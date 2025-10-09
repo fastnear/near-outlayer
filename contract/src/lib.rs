@@ -23,6 +23,10 @@ pub const DATA_ID_REGISTER: u64 = 37;
 // Timeout for stale execution cancellation (10 minutes)
 pub const EXECUTION_TIMEOUT: u64 = 600 * 1_000_000_000;
 
+// Maximum resource limits (hard caps)
+pub const MAX_INSTRUCTIONS: u64 = 100_000_000_000; // 100 billion instructions
+pub const MAX_EXECUTION_SECONDS: u64 = 60; // 60 seconds
+
 #[derive(BorshSerialize, BorshStorageKey)]
 #[borsh(crate = "near_sdk::borsh")]
 enum StorageKey {
@@ -85,8 +89,7 @@ pub struct ExecutionResponse {
 #[near(serializers = [json])]
 pub struct ResourceMetrics {
     pub instructions: u64,
-    pub memory_bytes: u64,
-    pub time_seconds: u64,
+    pub time_ms: u64,
 }
 
 #[derive(BorshDeserialize, BorshSerialize, PanicOnDefault)]
@@ -101,8 +104,7 @@ pub struct Contract {
     // Pricing
     base_fee: Balance,
     per_instruction_fee: Balance,
-    per_mb_fee: Balance,
-    per_second_fee: Balance,
+    per_ms_fee: Balance,
 
     // Request tracking
     next_request_id: u64,
@@ -122,9 +124,8 @@ impl Contract {
             operator_id: operator_id.unwrap_or(owner_id),
             paused: false,
             base_fee: 10_000_000_000_000_000_000_000, // 0.01 NEAR
-            per_instruction_fee: 1_000_000_000_000_000, // 0.000001 NEAR per million
-            per_mb_fee: 100_000_000_000_000_000_000,  // 0.0001 NEAR per MB
-            per_second_fee: 1_000_000_000_000_000_000_000, // 0.001 NEAR per second
+            per_instruction_fee: 1_000_000_000_000_000, // 0.000001 NEAR per million instructions
+            per_ms_fee: 1_000_000_000_000_000_000, // 0.000001 NEAR per millisecond
             next_request_id: 0,
             pending_requests: LookupMap::new(StorageKey::PendingRequests),
             total_executions: 0,
@@ -149,10 +150,23 @@ impl Contract {
     fn calculate_cost(&self, metrics: &ResourceMetrics) -> Balance {
         let instruction_cost =
             (metrics.instructions / 1_000_000) as u128 * self.per_instruction_fee;
-        let memory_cost = (metrics.memory_bytes / (1024 * 1024)) as u128 * self.per_mb_fee;
-        let time_cost = metrics.time_seconds as u128 * self.per_second_fee;
+        let time_cost = metrics.time_ms as u128 * self.per_ms_fee;
 
-        self.base_fee + instruction_cost + memory_cost + time_cost
+        self.base_fee + instruction_cost + time_cost
+    }
+
+    /// Estimate cost based on resource limits
+    fn estimate_cost(&self, limits: &ResourceLimits) -> Balance {
+        // Use requested limits or defaults
+        let max_instructions = limits.max_instructions.unwrap_or(1_000_000_000);
+        let max_execution_seconds = limits.max_execution_seconds.unwrap_or(60);
+        let max_time_ms = max_execution_seconds * 1000;
+
+        // Calculate worst-case cost
+        let instruction_cost = (max_instructions / 1_000_000) as u128 * self.per_instruction_fee;
+        let time_cost = max_time_ms as u128 * self.per_ms_fee;
+
+        self.base_fee + instruction_cost + time_cost
     }
 }
 

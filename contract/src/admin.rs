@@ -47,8 +47,7 @@ impl Contract {
         &mut self,
         base_fee: Option<U128>,
         per_instruction_fee: Option<U128>,
-        per_mb_fee: Option<U128>,
-        per_second_fee: Option<U128>,
+        per_ms_fee: Option<U128>,
     ) {
         self.assert_owner();
 
@@ -60,13 +59,9 @@ impl Contract {
             self.per_instruction_fee = fee.0;
             log!("Per instruction fee updated to {}", fee.0);
         }
-        if let Some(fee) = per_mb_fee {
-            self.per_mb_fee = fee.0;
-            log!("Per MB fee updated to {}", fee.0);
-        }
-        if let Some(fee) = per_second_fee {
-            self.per_second_fee = fee.0;
-            log!("Per second fee updated to {}", fee.0);
+        if let Some(fee) = per_ms_fee {
+            self.per_ms_fee = fee.0;
+            log!("Per millisecond fee updated to {}", fee.0);
         }
     }
 

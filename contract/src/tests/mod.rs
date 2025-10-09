@@ -53,12 +53,11 @@ mod basic_tests {
     #[test]
     fn test_get_pricing() {
         let contract = setup_contract();
-        let (base, per_inst, per_mb, per_sec) = contract.get_pricing();
+        let (base, per_inst, per_ms) = contract.get_pricing();
 
         assert_eq!(base.0, 10_000_000_000_000_000_000_000); // 0.01 NEAR
-        assert_eq!(per_inst.0, 1_000_000_000_000_000);
-        assert_eq!(per_mb.0, 100_000_000_000_000_000_000);
-        assert_eq!(per_sec.0, 1_000_000_000_000_000_000_000);
+        assert_eq!(per_inst.0, 1_000_000_000_000_000); // 0.000001 NEAR per million instructions
+        assert_eq!(per_ms.0, 1_000_000_000_000_000_000); // 0.000001 NEAR per millisecond
     }
 
     #[test]
@@ -147,9 +146,9 @@ mod admin_tests {
         testing_env!(context.build());
 
         let new_base = U128(20_000_000_000_000_000_000_000);
-        contract.set_pricing(Some(new_base), None, None, None);
+        contract.set_pricing(Some(new_base), None, None);
 
-        let (base, _, _, _) = contract.get_pricing();
+        let (base, _, _) = contract.get_pricing();
         assert_eq!(base, new_base);
     }
 

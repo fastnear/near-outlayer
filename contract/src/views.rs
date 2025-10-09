@@ -13,13 +13,23 @@ impl Contract {
     }
 
     /// Get current pricing
-    pub fn get_pricing(&self) -> (U128, U128, U128, U128) {
+    pub fn get_pricing(&self) -> (U128, U128, U128) {
         (
             U128(self.base_fee),
             U128(self.per_instruction_fee),
-            U128(self.per_mb_fee),
-            U128(self.per_second_fee),
+            U128(self.per_ms_fee),
         )
+    }
+
+    /// Estimate cost for given resource limits
+    pub fn estimate_execution_cost(&self, resource_limits: Option<ResourceLimits>) -> U128 {
+        let limits = resource_limits.unwrap_or_default();
+        U128(self.estimate_cost(&limits))
+    }
+
+    /// Get maximum resource limits (hard caps)
+    pub fn get_max_limits(&self) -> (u64, u64) {
+        (MAX_INSTRUCTIONS, MAX_EXECUTION_SECONDS)
     }
 
     /// Check if contract is paused

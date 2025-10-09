@@ -46,6 +46,7 @@ pub struct ExecutionResult {
     pub output: Option<Vec<u8>>,
     pub error: Option<String>,
     pub execution_time_ms: u64,
+    pub instructions: u64,
 }
 
 /// API client for communicating with Coordinator API
@@ -131,6 +132,7 @@ impl ApiClient {
             output: Option<Vec<u8>>,
             error: Option<String>,
             execution_time_ms: u64,
+            instructions: u64,
         }
 
         let request = CompleteRequest {
@@ -139,6 +141,7 @@ impl ApiClient {
             output: result.output,
             error: result.error,
             execution_time_ms: result.execution_time_ms,
+            instructions: result.instructions,
         };
 
         let response = self

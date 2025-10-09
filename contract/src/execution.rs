@@ -13,14 +13,42 @@ impl Contract {
     ) {
         self.assert_not_paused();
 
+        let limits = resource_limits.unwrap_or_default();
+
+        // Validate resource limits against hard caps
+        let max_instructions = limits.max_instructions.unwrap_or_default();
+        let max_execution_seconds = limits.max_execution_seconds.unwrap_or_default();
+
+        assert!(
+            max_instructions <= MAX_INSTRUCTIONS,
+            "Requested max_instructions {} exceeds hard limit of {}",
+            max_instructions,
+            MAX_INSTRUCTIONS
+        );
+
+        assert!(
+            max_execution_seconds <= MAX_EXECUTION_SECONDS,
+            "Requested max_execution_seconds {} exceeds hard limit of {} seconds",
+            max_execution_seconds,
+            MAX_EXECUTION_SECONDS
+        );
+
+        let estimated_cost = self.estimate_cost(&limits);
         let payment = env::attached_deposit().as_yoctonear();
-        assert!(payment >= self.base_fee, "Insufficient payment");
+
+        assert!(
+            payment >= estimated_cost,
+            "Insufficient payment: required {} yoctoNEAR for requested limits (max_instructions: {:?}, max_execution_seconds: {:?}), got {} yoctoNEAR",
+            estimated_cost,
+            limits.max_instructions,
+            limits.max_execution_seconds,
+            payment
+        );
 
         let request_id = self.next_request_id;
         self.next_request_id += 1;
 
         let sender_id = env::predecessor_account_id();
-        let limits = resource_limits.unwrap_or_default();
 
         // Create execution request data for yield
         let request_data = json!({
@@ -75,9 +103,11 @@ impl Contract {
         self.assert_operator();
 
         log!(
-            "Resolving execution with data_id: {:?}, success: {}",
+            "Resolving execution with data_id: {:?}, success: {}, resources_used: {{ instructions: {}, time_ms: {} }}",
             data_id,
-            response.success
+            response.success,
+            response.resources_used.instructions,
+            response.resources_used.time_ms
         );
 
         // Resume the yield promise with the response
@@ -127,13 +157,15 @@ impl Contract {
                             true,
                         );
 
-                        // Log the execution result
+                        // Log the execution result with resources used
                         if let Some(return_value) = &exec_response.return_value {
                             match String::from_utf8(return_value.clone()) {
                                 Ok(result_str) => {
                                     log!(
-                                        "Execution completed successfully. Result: {}, Cost: {} yoctoNEAR, Refund: {} yoctoNEAR",
+                                        "Execution completed successfully. Result: {}, Resources: {{ instructions: {}, time_ms: {} }}, Cost: {} yoctoNEAR, Refund: {} yoctoNEAR",
                                         result_str,
+                                        exec_response.resources_used.instructions,
+                                        exec_response.resources_used.time_ms,
                                         cost,
                                         refund
                                     );
@@ -142,8 +174,10 @@ impl Contract {
                                 }
                                 Err(e) => {
                                     log!(
-                                        "Execution returned non-UTF8 data: {:?}. Cost: {} yoctoNEAR, Refund: {} yoctoNEAR",
+                                        "Execution returned non-UTF8 data: {:?}. Resources: {{ instructions: {}, time_ms: {} }}, Cost: {} yoctoNEAR, Refund: {} yoctoNEAR",
                                         e,
+                                        exec_response.resources_used.instructions,
+                                        exec_response.resources_used.time_ms,
                                         cost,
                                         refund
                                     );
@@ -153,7 +187,9 @@ impl Contract {
                             }
                         } else {
                             log!(
-                                "Execution has no output value. Cost: {} yoctoNEAR, Refund: {} yoctoNEAR",
+                                "Execution has no output value. Resources: {{ instructions: {}, time_ms: {} }}, Cost: {} yoctoNEAR, Refund: {} yoctoNEAR",
+                                exec_response.resources_used.instructions,
+                                exec_response.resources_used.time_ms,
                                 cost,
                                 refund
                             );
@@ -179,8 +215,10 @@ impl Contract {
                         );
 
                         env::panic_str(&format!(
-                            "Execution failed: {}. Refunded {} yoctoNEAR",
+                            "Execution failed: {}. Resources: {{ instructions: {}, time_ms: {} }}. Refunded {} yoctoNEAR",
                             exec_response.error.unwrap_or("Unknown error".to_string()),
+                            exec_response.resources_used.instructions,
+                            exec_response.resources_used.time_ms,
                             refund
                         ));
                     }

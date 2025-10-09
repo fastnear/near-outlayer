@@ -20,7 +20,7 @@ mod tests {
             code_source: CodeSource {
                 repo: "https://github.com/test/repo".to_string(),
                 commit: "abc123".to_string(),
-                build_target: "wasm32-wasi".to_string(),
+                build_target: Some("wasm32-wasi".to_string()),
             },
             resource_limits: ResourceLimits::default(),
             payment: 100_000_000_000_000_000_000_000, // 0.1 NEAR
@@ -62,7 +62,7 @@ mod tests {
             code_source: CodeSource {
                 repo: "https://github.com/test/repo".to_string(),
                 commit: "abc123".to_string(),
-                build_target: "wasm32-wasi".to_string(),
+                build_target: Some("wasm32-wasi".to_string()),
             },
             resource_limits: ResourceLimits::default(),
             payment: 100_000_000_000_000_000_000_000,
@@ -96,7 +96,7 @@ mod tests {
             code_source: CodeSource {
                 repo: "https://github.com/test/repo".to_string(),
                 commit: "abc123".to_string(),
-                build_target: "wasm32-wasi".to_string(),
+                build_target: Some("wasm32-wasi".to_string()),
             },
             resource_limits: ResourceLimits::default(),
             payment: 100_000_000_000_000_000_000_000,
@@ -133,8 +133,7 @@ mod tests {
 
         let metrics = ResourceMetrics {
             instructions: 10_000_000, // 10M instructions
-            memory_bytes: 67_108_864, // 64 MB
-            time_seconds: 5,          // 5 seconds
+            time_ms: 5000,            // 5000 ms (5 seconds)
         };
 
         let cost = contract.calculate_cost(&metrics);
@@ -142,11 +141,10 @@ mod tests {
         // Expected:
         // base_fee: 10_000_000_000_000_000_000_000
         // instruction_cost: 10 * 1_000_000_000_000_000 = 10_000_000_000_000_000
-        // memory_cost: 64 * 100_000_000_000_000_000_000 = 6_400_000_000_000_000_000_000
-        // time_cost: 5 * 1_000_000_000_000_000_000_000 = 5_000_000_000_000_000_000_000
-        // Total: 21_400_010_000_000_000_000_000 (actual result from calculation)
+        // time_cost: 5000 * 1_000_000_000_000_000_000 = 5_000_000_000_000_000_000_000
+        // Total: 15_000_010_000_000_000_000_000
 
-        assert_eq!(cost, 21_400_010_000_000_000_000_000);
+        assert_eq!(cost, 15_000_010_000_000_000_000_000);
     }
 
     #[test]
@@ -166,10 +164,10 @@ mod tests {
         let code_source = CodeSource {
             repo: "https://github.com/test/repo".to_string(),
             commit: "abc123".to_string(),
-            build_target: "wasm32-wasi".to_string(),
+            build_target: Some("wasm32-wasi".to_string()),
         };
 
-        contract.request_execution(code_source, None);
+        contract.request_execution(code_source, None, None);
     }
 
     #[test]
@@ -184,9 +182,9 @@ mod tests {
         let code_source = CodeSource {
             repo: "https://github.com/test/repo".to_string(),
             commit: "abc123".to_string(),
-            build_target: "wasm32-wasi".to_string(),
+            build_target: Some("wasm32-wasi".to_string()),
         };
 
-        contract.request_execution(code_source, None);
+        contract.request_execution(code_source, None, None);
     }
 }

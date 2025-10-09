@@ -61,13 +61,14 @@ impl Executor {
             Ok(Ok(inner_result)) => {
                 // Execution completed within timeout
                 match inner_result {
-                    Ok(output) => {
-                        info!("WASM execution succeeded in {} ms", execution_time_ms);
+                    Ok((output, instructions)) => {
+                        info!("WASM execution succeeded in {} ms, consumed {} instructions", execution_time_ms, instructions);
                         Ok(ExecutionResult {
                             success: true,
                             output: Some(output),
                             error: None,
                             execution_time_ms,
+                            instructions,
                         })
                     }
                     Err(e) => {
@@ -77,6 +78,7 @@ impl Executor {
                             output: None,
                             error: Some(e.to_string()),
                             execution_time_ms,
+                            instructions: 0,
                         })
                     }
                 }
@@ -88,6 +90,7 @@ impl Executor {
                     output: None,
                     error: Some(format!("Execution panicked: {}", e)),
                     execution_time_ms,
+                    instructions: 0,
                 })
             }
             Err(_) => {
@@ -100,13 +103,14 @@ impl Executor {
                         limits.max_execution_seconds
                     )),
                     execution_time_ms,
+                    instructions: 0,
                 })
             }
         }
     }
 
     /// Synchronous execution (runs in blocking thread)
-    fn execute_sync(wasm_bytes: &[u8], input_data: &[u8], limits: &ResourceLimits) -> Result<Vec<u8>> {
+    fn execute_sync(wasm_bytes: &[u8], input_data: &[u8], limits: &ResourceLimits) -> Result<(Vec<u8>, u64)> {
         // Create WASM engine with fuel metering
         let mut config = Config::default();
         config.consume_fuel(true);
@@ -181,7 +185,7 @@ impl Executor {
         let fuel_consumed = limits.max_instructions - store.get_fuel().unwrap_or(0);
         debug!("WASM execution consumed {} instructions", fuel_consumed);
 
-        Ok(output)
+        Ok((output, fuel_consumed))
     }
 
     /// Add minimal WASI host functions

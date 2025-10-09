@@ -73,9 +73,8 @@ impl NearClient {
                 "return_value": result.output,
                 "error": result.error,
                 "resources_used": {
-                    "instructions": 0u64, // TODO: Get actual metrics from executor
-                    "memory_bytes": 0u64,
-                    "time_seconds": result.execution_time_ms / 1000,
+                    "instructions": result.instructions,
+                    "time_ms": result.execution_time_ms,
                 }
             }
         });
