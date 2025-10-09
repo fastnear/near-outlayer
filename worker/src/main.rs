@@ -166,6 +166,7 @@ async fn worker_iteration(
             data_id,
             wasm_checksum,
             resource_limits,
+            input_data,
         } => {
             handle_execute_task(
                 api_client,
@@ -175,6 +176,7 @@ async fn worker_iteration(
                 data_id,
                 wasm_checksum,
                 resource_limits,
+                input_data,
             )
             .await?;
         }
@@ -305,6 +307,7 @@ async fn handle_execute_task(
     data_id: String,
     wasm_checksum: String,
     resource_limits: api_client::ResourceLimits,
+    input_data: String,
 ) -> Result<()> {
     info!(
         "Executing WASM for request_id={}, data_id={}, checksum={}",
@@ -326,12 +329,13 @@ async fn handle_execute_task(
         }
     };
 
-    // Get input data (for now, use empty data - in real implementation, fetch from data_id)
-    let input_data = vec![]; // TODO: Fetch actual input data using data_id
+    // Use input data from task
+    info!("📝 Using input from task: {}", input_data);
+    let input_bytes = input_data.as_bytes().to_vec();
 
     // Execute WASM
     let result = executor
-        .execute(&wasm_bytes, &input_data, &resource_limits)
+        .execute(&wasm_bytes, &input_bytes, &resource_limits)
         .await
         .context("Failed to execute WASM")?;
 

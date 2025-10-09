@@ -19,6 +19,7 @@ pub enum Task {
         data_id: String,
         wasm_checksum: String,
         resource_limits: ResourceLimits,
+        input_data: String,
     },
 }
 
