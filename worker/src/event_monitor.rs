@@ -33,7 +33,7 @@ pub struct RequestData {
 pub struct CodeSource {
     pub repo: String,
     pub commit: String,
-    pub build_target: String,
+    pub build_target: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -407,7 +407,7 @@ impl EventMonitor {
             serde_json::from_value(data_array[0].clone()).ok()?;
 
         // Parse the nested request_data JSON string
-        let request_data: RequestData = match serde_json::from_str(&event_data.request_data) {
+        let mut request_data: RequestData = match serde_json::from_str(&event_data.request_data) {
             Ok(data) => data,
             Err(e) => {
                 error!(
@@ -417,6 +417,10 @@ impl EventMonitor {
                 return None;
             }
         };
+
+        if request_data.code_source.build_target.is_none() {
+            request_data.code_source.build_target = Some("wasm32-wasi".to_string());
+        }
 
         info!(
             "✅ Found execution_requested event at block {}: request_id={} repo={} commit={}",

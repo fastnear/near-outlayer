@@ -35,24 +35,24 @@ enum StorageKey {
 pub struct CodeSource {
     pub repo: String,
     pub commit: String,
-    pub build_target: String, // e.g., "wasm32-wasi"
+    pub build_target: Option<String>, // e.g., "wasm32-wasi"
 }
 
 /// Resource limits for execution
 #[derive(Clone, Debug)]
 #[near(serializers = [borsh, json])]
 pub struct ResourceLimits {
-    pub max_instructions: u64,
-    pub max_memory_mb: u32,
-    pub max_execution_seconds: u64,
+    pub max_instructions: Option<u64>,
+    pub max_memory_mb: Option<u32>,
+    pub max_execution_seconds: Option<u64>,
 }
 
 impl Default for ResourceLimits {
     fn default() -> Self {
         Self {
-            max_instructions: 1_000_000_000, // 1B instructions
-            max_memory_mb: 128,              // 128 MB
-            max_execution_seconds: 60,       // 60 seconds
+            max_instructions: Some(1_000_000_000), // 1B instructions
+            max_memory_mb: Some(128),              // 128 MB
+            max_execution_seconds: Some(60),       // 60 seconds
         }
     }
 }
