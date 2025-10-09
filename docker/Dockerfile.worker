@@ -1,0 +1,58 @@
+# Multi-stage build for OffchainVM Worker
+
+# Stage 1: Builder
+FROM rust:alpine AS builder
+
+# Update to latest stable Rust
+RUN rustup update stable && rustup default stable
+
+# Install build dependencies
+RUN apk add --no-cache \
+    musl-dev \
+    pkgconfig \
+    openssl-dev \
+    openssl-libs-static
+
+WORKDIR /build
+
+# Copy manifests
+COPY Cargo.toml Cargo.lock ./
+
+# Create dummy src to cache dependencies
+RUN mkdir src && \
+    echo "fn main() {}" > src/main.rs && \
+    cargo build --release && \
+    rm -rf src
+
+# Copy actual source code
+COPY src ./src
+
+# Build the application
+RUN touch src/main.rs && \
+    cargo build --release --bin offchainvm-worker
+
+# Stage 2: Runtime
+FROM alpine:3.18
+
+# Install runtime dependencies
+RUN apk add --no-cache \
+    ca-certificates \
+    libgcc \
+    docker-cli
+
+# Create app user
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=builder /build/target/release/offchainvm-worker /app/worker
+
+# Change ownership
+RUN chown -R appuser:appgroup /app
+
+# Switch to non-root user
+USER appuser
+
+# Run the application
+CMD ["/app/worker"]
