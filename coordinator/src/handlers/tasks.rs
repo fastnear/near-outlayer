@@ -96,8 +96,9 @@ pub async fn complete_task(
         //TODO: Fetch code_source, resource_limits, and data_id from database
         // For now, we need these from the original request
         // This is a limitation - we should store these in DB when task is created
+        // Note: Worker handles compile+execute flow directly, so this is not critical
 
-        warn!("TODO: Create Execute task after Compile - need to store task metadata in DB");
+        debug!("Note: Could auto-create Execute task after Compile (requires storing task metadata in DB)");
     }
 
     debug!("Task {} marked as completed", payload.request_id);

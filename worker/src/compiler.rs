@@ -107,8 +107,9 @@ impl Compiler {
             .await;
 
         // Always release the lock, even on error
+        // Note: Lock may already be expired (TTL=5min), which is OK
         if let Err(e) = self.api_client.release_lock(&lock_key).await {
-            warn!("Failed to release compilation lock: {}", e);
+            debug!("Could not release compilation lock (may have expired): {}", e);
         }
 
         // Check upload result after releasing lock
@@ -225,13 +226,17 @@ impl Compiler {
     /// Execute compilation inside container
     async fn execute_compilation(&self, container_id: &str, build_target: &str) -> Result<Vec<u8>> {
         info!("Executing compilation in container {}", container_id);
+        let start_time = std::time::Instant::now();
 
         // Single command with proper shell environment handling
         let compile_script = format!(r#"
 set -ex
 cd /workspace
 
-# Setup Rust environment (rustrust:1.75 image already has Rust)
+# Track compilation time
+START_TIME=$(date +%s)
+
+# Setup Rust environment (rust:1.75 image already has Rust)
 if [ -f /usr/local/cargo/env ]; then
     . /usr/local/cargo/env
 elif [ -f $HOME/.cargo/env ]; then
@@ -239,28 +244,80 @@ elif [ -f $HOME/.cargo/env ]; then
 fi
 
 # Add WASM target
-rustup target add {build_target}
+# Note: wasm32-wasi will be deprecated in Rust 1.84 (Jan 2025)
+# Prefer wasm32-wasip1 for forward compatibility
+TARGET_TO_ADD={build_target}
+if [ "{build_target}" = "wasm32-wasi" ]; then
+    # Try wasip1 first (Rust 1.78+), fallback to wasi
+    if rustup target list | grep -q wasm32-wasip1; then
+        TARGET_TO_ADD="wasm32-wasip1"
+        echo "ℹ️  Using wasm32-wasip1 (recommended for Rust 1.78+)"
+    fi
+fi
+rustup target add $TARGET_TO_ADD
 
 # Clone repository
 git clone $REPO repo
 cd repo
 git checkout $COMMIT
 
-# Build WASM
+# Build WASM with size optimizations
+# Note: We rely on repository's Cargo.toml profile settings
+# If profile.release has opt-level="z", lto=true, codegen-units=1 - great!
+# If not, we'll optimize with wasm-opt later
 cargo build --release --target {build_target}
 
-# Copy WASM to predictable location
-mkdir -p /workspace/output
+# Find compiled WASM
 WASM_FILE=$(find target/{build_target}/release -maxdepth 1 -name "*.wasm" -type f | head -1)
-if [ -n "$WASM_FILE" ]; then
-    cp "$WASM_FILE" /workspace/output/output.wasm
-    echo "✅ WASM copied: $WASM_FILE -> /workspace/output/output.wasm"
-    ls -lah /workspace/output/output.wasm
-else
+if [ -z "$WASM_FILE" ]; then
     echo "❌ ERROR: No WASM file found!"
     find target/{build_target}/release -type f
     exit 1
 fi
+
+echo "📦 Original WASM: $WASM_FILE"
+ls -lah "$WASM_FILE"
+
+# Copy to output
+mkdir -p /workspace/output
+cp "$WASM_FILE" /workspace/output/output.wasm
+
+# Install wasm-opt if not present (from binaryen package)
+if ! command -v wasm-opt &> /dev/null; then
+    echo "📥 Installing wasm-opt..."
+    apt-get update -qq && apt-get install -y -qq binaryen > /dev/null 2>&1 || true
+fi
+
+# Optimize WASM following cargo-wasi best practices
+if command -v wasm-opt &> /dev/null; then
+    echo "🔧 Optimizing WASM with wasm-opt (cargo-wasi style)..."
+    ORIGINAL_SIZE=$(stat -c%s /workspace/output/output.wasm)
+
+    # Apply optimizations as per cargo-wasi:
+    # -Oz: optimize aggressively for size
+    # --strip-dwarf: remove DWARF debug info (cargo-wasi does this in release)
+    # --strip-producers: remove producers section (optional, saves ~100 bytes)
+    wasm-opt -Oz \
+        --strip-dwarf \
+        --strip-producers \
+        /workspace/output/output.wasm \
+        -o /workspace/output/output_optimized.wasm
+
+    mv /workspace/output/output_optimized.wasm /workspace/output/output.wasm
+    OPTIMIZED_SIZE=$(stat -c%s /workspace/output/output.wasm)
+    SAVED=$((ORIGINAL_SIZE - OPTIMIZED_SIZE))
+    PERCENT=$((SAVED * 100 / ORIGINAL_SIZE))
+    echo "✅ Optimization complete: $ORIGINAL_SIZE bytes → $OPTIMIZED_SIZE bytes (saved $SAVED bytes / $PERCENT%)"
+else
+    echo "⚠️  wasm-opt not available, skipping optimization"
+fi
+
+ls -lah /workspace/output/output.wasm
+
+# Calculate total compilation time
+END_TIME=$(date +%s)
+COMPILE_TIME=$((END_TIME - START_TIME))
+echo "⏱️  Total compilation time: $COMPILE_TIME seconds"
 "#);
 
         self.exec_in_container(container_id, &compile_script).await?;
@@ -268,7 +325,12 @@ fi
         // Extract WASM file from container
         let wasm_bytes = self.extract_wasm_from_container(container_id, "/workspace/output/output.wasm").await?;
 
-        info!("Compilation successful, WASM size: {} bytes", wasm_bytes.len());
+        let elapsed = start_time.elapsed();
+        info!(
+            "✅ Compilation successful: WASM size={} bytes, total_time={:.2}s",
+            wasm_bytes.len(),
+            elapsed.as_secs_f64()
+        );
         Ok(wasm_bytes)
     }
 

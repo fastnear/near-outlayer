@@ -24,18 +24,39 @@ echo "📁 WASM cache directory: $WASM_CACHE_DIR"
 echo ""
 
 # 1. Clear filesystem cache
-if [ -d "$WASM_CACHE_DIR" ]; then
-    FILE_COUNT=$(find "$WASM_CACHE_DIR" -name "*.wasm" -type f 2>/dev/null | wc -l | tr -d ' ')
+
+# Check if coordinator is running in Docker
+if docker ps 2>/dev/null | grep -q coordinator; then
+    echo "🐳 Coordinator running in Docker, clearing cache inside container..."
+
+    # Clear inside Docker container
+    CONTAINER_CACHE="/var/offchainvm/wasm"
+    FILE_COUNT=$(docker exec offchainvm-coordinator sh -c "ls $CONTAINER_CACHE/*.wasm 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
+
     if [ "$FILE_COUNT" -gt 0 ]; then
-        echo "🗑️  Found $FILE_COUNT WASM files in filesystem cache"
-        rm -f "$WASM_CACHE_DIR"/*.wasm
-        echo "✅ Deleted $FILE_COUNT WASM files from filesystem"
+        echo "🗑️  Found $FILE_COUNT WASM files in Docker container cache"
+        docker exec offchainvm-coordinator sh -c "rm -f $CONTAINER_CACHE/*.wasm"
+        echo "✅ Deleted $FILE_COUNT WASM files from Docker container"
     else
-        echo "✨ Filesystem cache is already empty"
+        echo "✨ Docker container cache is already empty"
     fi
 else
-    echo "📂 Creating cache directory: $WASM_CACHE_DIR"
-    mkdir -p "$WASM_CACHE_DIR"
+    echo "💻 Clearing host filesystem cache..."
+
+    # Clear on host
+    if [ -d "$WASM_CACHE_DIR" ]; then
+        FILE_COUNT=$(find "$WASM_CACHE_DIR" -name "*.wasm" -type f 2>/dev/null | wc -l | tr -d ' ')
+        if [ "$FILE_COUNT" -gt 0 ]; then
+            echo "🗑️  Found $FILE_COUNT WASM files in filesystem cache"
+            rm -f "$WASM_CACHE_DIR"/*.wasm
+            echo "✅ Deleted $FILE_COUNT WASM files from filesystem"
+        else
+            echo "✨ Filesystem cache is already empty"
+        fi
+    else
+        echo "📂 Creating cache directory: $WASM_CACHE_DIR"
+        mkdir -p "$WASM_CACHE_DIR"
+    fi
 fi
 
 echo ""
