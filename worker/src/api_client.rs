@@ -446,7 +446,7 @@ impl ApiClient {
             code_source: CodeSource::GitHub {
                 repo,
                 commit,
-                build_target: "wasm32-unknown-unknown".to_string(),
+                build_target: "wasm32-wasi".to_string(),
             },
             resource_limits: ResourceLimits {
                 max_instructions,

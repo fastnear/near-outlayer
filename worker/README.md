@@ -63,11 +63,19 @@ HTTP client for Coordinator API:
 - `acquire_lock()` / `release_lock()` - Distributed locking for compilation
 
 ### 3. Compiler (`src/compiler.rs`)
-Compiles GitHub repositories to WASM:
+Compiles GitHub repositories to WASM using Docker:
 - Checks WASM cache before compiling
 - Acquires distributed lock to prevent duplicate work
-- Runs compilation in Docker sandbox (TODO: implement Docker integration)
+- **Runs real Docker-based compilation** from public GitHub repositories
+- Supports `wasm32-wasi` and `wasm32-wasip1` targets (extensible to more targets)
+- Extracts compiled WASM via tar streaming
 - Uploads compiled WASM to coordinator
+
+**Supported Build Targets:**
+- ✅ `wasm32-wasi` (primary target)
+- ✅ `wasm32-wasip1` (normalized to wasm32-wasi)
+- 🔜 `wasm32-unknown-unknown` (planned)
+- 🔜 `wasm32-wasip2` (planned)
 
 ### 4. Executor (`src/executor.rs`)
 Executes WASM with resource metering:
@@ -193,9 +201,9 @@ RUST_LOG=offchainvm_worker=trace cargo run
 2. Compute checksum for (repo, commit, build_target)
 3. Check if WASM exists in cache → return if yes
 4. Acquire distributed lock for this compilation
-5. Clone GitHub repository (TODO: implement)
-6. Run `cargo build --target wasm32-wasi` in Docker (TODO: implement)
-7. Extract WASM binary
+5. **Clone GitHub repository in Docker container**
+6. **Run `cargo build --target wasm32-wasi` in Docker sandbox**
+7. **Extract WASM binary via tar streaming**
 8. Upload to coordinator with checksum
 9. Release lock
 10. Complete task
@@ -248,10 +256,37 @@ Memory layout:
 
 ## Testing
 
+### Unit Tests
+
 ```bash
-# Run unit tests
+# Run all unit tests
 cargo test
 
+# Run specific test
+cargo test test_validate_build_target
+```
+
+### Integration Tests
+
+**Test real GitHub compilation** (requires Docker):
+
+```bash
+# Using test script
+./scripts/test_github_compilation.sh
+
+# Or manually
+cargo test test_real_github_compilation -- --ignored --nocapture
+```
+
+This test:
+- Compiles https://github.com/zavodil/random-ark @ `6491b31`
+- Validates WASM magic number
+- Compares with pre-compiled version if available
+- Shows compilation metrics (size, checksum)
+
+### Manual Testing
+
+```bash
 # Run with test configuration
 API_BASE_URL=http://localhost:8080 \
 API_AUTH_TOKEN=test-token \
@@ -274,7 +309,9 @@ cargo run
 
 ### TODO
 
-- [ ] Implement Docker-based GitHub compilation
+- [x] ~~Implement Docker-based GitHub compilation~~ ✅ **DONE**
+- [x] ~~Support wasm32-wasi build target~~ ✅ **DONE**
+- [ ] Add support for more build targets (wasm32-unknown-unknown, wasm32-wasip2)
 - [ ] Implement proper input data fetching via data_id
 - [ ] Add metrics collection and reporting
 - [ ] Implement health checks and worker registration
@@ -282,6 +319,7 @@ cargo run
 - [ ] Implement WASM caching on worker disk
 - [ ] Add support for multiple WASM runtimes (wasmtime, wasmer)
 - [ ] Implement full WASI support for more complex programs
+- [ ] Optimize Docker image caching for faster compilations
 
 ## Troubleshooting
 

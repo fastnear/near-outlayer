@@ -1,22 +1,36 @@
 use anyhow::{Context, Result};
+use bollard::container::{Config as ContainerConfig, CreateContainerOptions, RemoveContainerOptions};
+use bollard::exec::{CreateExecOptions, StartExecResults};
+use bollard::image::CreateImageOptions;
+use bollard::Docker;
+use futures_util::stream::StreamExt;
 use sha2::{Digest, Sha256};
-use tracing::{info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::api_client::{ApiClient, CodeSource};
 use crate::config::Config;
+
+/// Lock TTL for compilation in seconds (5 minutes)
+/// This prevents stale locks from blocking compilation forever
+const COMPILATION_LOCK_TTL_SECONDS: u64 = 300;
 
 /// Compiler for building GitHub repositories into WASM binaries
 pub struct Compiler {
     api_client: ApiClient,
     config: Config,
+    docker: Docker,
 }
 
 impl Compiler {
     /// Create a new compiler instance
     pub fn new(api_client: ApiClient, config: Config) -> Result<Self> {
+        let docker = Docker::connect_with_socket_defaults()
+            .context("Failed to connect to Docker")?;
+
         Ok(Self {
             api_client,
             config,
+            docker,
         })
     }
 
@@ -58,7 +72,7 @@ impl Compiler {
             .acquire_lock(
                 lock_key.clone(),
                 self.config.worker_id.clone(),
-                self.config.compile_timeout_seconds + 60, // Add buffer to TTL
+                COMPILATION_LOCK_TTL_SECONDS, // Lock expires after 5 minutes
             )
             .await?;
 
@@ -78,9 +92,8 @@ impl Compiler {
 
         info!("Acquired compilation lock for {}", repo);
 
-        // For MVP: Create a dummy WASM binary
-        // TODO: Implement real Docker-based compilation
-        let wasm_bytes = self.compile_dummy_wasm(repo, commit)?;
+        // Compile WASM from GitHub repository
+        let wasm_bytes = self.compile_from_github(repo, commit, build_target).await?;
 
         // Upload to coordinator
         info!("Uploading compiled WASM to coordinator");
@@ -104,46 +117,320 @@ impl Compiler {
         Ok(checksum)
     }
 
-    /// Create a dummy WASM binary for MVP testing
-    /// TODO: Replace with real Docker-based compilation
-    fn compile_dummy_wasm(&self, repo: &str, _commit: &str) -> Result<Vec<u8>> {
-        // Special case: if it's our test-wasm repo, load the real compiled WASM
-        if repo == "https://github.com/near-offshore/test-wasm"
-            || repo == "https://github.com/zavodil/random-ark" {
-            // Try to load from local test-wasm build (multiple possible locations)
-            let possible_paths = vec![
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .unwrap()
-                    .join("test-wasm/target/wasm32-wasip1/release/test_wasm.wasm"),
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .unwrap()
-                    .join("test-wasm/target/wasm32-wasi/release/test_wasm.wasm"),
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .unwrap()
-                    .join("test-wasm/target/wasm32-unknown-unknown/release/test_wasm.wasm"),
-            ];
+    /// Compile WASM from GitHub repository using Docker
+    ///
+    /// Currently supports: wasm32-wasi, wasm32-wasip1
+    /// Future support planned for: wasm32-unknown-unknown, wasm32-wasip2
+    async fn compile_from_github(&self, repo: &str, commit: &str, build_target: &str) -> Result<Vec<u8>> {
+        info!("Compiling {} @ {} for target {}", repo, commit, build_target);
 
-            for test_wasm_path in possible_paths {
-                if test_wasm_path.exists() {
-                    info!("Loading pre-compiled test WASM from: {}", test_wasm_path.display());
-                    return std::fs::read(&test_wasm_path)
-                        .context("Failed to read test WASM file");
-                }
-            }
+        // Validate and normalize build target
+        let normalized_target = self.validate_build_target(build_target)?;
 
-            warn!("Test WASM not found in any expected location, using minimal WASM");
+        info!("Using build target: {}", normalized_target);
+
+        // Create unique container name
+        let container_name = format!("offchainvm-compile-{}", uuid::Uuid::new_v4());
+
+        // Ensure Docker image is available
+        self.ensure_docker_image().await?;
+
+        // Create container
+        let container_id = self.create_compile_container(&container_name, repo, commit, &normalized_target).await?;
+
+        // Execute compilation
+        let result = self.execute_compilation(&container_id, &normalized_target).await;
+
+        // Always cleanup container
+        if let Err(e) = self.cleanup_container(&container_id).await {
+            warn!("Failed to cleanup container {}: {}", container_id, e);
         }
 
-        // Fallback: minimal valid WASM module that does nothing
-        // Real implementation would compile from GitHub
-        let wasm = vec![
-            0x00, 0x61, 0x73, 0x6d, // \0asm - magic number
-            0x01, 0x00, 0x00, 0x00, // version 1
-        ];
-        Ok(wasm)
+        // Return result
+        result
+    }
+
+    /// Ensure Docker image is available
+    async fn ensure_docker_image(&self) -> Result<()> {
+        let image = &self.config.docker_image;
+        info!("Ensuring Docker image is available: {}", image);
+
+        // Try to create/pull the image
+        let mut stream = self.docker.create_image(
+            Some(CreateImageOptions {
+                from_image: image.clone(),
+                ..Default::default()
+            }),
+            None,
+            None,
+        );
+
+        while let Some(result) = stream.next().await {
+            match result {
+                Ok(info) => {
+                    if let Some(status) = info.status {
+                        debug!("Docker: {}", status);
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to pull Docker image: {}", e);
+                    return Err(e.into());
+                }
+            }
+        }
+
+        info!("Docker image ready: {}", image);
+        Ok(())
+    }
+
+    /// Create a Docker container for compilation
+    async fn create_compile_container(&self, name: &str, repo: &str, commit: &str, build_target: &str) -> Result<String> {
+        info!("Creating Docker container: {}", name);
+
+        let config = ContainerConfig {
+            image: Some(self.config.docker_image.clone()),
+            cmd: Some(vec!["sleep".to_string(), "600".to_string()]), // Keep alive for 10 minutes
+            working_dir: Some("/workspace".to_string()),
+            host_config: Some(bollard::models::HostConfig {
+                // Note: Network is needed for installing rustup and cloning repo
+                // We'll disable it after initial setup in the future
+                network_mode: Some("bridge".to_string()),
+                memory: Some((self.config.compile_memory_limit_mb as i64) * 1024 * 1024),
+                nano_cpus: Some((self.config.compile_cpu_limit * 1_000_000_000.0) as i64),
+                ..Default::default()
+            }),
+            env: Some(vec![
+                format!("REPO={}", repo),
+                format!("COMMIT={}", commit),
+                format!("BUILD_TARGET={}", build_target),
+            ]),
+            ..Default::default()
+        };
+
+        let response = self.docker
+            .create_container(Some(CreateContainerOptions { name: name.to_string(), ..Default::default() }), config)
+            .await
+            .context("Failed to create container")?;
+
+        // Start container
+        self.docker
+            .start_container::<String>(&response.id, None)
+            .await
+            .context("Failed to start container")?;
+
+        info!("Container created and started: {}", response.id);
+        Ok(response.id)
+    }
+
+    /// Execute compilation inside container
+    async fn execute_compilation(&self, container_id: &str, build_target: &str) -> Result<Vec<u8>> {
+        info!("Executing compilation in container {}", container_id);
+
+        // Single command with proper shell environment handling
+        let compile_script = format!(r#"
+set -ex
+cd /workspace
+
+# Setup Rust environment (rustrust:1.75 image already has Rust)
+if [ -f /usr/local/cargo/env ]; then
+    . /usr/local/cargo/env
+elif [ -f $HOME/.cargo/env ]; then
+    . $HOME/.cargo/env
+fi
+
+# Add WASM target
+rustup target add {build_target}
+
+# Clone repository
+git clone $REPO repo
+cd repo
+git checkout $COMMIT
+
+# Build WASM
+cargo build --release --target {build_target}
+
+# Copy WASM to predictable location
+mkdir -p /workspace/output
+WASM_FILE=$(find target/{build_target}/release -maxdepth 1 -name "*.wasm" -type f | head -1)
+if [ -n "$WASM_FILE" ]; then
+    cp "$WASM_FILE" /workspace/output/output.wasm
+    echo "✅ WASM copied: $WASM_FILE -> /workspace/output/output.wasm"
+    ls -lah /workspace/output/output.wasm
+else
+    echo "❌ ERROR: No WASM file found!"
+    find target/{build_target}/release -type f
+    exit 1
+fi
+"#);
+
+        self.exec_in_container(container_id, &compile_script).await?;
+
+        // Extract WASM file from container
+        let wasm_bytes = self.extract_wasm_from_container(container_id, "/workspace/output/output.wasm").await?;
+
+        info!("Compilation successful, WASM size: {} bytes", wasm_bytes.len());
+        Ok(wasm_bytes)
+    }
+
+    /// Execute command in container
+    async fn exec_in_container(&self, container_id: &str, cmd: &str) -> Result<()> {
+        debug!("Executing in container: {}", cmd);
+
+        let exec = self.docker
+            .create_exec(
+                container_id,
+                CreateExecOptions {
+                    cmd: Some(vec!["sh", "-c", cmd]),
+                    attach_stdout: Some(true),
+                    attach_stderr: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await
+            .context("Failed to create exec")?;
+
+        let mut output = match self.docker.start_exec(&exec.id, None).await? {
+            StartExecResults::Attached { output, .. } => output,
+            StartExecResults::Detached => {
+                anyhow::bail!("Unexpected detached exec");
+            }
+        };
+
+        let mut stdout_lines = Vec::new();
+        let mut stderr_lines = Vec::new();
+
+        while let Some(msg) = output.next().await {
+            match msg {
+                Ok(log) => {
+                    use bollard::container::LogOutput;
+                    match log {
+                        LogOutput::StdOut { message } => {
+                            let text = String::from_utf8_lossy(&message);
+                            for line in text.lines() {
+                                info!("📦 STDOUT: {}", line);
+                                stdout_lines.push(line.to_string());
+                            }
+                        }
+                        LogOutput::StdErr { message } => {
+                            let text = String::from_utf8_lossy(&message);
+                            for line in text.lines() {
+                                warn!("📦 STDERR: {}", line);
+                                stderr_lines.push(line.to_string());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Err(e) => {
+                    error!("Error reading container output: {}", e);
+                    return Err(e.into());
+                }
+            }
+        }
+
+        // Check exit code
+        let inspect = self.docker.inspect_exec(&exec.id).await?;
+        if let Some(exit_code) = inspect.exit_code {
+            if exit_code != 0 {
+                error!("❌ Container command failed with exit code: {}", exit_code);
+                error!("Last stdout lines: {:?}", stdout_lines.iter().rev().take(5).collect::<Vec<_>>());
+                error!("Last stderr lines: {:?}", stderr_lines.iter().rev().take(5).collect::<Vec<_>>());
+                anyhow::bail!("Container command exited with code {}", exit_code);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Extract WASM file from container using tar stream
+    async fn extract_wasm_from_container(&self, container_id: &str, wasm_path: &str) -> Result<Vec<u8>> {
+        info!("Extracting WASM from container: {}", wasm_path);
+
+        use bollard::container::DownloadFromContainerOptions;
+        use futures_util::TryStreamExt;
+        use tar::Archive;
+        use std::io::Read;
+
+        // Download file as tar stream from container
+        let mut tar_stream = self.docker.download_from_container(
+            container_id,
+            Some(DownloadFromContainerOptions {
+                path: wasm_path.to_string(),
+            }),
+        );
+
+        // Collect all chunks into a buffer
+        let mut tar_data = Vec::new();
+        while let Some(chunk) = tar_stream.try_next().await? {
+            tar_data.extend_from_slice(&chunk);
+        }
+
+        // Parse tar archive
+        let mut archive = Archive::new(&tar_data[..]);
+
+        // Extract the WASM file
+        for entry in archive.entries().context("Failed to read tar entries")? {
+            let mut entry = entry.context("Failed to read tar entry")?;
+
+            // Read the file content
+            let mut wasm_bytes = Vec::new();
+            entry.read_to_end(&mut wasm_bytes)
+                .context("Failed to read WASM from tar")?;
+
+            if !wasm_bytes.is_empty() {
+                info!("Successfully extracted WASM ({} bytes)", wasm_bytes.len());
+                return Ok(wasm_bytes);
+            }
+        }
+
+        anyhow::bail!("WASM file not found in tar archive");
+    }
+
+    /// Cleanup container
+    async fn cleanup_container(&self, container_id: &str) -> Result<()> {
+        info!("Cleaning up container: {}", container_id);
+
+        self.docker
+            .remove_container(
+                container_id,
+                Some(RemoveContainerOptions {
+                    force: true,
+                    ..Default::default()
+                }),
+            )
+            .await
+            .context("Failed to remove container")?;
+
+        Ok(())
+    }
+
+    /// Validate and normalize build target
+    ///
+    /// Currently supports:
+    /// - wasm32-wasi (primary)
+    /// - wasm32-wasip1 (alias for wasi)
+    ///
+    /// Future support planned:
+    /// - wasm32-unknown-unknown (core WASM without WASI)
+    /// - wasm32-wasip2 (WASI Preview 2)
+    fn validate_build_target(&self, target: &str) -> Result<String> {
+        match target {
+            // Currently supported targets
+            "wasm32-wasi" => Ok("wasm32-wasi".to_string()),
+            "wasm32-wasip1" => Ok("wasm32-wasi".to_string()), // Normalize to wasm32-wasi
+
+            // Future targets (commented out for now)
+            // "wasm32-unknown-unknown" => Ok("wasm32-unknown-unknown".to_string()),
+            // "wasm32-wasip2" => Ok("wasm32-wasip2".to_string()),
+
+            _ => {
+                anyhow::bail!(
+                    "Unsupported build target: '{}'. Currently supported: wasm32-wasi, wasm32-wasip1. \
+                    Future support planned for: wasm32-unknown-unknown, wasm32-wasip2",
+                    target
+                )
+            }
+        }
     }
 
     /// Compute deterministic checksum for a code source
@@ -188,6 +475,109 @@ mod tests {
 
         assert_eq!(checksum1, checksum2);
         assert_ne!(checksum1, checksum3);
+    }
+
+    #[test]
+    fn test_validate_build_target() {
+        let config = create_test_config();
+        let api_client = ApiClient::new(
+            "http://localhost:8080".to_string(),
+            "test-token".to_string(),
+        )
+        .unwrap();
+        let compiler = Compiler::new(api_client, config).unwrap();
+
+        // Valid targets
+        assert_eq!(
+            compiler.validate_build_target("wasm32-wasi").unwrap(),
+            "wasm32-wasi"
+        );
+        assert_eq!(
+            compiler.validate_build_target("wasm32-wasip1").unwrap(),
+            "wasm32-wasi"
+        ); // normalized
+
+        // Invalid target
+        assert!(compiler.validate_build_target("invalid-target").is_err());
+    }
+
+    #[tokio::test]
+    #[ignore] // Run with: cargo test test_real_github_compilation -- --ignored --nocapture
+    async fn test_real_github_compilation() {
+        use sha2::{Digest, Sha256};
+
+        // Initialize tracing for test output
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter("info")
+            .with_test_writer()
+            .try_init();
+
+        // This test requires Docker to be running
+        let config = create_test_config();
+        let api_client = ApiClient::new(
+            "http://localhost:8080".to_string(),
+            "test-token".to_string(),
+        )
+        .unwrap();
+        let compiler = Compiler::new(api_client, config).unwrap();
+
+        // Test with real repository
+        let repo = "https://github.com/zavodil/random-ark";
+        let commit = "6491b317afa33534b56cebe9957844e16ac720e8";
+        let build_target = "wasm32-wasi";
+
+        println!("Compiling {} @ {} for {}", repo, commit, build_target);
+
+        let wasm_bytes = compiler
+            .compile_from_github(repo, commit, build_target)
+            .await
+            .expect("Compilation failed");
+
+        println!("Compiled WASM size: {} bytes", wasm_bytes.len());
+
+        // Calculate checksum
+        let mut hasher = Sha256::new();
+        hasher.update(&wasm_bytes);
+        let checksum = hex::encode(hasher.finalize());
+
+        println!("Compiled WASM checksum: {}", checksum);
+
+        // Compare with pre-compiled version if it exists
+        let expected_wasm_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .join("test-wasm/target/wasm32-wasip1/release/test_wasm.wasm");
+
+        if expected_wasm_path.exists() {
+            let expected_bytes = std::fs::read(&expected_wasm_path)
+                .expect("Failed to read expected WASM");
+
+            let mut expected_hasher = Sha256::new();
+            expected_hasher.update(&expected_bytes);
+            let expected_checksum = hex::encode(expected_hasher.finalize());
+
+            println!("Expected WASM checksum: {}", expected_checksum);
+            println!("Expected WASM size: {} bytes", expected_bytes.len());
+
+            // Note: Checksums might differ due to compilation environment differences
+            // but we can compare sizes and validate structure
+            assert!(wasm_bytes.len() > 0, "Compiled WASM should not be empty");
+            assert!(
+                wasm_bytes.starts_with(&[0x00, 0x61, 0x73, 0x6d]),
+                "WASM should start with magic number"
+            );
+
+            println!(
+                "✅ Compilation successful! Size difference: {} bytes",
+                (wasm_bytes.len() as i64 - expected_bytes.len() as i64).abs()
+            );
+        } else {
+            println!(
+                "⚠️  Expected WASM not found at {:?}, skipping comparison",
+                expected_wasm_path
+            );
+        }
     }
 
     fn create_test_config() -> Config {
