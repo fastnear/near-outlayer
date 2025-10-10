@@ -155,6 +155,7 @@ impl Contract {
                             &code_source,
                             &exec_response.resources_used,
                             true,
+                            None,
                         );
 
                         // Log the execution result with resources used
@@ -206,17 +207,21 @@ impl Contract {
 
                         self.total_fees_collected += self.base_fee;
 
-                        // Emit failure event
+                        // Get error message for event and panic
+                        let error_msg = exec_response.error.unwrap_or("Unknown error".to_string());
+
+                        // Emit failure event with error details
                         events::emit::execution_completed(
                             &sender_id,
                             &code_source,
                             &exec_response.resources_used,
                             false,
+                            Some(&error_msg),
                         );
 
                         env::panic_str(&format!(
                             "Execution failed: {}. Resources: {{ instructions: {}, time_ms: {} }}. Refunded {} yoctoNEAR",
-                            exec_response.error.unwrap_or("Unknown error".to_string()),
+                            error_msg,
                             exec_response.resources_used.instructions,
                             exec_response.resources_used.time_ms,
                             refund

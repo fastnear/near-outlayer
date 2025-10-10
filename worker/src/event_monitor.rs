@@ -88,7 +88,7 @@ pub struct EventMonitor {
     fastnear_api_url: String,
     contract_id: AccountId,
     current_block: u64,
-    scan_interval: Duration,
+    scan_interval_ms: u64,
     http_client: reqwest::Client,
     event_json_regex: Regex,
     blocks_scanned: u64,
@@ -102,7 +102,7 @@ impl EventMonitor {
         fastnear_api_url: String,
         contract_id: AccountId,
         start_block: u64,
-        scan_interval_seconds: u64,
+        scan_interval_ms: u64,
     ) -> Result<Self> {
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
@@ -123,7 +123,7 @@ impl EventMonitor {
             fastnear_api_url,
             contract_id,
             current_block,
-            scan_interval: Duration::from_secs(scan_interval_seconds),
+            scan_interval_ms,
             http_client,
             event_json_regex: Regex::new(r"EVENT_JSON:(.*?)$")
                 .context("Failed to compile regex")?,
@@ -210,8 +210,10 @@ impl EventMonitor {
                         );
                     }
 
-                    // Brief pause between blocks
-                    sleep(self.scan_interval).await;
+                    // Brief pause between blocks (if configured)
+                    if self.scan_interval_ms > 0 {
+                        sleep(Duration::from_millis(self.scan_interval_ms)).await;
+                    }
                 }
                 Err(e) => {
                     retry_count += 1;

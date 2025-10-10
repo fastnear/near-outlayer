@@ -23,6 +23,7 @@ pub mod emit {
         pub code_source: &'a CodeSource,
         pub resources_used: &'a ResourceMetrics,
         pub success: bool,
+        pub error_message: Option<&'a str>,
         pub timestamp: u64,
     }
 
@@ -55,6 +56,7 @@ pub mod emit {
         code_source: &CodeSource,
         resources_used: &ResourceMetrics,
         success: bool,
+        error_message: Option<&str>,
     ) {
         log_event(
             "execution_completed",
@@ -63,6 +65,7 @@ pub mod emit {
                 code_source,
                 resources_used,
                 success,
+                error_message,
                 timestamp: env::block_timestamp(),
             },
         );

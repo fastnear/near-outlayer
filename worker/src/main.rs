@@ -63,7 +63,7 @@ async fn main() -> Result<()> {
         let fastnear_url = config.fastnear_api_url.clone();
         let contract_id = config.offchainvm_contract_id.clone();
         let start_block = config.start_block_height;
-        let scan_interval = config.scan_interval_seconds;
+        let scan_interval_ms = config.scan_interval_ms;
 
         tokio::spawn(async move {
             info!("Starting event monitor...");
@@ -73,7 +73,7 @@ async fn main() -> Result<()> {
                 fastnear_url,
                 contract_id,
                 start_block,
-                scan_interval,
+                scan_interval_ms,
             )
             .await
             {
@@ -206,9 +206,31 @@ async fn handle_compile_task(
             checksum
         }
         Err(e) => {
-            warn!("❌ Compilation failed for request_id={}: {}", request_id, e);
+            let error_msg = format!("Compilation failed: {}", e);
+            warn!("❌ {}", error_msg);
+
+            // Create error result to submit to NEAR
+            let error_result = ExecutionResult {
+                success: false,
+                output: None,
+                error: Some(error_msg.clone()),
+                execution_time_ms: 0,
+                instructions: 0,
+            };
+
+            // Submit error to NEAR contract
+            match near_client.submit_execution_result(&data_id, &error_result).await {
+                Ok(tx_hash) => {
+                    info!("✅ Compilation error submitted to NEAR: tx_hash={}", tx_hash);
+                }
+                Err(submit_err) => {
+                    error!("❌ Failed to submit compilation error to NEAR: {}", submit_err);
+                }
+            }
+
+            // Mark task as failed in coordinator
             api_client
-                .fail_task(request_id, format!("Compilation failed: {}", e))
+                .fail_task(request_id, error_msg)
                 .await
                 .context("Failed to fail compile task")?;
             return Ok(());

@@ -24,7 +24,7 @@ pub struct Config {
     pub worker_id: String,
     pub enable_event_monitor: bool,
     pub poll_timeout_seconds: u64,
-    pub scan_interval_seconds: u64,
+    pub scan_interval_ms: u64,
 
     // Docker for compilation
     pub docker_image: String,
@@ -126,10 +126,10 @@ impl Config {
             .parse::<u64>()
             .context("POLL_TIMEOUT_SECONDS must be a valid number")?;
 
-        let scan_interval_seconds = env::var("SCAN_INTERVAL_SECONDS")
-            .unwrap_or_else(|_| "1".to_string())
+        let scan_interval_ms = env::var("SCAN_INTERVAL_MS")
+            .unwrap_or_else(|_| "0".to_string())
             .parse::<u64>()
-            .context("SCAN_INTERVAL_SECONDS must be a valid number")?;
+            .context("SCAN_INTERVAL_MS must be a valid number")?;
 
         let docker_image = env::var("DOCKER_IMAGE")
             .unwrap_or_else(|_| "rust:1.75".to_string());
@@ -177,7 +177,7 @@ impl Config {
             worker_id,
             enable_event_monitor,
             poll_timeout_seconds,
-            scan_interval_seconds,
+            scan_interval_ms,
             docker_image,
             compile_timeout_seconds,
             compile_memory_limit_mb,
@@ -260,7 +260,7 @@ mod tests {
             worker_id: "test-worker".to_string(),
             enable_event_monitor: false,
             poll_timeout_seconds: 60,
-            scan_interval_seconds: 1,
+            scan_interval_ms: 0,
             docker_image: "rust:1.75".to_string(),
             compile_timeout_seconds: 300,
             compile_memory_limit_mb: 2048,

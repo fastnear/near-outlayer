@@ -397,7 +397,10 @@ echo "⏱️  Total compilation time: $COMPILE_TIME seconds"
                 error!("❌ Container command failed with exit code: {}", exit_code);
                 error!("Last stdout lines: {:?}", stdout_lines.iter().rev().take(5).collect::<Vec<_>>());
                 error!("Last stderr lines: {:?}", stderr_lines.iter().rev().take(5).collect::<Vec<_>>());
-                anyhow::bail!("Container command exited with code {}", exit_code);
+
+                // Extract user-friendly error message from stderr
+                let error_msg = Self::extract_compilation_error(&stderr_lines, &stdout_lines);
+                anyhow::bail!("{}", error_msg);
             }
         }
 
@@ -464,6 +467,57 @@ echo "⏱️  Total compilation time: $COMPILE_TIME seconds"
             .context("Failed to remove container")?;
 
         Ok(())
+    }
+
+    /// Extract user-friendly error message from compilation output
+    fn extract_compilation_error(stderr_lines: &[String], stdout_lines: &[String]) -> String {
+        // Check for common git errors
+        for line in stderr_lines.iter().chain(stdout_lines.iter()) {
+            // Git clone errors
+            if line.contains("fatal: repository") && line.contains("not found") {
+                return "Repository not found or not accessible on GitHub".to_string();
+            }
+            if line.contains("fatal: could not read Username") {
+                return "Repository requires authentication (private repo not supported)".to_string();
+            }
+
+            // Git checkout errors
+            if line.contains("pathspec") && line.contains("did not match any file(s) known to git") {
+                // Extract the commit hash from the error
+                if let Some(hash_start) = line.find('\'') {
+                    if let Some(hash_end) = line[hash_start + 1..].find('\'') {
+                        let commit = &line[hash_start + 1..hash_start + 1 + hash_end];
+                        return format!("Commit '{}' not found in repository", commit);
+                    }
+                }
+                return "Commit hash not found in repository".to_string();
+            }
+            if line.contains("error: pathspec") && line.contains("did not match") {
+                return "Invalid commit hash or branch name".to_string();
+            }
+
+            // Cargo build errors
+            if line.contains("error: no matching package named") {
+                return "Cargo.toml not found or invalid package configuration".to_string();
+            }
+            if line.contains("error: could not compile") {
+                return "Rust compilation failed - check code for errors".to_string();
+            }
+            if line.contains("error[E") {
+                // Rust compiler error, return first error line
+                return format!("Rust compilation error: {}", line.trim());
+            }
+        }
+
+        // No specific error found, check last stderr lines for any error indication
+        for line in stderr_lines.iter().rev().take(3) {
+            if line.contains("error:") || line.contains("fatal:") || line.contains("ERROR") {
+                return line.trim().to_string();
+            }
+        }
+
+        // Generic fallback
+        "Compilation failed - see worker logs for details".to_string()
     }
 
     /// Validate and normalize build target
