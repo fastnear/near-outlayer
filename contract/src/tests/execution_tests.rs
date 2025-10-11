@@ -25,6 +25,7 @@ mod tests {
             resource_limits: ResourceLimits::default(),
             payment: 100_000_000_000_000_000_000_000, // 0.1 NEAR
             timestamp: initial_timestamp,
+            encrypted_secrets: None,
         };
         contract.pending_requests.insert(&0, &execution_request);
         assert!(contract.get_request(0).is_some());
@@ -67,6 +68,7 @@ mod tests {
             resource_limits: ResourceLimits::default(),
             payment: 100_000_000_000_000_000_000_000,
             timestamp: initial_timestamp,
+            encrypted_secrets: None,
         };
         contract.pending_requests.insert(&0, &execution_request);
 
@@ -101,6 +103,7 @@ mod tests {
             resource_limits: ResourceLimits::default(),
             payment: 100_000_000_000_000_000_000_000,
             timestamp: initial_timestamp,
+            encrypted_secrets: None,
         };
         contract.pending_requests.insert(&0, &execution_request);
 
@@ -167,7 +170,7 @@ mod tests {
             build_target: Some("wasm32-wasi".to_string()),
         };
 
-        contract.request_execution(code_source, None, None);
+        contract.request_execution(code_source, None, None, None);
     }
 
     #[test]
@@ -185,6 +188,6 @@ mod tests {
             build_target: Some("wasm32-wasi".to_string()),
         };
 
-        contract.request_execution(code_source, None, None);
+        contract.request_execution(code_source, None, None, None);
     }
 }

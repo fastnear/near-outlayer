@@ -8,16 +8,16 @@ CALLER_ACCOUNT="offchainvm.testnet"  # Using owner account for testing
 PAYMENT="1"  # 1 NEAR deposit
 
 echo "Calling request_execution on $CONTRACT_ID..."
-echo "Repo: https://github.com/near-offshore/test-wasm"
+echo "Repo: https://github.com/near-offshore/get-random"
 echo "Commit: main"
 echo ""
 
 near contract call-function as-transaction $CONTRACT_ID request_execution json-args \
 '{
   "code_source": {
-    "repo": "https://github.com/near-offshore/test-wasm",
+    "repo": "https://github.com/near-offshore/get-random",
     "commit": "main",
-    "build_target": "wasm32-unknown-unknown"
+    "build_target": "wasm32-wasip1"
   },
   "resource_limits": {
     "max_instructions": 10000000000,

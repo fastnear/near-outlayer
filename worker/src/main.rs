@@ -3,6 +3,7 @@ mod compiler;
 mod config;
 mod event_monitor;
 mod executor;
+mod keystore_client;
 mod near_client;
 
 use anyhow::{Context, Result};
@@ -13,6 +14,7 @@ use compiler::Compiler;
 use config::Config;
 use event_monitor::EventMonitor;
 use executor::Executor;
+use keystore_client::KeystoreClient;
 use near_client::NearClient;
 
 #[tokio::main]
@@ -47,6 +49,23 @@ async fn main() -> Result<()> {
 
     // Initialize executor
     let executor = Executor::new(config.default_max_instructions);
+
+    // Initialize keystore client (optional)
+    let keystore_client = if let (Some(keystore_url), Some(keystore_token)) = (
+        &config.keystore_base_url,
+        &config.keystore_auth_token,
+    ) {
+        info!("Keystore configured at: {}", keystore_url);
+        info!("TEE mode: {}", config.tee_mode);
+        Some(KeystoreClient::new(
+            keystore_url.clone(),
+            keystore_token.clone(),
+            config.tee_mode.clone(),
+        ))
+    } else {
+        info!("Keystore not configured - encrypted secrets will not be supported");
+        None
+    };
 
     // Initialize NEAR client
     let near_client = NearClient::new(
@@ -97,6 +116,7 @@ async fn main() -> Result<()> {
             &compiler,
             &executor,
             &near_client,
+            keystore_client.as_ref(),
             &config,
         )
         .await
@@ -124,6 +144,7 @@ async fn worker_iteration(
     compiler: &Compiler,
     executor: &Executor,
     near_client: &NearClient,
+    keystore_client: Option<&KeystoreClient>,
     config: &Config,
 ) -> Result<bool> {
     // Poll for a task (with long-polling)
@@ -147,17 +168,20 @@ async fn worker_iteration(
             code_source,
             resource_limits,
             input_data,
+            encrypted_secrets,
         } => {
             handle_compile_task(
                 api_client,
                 compiler,
                 executor,
                 near_client,
+                keystore_client,
                 request_id,
                 data_id,
                 code_source,
                 resource_limits,
                 input_data,
+                encrypted_secrets,
             )
             .await?;
         }
@@ -167,16 +191,19 @@ async fn worker_iteration(
             wasm_checksum,
             resource_limits,
             input_data,
+            encrypted_secrets,
         } => {
             handle_execute_task(
                 api_client,
                 executor,
                 near_client,
+                keystore_client,
                 request_id,
                 data_id,
                 wasm_checksum,
                 resource_limits,
                 input_data,
+                encrypted_secrets,
             )
             .await?;
         }
@@ -191,11 +218,13 @@ async fn handle_compile_task(
     compiler: &Compiler,
     executor: &Executor,
     near_client: &NearClient,
+    keystore_client: Option<&KeystoreClient>,
     request_id: u64,
     data_id: String,
     code_source: CodeSource,
     resource_limits: api_client::ResourceLimits,
     input_data: String,
+    encrypted_secrets: Option<Vec<u8>>,
 ) -> Result<()> {
     info!("🔨 Starting compilation for request_id={}", request_id);
 
@@ -253,11 +282,41 @@ async fn handle_compile_task(
         }
     };
 
-    // Step 3: Execute the WASM
+    // Step 3: Decrypt secrets if provided
+    let env_vars = if let Some(encrypted) = &encrypted_secrets {
+        info!("🔐 Found encrypted_secrets field: {} bytes", encrypted.len());
+        if let Some(keystore) = keystore_client {
+            info!("🔑 Keystore client configured, attempting decryption...");
+            match keystore.decrypt_secrets(encrypted, Some(&request_id.to_string())).await {
+                Ok(secrets) => {
+                    info!("✅ Secrets decrypted successfully! {} environment variables", secrets.len());
+                    info!("📝 Environment variables: {:?}", secrets.keys().collect::<Vec<_>>());
+                    Some(secrets)
+                }
+                Err(e) => {
+                    let error_msg = format!("Failed to decrypt secrets: {}", e);
+                    warn!("❌ {}", error_msg);
+                    api_client.fail_task(request_id, error_msg).await?;
+                    return Ok(());
+                }
+            }
+        } else {
+            warn!("⚠️  Encrypted secrets provided ({} bytes) but keystore not configured - ignoring", encrypted.len());
+            None
+        }
+    } else {
+        info!("ℹ️  No encrypted_secrets in task");
+        None
+    };
+
+    // Step 4: Execute the WASM
     info!("⚙️  Executing WASM for request_id={} (size={} bytes)", request_id, wasm_bytes.len());
 
     // Use input_data from contract request
     info!("📝 Using input from contract: {}", input_data);
+    if env_vars.is_some() {
+        info!("🔑 Secrets available for execution (will be passed via WASI env)");
+    }
     info!("📊 Resource limits: max_instructions={}, max_memory={}MB, max_time={}s",
         resource_limits.max_instructions,
         resource_limits.max_memory_mb,
@@ -266,7 +325,7 @@ async fn handle_compile_task(
     let input_bytes = input_data.as_bytes().to_vec();
     info!("🚀 Starting WASM execution now...");
 
-    let result = match executor.execute(&wasm_bytes, &input_bytes, &resource_limits).await {
+    let result = match executor.execute(&wasm_bytes, &input_bytes, &resource_limits, env_vars).await {
         Ok(result) => {
             info!("✅ WASM Execution completed: success={}, time={}ms, output_len={:?}, error={:?}",
                 result.success,
@@ -325,11 +384,13 @@ async fn handle_execute_task(
     api_client: &ApiClient,
     executor: &Executor,
     near_client: &NearClient,
+    keystore_client: Option<&KeystoreClient>,
     request_id: u64,
     data_id: String,
     wasm_checksum: String,
     resource_limits: api_client::ResourceLimits,
     input_data: String,
+    encrypted_secrets: Option<Vec<u8>>,
 ) -> Result<()> {
     info!(
         "Executing WASM for request_id={}, data_id={}, checksum={}",
@@ -351,13 +412,43 @@ async fn handle_execute_task(
         }
     };
 
+    // Decrypt secrets if provided
+    let env_vars = if let Some(encrypted) = &encrypted_secrets {
+        info!("🔐 Found encrypted_secrets field: {} bytes", encrypted.len());
+        if let Some(keystore) = keystore_client {
+            info!("🔑 Keystore client configured, attempting decryption...");
+            match keystore.decrypt_secrets(encrypted, Some(&request_id.to_string())).await {
+                Ok(secrets) => {
+                    info!("✅ Secrets decrypted successfully! {} environment variables", secrets.len());
+                    info!("📝 Environment variables: {:?}", secrets.keys().collect::<Vec<_>>());
+                    Some(secrets)
+                }
+                Err(e) => {
+                    let error_msg = format!("Failed to decrypt secrets: {}", e);
+                    warn!("❌ {}", error_msg);
+                    api_client.fail_task(request_id, error_msg).await?;
+                    return Ok(());
+                }
+            }
+        } else {
+            warn!("⚠️  Encrypted secrets provided ({} bytes) but keystore not configured - ignoring", encrypted.len());
+            None
+        }
+    } else {
+        info!("ℹ️  No encrypted_secrets in task");
+        None
+    };
+
     // Use input data from task
     info!("📝 Using input from task: {}", input_data);
+    if env_vars.is_some() {
+        info!("🔑 Secrets will be passed via WASI environment");
+    }
     let input_bytes = input_data.as_bytes().to_vec();
 
-    // Execute WASM
+    // Execute WASM with environment variables
     let result = executor
-        .execute(&wasm_bytes, &input_bytes, &resource_limits)
+        .execute(&wasm_bytes, &input_bytes, &resource_limits, env_vars)
         .await
         .context("Failed to execute WASM")?;
 

@@ -72,6 +72,7 @@ pub struct ExecutionRequest {
     pub resource_limits: ResourceLimits,
     pub payment: Balance,
     pub timestamp: u64,
+    pub encrypted_secrets: Option<Vec<u8>>, // Secrets encrypted with keystore pubkey
 }
 
 /// Execution response from worker
@@ -113,6 +114,10 @@ pub struct Contract {
     // Statistics
     total_executions: u64,
     total_fees_collected: Balance,
+
+    // Keystore integration
+    keystore_account_id: Option<AccountId>,
+    keystore_pubkey: Option<String>, // hex encoded public key
 }
 
 #[near_bindgen]
@@ -130,6 +135,8 @@ impl Contract {
             pending_requests: LookupMap::new(StorageKey::PendingRequests),
             total_executions: 0,
             total_fees_collected: 0,
+            keystore_account_id: None,
+            keystore_pubkey: None,
         }
     }
 }

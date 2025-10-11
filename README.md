@@ -11,7 +11,7 @@ near-offshore/
 ├── contract/          # NEAR smart contract (offchainvm.near)
 ├── coordinator/       # Coordinator API server (Rust + Axum)
 ├── worker/           # Worker nodes (Rust + Tokio)
-├── test-wasm/        # Test WASM project (random number generator)
+├── wasi-examples/    # WASI example projects (get-random, etc.)
 ├── scripts/          # Deployment scripts
 ├── docker/           # Docker configurations
 └── docs/             # Documentation

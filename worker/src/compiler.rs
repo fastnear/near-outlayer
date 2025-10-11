@@ -663,7 +663,7 @@ mod tests {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .parent()
                 .unwrap()
-                .join("test-wasm/target/wasm32-wasip1/release/test_wasm.wasm");
+                .join("wasi-examples/get-random/target/wasm32-wasip1/release/get_random_example.wasm");
 
         if expected_wasm_path.exists() {
             let expected_bytes = std::fs::read(&expected_wasm_path)
@@ -715,7 +715,7 @@ mod tests {
             worker_id: "test-worker".to_string(),
             enable_event_monitor: false,
             poll_timeout_seconds: 60,
-            scan_interval_seconds: 1,
+            scan_interval_ms: 1000,
             docker_image: "rust:1.75".to_string(),
             compile_timeout_seconds: 300,
             compile_memory_limit_mb: 2048,
@@ -723,6 +723,9 @@ mod tests {
             default_max_instructions: 10_000_000_000,
             default_max_memory_mb: 128,
             default_max_execution_seconds: 60,
+            keystore_base_url: None,
+            keystore_auth_token: None,
+            tee_mode: "none".to_string()
         }
     }
 }

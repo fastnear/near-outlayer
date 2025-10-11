@@ -12,14 +12,14 @@ async fn test_wasm_execution() {
     let test_wasm_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
-        .join("test-wasm/target/wasm32-unknown-unknown/release/test_wasm.wasm");
+        .join("wasi-examples/get-random/target/wasm32-wasip1/release/get_random_example.wasm");
 
     println!("Looking for WASM at: {}", test_wasm_path.display());
 
     if !test_wasm_path.exists() {
         panic!(
             "Test WASM not found! Build it first:\n\
-             cd ../test-wasm && cargo build --release --target wasm32-unknown-unknown"
+             cd ../wasi-examples/get-random && cargo build --release --target wasm32-wasip1"
         );
     }
 
@@ -41,7 +41,7 @@ async fn test_wasm_execution() {
         max_execution_seconds: 60,
     };
 
-    // Create valid JSON input for test-wasm
+    // Create valid JSON input for get-random example
     let input_json = r#"{"min": 0, "max": 100}"#;
     let input_data = input_json.as_bytes().to_vec();
 
@@ -49,7 +49,7 @@ async fn test_wasm_execution() {
 
     // Execute WASM
     println!("⚙️  Executing WASM...");
-    match executor.execute(&wasm_bytes, &input_data, &resource_limits).await {
+    match executor.execute(&wasm_bytes, &input_data, &resource_limits, None).await {
         Ok(result) => {
             println!("✅ Execution result:");
             println!("   Success: {}", result.success);
@@ -91,7 +91,7 @@ async fn test_minimal_wasm() {
     };
 
     println!("⚙️  Testing minimal WASM...");
-    match executor.execute(&minimal_wasm, &[], &resource_limits).await {
+    match executor.execute(&minimal_wasm, &[], &resource_limits, None).await {
         Ok(result) => {
             println!("Result: success={}, error={:?}", result.success, result.error);
         }

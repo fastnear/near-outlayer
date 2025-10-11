@@ -10,12 +10,16 @@ pub enum Task {
         code_source: CodeSource,
         resource_limits: ResourceLimits,
         input_data: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        encrypted_secrets: Option<Vec<u8>>,
     },
     Execute {
         request_id: u64,
         data_id: String,
         wasm_checksum: String,
         resource_limits: ResourceLimits,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        encrypted_secrets: Option<Vec<u8>>,
     },
 }
 
@@ -77,4 +81,6 @@ pub struct CreateTaskRequest {
     pub resource_limits: ResourceLimits,
     pub input_data: String,
     pub data_id: String,
+    #[serde(default)]
+    pub encrypted_secrets: Option<Vec<u8>>,
 }

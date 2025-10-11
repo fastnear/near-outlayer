@@ -6,8 +6,8 @@ echo "===================================="
 echo ""
 
 COORDINATOR_URL="http://localhost:8080"
-TEST_WASM_PATH="../test-wasm/target/wasm32-unknown-unknown/release/test_wasm.wasm"
-CHECKSUM="0c4302b61016848c9181a279947413ab22c2e3d73281cf645c6fb955cd3731b2"
+TEST_WASM_PATH="../wasi-examples/get-random/target/wasm32-wasip1/release/get_random_example.wasm"
+CHECKSUM="ba2c7a75c93b7cd7bc3e2f7e12943ba2dacac6ea444f6a2e853023b892ca8acc"
 
 # Colors
 GREEN='\033[0;32m'
@@ -29,13 +29,13 @@ echo ""
 echo "📋 Test 2: Upload WASM File"
 if [ ! -f "$TEST_WASM_PATH" ]; then
     echo -e "${RED}✗${NC} Test WASM not found at $TEST_WASM_PATH"
-    echo "Run: cd ../test-wasm && cargo build --release --target wasm32-unknown-unknown"
+    echo "Run: cd ../wasi-examples/get-random && cargo build --release --target wasm32-wasip1"
     exit 1
 fi
 
 UPLOAD_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST $COORDINATOR_URL/wasm/upload \
   -F "checksum=$CHECKSUM" \
-  -F "repo_url=https://github.com/near-offshore/test-wasm" \
+  -F "repo_url=https://github.com/near-offshore/get-random" \
   -F "commit_hash=test" \
   -F "wasm_file=@$TEST_WASM_PATH")
 
@@ -81,9 +81,9 @@ CREATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST $COORDINATOR_URL/tasks/cre
     "data_id": "0000000000000000000000000000000000000000000000000000000000000001",
     "code_source": {
       "type": "GitHub",
-      "repo": "https://github.com/near-offshore/test-wasm",
+      "repo": "https://github.com/near-offshore/get-random",
       "commit": "test",
-      "build_target": "wasm32-unknown-unknown"
+      "build_target": "wasm32-wasip1"
     },
     "resource_limits": {
       "max_instructions": 10000000000,

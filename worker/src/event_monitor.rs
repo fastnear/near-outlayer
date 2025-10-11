@@ -25,6 +25,8 @@ pub struct RequestData {
     pub code_source: CodeSource,
     pub resource_limits: ResourceLimits,
     pub input_data: String,
+    #[serde(default)]
+    pub encrypted_secrets: Option<Vec<u8>>,
     pub payment: String,
     pub timestamp: u64,
 }
@@ -420,6 +422,8 @@ impl EventMonitor {
             }
         };
 
+        info!("request_data {:?}", request_data.encrypted_secrets);
+
         if request_data.code_source.build_target.is_none() {
             request_data.code_source.build_target = Some("wasm32-wasi".to_string());
         }
@@ -459,12 +463,16 @@ impl EventMonitor {
                 request_data.resource_limits.max_memory_mb,
                 request_data.resource_limits.max_execution_seconds,
                 request_data.input_data.clone(),
+                request_data.encrypted_secrets.clone(),
             )
             .await
         {
             Ok(_) => {
                 info!("✅ Task created in coordinator: request_id={} data_id={}",
                     request_data.request_id, data_id_hex);
+
+                // TODO remove debug
+                info!("encrypted_secrets: {:?}", request_data.encrypted_secrets.clone());
             }
             Err(e) => {
                 error!(

@@ -1,0 +1,55 @@
+[package]
+name = "keystore-worker"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.42", features = ["full"] }
+
+# Web framework
+axum = { version = "0.7", features = ["macros"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Cryptography
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+rand = "0.8"
+sha2 = "0.10"
+hex = "0.4"
+bs58 = "0.5"
+base64 = "0.22"
+
+# NEAR integration
+near-jsonrpc-client = "0.13"
+near-primitives = "0.26"
+near-crypto = "0.26"
+near-jsonrpc-primitives = "0.26"
+
+# Environment and config
+dotenvy = "0.15"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
+
+# TEE support (conditional compilation for future)
+[target.'cfg(target_env = "sgx")'.dependencies]
+# sgx_tstd = "2.0"  # Will be added when TEE integration is ready
+
+[dev-dependencies]
+reqwest = { version = "0.12", features = ["json"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

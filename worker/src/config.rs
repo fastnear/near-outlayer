@@ -36,6 +36,11 @@ pub struct Config {
     pub default_max_instructions: u64,
     pub default_max_memory_mb: u32,
     pub default_max_execution_seconds: u64,
+
+    // Keystore worker (optional - for secret decryption)
+    pub keystore_base_url: Option<String>,
+    pub keystore_auth_token: Option<String>,
+    pub tee_mode: String,
 }
 
 impl Config {
@@ -164,6 +169,18 @@ impl Config {
             .parse::<u64>()
             .context("DEFAULT_MAX_EXECUTION_SECONDS must be a valid number")?;
 
+        // Keystore configuration (optional)
+        let keystore_base_url = env::var("KEYSTORE_BASE_URL").ok();
+        let keystore_auth_token = env::var("KEYSTORE_AUTH_TOKEN").ok();
+
+        let tee_mode = env::var("TEE_MODE")
+            .unwrap_or_else(|_| "none".to_string());
+
+        // Validate TEE mode
+        if !["sgx", "sev", "simulated", "none"].contains(&tee_mode.as_str()) {
+            anyhow::bail!("Invalid TEE_MODE: must be one of: sgx, sev, simulated, none");
+        }
+
         Ok(Self {
             api_base_url,
             api_auth_token,
@@ -185,6 +202,9 @@ impl Config {
             default_max_instructions,
             default_max_memory_mb,
             default_max_execution_seconds,
+            keystore_base_url,
+            keystore_auth_token,
+            tee_mode,
         })
     }
 
@@ -268,6 +288,9 @@ mod tests {
             default_max_instructions: 10_000_000_000,
             default_max_memory_mb: 128,
             default_max_execution_seconds: 60,
+            keystore_base_url: None,
+            keystore_auth_token: None,
+            tee_mode: "none".to_string(),
         }
     }
 }

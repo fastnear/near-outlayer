@@ -41,4 +41,17 @@ impl Contract {
     pub fn get_config(&self) -> (AccountId, AccountId) {
         (self.owner_id.clone(), self.operator_id.clone())
     }
+
+    /// Get keystore public key (for encrypting secrets)
+    ///
+    /// Returns None if keystore is not configured.
+    /// Users should encrypt their secrets with this public key before calling request_execution.
+    pub fn get_keystore_pubkey(&self) -> Option<String> {
+        self.keystore_pubkey.clone()
+    }
+
+    /// Get keystore account ID
+    pub fn get_keystore_account(&self) -> Option<AccountId> {
+        self.keystore_account_id.clone()
+    }
 }

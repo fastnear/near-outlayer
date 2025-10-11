@@ -32,9 +32,9 @@ async fn test_full_execution_flow() {
         "request_id": request_id,
         "sender_id": "client.testnet",
         "code_source": {
-            "repo": "https://github.com/example/test-wasm",
+            "repo": "https://github.com/zavodil/random-ark",
             "commit": "main",
-            "build_target": "wasm32-unknown-unknown"
+            "build_target": "wasm32-wasip1"
         },
         "resource_limits": {
             "max_instructions": 1000000000u64,
@@ -55,9 +55,9 @@ async fn test_full_execution_flow() {
     let create_task_request = json!({
         "request_id": request_id,
         "code_source": {
-            "repo": "https://github.com/example/test-wasm",
+            "repo": "https://github.com/example/get-random",
             "commit": "main",
-            "build_target": "wasm32-unknown-unknown"
+            "build_target": "wasm32-wasip1"
         },
         "resource_limits": {
             "max_instructions": 1000000000u64,
@@ -76,9 +76,9 @@ async fn test_full_execution_flow() {
         "type": "Compile",
         "request_id": request_id,
         "code_source": {
-            "repo": "https://github.com/example/test-wasm",
+            "repo": "https://github.com/zavodil/random-ark",
             "commit": "main",
-            "build_target": "wasm32-unknown-unknown"
+            "build_target": "wasm32-wasip1"
         }
     });
 

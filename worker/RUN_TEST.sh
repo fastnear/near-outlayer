@@ -3,12 +3,12 @@
 
 set -e
 
-echo "🔨 Building test-wasm..."
-cd ../test-wasm
-cargo build --release --target wasm32-unknown-unknown
+echo "🔨 Building get-random example..."
+cd ../wasi-examples/get-random
+cargo build --release --target wasm32-wasip1
 
 echo ""
-echo "✅ test-wasm built successfully"
+echo "✅ get-random example built successfully"
 echo ""
 
 cd ../worker

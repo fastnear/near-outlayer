@@ -138,6 +138,9 @@ pub async fn create_task(
 ) -> StatusCode {
     debug!("Creating task for request {}", payload.request_id);
 
+    // TODO remove debug
+    debug!("payload encrypted_secrets: {:?}", payload.encrypted_secrets.clone());
+
     // Insert into database
     let insert_result = sqlx::query!(
         r#"
@@ -156,13 +159,14 @@ pub async fn create_task(
         return StatusCode::INTERNAL_SERVER_ERROR;
     }
 
-    // Push to Redis queue - now includes data_id, resource_limits and input_data
+    // Push to Redis queue - now includes data_id, resource_limits, input_data and encrypted_secrets
     let task = Task::Compile {
         request_id: payload.request_id,
         data_id: payload.data_id.clone(),
         code_source: payload.code_source,
         resource_limits: payload.resource_limits,
         input_data: payload.input_data,
+        encrypted_secrets: payload.encrypted_secrets,
     };
 
     let task_json = match serde_json::to_string(&task) {

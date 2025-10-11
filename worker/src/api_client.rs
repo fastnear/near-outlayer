@@ -13,6 +13,8 @@ pub enum Task {
         code_source: CodeSource,
         resource_limits: ResourceLimits,
         input_data: String,
+        #[serde(default)]
+        encrypted_secrets: Option<Vec<u8>>,
     },
     Execute {
         request_id: u64,
@@ -20,6 +22,8 @@ pub enum Task {
         wasm_checksum: String,
         resource_limits: ResourceLimits,
         input_data: String,
+        #[serde(default)]
+        encrypted_secrets: Option<Vec<u8>>,
     },
 }
 
@@ -418,6 +422,8 @@ impl ApiClient {
     /// * `max_instructions` - Maximum WASM instructions
     /// * `max_memory_mb` - Maximum memory in MB
     /// * `max_execution_seconds` - Maximum execution time
+    /// * `input_data` - Input data JSON string
+    /// * `encrypted_secrets` - Optional encrypted secrets
     pub async fn create_task(
         &self,
         request_id: u64,
@@ -428,6 +434,7 @@ impl ApiClient {
         max_memory_mb: u32,
         max_execution_seconds: u64,
         input_data: String,
+        encrypted_secrets: Option<Vec<u8>>,
     ) -> Result<()> {
         let url = format!("{}/tasks/create", self.base_url);
 
@@ -438,6 +445,8 @@ impl ApiClient {
             code_source: CodeSource,
             resource_limits: ResourceLimits,
             input_data: String,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            encrypted_secrets: Option<Vec<u8>>,
         }
 
         let request = CreateRequest {
@@ -454,6 +463,7 @@ impl ApiClient {
                 max_execution_seconds,
             },
             input_data,
+            encrypted_secrets,
         };
 
         let response = self

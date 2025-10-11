@@ -4,12 +4,25 @@ use near_sdk::serde_json::json;
 #[near_bindgen]
 impl Contract {
     /// Request off-chain execution
+    ///
+    /// # Arguments
+    /// * `code_source` - GitHub repository and commit to compile
+    /// * `resource_limits` - Optional resource limits for execution
+    /// * `input_data` - Optional input data for the WASM program
+    /// * `encrypted_secrets` - Optional secrets encrypted with keystore public key
+    ///
+    /// # Secrets Encryption
+    /// If you need to pass secrets (API keys, credentials) to the execution:
+    /// 1. Get keystore public key: `get_keystore_pubkey()`
+    /// 2. Encrypt your secrets with this public key
+    /// 3. Pass encrypted data in `encrypted_secrets` parameter
     #[payable]
     pub fn request_execution(
         &mut self,
         code_source: CodeSource,
         resource_limits: Option<ResourceLimits>,
         input_data: Option<String>,
+        encrypted_secrets: Option<Vec<u8>>,
     ) {
         self.assert_not_paused();
 
@@ -57,6 +70,7 @@ impl Contract {
             "code_source": code_source,
             "resource_limits": limits,
             "input_data": input_data.unwrap_or_else(|| "{}".to_string()),
+            "encrypted_secrets": encrypted_secrets.as_ref().map(|s| s.clone()),
             "payment": U128::from(payment),
             "timestamp": env::block_timestamp()
         });
@@ -85,6 +99,7 @@ impl Contract {
             resource_limits: limits.clone(),
             payment,
             timestamp: env::block_timestamp(),
+            encrypted_secrets,
         };
 
         self.pending_requests

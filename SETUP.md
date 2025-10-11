@@ -205,11 +205,11 @@ near call offchainvm.your-account.testnet \
 ### 1. Create Test WASM
 
 ```bash
-cd test-wasm
-cargo build --release --target wasm32-unknown-unknown
+cd wasi-examples/get-random
+cargo build --release --target wasm32-wasip1
 
 # WASM output:
-# target/wasm32-unknown-unknown/release/test_wasm.wasm
+# target/wasm32-wasip1/release/get_random_example.wasm
 ```
 
 ### 2. Upload Test WASM to GitHub
@@ -218,7 +218,7 @@ cargo build --release --target wasm32-unknown-unknown
 git init
 git add .
 git commit -m "Initial commit"
-gh repo create near-offshore-test-wasm --public
+gh repo create near-offshore-get-random --public
 git push origin main
 ```
 
@@ -230,9 +230,9 @@ near call offchainvm.your-account.testnet \
   request_execution \
   '{
     "code_source": {
-      "repo": "https://github.com/your-username/near-offshore-test-wasm",
+      "repo": "https://github.com/your-username/near-offshore-get-random",
       "commit": "main",
-      "build_target": "wasm32-unknown-unknown"
+      "build_target": "wasm32-wasip1"
     },
     "resource_limits": {
       "max_instructions": 1000000000,
@@ -421,4 +421,4 @@ Check logs for "Starting worker loop" message
 For issues and questions:
 - GitHub Issues: https://github.com/your-org/near-offshore/issues
 - Documentation: See [PROJECT.md](PROJECT.md)
-- Examples: See [test-wasm/](test-wasm/)
+- Examples: See [wasi-examples/](wasi-examples/)

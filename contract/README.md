@@ -10,6 +10,7 @@ NEAR smart contract for off-chain WASM execution using yield/resume mechanism.
 - **Dynamic Pricing**: Cost calculated based on actual resource usage
 - **Stale Request Cancellation**: Users can cancel requests after timeout
 - **Admin Controls**: Owner can manage operators, pricing, and pause contract
+- **Secret Management**: Encrypted secrets support via keystore worker integration
 
 ## Contract API
 
@@ -18,6 +19,7 @@ NEAR smart contract for off-chain WASM execution using yield/resume mechanism.
 #### `request_execution`
 Request off-chain execution of WASM code.
 
+**Basic execution (no secrets):**
 ```bash
 near call offchainvm.testnet request_execution '{
   "code_source": {
@@ -29,7 +31,26 @@ near call offchainvm.testnet request_execution '{
     "max_instructions": 1000000000,
     "max_memory_mb": 128,
     "max_execution_seconds": 60
-  }
+  },
+  "input_data": "{\"key\": \"value\"}",
+  "encrypted_secrets": null
+}' --accountId user.testnet --deposit 0.1
+```
+
+**With encrypted secrets (e.g., API keys):**
+```bash
+# 1. Get keystore public key
+near view offchainvm.testnet get_keystore_pubkey
+
+# 2. Encrypt your secrets with the public key (use keystore encryption library)
+# encrypted_data = encrypt_for_keystore(pubkey, "OPENAI_API_KEY=sk-...")
+
+# 3. Call with encrypted secrets
+near call offchainvm.testnet request_execution '{
+  "code_source": {...},
+  "resource_limits": {...},
+  "input_data": "{...}",
+  "encrypted_secrets": [1, 2, 3, ...]
 }' --accountId user.testnet --deposit 0.1
 ```
 
