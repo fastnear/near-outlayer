@@ -175,32 +175,16 @@ impl Contract {
 
                         // Log the execution result with resources used
                         if let Some(return_value) = &exec_response.return_value {
-                            match String::from_utf8(return_value.clone()) {
-                                Ok(result_str) => {
-                                    log!(
-                                        "Execution completed successfully. Result: {}, Resources: {{ instructions: {}, time_ms: {} }}, Cost: {} yoctoNEAR, Refund: {} yoctoNEAR",
-                                        result_str,
-                                        exec_response.resources_used.instructions,
-                                        exec_response.resources_used.time_ms,
-                                        cost,
-                                        refund
-                                    );
+                            log!(
+                                "Execution completed successfully. Result: {}, Resources: {{ instructions: {}, time_ms: {} }}, Cost: {} yoctoNEAR, Refund: {} yoctoNEAR",
+                                return_value,
+                                exec_response.resources_used.instructions,
+                                exec_response.resources_used.time_ms,
+                                cost,
+                                refund
+                            );
 
-                                    Some(result_str)
-                                }
-                                Err(e) => {
-                                    log!(
-                                        "Execution returned non-UTF8 data: {:?}. Resources: {{ instructions: {}, time_ms: {} }}, Cost: {} yoctoNEAR, Refund: {} yoctoNEAR",
-                                        e,
-                                        exec_response.resources_used.instructions,
-                                        exec_response.resources_used.time_ms,
-                                        cost,
-                                        refund
-                                    );
-
-                                    None
-                                }
-                            }
+                            Some(return_value.clone())
                         } else {
                             log!(
                                 "Execution has no output value. Resources: {{ instructions: {}, time_ms: {} }}, Cost: {} yoctoNEAR, Refund: {} yoctoNEAR",

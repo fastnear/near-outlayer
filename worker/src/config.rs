@@ -137,7 +137,7 @@ impl Config {
             .context("SCAN_INTERVAL_MS must be a valid number")?;
 
         let docker_image = env::var("DOCKER_IMAGE")
-            .unwrap_or_else(|_| "rust:1.75".to_string());
+            .unwrap_or_else(|_| "zavodil/wasmedge-compiler:latest".to_string());
 
         let compile_timeout_seconds = env::var("COMPILE_TIMEOUT_SECONDS")
             .unwrap_or_else(|_| "300".to_string())

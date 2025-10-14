@@ -1,0 +1,61 @@
+# Dockerfile for compiling Rust WASM for WASI Preview 1 and Preview 2
+# Supports both wasm32-wasip1 (WasmEdge) and wasm32-wasip2 (wasmtime)
+
+FROM rust:1.85
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    wget \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    clang \
+    llvm \
+    binaryen \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install WASI SDK for compiling C code (ring library) to WASM
+ENV WASI_VERSION=25
+ENV WASI_VERSION_FULL=${WASI_VERSION}.0
+ENV WASI_SDK_PATH=/opt/wasi-sdk
+
+# Detect architecture and download appropriate WASI SDK
+RUN ARCH=$(uname -m) && \
+    if [ "$ARCH" = "x86_64" ]; then \
+        WASI_ARCH="x86_64"; \
+    elif [ "$ARCH" = "aarch64" ]; then \
+        WASI_ARCH="arm64"; \
+    else \
+        echo "Unsupported architecture: $ARCH" && exit 1; \
+    fi && \
+    wget -q https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_VERSION}/wasi-sdk-${WASI_VERSION_FULL}-${WASI_ARCH}-linux.tar.gz && \
+    tar xzf wasi-sdk-${WASI_VERSION_FULL}-${WASI_ARCH}-linux.tar.gz && \
+    mv wasi-sdk-${WASI_VERSION_FULL}-${WASI_ARCH}-linux ${WASI_SDK_PATH} && \
+    rm wasi-sdk-${WASI_VERSION_FULL}-${WASI_ARCH}-linux.tar.gz
+
+# Set environment variables for WASI compilation
+ENV CC_wasm32_wasip1=${WASI_SDK_PATH}/bin/clang
+ENV AR_wasm32_wasip1=${WASI_SDK_PATH}/bin/llvm-ar
+ENV CARGO_TARGET_WASM32_WASIP1_LINKER=${WASI_SDK_PATH}/bin/clang
+
+# Add WASM targets (wasip1 for WasmEdge, wasip2 for wasmtime)
+RUN rustup target add wasm32-wasip1 wasm32-wasip2
+
+# Install wasm-tools for WASI Preview 2 component optimization
+RUN cargo install wasm-tools
+
+# Install cargo-component for proper WASI Preview 2 CLI component builds
+RUN cargo install cargo-component
+
+# Download WASI Preview 1 to Preview 2 adapter for component conversion
+RUN mkdir -p /opt/wasi-adapters && \
+    wget -q https://github.com/bytecodealliance/wasmtime/releases/download/v28.0.0/wasi_snapshot_preview1.command.wasm \
+    -O /opt/wasi-adapters/wasi_snapshot_preview1.command.wasm
+
+# Create workspace directory
+WORKDIR /workspace
+
+# Default command (will be overridden by container execution)
+CMD ["bash"]

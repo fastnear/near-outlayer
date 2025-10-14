@@ -29,8 +29,13 @@ pub enum CodeSource {
     GitHub {
         repo: String,
         commit: String,
+        #[serde(default = "default_build_target")]
         build_target: String,
     },
+}
+
+fn default_build_target() -> String {
+    "wasm32-wasip1".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

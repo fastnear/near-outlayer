@@ -80,7 +80,7 @@ pub struct ExecutionRequest {
 #[near(serializers = [json])]
 pub struct ExecutionResponse {
     pub success: bool,
-    pub return_value: Option<Vec<u8>>,
+    pub return_value: Option<String>, // Changed from Vec<u8> to String for better readability in explorer
     pub error: Option<String>,
     pub resources_used: ResourceMetrics,
 }

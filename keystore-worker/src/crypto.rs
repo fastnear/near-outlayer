@@ -109,8 +109,9 @@ impl Keystore {
         // For MVP: Simple XOR with key derivation (NOT PRODUCTION READY)
         // TODO: Replace with proper hybrid encryption (X25519-ECDH + ChaCha20-Poly1305)
 
-        // Derive symmetric key from private key
-        let key_material = self.signing_key.to_bytes();
+        // Derive symmetric key from PUBLIC key (same as encryption)
+        // This allows clients to encrypt with public key and keystore to decrypt
+        let key_material = self.verifying_key.to_bytes();
         let mut hasher = Sha256::new();
         hasher.update(&key_material);
         hasher.update(b"keystore-encryption-v1");

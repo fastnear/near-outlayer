@@ -424,8 +424,12 @@ impl EventMonitor {
 
         info!("request_data {:?}", request_data.encrypted_secrets);
 
+        // Default to wasm32-wasi if not specified (will be normalized to wasm32-wasip1 by compiler)
         if request_data.code_source.build_target.is_none() {
             request_data.code_source.build_target = Some("wasm32-wasi".to_string());
+            info!("⚠️  No build_target specified, defaulting to wasm32-wasi");
+        } else {
+            info!("📦 build_target specified: {}", request_data.code_source.build_target.as_ref().unwrap());
         }
 
         info!(
@@ -459,6 +463,7 @@ impl EventMonitor {
                 data_id_hex.clone(),
                 request_data.code_source.repo.clone(),
                 request_data.code_source.commit.clone(),
+                request_data.code_source.build_target.clone().unwrap_or_else(|| "wasm32-wasi".to_string()),
                 request_data.resource_limits.max_instructions,
                 request_data.resource_limits.max_memory_mb,
                 request_data.resource_limits.max_execution_seconds,

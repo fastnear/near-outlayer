@@ -63,6 +63,26 @@ impl NearClient {
 
         info!("📦 data_id bytes (first 8): {:?}", &data_id_bytes[..8]);
 
+        // NEAR yield resume has 1024 byte limit for payload
+        // We need to truncate output if it's too large and convert to String
+        const MAX_OUTPUT_SIZE: usize = 900; // Leave room for other fields in JSON
+
+        let truncated_output = result.output.as_ref().map(|output| {
+            let truncated_bytes = if output.len() > MAX_OUTPUT_SIZE {
+                info!(
+                    "⚠️  Output size {} bytes exceeds limit, truncating to {} bytes",
+                    output.len(),
+                    MAX_OUTPUT_SIZE
+                );
+                &output[..MAX_OUTPUT_SIZE]
+            } else {
+                output.as_slice()
+            };
+
+            // Convert bytes to UTF-8 string, replacing invalid sequences
+            String::from_utf8_lossy(truncated_bytes).into_owned()
+        });
+
         // Prepare method arguments matching contract signature:
         // resolve_execution(data_id: [u8; 32], response: ExecutionResponse)
         // Note: data_id must be sent as array, not base58 string
@@ -70,7 +90,7 @@ impl NearClient {
             "data_id": data_id_bytes,
             "response": {
                 "success": result.success,
-                "return_value": result.output,
+                "return_value": truncated_output,
                 "error": result.error,
                 "resources_used": {
                     "instructions": result.instructions,

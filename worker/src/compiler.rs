@@ -253,8 +253,12 @@ if [ "{build_target}" = "wasm32-wasi" ]; then
         TARGET_TO_ADD="wasm32-wasip1"
         echo "ℹ️  Using wasm32-wasip1 (recommended for Rust 1.78+)"
     fi
+elif [ "{build_target}" = "wasm32-wasip2" ]; then
+    # WASI Preview 2 requires explicit target installation
+    echo "ℹ️  Using wasm32-wasip2 (WASI Preview 2)"
 fi
 rustup target add $TARGET_TO_ADD
+echo "🔧TARGET_TO_ADD: $TARGET_TO_ADD"
 
 # Clone repository
 git clone $REPO repo
@@ -263,15 +267,15 @@ git checkout $COMMIT
 
 # Build WASM with size optimizations
 # Note: We rely on repository's Cargo.toml profile settings
-# If profile.release has opt-level="z", lto=true, codegen-units=1 - great!
-# If not, we'll optimize with wasm-opt later
-cargo build --release --target {build_target}
+# For wasm32-wasip2: use standard cargo build (works with wasi-http-client)
+# For wasm32-wasi/wasip1: also use standard cargo build
+cargo build --release --target $TARGET_TO_ADD
+WASM_FILE=$(find target/$TARGET_TO_ADD/release -maxdepth 1 -name "*.wasm" -type f | head -1)
 
 # Find compiled WASM
-WASM_FILE=$(find target/{build_target}/release -maxdepth 1 -name "*.wasm" -type f | head -1)
 if [ -z "$WASM_FILE" ]; then
     echo "❌ ERROR: No WASM file found!"
-    find target/{build_target}/release -type f
+    find target/$TARGET_TO_ADD/release -type f
     exit 1
 fi
 
@@ -282,34 +286,60 @@ ls -lah "$WASM_FILE"
 mkdir -p /workspace/output
 cp "$WASM_FILE" /workspace/output/output.wasm
 
-# Install wasm-opt if not present (from binaryen package)
-if ! command -v wasm-opt &> /dev/null; then
-    echo "📥 Installing wasm-opt..."
-    apt-get update -qq && apt-get install -y -qq binaryen > /dev/null 2>&1 || true
-fi
+# Optimize WASM based on target type
+ORIGINAL_SIZE=$(stat -c%s /workspace/output/output.wasm)
 
-# Optimize WASM following cargo-wasi best practices
-if command -v wasm-opt &> /dev/null; then
-    echo "🔧 Optimizing WASM with wasm-opt (cargo-wasi style)..."
-    ORIGINAL_SIZE=$(stat -c%s /workspace/output/output.wasm)
+if [ "$TARGET_TO_ADD" = "wasm32-wasip2" ]; then
+    # WASI Preview 2: already a proper CLI component from cargo-component
+    # Just strip debug info and optimize
+    if command -v wasm-tools &> /dev/null; then
+        echo "🔧 Optimizing WASI P2 CLI component..."
 
-    # Apply optimizations as per cargo-wasi:
-    # -Oz: optimize aggressively for size
-    # --strip-dwarf: remove DWARF debug info (cargo-wasi does this in release)
-    # --strip-producers: remove producers section (optional, saves ~100 bytes)
-    wasm-opt -Oz \
-        --strip-dwarf \
-        --strip-producers \
-        /workspace/output/output.wasm \
-        -o /workspace/output/output_optimized.wasm
+        # Strip debug information from component
+        wasm-tools strip /workspace/output/output.wasm -o /workspace/output/output_optimized.wasm
+        mv /workspace/output/output_optimized.wasm /workspace/output/output.wasm
 
-    mv /workspace/output/output_optimized.wasm /workspace/output/output.wasm
-    OPTIMIZED_SIZE=$(stat -c%s /workspace/output/output.wasm)
-    SAVED=$((ORIGINAL_SIZE - OPTIMIZED_SIZE))
-    PERCENT=$((SAVED * 100 / ORIGINAL_SIZE))
-    echo "✅ Optimization complete: $ORIGINAL_SIZE bytes → $OPTIMIZED_SIZE bytes (saved $SAVED bytes / $PERCENT%)"
+        OPTIMIZED_SIZE=$(stat -c%s /workspace/output/output.wasm)
+        SAVED=$((ORIGINAL_SIZE - OPTIMIZED_SIZE))
+        PERCENT=$((SAVED * 100 / ORIGINAL_SIZE))
+        echo "✅ Component optimization complete: $ORIGINAL_SIZE bytes → $OPTIMIZED_SIZE bytes (saved $SAVED bytes / $PERCENT%)"
+    else
+        echo "ℹ️  wasm-tools not available - skipping WASI Preview 2 component conversion"
+        echo "   Module size: $ORIGINAL_SIZE bytes"
+    fi
 else
-    echo "⚠️  wasm-opt not available, skipping optimization"
+    # WASI Preview 1 - use wasm-opt for classic modules
+    echo "🔧 Optimizing WASM module with wasm-opt..."
+
+    # Install wasm-opt if not present (from binaryen package)
+    if ! command -v wasm-opt &> /dev/null; then
+        echo "📥 Installing wasm-opt..."
+        apt-get update -qq && apt-get install -y -qq binaryen > /dev/null 2>&1 || true
+    fi
+
+    if command -v wasm-opt &> /dev/null; then
+        # Apply optimizations as per cargo-wasi:
+        # -Oz: optimize aggressively for size
+        # --strip-dwarf: remove DWARF debug info
+        # --strip-producers: remove producers section
+        # --enable-sign-ext: enable sign extension operations (i32.extend8_s, i32.extend16_s)
+        # --enable-bulk-memory: enable bulk memory operations (memory.copy, memory.fill)
+        wasm-opt -Oz \
+            --strip-dwarf \
+            --strip-producers \
+            --enable-sign-ext \
+            --enable-bulk-memory \
+            /workspace/output/output.wasm \
+            -o /workspace/output/output_optimized.wasm
+
+        mv /workspace/output/output_optimized.wasm /workspace/output/output.wasm
+        OPTIMIZED_SIZE=$(stat -c%s /workspace/output/output.wasm)
+        SAVED=$((ORIGINAL_SIZE - OPTIMIZED_SIZE))
+        PERCENT=$((SAVED * 100 / ORIGINAL_SIZE))
+        echo "✅ Module optimization complete: $ORIGINAL_SIZE bytes → $OPTIMIZED_SIZE bytes (saved $SAVED bytes / $PERCENT%)"
+    else
+        echo "⚠️  wasm-opt not available, skipping module optimization"
+    fi
 fi
 
 ls -lah /workspace/output/output.wasm
@@ -523,26 +553,26 @@ echo "⏱️  Total compilation time: $COMPILE_TIME seconds"
     /// Validate and normalize build target
     ///
     /// Currently supports:
-    /// - wasm32-wasi (primary)
-    /// - wasm32-wasip1 (alias for wasi)
+    /// - wasm32-wasi (primary, deprecated in Rust 1.84+)
+    /// - wasm32-wasip1 (alias for wasi, recommended for Rust 1.78+)
+    /// - wasm32-wasip2 (WASI Preview 2, requires WasmEdge or wasmtime)
     ///
     /// Future support planned:
     /// - wasm32-unknown-unknown (core WASM without WASI)
-    /// - wasm32-wasip2 (WASI Preview 2)
     fn validate_build_target(&self, target: &str) -> Result<String> {
         match target {
             // Currently supported targets
             "wasm32-wasi" => Ok("wasm32-wasi".to_string()),
-            "wasm32-wasip1" => Ok("wasm32-wasi".to_string()), // Normalize to wasm32-wasi
+            "wasm32-wasip1" => Ok("wasm32-wasi".to_string()), // Normalize to wasm32-wasi for backward compatibility
+            "wasm32-wasip2" => Ok("wasm32-wasip2".to_string()), // WASI Preview 2 (requires WasmEdge/wasmtime)
 
             // Future targets (commented out for now)
             // "wasm32-unknown-unknown" => Ok("wasm32-unknown-unknown".to_string()),
-            // "wasm32-wasip2" => Ok("wasm32-wasip2".to_string()),
 
             _ => {
                 anyhow::bail!(
-                    "Unsupported build target: '{}'. Currently supported: wasm32-wasi, wasm32-wasip1. \
-                    Future support planned for: wasm32-unknown-unknown, wasm32-wasip2",
+                    "Unsupported build target: '{}'. Currently supported: wasm32-wasi, wasm32-wasip1, wasm32-wasip2. \
+                    Future support planned for: wasm32-unknown-unknown",
                     target
                 )
             }

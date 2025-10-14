@@ -430,6 +430,7 @@ impl ApiClient {
         data_id: String,
         repo: String,
         commit: String,
+        build_target: String,
         max_instructions: u64,
         max_memory_mb: u32,
         max_execution_seconds: u64,
@@ -455,7 +456,7 @@ impl ApiClient {
             code_source: CodeSource::GitHub {
                 repo,
                 commit,
-                build_target: "wasm32-wasi".to_string(),
+                build_target,
             },
             resource_limits: ResourceLimits {
                 max_instructions,
