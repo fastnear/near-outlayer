@@ -693,7 +693,7 @@ mod tests {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .parent()
                 .unwrap()
-                .join("wasi-examples/get-random/target/wasm32-wasip1/release/get_random_example.wasm");
+                .join("wasi-examples/random-ark/target/wasm32-wasip1/release/random-ark.wasm");
 
         if expected_wasm_path.exists() {
             let expected_bytes = std::fs::read(&expected_wasm_path)

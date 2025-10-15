@@ -1,12 +1,17 @@
 #!/bin/bash
+# Integration tests for Coordinator + Worker API
+
 set -e
 
-echo "🧪 Testing Worker + Coordinator Flow"
-echo "===================================="
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+echo "🧪 Integration Tests - Coordinator + Worker Flow"
+echo "================================================="
 echo ""
 
 COORDINATOR_URL="http://localhost:8080"
-TEST_WASM_PATH="../wasi-examples/get-random/target/wasm32-wasip1/release/get_random_example.wasm"
+TEST_WASM_PATH="$PROJECT_ROOT/wasi-examples/random-ark/target/wasm32-wasip1/release/random-ark.wasm"
 CHECKSUM="ba2c7a75c93b7cd7bc3e2f7e12943ba2dacac6ea444f6a2e853023b892ca8acc"
 
 # Colors
@@ -29,13 +34,13 @@ echo ""
 echo "📋 Test 2: Upload WASM File"
 if [ ! -f "$TEST_WASM_PATH" ]; then
     echo -e "${RED}✗${NC} Test WASM not found at $TEST_WASM_PATH"
-    echo "Run: cd ../wasi-examples/get-random && cargo build --release --target wasm32-wasip1"
+    echo "Run: $SCRIPT_DIR/unit.sh to build test modules"
     exit 1
 fi
 
 UPLOAD_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST $COORDINATOR_URL/wasm/upload \
   -F "checksum=$CHECKSUM" \
-  -F "repo_url=https://github.com/near-offshore/get-random" \
+  -F "repo_url=https://github.com/zavodil/random-ark" \
   -F "commit_hash=test" \
   -F "wasm_file=@$TEST_WASM_PATH")
 
@@ -89,7 +94,8 @@ CREATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST $COORDINATOR_URL/tasks/cre
       "max_instructions": 10000000000,
       "max_memory_mb": 128,
       "max_execution_seconds": 60
-    }
+    },
+    "input_data": "{\"min\":1,\"max\":100}"
   }')
 
 HTTP_CODE=$(echo "$CREATE_RESPONSE" | tail -1)

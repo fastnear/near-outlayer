@@ -43,8 +43,13 @@ async fn test_executor_with_invalid_wasm() {
     let input = vec![];
     let result = executor.execute(&invalid_wasm, &input, &limits, None).await;
 
-    // Should fail to parse
-    assert!(result.is_err());
+    // Should fail to parse - executor.execute() returns Ok(ExecutionResult)
+    // but ExecutionResult.success should be false
+    assert!(result.is_ok());
+    let exec_result = result.unwrap();
+    assert!(!exec_result.success, "Expected execution to fail with invalid WASM");
+    assert!(exec_result.error.is_some(), "Expected error message");
+    assert!(exec_result.error.unwrap().contains("Failed to load WASM binary"));
 }
 
 #[test]

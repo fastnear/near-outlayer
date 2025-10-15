@@ -55,7 +55,7 @@ async fn test_full_execution_flow() {
     let create_task_request = json!({
         "request_id": request_id,
         "code_source": {
-            "repo": "https://github.com/example/get-random",
+            "repo": "https://github.com/zavodil/random-ark",
             "commit": "main",
             "build_target": "wasm32-wasip1"
         },
