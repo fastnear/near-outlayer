@@ -138,9 +138,6 @@ pub async fn create_task(
 ) -> StatusCode {
     debug!("Creating task for request {}", payload.request_id);
 
-    // TODO remove debug
-    debug!("payload encrypted_secrets: {:?}", payload.encrypted_secrets.clone());
-
     // Insert into database
     let insert_result = sqlx::query!(
         r#"

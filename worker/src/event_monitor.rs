@@ -475,9 +475,6 @@ impl EventMonitor {
             Ok(_) => {
                 info!("✅ Task created in coordinator: request_id={} data_id={}",
                     request_data.request_id, data_id_hex);
-
-                // TODO remove debug
-                info!("encrypted_secrets: {:?}", request_data.encrypted_secrets.clone());
             }
             Err(e) => {
                 error!(
