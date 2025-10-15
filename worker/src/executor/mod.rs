@@ -1,0 +1,179 @@
+//! WASM executor with support for multiple WASI versions
+//!
+//! This module provides execution for different WASM formats:
+//! - WASI Preview 2 (P2): Modern component model with HTTP support
+//! - WASI Preview 1 (P1): Standard WASI modules
+//!
+//! ## Adding New Build Targets
+//!
+//! To add support for a new build target (e.g., wasm32-unknown-unknown):
+//!
+//! 1. Create a new module file: `src/executor/wasi_unknown.rs`
+//! 2. Implement the executor function with signature:
+//!    ```rust,ignore
+//!    pub async fn execute(
+//!        wasm_bytes: &[u8],
+//!        input_data: &[u8],
+//!        limits: &ResourceLimits,
+//!        env_vars: Option<HashMap<String, String>>,
+//!    ) -> Result<(Vec<u8>, u64)>
+//!    ```
+//! 3. Add module declaration: `mod wasi_unknown;`
+//! 4. Add detection logic in `execute_async()` to try loading the new format
+//! 5. Add unit tests in `tests/` directory
+//!
+//! ## Architecture
+//!
+//! The executor tries formats in order of priority:
+//! 1. WASI P2 component (most modern, has HTTP)
+//! 2. WASI P1 module (standard, widely compatible)
+//! 3. Return error if no format matches
+
+use anyhow::Result;
+use std::collections::HashMap;
+use std::time::Instant;
+use tracing::info;
+
+use crate::api_client::{ExecutionResult, ResourceLimits};
+
+mod wasi_p1;
+mod wasi_p2;
+
+/// WASM executor supporting multiple WASI versions
+pub struct Executor {
+    /// Maximum instructions allowed per execution (default)
+    _default_max_instructions: u64,
+}
+
+impl Executor {
+    /// Create a new executor
+    pub fn new(default_max_instructions: u64) -> Self {
+        Self {
+            _default_max_instructions: default_max_instructions,
+        }
+    }
+
+    /// Execute WASM with input data
+    ///
+    /// Returns ExecutionResult with success/failure and optional output
+    pub async fn execute(
+        &self,
+        wasm_bytes: &[u8],
+        input_data: &[u8],
+        limits: &ResourceLimits,
+        env_vars: Option<HashMap<String, String>>,
+        build_target: Option<&str>,
+    ) -> Result<ExecutionResult> {
+        info!(
+            "Starting WASM execution: {} instructions, {} MB memory, {} seconds, target: {:?}",
+            limits.max_instructions, limits.max_memory_mb, limits.max_execution_seconds, build_target
+        );
+
+        let start = Instant::now();
+
+        // Try to execute with different WASI versions
+        let result = Self::execute_async(wasm_bytes, input_data, limits, env_vars, build_target).await;
+
+        let execution_time_ms = start.elapsed().as_millis() as u64;
+
+        match result {
+            Ok((output, instructions)) => {
+                info!(
+                    "WASM execution succeeded in {} ms, consumed {} instructions",
+                    execution_time_ms, instructions
+                );
+                Ok(ExecutionResult {
+                    success: true,
+                    output: Some(output),
+                    error: None,
+                    execution_time_ms,
+                    instructions,
+                })
+            }
+            Err(e) => {
+                info!("WASM execution failed: {}", e);
+                Ok(ExecutionResult {
+                    success: false,
+                    output: None,
+                    error: Some(e.to_string()),
+                    execution_time_ms,
+                    instructions: 0,
+                })
+            }
+        }
+    }
+
+    /// Try to execute WASM with different formats
+    ///
+    /// If build_target is known, try that format first for performance.
+    /// Otherwise, try all formats in priority order.
+    ///
+    /// Priority order:
+    /// 1. WASI Preview 2 component (HTTP, modern features)
+    /// 2. WASI Preview 1 module (standard WASI)
+    /// 3. Error if no format matches
+    async fn execute_async(
+        wasm_bytes: &[u8],
+        input_data: &[u8],
+        limits: &ResourceLimits,
+        env_vars: Option<HashMap<String, String>>,
+        build_target: Option<&str>,
+    ) -> Result<(Vec<u8>, u64)> {
+        // Optimize: if we know build_target, try appropriate executor first
+        if let Some(target) = build_target {
+            match target {
+                "wasm32-wasip2" => {
+                    // Try P2 only
+                    if let Ok(result) = wasi_p2::execute(wasm_bytes, input_data, limits, env_vars.clone()).await {
+                        return Ok(result);
+                    }
+                }
+                "wasm32-wasip1" | "wasm32-wasi" => {
+                    // Try P1 only
+                    if let Ok(result) = wasi_p1::execute(wasm_bytes, input_data, limits, env_vars.clone()).await {
+                        return Ok(result);
+                    }
+                }
+                _ => {
+                    // Unknown target, fallback to auto-detection below
+                }
+            }
+        }
+
+        // Fallback: auto-detect format (for unknown targets or if specific executor failed)
+        // Try WASI P2 component first
+        if let Ok(result) = wasi_p2::execute(wasm_bytes, input_data, limits, env_vars.clone()).await
+        {
+            return Ok(result);
+        }
+
+        // Try WASI P1 module
+        if let Ok(result) = wasi_p1::execute(wasm_bytes, input_data, limits, env_vars.clone()).await
+        {
+            return Ok(result);
+        }
+
+        // If nothing worked, return error
+        anyhow::bail!(
+            "Failed to load WASM binary: not a valid WASI P2 component or WASI P1 module.\n\
+             Build target: {:?}\n\
+             Supported formats:\n\
+             - WASI Preview 2 components (wasm32-wasip2)\n\
+             - WASI Preview 1 modules (wasm32-wasip1, wasm32-wasi)\n\
+             \n\
+             If you need to add support for a new target, see module documentation.",
+            build_target
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_executor_creation() {
+        let executor = Executor::new(10_000_000_000);
+        assert_eq!(executor._default_max_instructions, 10_000_000_000);
+    }
+}

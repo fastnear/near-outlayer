@@ -10,6 +10,7 @@ tests/
 ├── compilation.sh   - Compilation tests (GitHub → WASM via Docker)
 ├── integration.sh   - Integration tests (Coordinator + Worker API)
 ├── e2e.sh          - End-to-end tests (NEAR contract flow)
+├── transactions.sh  - Transaction tests (real testnet execution)
 └── run_all.sh      - Run all tests in sequence
 ```
 

@@ -49,7 +49,7 @@ async fn test_wasm_execution() {
 
     // Execute WASM
     println!("⚙️  Executing WASM...");
-    match executor.execute(&wasm_bytes, &input_data, &resource_limits, None).await {
+    match executor.execute(&wasm_bytes, &input_data, &resource_limits, None, None).await {
         Ok(result) => {
             println!("✅ Execution result:");
             println!("   Success: {}", result.success);
@@ -91,7 +91,7 @@ async fn test_minimal_wasm() {
     };
 
     println!("⚙️  Testing minimal WASM...");
-    match executor.execute(&minimal_wasm, &[], &resource_limits, None).await {
+    match executor.execute(&minimal_wasm, &[], &resource_limits, None, None).await {
         Ok(result) => {
             println!("Result: success={}, error={:?}", result.success, result.error);
         }

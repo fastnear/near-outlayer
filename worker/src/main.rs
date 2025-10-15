@@ -192,6 +192,7 @@ async fn worker_iteration(
             resource_limits,
             input_data,
             encrypted_secrets,
+            build_target,
         } => {
             handle_execute_task(
                 api_client,
@@ -204,6 +205,7 @@ async fn worker_iteration(
                 resource_limits,
                 input_data,
                 encrypted_secrets,
+                build_target,
             )
             .await?;
         }
@@ -325,7 +327,12 @@ async fn handle_compile_task(
     let input_bytes = input_data.as_bytes().to_vec();
     info!("🚀 Starting WASM execution now...");
 
-    let result = match executor.execute(&wasm_bytes, &input_bytes, &resource_limits, env_vars).await {
+    // Extract build_target for optimized executor selection
+    let build_target = match &code_source {
+        CodeSource::GitHub { build_target, .. } => Some(build_target.as_str()),
+    };
+
+    let result = match executor.execute(&wasm_bytes, &input_bytes, &resource_limits, env_vars, build_target).await {
         Ok(result) => {
             info!("✅ WASM Execution completed: success={}, time={}ms, output_len={:?}, error={:?}",
                 result.success,
@@ -391,6 +398,7 @@ async fn handle_execute_task(
     resource_limits: api_client::ResourceLimits,
     input_data: String,
     encrypted_secrets: Option<Vec<u8>>,
+    build_target: Option<String>,
 ) -> Result<()> {
     info!(
         "Executing WASM for request_id={}, data_id={}, checksum={}",
@@ -446,9 +454,9 @@ async fn handle_execute_task(
     }
     let input_bytes = input_data.as_bytes().to_vec();
 
-    // Execute WASM with environment variables
+    // Execute WASM with environment variables and build target hint
     let result = executor
-        .execute(&wasm_bytes, &input_bytes, &resource_limits, env_vars)
+        .execute(&wasm_bytes, &input_bytes, &resource_limits, env_vars, build_target.as_deref())
         .await
         .context("Failed to execute WASM")?;
 

@@ -24,6 +24,8 @@ pub enum Task {
         input_data: String,
         #[serde(default)]
         encrypted_secrets: Option<Vec<u8>>,
+        #[serde(default)]
+        build_target: Option<String>,
     },
 }
 

@@ -22,7 +22,7 @@ async fn test_executor_with_minimal_wasm() {
     let input = vec![];
 
     // Should succeed (no functions to execute, but valid WASM)
-    let result = executor.execute(&wasm, &input, &limits, None).await;
+    let result = executor.execute(&wasm, &input, &limits, None, None).await;
 
     // Minimal WASM has no export, so execution will fail with specific error
     // But WASM parsing should succeed
@@ -41,7 +41,7 @@ async fn test_executor_with_invalid_wasm() {
     };
 
     let input = vec![];
-    let result = executor.execute(&invalid_wasm, &input, &limits, None).await;
+    let result = executor.execute(&invalid_wasm, &input, &limits, None, None).await;
 
     // Should fail to parse - executor.execute() returns Ok(ExecutionResult)
     // but ExecutionResult.success should be false
