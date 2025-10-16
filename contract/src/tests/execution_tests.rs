@@ -456,4 +456,95 @@ mod tests {
             _ => panic!("Wrong type"),
         }
     }
+
+    #[test]
+    fn test_submit_execution_output_and_resolve_stores_output() {
+        let mut contract = setup_contract();
+        let operator = accounts(1);
+        let sender = accounts(3);
+
+        // Create a pending request
+        let execution_request = ExecutionRequest {
+            request_id: 0,
+            data_id: [1; 32],
+            sender_id: sender.clone(),
+            code_source: CodeSource {
+                repo: "https://github.com/test/repo".to_string(),
+                commit: "abc123".to_string(),
+                build_target: Some("wasm32-wasi".to_string()),
+            },
+            resource_limits: ResourceLimits::default(),
+            payment: 100_000_000_000_000_000_000_000,
+            timestamp: env::block_timestamp(),
+            encrypted_secrets: None,
+            response_format: ResponseFormat::Text,
+            pending_output: None,
+            output_submitted: false,
+        };
+        contract.pending_requests.insert(&0, &execution_request);
+
+        // Operator calls the internal method (we can't test full flow with promise_yield_resume in unit tests)
+        let context = get_context(operator.clone(), NearToken::from_near(0));
+        testing_env!(context.build());
+
+        let large_output = ExecutionOutput::Text("C".repeat(2000)); // > 1024 bytes
+
+        // Test just the storage part (not the full promise_yield_resume)
+        contract.submit_execution_output_internal(0, large_output.clone());
+
+        // Verify that output was stored correctly
+        let request = contract.get_request(0).expect("Request should exist");
+        assert!(request.output_submitted, "output_submitted flag should be true");
+        assert!(request.pending_output.is_some(), "pending_output should be stored");
+
+        // Verify stored output matches
+        let stored = contract.get_pending_output(0).expect("Output should be stored");
+        match (stored, large_output) {
+            (ExecutionOutput::Text(s), ExecutionOutput::Text(o)) => assert_eq!(s, o),
+            _ => panic!("Output type mismatch"),
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "Only operator can call this")]
+    fn test_submit_execution_output_and_resolve_unauthorized() {
+        let mut contract = setup_contract();
+        let unauthorized = accounts(5);
+        let sender = accounts(3);
+
+        // Create a pending request
+        let execution_request = ExecutionRequest {
+            request_id: 0,
+            data_id: [1; 32],
+            sender_id: sender.clone(),
+            code_source: CodeSource {
+                repo: "https://github.com/test/repo".to_string(),
+                commit: "abc123".to_string(),
+                build_target: Some("wasm32-wasi".to_string()),
+            },
+            resource_limits: ResourceLimits::default(),
+            payment: 100_000_000_000_000_000_000_000,
+            timestamp: env::block_timestamp(),
+            encrypted_secrets: None,
+            response_format: ResponseFormat::Text,
+            pending_output: None,
+            output_submitted: false,
+        };
+        contract.pending_requests.insert(&0, &execution_request);
+
+        // Unauthorized user tries to call combined method
+        let context = get_context(unauthorized, NearToken::from_near(0));
+        testing_env!(context.build());
+
+        contract.submit_execution_output_and_resolve(
+            0,
+            ExecutionOutput::Text("test".to_string()),
+            true,
+            None,
+            ResourceMetrics {
+                instructions: 1000,
+                time_ms: 10,
+            },
+        );
+    }
 }

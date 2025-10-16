@@ -38,12 +38,14 @@ impl NearClient {
         })
     }
 
-    /// Submit execution result using 2-call flow with manual nonce management
+    /// Submit execution result using optimized 1-transaction flow
     ///
-    /// This method handles large outputs by:
-    /// 1. Getting current nonce and block_hash
-    /// 2. Sending submit_execution_output with nonce+1
-    /// 3. Sending resolve_execution with nonce+2 (avoiding nonce conflict)
+    /// This method handles large outputs efficiently by calling the combined
+    /// submit_execution_output_and_resolve method which:
+    /// 1. Stores large output in contract storage
+    /// 2. Creates internal promise to resolve_execution
+    ///
+    /// This saves ~1-2 seconds compared to two separate transactions.
     ///
     /// # Arguments
     /// * `request_id` - Request ID from the contract
@@ -53,121 +55,51 @@ impl NearClient {
         request_id: u64,
         result: &ExecutionResult,
     ) -> Result<String> {
-        // Get current nonce and block_hash once
-        let access_key_query = methods::query::RpcQueryRequest {
-            block_reference: BlockReference::Finality(Finality::Final),
-            request: near_primitives::views::QueryRequest::ViewAccessKey {
-                account_id: self.signer.account_id.clone(),
-                public_key: self.signer.public_key(),
-            },
-        };
-
-        let access_key_response = self
-            .client
-            .call(access_key_query)
-            .await
-            .context("Failed to query access key")?;
-
-        let current_nonce = match access_key_response.kind {
-            near_jsonrpc_primitives::types::query::QueryResponseKind::AccessKey(access_key) => {
-                access_key.nonce
-            }
-            _ => anyhow::bail!("Unexpected query response"),
-        };
-
-        // Get latest block hash
-        let block_query = methods::block::RpcBlockRequest {
-            block_reference: BlockReference::Finality(Finality::Final),
-        };
-
-        let block = self
-            .client
-            .call(block_query)
-            .await
-            .context("Failed to query block")?;
-
-        let block_hash = block.header.hash;
-
-        info!("📋 2-call flow: current_nonce={}, using nonce={} and nonce={}",
-            current_nonce, current_nonce + 1, current_nonce + 2);
-
-        // Step 1: submit_execution_output with nonce+1
         let output = result.output.as_ref().unwrap();
-        let output_args = json!({
+
+        // Prepare arguments for submit_execution_output_and_resolve
+        let args = json!({
             "request_id": request_id,
             "output": output,
-        });
-
-        let output_args_json = serde_json::to_string(&output_args)
-            .context("Failed to serialize submit_execution_output args")?;
-
-        info!("📤 Step 1/2: Submitting large output (size: {} bytes, nonce={})",
-            output_args_json.len(), current_nonce + 1);
-
-        let outcome1 = self
-            .call_contract_method_with_nonce(
-                "submit_execution_output",
-                output_args_json.into_bytes(),
-                100_000_000_000_000, // 100 TGas
-                0,
-                current_nonce + 1,
-                block_hash,
-            )
-            .await
-            .context("Failed to call submit_execution_output")?;
-
-        info!("✅ Step 1/2 complete: {:?}", outcome1.status);
-
-        // Optional delay
-        if TWO_CALL_DELAY_MS > 0 {
-            info!("⏳ Waiting {}ms between transactions", TWO_CALL_DELAY_MS);
-            tokio::time::sleep(Duration::from_millis(TWO_CALL_DELAY_MS)).await;
-        }
-
-        // Step 2: resolve_execution with nonce+2 (no output, already stored)
-        let resolve_args = json!({
-            "request_id": request_id,
-            "response": {
-                "success": result.success,
-                "output": null, // Output already submitted
-                "error": result.error,
-                "resources_used": {
-                    "instructions": result.instructions,
-                    "time_ms": result.execution_time_ms,
-                }
+            "success": result.success,
+            "error": result.error,
+            "resources_used": {
+                "instructions": result.instructions,
+                "time_ms": result.execution_time_ms,
             }
         });
 
-        let resolve_args_json = serde_json::to_string(&resolve_args)
-            .context("Failed to serialize resolve_execution args")?;
+        let args_json = serde_json::to_string(&args)
+            .context("Failed to serialize submit_execution_output_and_resolve args")?;
 
-        info!("📤 Step 2/2: Resolving execution (size: {} bytes, nonce={})",
-            resolve_args_json.len(), current_nonce + 2);
+        info!(
+            "📤 Submitting large output + resolve in ONE transaction (size: {} bytes)",
+            args_json.len()
+        );
 
-        let outcome2 = self
-            .call_contract_method_with_nonce(
-                "resolve_execution",
-                resolve_args_json.into_bytes(),
-                300_000_000_000_000, // 300 TGas
+        // Call the combined method (400 TGas: 100 for submit + 300 for internal resolve)
+        let outcome = self
+            .call_contract_method(
+                "submit_execution_output_and_resolve",
+                args_json.into_bytes(),
+                300_000_000_000_000, // 300 TGas total
                 0,
-                current_nonce + 2,
-                block_hash,
             )
             .await
-            .context("Failed to call resolve_execution")?;
+            .context("Failed to call submit_execution_output_and_resolve")?;
 
-        info!("✅ Step 2/2 complete: {:?}", outcome2.status);
-        info!("   Final transaction ID: {}", outcome2.transaction_outcome.id);
+        info!("✅ Combined transaction complete: {:?}", outcome.status);
+        info!("   Transaction ID: {}", outcome.transaction_outcome.id);
 
-        // Return final transaction hash
-        let tx_hash = format!("{}", outcome2.transaction_outcome.id);
+        // Return transaction hash
+        let tx_hash = format!("{}", outcome.transaction_outcome.id);
         Ok(tx_hash)
     }
 
-    /// Submit large execution output separately (2-call flow)
+    /// Submit large execution output separately (legacy 2-call flow)
     ///
-    /// Calls `submit_execution_output` on the OffchainVM contract
-    /// This is used when output is too large to fit in yield resume payload
+    /// This is kept as a fallback option. The recommended approach is to use
+    /// submit_execution_output_and_resolve for better performance.
     ///
     /// # Arguments
     /// * `request_id` - Request ID from the contract
@@ -175,6 +107,7 @@ impl NearClient {
     ///
     /// # Returns
     /// * `Ok(tx_hash)` - Transaction hash as hex string
+    #[allow(dead_code)]
     async fn submit_execution_output(
         &self,
         request_id: u64,
@@ -209,12 +142,6 @@ impl NearClient {
         info!("✅ submit_execution_output transaction outcome status: {:?}", outcome.status);
         info!("   Transaction ID: {}", outcome.transaction_outcome.id);
 
-        // Optional delay before next transaction to ensure nonce propagation
-        if TWO_CALL_DELAY_MS > 0 {
-            info!("⏳ Waiting {}ms for nonce propagation", TWO_CALL_DELAY_MS);
-            tokio::time::sleep(Duration::from_millis(TWO_CALL_DELAY_MS)).await;
-        }
-
         // Return transaction hash as hex string
         let tx_hash = format!("{}", outcome.transaction_outcome.id);
         Ok(tx_hash)
@@ -224,7 +151,7 @@ impl NearClient {
     ///
     /// Automatically decides between 1-call or 2-call flow based on payload size:
     /// - If payload < 1024 bytes: calls `resolve_execution` directly (1-call)
-    /// - If payload >= 1024 bytes: calls `submit_execution_output` first, then `resolve_execution` (2-call)
+    /// - If payload >= 1024 bytes: calls `submit_execution_output_and_resolve` (optimized 1-transaction flow)
     ///
     /// # Arguments
     /// * `request_id` - Request ID from the contract

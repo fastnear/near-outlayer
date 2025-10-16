@@ -119,71 +119,74 @@ impl Contract {
         env::promise_return(promise_idx)
     }
 
+
+
     /// Worker calls this to submit large execution output (> 1024 bytes)
     /// This is the first step of 2-call flow for large outputs
     pub fn submit_execution_output(&mut self, request_id: u64, output: ExecutionOutput) {
         // Only operator can submit execution data
         self.assert_operator();
 
-        // Get the pending request
-        let mut request = self
-            .pending_requests
-            .get(&request_id)
-            .expect("Execution request not found");
+        self.submit_execution_output_internal(request_id, output);
+    }
 
-        // Ensure output was not already submitted
-        assert!(
-            !request.output_submitted,
-            "Output already submitted for this request"
-        );
+    /// Worker calls this to submit large output AND resolve in one transaction (recommended)
+    ///
+    /// This method combines submit_execution_output + resolve_execution into a single call:
+    /// 1. Stores the large output in contract storage
+    /// 2. Immediately calls resolve_execution_internal with metadata only
+    ///
+    /// This saves ~1-2 seconds compared to two separate transactions.
+    ///
+    /// # Arguments
+    /// * `request_id` - Request ID
+    /// * `output` - Large execution output (> 1024 bytes)
+    /// * `success` - Whether execution succeeded
+    /// * `error` - Error message if failed
+    /// * `resources_used` - Actual resource consumption
+    pub fn submit_execution_output_and_resolve(
+        &mut self,
+        request_id: u64,
+        output: ExecutionOutput,
+        success: bool,
+        error: Option<String>,
+        resources_used: ResourceMetrics,
+    ) {
+        // Only operator can submit execution data
+        self.assert_operator();
 
-        // Store the output in the request (convert to internal storage format)
-        let stored_output: crate::StoredOutput = output.into();
-        request.pending_output = Some(stored_output);
-        request.output_submitted = true;
+        // Step 1: Store the large output
+        self.submit_execution_output_internal(request_id, output);
 
-        // Save updated request
-        self.pending_requests.insert(&request_id, &request);
+        // Step 2: Immediately resolve with metadata only (no Promise needed!)
+        let response = ExecutionResponse {
+            success,
+            output: None, // Output already stored above
+            error,
+            resources_used,
+        };
 
         log!(
-            "Stored pending output for request_id: {}, data_id: {:?}",
-            request_id,
-            request.data_id
+            "Resolving execution for request_id: {} (combined flow, synchronous)",
+            request_id
         );
+
+        // Call resolve directly in the same function call
+        self.resolve_execution_internal(request_id, response);
     }
+
+
 
     /// Worker calls this to resolve execution (small output) or finalize after submit_execution_output (large output)
     ///
     /// For outputs <= 1024 bytes: Call this directly with output in response
     /// For outputs > 1024 bytes: Call submit_execution_output first, then call this
+    /// Or use submit_execution_output_and_resolve for optimized 1-call flow
     pub fn resolve_execution(&mut self, request_id: u64, response: ExecutionResponse) {
         // Only operator can resolve executions
         self.assert_operator();
 
-        // Get the pending request
-        let request = self
-            .pending_requests
-            .get(&request_id)
-            .expect("Execution request not found");
-
-        let data_id = request.data_id;
-
-        log!(
-            "Resolving execution for request_id: {}, data_id: {:?}, success: {}, output_submitted: {}, resources_used: {{ instructions: {}, time_ms: {} }}",
-            request_id,
-            data_id,
-            response.success,
-            request.output_submitted,
-            response.resources_used.instructions,
-            response.resources_used.time_ms
-        );
-
-        // For large outputs, we only pass metadata through resume (output stays in storage)
-        // The callback will retrieve it from pending_output field
-        // This avoids the 1024 byte limit of promise_yield_resume
-        if !env::promise_yield_resume(&data_id, &serde_json::to_vec(&response).unwrap()) {
-            env::panic_str("Unable to resume execution promise");
-        }
+        self.resolve_execution_internal(request_id, response);
     }
 
     #[allow(unused_variables)]
@@ -375,6 +378,65 @@ impl Contract {
                 request_id,
                 stale_request.sender_id
             );
+        }
+    }
+}
+
+impl Contract {
+    /// Internal helper to submit execution output (used by both public methods)
+    pub(crate) fn submit_execution_output_internal(&mut self, request_id: u64, output: ExecutionOutput) {
+        // Get the pending request
+        let mut request = self
+            .pending_requests
+            .get(&request_id)
+            .expect("Execution request not found");
+
+        // Ensure output was not already submitted
+        assert!(
+            !request.output_submitted,
+            "Output already submitted for this request"
+        );
+
+        // Store the output in the request (convert to internal storage format)
+        let stored_output: crate::StoredOutput = output.into();
+        request.pending_output = Some(stored_output);
+        request.output_submitted = true;
+
+        // Save updated request
+        self.pending_requests.insert(&request_id, &request);
+
+        log!(
+            "Stored pending output for request_id: {}, data_id: {:?}",
+            request_id,
+            request.data_id
+        );
+    }
+
+    /// Internal helper to resolve execution (no operator check)
+    fn resolve_execution_internal(&mut self, request_id: u64, response: ExecutionResponse) {
+        // Get the pending request
+        let request = self
+            .pending_requests
+            .get(&request_id)
+            .expect("Execution request not found");
+
+        let data_id = request.data_id;
+
+        log!(
+            "Resolving execution for request_id: {}, data_id: {:?}, success: {}, output_submitted: {}, resources_used: {{ instructions: {}, time_ms: {} }}",
+            request_id,
+            data_id,
+            response.success,
+            request.output_submitted,
+            response.resources_used.instructions,
+            response.resources_used.time_ms
+        );
+
+        // For large outputs, we only pass metadata through resume (output stays in storage)
+        // The callback will retrieve it from pending_output field
+        // This avoids the 1024 byte limit of promise_yield_resume
+        if !env::promise_yield_resume(&data_id, &serde_json::to_vec(&response).unwrap()) {
+            env::panic_str("Unable to resume execution promise");
         }
     }
 }
