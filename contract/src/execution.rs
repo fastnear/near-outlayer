@@ -7,9 +7,10 @@ impl Contract {
     ///
     /// # Arguments
     /// * `code_source` - GitHub repository and commit to compile
-    /// * `resource_limits` - Optional resource limits for execution
-    /// * `input_data` - Optional input data for the WASM program
+    /// * `resource_limits` - Optional resource limits for execution (default: 1B instructions, 128MB, 60s)
+    /// * `input_data` - Optional input data for the WASM program (default: empty string)
     /// * `encrypted_secrets` - Optional secrets encrypted with keystore public key
+    /// * `response_format` - Optional output format: Bytes, Text, or Json (default: Text)
     ///
     /// # Secrets Encryption
     /// If you need to pass secrets (API keys, credentials) to the execution:
@@ -23,6 +24,7 @@ impl Contract {
         resource_limits: Option<ResourceLimits>,
         input_data: Option<String>,
         encrypted_secrets: Option<Vec<u8>>,
+        response_format: Option<ResponseFormat>,
     ) {
         self.assert_not_paused();
 
@@ -62,6 +64,7 @@ impl Contract {
         self.next_request_id += 1;
 
         let sender_id = env::predecessor_account_id();
+        let format = response_format.unwrap_or_default();
 
         // Create execution request data for yield
         let request_data = json!({
@@ -69,8 +72,9 @@ impl Contract {
             "sender_id": sender_id,
             "code_source": code_source,
             "resource_limits": limits,
-            "input_data": input_data.unwrap_or_else(|| "{}".to_string()),
+            "input_data": input_data.unwrap_or_else(|| String::new()),
             "encrypted_secrets": encrypted_secrets.as_ref().map(|s| s.clone()),
+            "response_format": format,
             "payment": U128::from(payment),
             "timestamp": env::block_timestamp()
         });
@@ -100,6 +104,7 @@ impl Contract {
             payment,
             timestamp: env::block_timestamp(),
             encrypted_secrets,
+            response_format: format.clone(),
         };
 
         self.pending_requests
@@ -142,7 +147,7 @@ impl Contract {
         resource_limits: ResourceLimits,
         payment: U128,
         #[callback_result] response: Result<ExecutionResponse, PromiseError>,
-    ) -> Option<String> {
+    ) -> Option<serde_json::Value> {
         // Remove the pending request
         if let Some(_request) = self.pending_requests.remove(&request_id) {
             self.total_executions += 1;
@@ -174,17 +179,44 @@ impl Contract {
                         );
 
                         // Log the execution result with resources used
-                        if let Some(return_value) = &exec_response.return_value {
+                        if let Some(output) = exec_response.output {
+                            // Convert ExecutionOutput to plain JSON value (without enum wrapper)
+                            let json_value = match &output {
+                                ExecutionOutput::Bytes(bytes) => {
+                                    // For bytes, encode as base64 string
+                                    use near_sdk::base64::{engine::general_purpose::STANDARD, Engine};
+                                    serde_json::Value::String(STANDARD.encode(bytes))
+                                }
+                                ExecutionOutput::Text(text) => {
+                                    // For text, return as JSON string
+                                    serde_json::Value::String(text.clone())
+                                }
+                                ExecutionOutput::Json(value) => {
+                                    // For JSON, return the value directly (no double serialization!)
+                                    value.clone()
+                                }
+                            };
+
+                            // Log for debugging (with type info)
+                            let log_preview = match &output {
+                                ExecutionOutput::Bytes(bytes) => format!("Bytes({} bytes)", bytes.len()),
+                                ExecutionOutput::Text(text) => {
+                                    let preview = if text.len() > 100 { &text[..100] } else { text };
+                                    format!("Text: {}", preview)
+                                }
+                                ExecutionOutput::Json(value) => format!("Json: {}", serde_json::to_string(value).unwrap_or_default()),
+                            };
+
                             log!(
-                                "Execution completed successfully. Result: {}, Resources: {{ instructions: {}, time_ms: {} }}, Cost: {} yoctoNEAR, Refund: {} yoctoNEAR",
-                                return_value,
+                                "Execution completed successfully. Output: {}, Resources: {{ instructions: {}, time_ms: {} }}, Cost: {} yoctoNEAR, Refund: {} yoctoNEAR",
+                                log_preview,
                                 exec_response.resources_used.instructions,
                                 exec_response.resources_used.time_ms,
                                 cost,
                                 refund
                             );
 
-                            Some(return_value.clone())
+                            Some(json_value)
                         } else {
                             log!(
                                 "Execution has no output value. Resources: {{ instructions: {}, time_ms: {} }}, Cost: {} yoctoNEAR, Refund: {} yoctoNEAR",

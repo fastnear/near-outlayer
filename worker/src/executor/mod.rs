@@ -34,7 +34,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 use tracing::info;
 
-use crate::api_client::{ExecutionResult, ResourceLimits};
+use crate::api_client::{ExecutionOutput, ExecutionResult, ResourceLimits, ResponseFormat};
 
 mod wasi_p1;
 mod wasi_p2;
@@ -63,10 +63,11 @@ impl Executor {
         limits: &ResourceLimits,
         env_vars: Option<HashMap<String, String>>,
         build_target: Option<&str>,
+        response_format: &ResponseFormat,
     ) -> Result<ExecutionResult> {
         info!(
-            "Starting WASM execution: {} instructions, {} MB memory, {} seconds, target: {:?}",
-            limits.max_instructions, limits.max_memory_mb, limits.max_execution_seconds, build_target
+            "Starting WASM execution: {} instructions, {} MB memory, {} seconds, target: {:?}, format: {:?}",
+            limits.max_instructions, limits.max_memory_mb, limits.max_execution_seconds, build_target, response_format
         );
 
         let start = Instant::now();
@@ -77,14 +78,46 @@ impl Executor {
         let execution_time_ms = start.elapsed().as_millis() as u64;
 
         match result {
-            Ok((output, instructions)) => {
+            Ok((output_bytes, instructions)) => {
                 info!(
                     "WASM execution succeeded in {} ms, consumed {} instructions",
                     execution_time_ms, instructions
                 );
+
+                // Convert output based on requested format
+                let output = match response_format {
+                    ResponseFormat::Bytes => {
+                        Some(ExecutionOutput::Bytes(output_bytes))
+                    }
+                    ResponseFormat::Text => {
+                        let text = String::from_utf8(output_bytes)
+                            .unwrap_or_else(|e| format!("Invalid UTF-8 output: {}", e));
+                        Some(ExecutionOutput::Text(text))
+                    }
+                    ResponseFormat::Json => {
+                        match serde_json::from_slice(&output_bytes) {
+                            Ok(json_value) => Some(ExecutionOutput::Json(json_value)),
+                            Err(e) => {
+                                // If JSON parsing fails, return error
+                                return Ok(ExecutionResult {
+                                    success: false,
+                                    output: None,
+                                    error: Some(format!(
+                                        "Failed to parse output as JSON: {}. Output was: {}",
+                                        e,
+                                        String::from_utf8_lossy(&output_bytes)
+                                    )),
+                                    execution_time_ms,
+                                    instructions,
+                                });
+                            }
+                        }
+                    }
+                };
+
                 Ok(ExecutionResult {
                     success: true,
-                    output: Some(output),
+                    output,
                     error: None,
                     execution_time_ms,
                     instructions,

@@ -1,5 +1,27 @@
 use serde::{Deserialize, Serialize};
 
+/// Response format for execution output
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub enum ResponseFormat {
+    Bytes,
+    #[default]
+    Text,
+    Json,
+}
+
+/// Execution context metadata
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExecutionContext {
+    #[serde(default)]
+    pub sender_id: Option<String>,
+    #[serde(default)]
+    pub block_height: Option<u64>,
+    #[serde(default)]
+    pub block_timestamp: Option<u64>,
+    #[serde(default)]
+    pub contract_id: Option<String>,
+}
+
 /// Task types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -12,14 +34,23 @@ pub enum Task {
         input_data: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         encrypted_secrets: Option<Vec<u8>>,
+        #[serde(default)]
+        response_format: ResponseFormat,
+        #[serde(default)]
+        context: ExecutionContext,
     },
     Execute {
         request_id: u64,
         data_id: String,
         wasm_checksum: String,
         resource_limits: ResourceLimits,
+        input_data: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         encrypted_secrets: Option<Vec<u8>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        build_target: Option<String>,
+        response_format: ResponseFormat,
+        context: ExecutionContext,
     },
 }
 
@@ -64,11 +95,19 @@ pub struct WasmExistsResponse {
     pub exists: bool,
 }
 
+/// Execution output - can be bytes, text, or parsed JSON
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ExecutionOutput {
+    Bytes(Vec<u8>),
+    Text(String),
+    Json(serde_json::Value),
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CompleteTaskRequest {
     pub request_id: u64,
     pub success: bool,
-    pub output: Option<Vec<u8>>,
+    pub output: Option<ExecutionOutput>,
     pub error: Option<String>,
     pub execution_time_ms: u64,
     #[serde(default)]
@@ -100,4 +139,8 @@ pub struct CreateTaskRequest {
     pub data_id: String,
     #[serde(default)]
     pub encrypted_secrets: Option<Vec<u8>>,
+    #[serde(default)]
+    pub response_format: ResponseFormat,
+    #[serde(default)]
+    pub context: ExecutionContext,
 }

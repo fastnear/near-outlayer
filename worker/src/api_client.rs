@@ -3,6 +3,28 @@ use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+/// Response format for execution output
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub enum ResponseFormat {
+    Bytes,
+    #[default]
+    Text,
+    Json,
+}
+
+/// Execution context metadata passed to WASM via environment variables
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExecutionContext {
+    #[serde(default)]
+    pub sender_id: Option<String>,
+    #[serde(default)]
+    pub block_height: Option<u64>,
+    #[serde(default)]
+    pub block_timestamp: Option<u64>,
+    #[serde(default)]
+    pub contract_id: Option<String>,
+}
+
 /// Task types that worker can receive
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -15,6 +37,10 @@ pub enum Task {
         input_data: String,
         #[serde(default)]
         encrypted_secrets: Option<Vec<u8>>,
+        #[serde(default)]
+        response_format: ResponseFormat,
+        #[serde(default)]
+        context: ExecutionContext,
     },
     Execute {
         request_id: u64,
@@ -26,6 +52,10 @@ pub enum Task {
         encrypted_secrets: Option<Vec<u8>>,
         #[serde(default)]
         build_target: Option<String>,
+        #[serde(default)]
+        response_format: ResponseFormat,
+        #[serde(default)]
+        context: ExecutionContext,
     },
 }
 
@@ -46,11 +76,19 @@ pub struct ResourceLimits {
     pub max_execution_seconds: u64,
 }
 
+/// Execution output - can be bytes, text, or parsed JSON
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ExecutionOutput {
+    Bytes(Vec<u8>),
+    Text(String),
+    Json(serde_json::Value),
+}
+
 /// Execution result to send back to coordinator
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionResult {
     pub success: bool,
-    pub output: Option<Vec<u8>>,
+    pub output: Option<ExecutionOutput>,
     pub error: Option<String>,
     pub execution_time_ms: u64,
     pub instructions: u64,
@@ -150,7 +188,7 @@ impl ApiClient {
         struct CompleteRequest {
             request_id: u64,
             success: bool,
-            output: Option<Vec<u8>>,
+            output: Option<ExecutionOutput>,
             error: Option<String>,
             execution_time_ms: u64,
             instructions: u64,
@@ -164,7 +202,7 @@ impl ApiClient {
         let request = CompleteRequest {
             request_id,
             success: result.success,
-            output: result.output,
+            output: result.output.clone(),
             error: result.error,
             execution_time_ms: result.execution_time_ms,
             instructions: result.instructions,
@@ -462,6 +500,8 @@ impl ApiClient {
         max_execution_seconds: u64,
         input_data: String,
         encrypted_secrets: Option<Vec<u8>>,
+        response_format: ResponseFormat,
+        context: ExecutionContext,
     ) -> Result<()> {
         let url = format!("{}/tasks/create", self.base_url);
 
@@ -474,6 +514,8 @@ impl ApiClient {
             input_data: String,
             #[serde(skip_serializing_if = "Option::is_none")]
             encrypted_secrets: Option<Vec<u8>>,
+            response_format: ResponseFormat,
+            context: ExecutionContext,
         }
 
         let request = CreateRequest {
@@ -491,6 +533,8 @@ impl ApiClient {
             },
             input_data,
             encrypted_secrets,
+            response_format,
+            context,
         };
 
         let response = self

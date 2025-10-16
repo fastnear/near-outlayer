@@ -192,6 +192,8 @@ async fn worker_iteration(
             resource_limits,
             input_data,
             encrypted_secrets,
+            response_format,
+            context,
         } => {
             handle_compile_task(
                 api_client,
@@ -206,6 +208,8 @@ async fn worker_iteration(
                 resource_limits,
                 input_data,
                 encrypted_secrets,
+                response_format,
+                context,
             )
             .await?;
         }
@@ -217,6 +221,8 @@ async fn worker_iteration(
             input_data,
             encrypted_secrets,
             build_target,
+            response_format,
+            context,
         } => {
             handle_execute_task(
                 api_client,
@@ -231,12 +237,49 @@ async fn worker_iteration(
                 input_data,
                 encrypted_secrets,
                 build_target,
+                response_format,
+                context,
             )
             .await?;
         }
     }
 
     Ok(true)
+}
+
+/// Merge user secrets with system environment variables
+fn merge_env_vars(
+    user_secrets: Option<std::collections::HashMap<String, String>>,
+    context: &api_client::ExecutionContext,
+    resource_limits: &api_client::ResourceLimits,
+    request_id: u64,
+) -> std::collections::HashMap<String, String> {
+
+    let mut env_vars = user_secrets.unwrap_or_default();
+
+    // Add execution context
+    if let Some(ref sender_id) = context.sender_id {
+        env_vars.insert("NEAR_SENDER_ID".to_string(), sender_id.clone());
+    }
+    if let Some(ref contract_id) = context.contract_id {
+        env_vars.insert("NEAR_CONTRACT_ID".to_string(), contract_id.clone());
+    }
+    if let Some(block_height) = context.block_height {
+        env_vars.insert("NEAR_BLOCK_HEIGHT".to_string(), block_height.to_string());
+    }
+    if let Some(block_timestamp) = context.block_timestamp {
+        env_vars.insert("NEAR_BLOCK_TIMESTAMP".to_string(), block_timestamp.to_string());
+    }
+
+    // Add resource limits
+    env_vars.insert("NEAR_MAX_INSTRUCTIONS".to_string(), resource_limits.max_instructions.to_string());
+    env_vars.insert("NEAR_MAX_MEMORY_MB".to_string(), resource_limits.max_memory_mb.to_string());
+    env_vars.insert("NEAR_MAX_EXECUTION_SECONDS".to_string(), resource_limits.max_execution_seconds.to_string());
+
+    // Add request ID
+    env_vars.insert("NEAR_REQUEST_ID".to_string(), request_id.to_string());
+
+    env_vars
 }
 
 /// Handle a compilation task - now also executes and submits result
@@ -253,6 +296,8 @@ async fn handle_compile_task(
     resource_limits: api_client::ResourceLimits,
     input_data: String,
     encrypted_secrets: Option<Vec<u8>>,
+    response_format: api_client::ResponseFormat,
+    context: api_client::ExecutionContext,
 ) -> Result<()> {
     info!("🔨 Starting compilation for request_id={}", request_id);
 
@@ -358,16 +403,27 @@ async fn handle_compile_task(
         CodeSource::GitHub { build_target, .. } => Some(build_target.as_str()),
     };
 
-    let result = match executor.execute(&wasm_bytes, &input_bytes, &resource_limits, env_vars, build_target).await {
+    // Merge user secrets with system environment variables
+    let merged_env_vars = merge_env_vars(env_vars, &context, &resource_limits, request_id);
+    info!("🌍 Environment variables: {} total", merged_env_vars.len());
+
+    let result = match executor.execute(&wasm_bytes, &input_bytes, &resource_limits, Some(merged_env_vars), build_target, &response_format).await {
         Ok(result) => {
-            info!("✅ WASM Execution completed: success={}, time={}ms, output_len={:?}, error={:?}",
+            info!("✅ WASM Execution completed: success={}, time={}ms, error={:?}",
                 result.success,
                 result.execution_time_ms,
-                result.output.as_ref().map(|o| o.len()),
                 result.error);
-            if let Some(ref output) = result.output {
-                info!("📤 WASM Output (first 200 bytes): {:?}",
-                    String::from_utf8_lossy(&output[..output.len().min(200)]));
+            if let Some(ref output) = &result.output {
+                use api_client::ExecutionOutput;
+                let output_preview = match output {
+                    ExecutionOutput::Bytes(data) => format!("Bytes({} bytes)", data.len()),
+                    ExecutionOutput::Text(data) => {
+                        let preview = if data.len() > 200 { &data[..200] } else { data };
+                        format!("Text: {}", preview)
+                    }
+                    ExecutionOutput::Json(data) => format!("Json: {}", serde_json::to_string(data).unwrap_or_default()),
+                };
+                info!("📤 WASM Output: {}", output_preview);
             }
             result
         }
@@ -383,7 +439,7 @@ async fn handle_compile_task(
     // Step 4: Submit result to NEAR contract (promise_yield_resume)
     info!("📤 Submitting result to NEAR contract via promise_yield_resume");
     info!("   data_id={}", data_id);
-    info!("   success={}, output_len={:?}", result.success, result.output.as_ref().map(|o| o.len()));
+    info!("   success={}", result.success);
     match near_client.submit_execution_result(&data_id, &result).await {
         Ok(tx_hash) => {
             info!("✅ Successfully submitted to NEAR: tx_hash={}", tx_hash);
@@ -434,6 +490,8 @@ async fn handle_execute_task(
     input_data: String,
     encrypted_secrets: Option<Vec<u8>>,
     build_target: Option<String>,
+    response_format: api_client::ResponseFormat,
+    context: api_client::ExecutionContext,
 ) -> Result<()> {
     info!(
         "Executing WASM for request_id={}, data_id={}, checksum={}",
@@ -489,9 +547,13 @@ async fn handle_execute_task(
     }
     let input_bytes = input_data.as_bytes().to_vec();
 
+    // Merge user secrets with system environment variables
+    let merged_env_vars = merge_env_vars(env_vars, &context, &resource_limits, request_id);
+    info!("🌍 Environment variables: {} total", merged_env_vars.len());
+
     // Execute WASM with environment variables and build target hint
     let result = executor
-        .execute(&wasm_bytes, &input_bytes, &resource_limits, env_vars, build_target.as_deref())
+        .execute(&wasm_bytes, &input_bytes, &resource_limits, Some(merged_env_vars), build_target.as_deref(), &response_format)
         .await
         .context("Failed to execute WASM")?;
 

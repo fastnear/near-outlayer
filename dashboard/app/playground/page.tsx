@@ -11,6 +11,7 @@ export default function PlaygroundPage() {
   const [commit, setCommit] = useState('main');
   const [buildTarget, setBuildTarget] = useState('wasm32-wasip1');
   const [args, setArgs] = useState('{"min":1,"max":100}');
+  const [responseFormat, setResponseFormat] = useState('Json');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
@@ -38,13 +39,16 @@ export default function PlaygroundPage() {
     setResult(null);
 
     try {
-      // Parse arguments
-      let parsedArgs;
-      try {
-        parsedArgs = JSON.parse(args);
-      } catch (e) {
-        console.log('args', args);
-        throw new Error('Invalid JSON in arguments field');
+      // Parse arguments (optional)
+      let inputData = null;
+      if (args && args.trim()) {
+        try {
+          const parsedArgs = JSON.parse(args);
+          inputData = JSON.stringify(parsedArgs);
+        } catch {          
+          console.log('Invalid JSON in arguments field', args);
+          inputData = args;
+        }
       }
 
       // Prepare transaction arguments
@@ -59,7 +63,9 @@ export default function PlaygroundPage() {
           max_memory_mb: 128,
           max_execution_seconds: 60,
         },
-        input_data: JSON.stringify(parsedArgs),
+        input_data: inputData,
+        encrypted_secrets: null,
+        response_format: responseFormat,
       };
 
       // Create function call action using actionCreators
@@ -77,7 +83,27 @@ export default function PlaygroundPage() {
       };
 
       const txResult = await signAndSendTransaction(transaction);
-      setResult(txResult);
+
+      // Extract execution result from transaction (don't parse, show as-is)
+      let executionOutput = null;
+      try {
+        // Check if transaction has return value
+        if (txResult?.status?.SuccessValue !== undefined) {
+          const returnValue = Buffer.from(txResult.status.SuccessValue, 'base64').toString();
+          if (returnValue) {
+            // Show the raw JSON output from contract (already in correct format)
+            executionOutput = returnValue;
+          }
+        }
+      } catch (e) {
+        console.error('Failed to decode execution output:', e);
+      }
+
+      setResult({
+        transaction: txResult,
+        executionOutput,
+        transactionHash: txResult?.transaction?.hash,
+      });
     } catch (err: any) {
       setError(err.message || 'Transaction failed');
       console.error(err);
@@ -175,10 +201,32 @@ export default function PlaygroundPage() {
             </select>
           </div>
 
+          {/* Response Format */}
+          <div className="mb-6">
+            <label htmlFor="responseFormat" className="block text-sm font-medium text-gray-700">
+              Response Format
+            </label>
+            <select
+              id="responseFormat"
+              value={responseFormat}
+              onChange={(e) => setResponseFormat(e.target.value)}
+              className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm"
+            >
+              <option value="Json">JSON (parse output as JSON)</option>
+              <option value="Text">Text (UTF-8 string)</option>
+              <option value="Bytes">Bytes (raw binary)</option>
+            </select>
+            <p className="mt-1 text-xs text-gray-500">
+              {responseFormat === 'Json' && 'Contract will receive parsed JSON object instead of string'}
+              {responseFormat === 'Text' && 'Contract will receive UTF-8 text string'}
+              {responseFormat === 'Bytes' && 'Contract will receive raw bytes array'}
+            </p>
+          </div>
+
           {/* Arguments */}
           <div className="mb-6">
             <label htmlFor="args" className="block text-sm font-medium text-gray-700">
-              Input Data (JSON)
+              Input Data (JSON) - Optional
             </label>
             <textarea
               id="args"
@@ -188,6 +236,7 @@ export default function PlaygroundPage() {
               rows={4}
               className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm font-mono"
             />
+            <p className="mt-1 text-xs text-gray-500">Leave empty for no input data</p>
           </div>
 
           {/* Check WASM Button */}
@@ -272,14 +321,39 @@ export default function PlaygroundPage() {
 
           {/* Result Display */}
           {result && (
-            <div className="mt-6 bg-green-50 border border-green-200 rounded-md p-4">
-              <h3 className="text-sm font-medium text-green-800 mb-2">Transaction Sent!</h3>
-              <pre className="text-xs text-green-700 overflow-auto">
-                {JSON.stringify(result, null, 2)}
-              </pre>
-              <p className="mt-2 text-sm text-green-700">
-                Check execution status in the <a href="/executions" className="underline">Executions</a> page
-              </p>
+            <div className="mt-6 space-y-4">
+              {/* Execution Output */}
+              {result.executionOutput && (
+                <div className="bg-green-50 border border-green-200 rounded-md p-4">
+                  <h3 className="text-sm font-medium text-green-800 mb-2">Execution Result</h3>
+                  <div className="bg-white rounded p-3 border border-green-300">
+                    <pre className="text-sm text-gray-900 overflow-auto whitespace-pre-wrap">
+                      {result.executionOutput}
+                    </pre>
+                  </div>
+                </div>
+              )}
+
+              {/* Transaction Details */}
+              <div className="bg-blue-50 border border-blue-200 rounded-md p-4">
+                <h3 className="text-sm font-medium text-blue-800 mb-2">Transaction Details</h3>
+                {result.transactionHash && (
+                  <p className="text-xs text-blue-700 mb-2">
+                    Hash: <code className="bg-blue-100 px-1 py-0.5 rounded">{result.transactionHash}</code>
+                  </p>
+                )}
+                <details className="text-xs">
+                  <summary className="cursor-pointer text-blue-700 hover:text-blue-900">
+                    View full transaction data
+                  </summary>
+                  <pre className="mt-2 text-blue-700 overflow-auto bg-white p-2 rounded border border-blue-300">
+                    {JSON.stringify(result.transaction, null, 2)}
+                  </pre>
+                </details>
+                <p className="mt-3 text-sm text-blue-700">
+                  Check execution status in the <a href="/executions" className="underline font-medium">Executions</a> page
+                </p>
+              </div>
             </div>
           )}
         </div>

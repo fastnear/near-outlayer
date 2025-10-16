@@ -48,9 +48,11 @@ impl NearClient {
         data_id: &str,
         result: &ExecutionResult,
     ) -> Result<String> {
+        use crate::api_client::ExecutionOutput;
+
         info!(
-            "📡 Submitting execution result: data_id={}, success={}, output_len={:?}",
-            data_id, result.success, result.output.as_ref().map(|o| o.len())
+            "📡 Submitting execution result: data_id={}, success={}",
+            data_id, result.success
         );
 
         // Parse data_id from hex string to [u8; 32]
@@ -64,23 +66,51 @@ impl NearClient {
         info!("📦 data_id bytes (first 8): {:?}", &data_id_bytes[..8]);
 
         // NEAR yield resume has 1024 byte limit for payload
-        // We need to truncate output if it's too large and convert to String
-        const MAX_OUTPUT_SIZE: usize = 900; // Leave room for other fields in JSON
+        // Truncate output if needed to fit within limit
+        const MAX_OUTPUT_SIZE: usize = 800; // Conservative limit for output content
 
         let truncated_output = result.output.as_ref().map(|output| {
-            let truncated_bytes = if output.len() > MAX_OUTPUT_SIZE {
-                info!(
-                    "⚠️  Output size {} bytes exceeds limit, truncating to {} bytes",
-                    output.len(),
-                    MAX_OUTPUT_SIZE
-                );
-                &output[..MAX_OUTPUT_SIZE]
-            } else {
-                output.as_slice()
-            };
-
-            // Convert bytes to UTF-8 string, replacing invalid sequences
-            String::from_utf8_lossy(truncated_bytes).into_owned()
+            use crate::api_client::ExecutionOutput;
+            match output {
+                ExecutionOutput::Bytes(bytes) => {
+                    if bytes.len() > MAX_OUTPUT_SIZE {
+                        info!(
+                            "⚠️  Output size {} bytes exceeds limit, truncating to {} bytes",
+                            bytes.len(),
+                            MAX_OUTPUT_SIZE
+                        );
+                        ExecutionOutput::Bytes(bytes[..MAX_OUTPUT_SIZE].to_vec())
+                    } else {
+                        output.clone()
+                    }
+                }
+                ExecutionOutput::Text(text) => {
+                    if text.len() > MAX_OUTPUT_SIZE {
+                        info!(
+                            "⚠️  Text output size {} bytes exceeds limit, truncating to {} bytes",
+                            text.len(),
+                            MAX_OUTPUT_SIZE
+                        );
+                        ExecutionOutput::Text(text[..MAX_OUTPUT_SIZE].to_string())
+                    } else {
+                        output.clone()
+                    }
+                }
+                ExecutionOutput::Json(value) => {
+                    let json_str = serde_json::to_string(value).unwrap_or_default();
+                    if json_str.len() > MAX_OUTPUT_SIZE {
+                        info!(
+                            "⚠️  JSON output size {} bytes exceeds limit, truncating to {} bytes",
+                            json_str.len(),
+                            MAX_OUTPUT_SIZE
+                        );
+                        // Truncate JSON string and wrap in Text
+                        ExecutionOutput::Text(format!("{}...[truncated]", &json_str[..MAX_OUTPUT_SIZE]))
+                    } else {
+                        output.clone()
+                    }
+                }
+            }
         });
 
         // Prepare method arguments matching contract signature:
@@ -90,7 +120,7 @@ impl NearClient {
             "data_id": data_id_bytes,
             "response": {
                 "success": result.success,
-                "return_value": truncated_output,
+                "output": truncated_output,
                 "error": result.error,
                 "resources_used": {
                     "instructions": result.instructions,

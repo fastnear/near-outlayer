@@ -15,6 +15,8 @@ pub struct ExecutionRequestedEvent {
     pub request_data: String,  // JSON string containing RequestData
     pub data_id: Vec<u8>,
     pub timestamp: u64,
+    #[serde(skip)]
+    pub block_height: u64,  // Added locally, not from contract event
 }
 
 /// Parsed request data from the JSON string
@@ -29,6 +31,8 @@ pub struct RequestData {
     pub encrypted_secrets: Option<Vec<u8>>,
     pub payment: String,
     pub timestamp: u64,
+    #[serde(default)]
+    pub response_format: crate::api_client::ResponseFormat,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -407,8 +411,11 @@ impl EventMonitor {
         }
 
         // Parse the first data entry
-        let event_data: ExecutionRequestedEvent =
+        let mut event_data: ExecutionRequestedEvent =
             serde_json::from_value(data_array[0].clone()).ok()?;
+
+        // Set block_height from parameter
+        event_data.block_height = block_height;
 
         // Parse the nested request_data JSON string
         let mut request_data: RequestData = match serde_json::from_str(&event_data.request_data) {
@@ -442,19 +449,32 @@ impl EventMonitor {
 
     /// Handle execution_requested event by creating task in coordinator
     async fn handle_execution_requested(&self, event: ExecutionRequestedEvent) -> Result<()> {
+        // Log raw event data for debugging
+        tracing::debug!("📋 Raw request_data JSON: {}", event.request_data);
+
         // Parse the nested request_data JSON
         let request_data: RequestData = serde_json::from_str(&event.request_data)
             .context("Failed to parse request_data JSON")?;
 
         info!(
-            "Creating task for execution request: request_id={} repo={} commit={}",
+            "Creating task for execution request: request_id={} repo={} commit={} sender={} response_format={:?}",
             request_data.request_id,
             request_data.code_source.repo,
-            request_data.code_source.commit
+            request_data.code_source.commit,
+            request_data.sender_id,
+            request_data.response_format
         );
 
         // Convert data_id Vec<u8> to hex string
         let data_id_hex = hex::encode(&event.data_id);
+
+        // Build execution context
+        let context = crate::api_client::ExecutionContext {
+            sender_id: Some(request_data.sender_id.clone()),
+            block_height: Some(event.block_height),
+            block_timestamp: Some(event.timestamp),
+            contract_id: Some(self.contract_id.to_string()),
+        };
 
         // Create task in coordinator API
         match self.api_client
@@ -469,6 +489,8 @@ impl EventMonitor {
                 request_data.resource_limits.max_execution_seconds,
                 request_data.input_data.clone(),
                 request_data.encrypted_secrets.clone(),
+                request_data.response_format.clone(),
+                context,
             )
             .await
         {

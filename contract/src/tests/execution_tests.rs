@@ -26,6 +26,7 @@ mod tests {
             payment: 100_000_000_000_000_000_000_000, // 0.1 NEAR
             timestamp: initial_timestamp,
             encrypted_secrets: None,
+            response_format: ResponseFormat::default(),
         };
         contract.pending_requests.insert(&0, &execution_request);
         assert!(contract.get_request(0).is_some());
@@ -69,6 +70,7 @@ mod tests {
             payment: 100_000_000_000_000_000_000_000,
             timestamp: initial_timestamp,
             encrypted_secrets: None,
+            response_format: ResponseFormat::default(),
         };
         contract.pending_requests.insert(&0, &execution_request);
 
@@ -81,6 +83,63 @@ mod tests {
 
         // Should panic
         contract.cancel_stale_execution(0);
+    }
+
+    #[test]
+    fn test_response_format_default() {
+        let mut contract = setup_contract();
+        let code_source = CodeSource {
+            repo: "https://github.com/test/repo".to_string(),
+            commit: "main".to_string(),
+            build_target: Some("wasm32-wasi".to_string()),
+        };
+
+        let mut context = get_context(accounts(1), NearToken::from_near(1));
+        testing_env!(context.build());
+
+        contract.request_execution(code_source.clone(), None, None, None, None);
+
+        // Check that response_format defaults to Text
+        let request = contract.get_request(0).expect("Request should exist");
+        assert_eq!(request.response_format, ResponseFormat::Text);
+    }
+
+    #[test]
+    fn test_response_format_json() {
+        let mut contract = setup_contract();
+        let code_source = CodeSource {
+            repo: "https://github.com/test/repo".to_string(),
+            commit: "main".to_string(),
+            build_target: Some("wasm32-wasi".to_string()),
+        };
+
+        let mut context = get_context(accounts(1), NearToken::from_near(1));
+        testing_env!(context.build());
+
+        contract.request_execution(code_source.clone(), None, None, None, Some(ResponseFormat::Json));
+
+        // Check that response_format is Json
+        let request = contract.get_request(0).expect("Request should exist");
+        assert_eq!(request.response_format, ResponseFormat::Json);
+    }
+
+    #[test]
+    fn test_response_format_bytes() {
+        let mut contract = setup_contract();
+        let code_source = CodeSource {
+            repo: "https://github.com/test/repo".to_string(),
+            commit: "main".to_string(),
+            build_target: Some("wasm32-wasi".to_string()),
+        };
+
+        let mut context = get_context(accounts(1), NearToken::from_near(1));
+        testing_env!(context.build());
+
+        contract.request_execution(code_source.clone(), None, None, None, Some(ResponseFormat::Bytes));
+
+        // Check that response_format is Bytes
+        let request = contract.get_request(0).expect("Request should exist");
+        assert_eq!(request.response_format, ResponseFormat::Bytes);
     }
 
     #[test]
@@ -104,6 +163,7 @@ mod tests {
             payment: 100_000_000_000_000_000_000_000,
             timestamp: initial_timestamp,
             encrypted_secrets: None,
+            response_format: ResponseFormat::default(),
         };
         contract.pending_requests.insert(&0, &execution_request);
 
@@ -170,7 +230,7 @@ mod tests {
             build_target: Some("wasm32-wasi".to_string()),
         };
 
-        contract.request_execution(code_source, None, None, None);
+        contract.request_execution(code_source, None, None, None, None);
     }
 
     #[test]
@@ -188,6 +248,6 @@ mod tests {
             build_target: Some("wasm32-wasi".to_string()),
         };
 
-        contract.request_execution(code_source, None, None, None);
+        contract.request_execution(code_source, None, None, None, None);
     }
 }

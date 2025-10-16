@@ -42,6 +42,24 @@ pub struct CodeSource {
     pub build_target: Option<String>, // e.g., "wasm32-wasi"
 }
 
+/// Response format for execution output
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[near(serializers = [borsh, json])]
+pub enum ResponseFormat {
+    /// Raw bytes - no parsing
+    Bytes,
+    /// UTF-8 text string (default)
+    Text,
+    /// Parse stdout as JSON
+    Json,
+}
+
+impl Default for ResponseFormat {
+    fn default() -> Self {
+        Self::Text
+    }
+}
+
 /// Resource limits for execution
 #[derive(Clone, Debug)]
 #[near(serializers = [borsh, json])]
@@ -73,6 +91,16 @@ pub struct ExecutionRequest {
     pub payment: Balance,
     pub timestamp: u64,
     pub encrypted_secrets: Option<Vec<u8>>, // Secrets encrypted with keystore pubkey
+    pub response_format: ResponseFormat,
+}
+
+/// Execution output - can be bytes, text, or parsed JSON
+#[derive(Clone, Debug)]
+#[near(serializers = [json])]
+pub enum ExecutionOutput {
+    Bytes(Vec<u8>),
+    Text(String),
+    Json(serde_json::Value),
 }
 
 /// Execution response from worker
@@ -80,7 +108,7 @@ pub struct ExecutionRequest {
 #[near(serializers = [json])]
 pub struct ExecutionResponse {
     pub success: bool,
-    pub return_value: Option<String>, // Changed from Vec<u8> to String for better readability in explorer
+    pub output: Option<ExecutionOutput>,
     pub error: Option<String>,
     pub resources_used: ResourceMetrics,
 }

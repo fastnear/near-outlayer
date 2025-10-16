@@ -118,7 +118,11 @@ pub async fn complete_task(
     // If this was a successful Compile task, create Execute task
     if payload.success && payload.output.is_some() {
         // Output contains the WASM checksum from compilation
-        let checksum = String::from_utf8_lossy(&payload.output.unwrap()).to_string();
+        let checksum = match payload.output.unwrap() {
+            crate::models::ExecutionOutput::Text(s) => s,
+            crate::models::ExecutionOutput::Bytes(b) => String::from_utf8_lossy(&b).to_string(),
+            crate::models::ExecutionOutput::Json(v) => v.to_string(),
+        };
 
         debug!("Compilation succeeded, creating Execute task for request {}", payload.request_id);
 
@@ -165,7 +169,8 @@ pub async fn create_task(
     State(state): State<AppState>,
     Json(payload): Json<CreateTaskRequest>,
 ) -> StatusCode {
-    debug!("Creating task for request {}", payload.request_id);
+    debug!("Creating task for request {} with response_format={:?} context={:?}",
+        payload.request_id, payload.response_format, payload.context);
 
     // Insert into database
     let insert_result = sqlx::query!(
@@ -185,7 +190,7 @@ pub async fn create_task(
         return StatusCode::INTERNAL_SERVER_ERROR;
     }
 
-    // Push to Redis queue - now includes data_id, resource_limits, input_data and encrypted_secrets
+    // Push to Redis queue - now includes data_id, resource_limits, input_data, encrypted_secrets, response_format and context
     let task = Task::Compile {
         request_id: payload.request_id,
         data_id: payload.data_id.clone(),
@@ -193,10 +198,15 @@ pub async fn create_task(
         resource_limits: payload.resource_limits,
         input_data: payload.input_data,
         encrypted_secrets: payload.encrypted_secrets,
+        response_format: payload.response_format,
+        context: payload.context,
     };
 
     let task_json = match serde_json::to_string(&task) {
-        Ok(json) => json,
+        Ok(json) => {
+            debug!("Task serialized: {}", json);
+            json
+        }
         Err(e) => {
             error!("Failed to serialize task: {}", e);
             return StatusCode::INTERNAL_SERVER_ERROR;
