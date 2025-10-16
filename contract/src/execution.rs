@@ -105,6 +105,8 @@ impl Contract {
             timestamp: env::block_timestamp(),
             encrypted_secrets,
             response_format: format.clone(),
+            pending_output: None,
+            output_submitted: false,
         };
 
         self.pending_requests
@@ -117,20 +119,68 @@ impl Contract {
         env::promise_return(promise_idx)
     }
 
-    /// Worker calls this to provide execution result
-    pub fn resolve_execution(&mut self, data_id: CryptoHash, response: ExecutionResponse) {
+    /// Worker calls this to submit large execution output (> 1024 bytes)
+    /// This is the first step of 2-call flow for large outputs
+    pub fn submit_execution_output(&mut self, request_id: u64, output: ExecutionOutput) {
+        // Only operator can submit execution data
+        self.assert_operator();
+
+        // Get the pending request
+        let mut request = self
+            .pending_requests
+            .get(&request_id)
+            .expect("Execution request not found");
+
+        // Ensure output was not already submitted
+        assert!(
+            !request.output_submitted,
+            "Output already submitted for this request"
+        );
+
+        // Store the output in the request (convert to internal storage format)
+        let stored_output: crate::StoredOutput = output.into();
+        request.pending_output = Some(stored_output);
+        request.output_submitted = true;
+
+        // Save updated request
+        self.pending_requests.insert(&request_id, &request);
+
+        log!(
+            "Stored pending output for request_id: {}, data_id: {:?}",
+            request_id,
+            request.data_id
+        );
+    }
+
+    /// Worker calls this to resolve execution (small output) or finalize after submit_execution_output (large output)
+    ///
+    /// For outputs <= 1024 bytes: Call this directly with output in response
+    /// For outputs > 1024 bytes: Call submit_execution_output first, then call this
+    pub fn resolve_execution(&mut self, request_id: u64, response: ExecutionResponse) {
         // Only operator can resolve executions
         self.assert_operator();
 
+        // Get the pending request
+        let request = self
+            .pending_requests
+            .get(&request_id)
+            .expect("Execution request not found");
+
+        let data_id = request.data_id;
+
         log!(
-            "Resolving execution with data_id: {:?}, success: {}, resources_used: {{ instructions: {}, time_ms: {} }}",
+            "Resolving execution for request_id: {}, data_id: {:?}, success: {}, output_submitted: {}, resources_used: {{ instructions: {}, time_ms: {} }}",
+            request_id,
             data_id,
             response.success,
+            request.output_submitted,
             response.resources_used.instructions,
             response.resources_used.time_ms
         );
 
-        // Resume the yield promise with the response
+        // For large outputs, we only pass metadata through resume (output stays in storage)
+        // The callback will retrieve it from pending_output field
+        // This avoids the 1024 byte limit of promise_yield_resume
         if !env::promise_yield_resume(&data_id, &serde_json::to_vec(&response).unwrap()) {
             env::panic_str("Unable to resume execution promise");
         }
@@ -148,12 +198,21 @@ impl Contract {
         payment: U128,
         #[callback_result] response: Result<ExecutionResponse, PromiseError>,
     ) -> Option<serde_json::Value> {
-        // Remove the pending request
-        if let Some(_request) = self.pending_requests.remove(&request_id) {
+        // Remove the pending request and check if output was submitted separately
+        if let Some(request) = self.pending_requests.remove(&request_id) {
             self.total_executions += 1;
 
             match response {
-                Ok(exec_response) => {
+                Ok(mut exec_response) => {
+                    // If output was submitted separately, retrieve it from storage
+                    if request.output_submitted && exec_response.success {
+                        log!("Retrieving large output from storage for request_id: {}", request_id);
+                        if let Some(stored_output) = request.pending_output {
+                            let output: crate::ExecutionOutput = stored_output.into();
+                            exec_response.output = Some(output);
+                        }
+                    }
+
                     if exec_response.success {
                         // Calculate actual cost
                         let cost = self.calculate_cost(&exec_response.resources_used);
@@ -192,7 +251,7 @@ impl Contract {
                                     serde_json::Value::String(text.clone())
                                 }
                                 ExecutionOutput::Json(value) => {
-                                    // For JSON, return the value directly (no double serialization!)
+                                    // For JSON, return the value directly
                                     value.clone()
                                 }
                             };
@@ -204,7 +263,10 @@ impl Contract {
                                     let preview = if text.len() > 100 { &text[..100] } else { text };
                                     format!("Text: {}", preview)
                                 }
-                                ExecutionOutput::Json(value) => format!("Json: {}", serde_json::to_string(value).unwrap_or_default()),
+                                ExecutionOutput::Json(value) => {
+                                    let json_str = serde_json::to_string(value).unwrap_or_default();
+                                    format!("Json: {}", json_str)
+                                }
                             };
 
                             log!(

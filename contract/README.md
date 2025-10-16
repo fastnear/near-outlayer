@@ -68,17 +68,43 @@ near call offchainvm.testnet cancel_stale_execution '{
 #### `resolve_execution`
 Resolve execution with results (called by worker).
 
+**Small output (<1024 bytes):**
 ```bash
 near call offchainvm.testnet resolve_execution '{
-  "data_id": [0,1,2,...],
+  "request_id": 0,
   "response": {
     "success": true,
-    "return_value": [1,2,3],
+    "output": {"Text": "Hello, NEAR!"},
     "error": null,
     "resources_used": {
       "instructions": 1000000,
-      "memory_bytes": 1048576,
-      "time_seconds": 5
+      "time_ms": 100
+    }
+  }
+}' --accountId operator.testnet
+```
+
+**Large output (>1024 bytes) - 2-call flow:**
+
+1. First, submit the large output:
+```bash
+near call offchainvm.testnet submit_execution_output '{
+  "request_id": 0,
+  "output": {"Text": "Very long output..."}
+}' --accountId operator.testnet
+```
+
+2. Then, resolve with metadata only:
+```bash
+near call offchainvm.testnet resolve_execution '{
+  "request_id": 0,
+  "response": {
+    "success": true,
+    "output": null,
+    "error": null,
+    "resources_used": {
+      "instructions": 1000000,
+      "time_ms": 100
     }
   }
 }' --accountId operator.testnet

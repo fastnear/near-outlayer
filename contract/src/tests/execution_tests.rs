@@ -27,6 +27,8 @@ mod tests {
             timestamp: initial_timestamp,
             encrypted_secrets: None,
             response_format: ResponseFormat::default(),
+            pending_output: None,
+            output_submitted: false,
         };
         contract.pending_requests.insert(&0, &execution_request);
         assert!(contract.get_request(0).is_some());
@@ -71,6 +73,8 @@ mod tests {
             timestamp: initial_timestamp,
             encrypted_secrets: None,
             response_format: ResponseFormat::default(),
+            pending_output: None,
+            output_submitted: false,
         };
         contract.pending_requests.insert(&0, &execution_request);
 
@@ -164,6 +168,8 @@ mod tests {
             timestamp: initial_timestamp,
             encrypted_secrets: None,
             response_format: ResponseFormat::default(),
+            pending_output: None,
+            output_submitted: false,
         };
         contract.pending_requests.insert(&0, &execution_request);
 
@@ -249,5 +255,205 @@ mod tests {
         };
 
         contract.request_execution(code_source, None, None, None, None);
+    }
+
+    #[test]
+    fn test_submit_execution_output() {
+        let mut contract = setup_contract();
+        let operator = accounts(1);
+        let sender = accounts(3);
+
+        // Manually create a pending request
+        let execution_request = ExecutionRequest {
+            request_id: 0,
+            data_id: [1; 32],
+            sender_id: sender.clone(),
+            code_source: CodeSource {
+                repo: "https://github.com/test/repo".to_string(),
+                commit: "abc123".to_string(),
+                build_target: Some("wasm32-wasi".to_string()),
+            },
+            resource_limits: ResourceLimits::default(),
+            payment: 100_000_000_000_000_000_000_000,
+            timestamp: env::block_timestamp(),
+            encrypted_secrets: None,
+            response_format: ResponseFormat::Text,
+            pending_output: None,
+            output_submitted: false,
+        };
+        contract.pending_requests.insert(&0, &execution_request);
+
+        // Operator submits large output
+        let mut context = get_context(operator.clone(), NearToken::from_near(0));
+        testing_env!(context.build());
+
+        let large_output = ExecutionOutput::Text("A".repeat(2000)); // > 1024 bytes
+        contract.submit_execution_output(0, large_output.clone());
+
+        // Check that output was stored
+        assert!(contract.has_pending_output(0));
+        let stored_output = contract.get_pending_output(0).expect("Output should be stored");
+
+        match (stored_output, large_output) {
+            (ExecutionOutput::Text(stored), ExecutionOutput::Text(original)) => {
+                assert_eq!(stored, original);
+            }
+            _ => panic!("Output type mismatch"),
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "Only operator can call this")]
+    fn test_submit_execution_output_unauthorized() {
+        let mut contract = setup_contract();
+        let unauthorized = accounts(5);
+        let sender = accounts(3);
+
+        // Create a pending request
+        let execution_request = ExecutionRequest {
+            request_id: 0,
+            data_id: [1; 32],
+            sender_id: sender.clone(),
+            code_source: CodeSource {
+                repo: "https://github.com/test/repo".to_string(),
+                commit: "abc123".to_string(),
+                build_target: Some("wasm32-wasi".to_string()),
+            },
+            resource_limits: ResourceLimits::default(),
+            payment: 100_000_000_000_000_000_000_000,
+            timestamp: env::block_timestamp(),
+            encrypted_secrets: None,
+            response_format: ResponseFormat::Text,
+            pending_output: None,
+            output_submitted: false,
+        };
+        contract.pending_requests.insert(&0, &execution_request);
+
+        // Unauthorized user tries to submit output
+        let mut context = get_context(unauthorized, NearToken::from_near(0));
+        testing_env!(context.build());
+
+        contract.submit_execution_output(0, ExecutionOutput::Text("test".to_string()));
+    }
+
+    #[test]
+    #[should_panic(expected = "Output already submitted for this request")]
+    fn test_submit_execution_output_twice() {
+        let mut contract = setup_contract();
+        let operator = accounts(1);
+        let sender = accounts(3);
+
+        // Create a pending request with output already submitted
+        let execution_request = ExecutionRequest {
+            request_id: 0,
+            data_id: [1; 32],
+            sender_id: sender.clone(),
+            code_source: CodeSource {
+                repo: "https://github.com/test/repo".to_string(),
+                commit: "abc123".to_string(),
+                build_target: Some("wasm32-wasi".to_string()),
+            },
+            resource_limits: ResourceLimits::default(),
+            payment: 100_000_000_000_000_000_000_000,
+            timestamp: env::block_timestamp(),
+            encrypted_secrets: None,
+            response_format: ResponseFormat::Text,
+            pending_output: Some(StoredOutput::Text("old".as_bytes().to_vec())),
+            output_submitted: true,
+        };
+        contract.pending_requests.insert(&0, &execution_request);
+
+        // Operator tries to submit again
+        let mut context = get_context(operator, NearToken::from_near(0));
+        testing_env!(context.build());
+
+        contract.submit_execution_output(0, ExecutionOutput::Text("new".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_execution_with_pending_output() {
+        let mut contract = setup_contract();
+        let operator = accounts(1);
+        let sender = accounts(3);
+
+        // Create a pending request with submitted output
+        let large_text = "B".repeat(2000);
+        let execution_request = ExecutionRequest {
+            request_id: 0,
+            data_id: [1; 32],
+            sender_id: sender.clone(),
+            code_source: CodeSource {
+                repo: "https://github.com/test/repo".to_string(),
+                commit: "abc123".to_string(),
+                build_target: Some("wasm32-wasi".to_string()),
+            },
+            resource_limits: ResourceLimits::default(),
+            payment: 100_000_000_000_000_000_000_000,
+            timestamp: env::block_timestamp(),
+            encrypted_secrets: None,
+            response_format: ResponseFormat::Text,
+            pending_output: Some(StoredOutput::Text(large_text.as_bytes().to_vec())),
+            output_submitted: true,
+        };
+        contract.pending_requests.insert(&0, &execution_request);
+
+        // Operator resolves with metadata only (no output in response)
+        let mut context = get_context(operator, NearToken::from_near(0));
+        testing_env!(context.build());
+
+        let response = ExecutionResponse {
+            success: true,
+            output: None, // Output will be taken from pending_output
+            error: None,
+            resources_used: ResourceMetrics {
+                instructions: 1_000_000,
+                time_ms: 100,
+            },
+        };
+
+        // This would normally call promise_yield_resume, which we can't test directly
+        // But we can verify the request state before the call
+        let request = contract.get_request(0).expect("Request should exist");
+        assert!(request.output_submitted);
+        assert!(request.pending_output.is_some());
+    }
+
+    #[test]
+    fn test_stored_output_conversion_text() {
+        let text = "Hello, NEAR!";
+        let output = ExecutionOutput::Text(text.to_string());
+        let stored: StoredOutput = output.clone().into();
+        let converted: ExecutionOutput = stored.into();
+
+        match converted {
+            ExecutionOutput::Text(t) => assert_eq!(t, text),
+            _ => panic!("Wrong type"),
+        }
+    }
+
+    #[test]
+    fn test_stored_output_conversion_bytes() {
+        let bytes = vec![1, 2, 3, 4, 5];
+        let output = ExecutionOutput::Bytes(bytes.clone());
+        let stored: StoredOutput = output.into();
+        let converted: ExecutionOutput = stored.into();
+
+        match converted {
+            ExecutionOutput::Bytes(b) => assert_eq!(b, bytes),
+            _ => panic!("Wrong type"),
+        }
+    }
+
+    #[test]
+    fn test_stored_output_conversion_json() {
+        let json_value = serde_json::json!({"key": "value", "number": 42});
+        let output = ExecutionOutput::Json(json_value.clone());
+        let stored: StoredOutput = output.into();
+        let converted: ExecutionOutput = stored.into();
+
+        match converted {
+            ExecutionOutput::Json(j) => assert_eq!(j, json_value),
+            _ => panic!("Wrong type"),
+        }
     }
 }

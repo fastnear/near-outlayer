@@ -27,6 +27,9 @@ pub const EXECUTION_TIMEOUT: u64 = 600 * 1_000_000_000;
 pub const MAX_INSTRUCTIONS: u64 = 100_000_000_000; // 100 billion instructions
 pub const MAX_EXECUTION_SECONDS: u64 = 60; // 60 seconds
 
+// Extra fee for submitting large output data separately (covers storage + extra transaction)
+pub const SEPARATE_DATA_SUBMISSION_FEE: Balance = 10_000_000_000_000_000_000_000; // 0.01 NEAR
+
 #[derive(BorshSerialize, BorshStorageKey)]
 #[borsh(crate = "near_sdk::borsh")]
 enum StorageKey {
@@ -92,6 +95,10 @@ pub struct ExecutionRequest {
     pub timestamp: u64,
     pub encrypted_secrets: Option<Vec<u8>>, // Secrets encrypted with keystore pubkey
     pub response_format: ResponseFormat,
+
+    // Large output handling (2-call flow)
+    pub pending_output: Option<StoredOutput>, // Temporary storage for large output data
+    pub output_submitted: bool, // Flag indicating output data has been submitted
 }
 
 /// Execution output - can be bytes, text, or parsed JSON
@@ -101,6 +108,46 @@ pub enum ExecutionOutput {
     Bytes(Vec<u8>),
     Text(String),
     Json(serde_json::Value),
+}
+
+/// Internal storage format for ExecutionOutput (Borsh-compatible)
+/// Stores all data as Vec<u8> for efficient serialization
+#[derive(Clone, Debug)]
+#[near(serializers = [borsh, json])]
+pub enum StoredOutput {
+    Bytes(Vec<u8>),
+    Text(Vec<u8>),      // UTF-8 bytes
+    Json(Vec<u8>),      // JSON string as UTF-8 bytes
+}
+
+impl From<ExecutionOutput> for StoredOutput {
+    fn from(output: ExecutionOutput) -> Self {
+        match output {
+            ExecutionOutput::Bytes(bytes) => StoredOutput::Bytes(bytes),
+            ExecutionOutput::Text(text) => StoredOutput::Text(text.into_bytes()),
+            ExecutionOutput::Json(value) => {
+                let json_str = serde_json::to_string(&value).unwrap_or_default();
+                StoredOutput::Json(json_str.into_bytes())
+            }
+        }
+    }
+}
+
+impl From<StoredOutput> for ExecutionOutput {
+    fn from(stored: StoredOutput) -> Self {
+        match stored {
+            StoredOutput::Bytes(bytes) => ExecutionOutput::Bytes(bytes),
+            StoredOutput::Text(bytes) => ExecutionOutput::Text(
+                String::from_utf8(bytes).unwrap_or_else(|_| String::from("[invalid UTF-8]"))
+            ),
+            StoredOutput::Json(bytes) => {
+                let json_str = String::from_utf8(bytes).unwrap_or_default();
+                ExecutionOutput::Json(
+                    serde_json::from_str(&json_str).unwrap_or(serde_json::Value::Null)
+                )
+            }
+        }
+    }
 }
 
 /// Execution response from worker

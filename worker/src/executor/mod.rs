@@ -95,8 +95,11 @@ impl Executor {
                         Some(ExecutionOutput::Text(text))
                     }
                     ResponseFormat::Json => {
-                        match serde_json::from_slice(&output_bytes) {
-                            Ok(json_value) => Some(ExecutionOutput::Json(json_value)),
+                        // Parse output as JSON
+                        match serde_json::from_slice::<serde_json::Value>(&output_bytes) {
+                            Ok(json_value) => {
+                                Some(ExecutionOutput::Json(json_value))
+                            }
                             Err(e) => {
                                 // If JSON parsing fails, return error
                                 return Ok(ExecutionResult {

@@ -11,7 +11,7 @@ echo "========================================"
 echo ""
 
 # Configuration
-CONTRACT_ID="${CONTRACT_ID:-c2.offchainvm.testnet}"
+CONTRACT_ID="${CONTRACT_ID:-c3.offchainvm.testnet}"
 CALLER_ACCOUNT="${CALLER_ACCOUNT:-offchainvm.testnet}"
 PAYMENT="${PAYMENT:-0.1}"
 

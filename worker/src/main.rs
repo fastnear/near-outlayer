@@ -321,7 +321,7 @@ async fn handle_compile_task(
             };
 
             // Submit error to NEAR contract
-            match near_client.submit_execution_result(&data_id, &error_result).await {
+            match near_client.submit_execution_result(request_id, &error_result).await {
                 Ok(tx_hash) => {
                     info!("✅ Compilation error submitted to NEAR: tx_hash={}", tx_hash);
                 }
@@ -438,9 +438,10 @@ async fn handle_compile_task(
 
     // Step 4: Submit result to NEAR contract (promise_yield_resume)
     info!("📤 Submitting result to NEAR contract via promise_yield_resume");
+    info!("   request_id={}", request_id);
     info!("   data_id={}", data_id);
     info!("   success={}", result.success);
-    match near_client.submit_execution_result(&data_id, &result).await {
+    match near_client.submit_execution_result(request_id, &result).await {
         Ok(tx_hash) => {
             info!("✅ Successfully submitted to NEAR: tx_hash={}", tx_hash);
 
@@ -562,8 +563,8 @@ async fn handle_execute_task(
         request_id, result.success
     );
 
-    // Submit result to NEAR contract using data_id
-    match near_client.submit_execution_result(&data_id, &result).await {
+    // Submit result to NEAR contract using request_id
+    match near_client.submit_execution_result(request_id, &result).await {
         Ok(tx_hash) => {
             info!("Successfully submitted result to NEAR for request_id={}, tx_hash={}", request_id, tx_hash);
 

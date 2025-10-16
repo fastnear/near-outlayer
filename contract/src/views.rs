@@ -54,4 +54,20 @@ impl Contract {
     pub fn get_keystore_account(&self) -> Option<AccountId> {
         self.keystore_account_id.clone()
     }
+
+    /// Get pending output data for a given request_id
+    /// Used by coordinator to check if large output was submitted
+    pub fn get_pending_output(&self, request_id: u64) -> Option<ExecutionOutput> {
+        let request = self.pending_requests.get(&request_id)?;
+        // Convert from internal storage format to ExecutionOutput
+        request.pending_output.map(|stored| stored.into())
+    }
+
+    /// Check if pending output exists for a given request_id
+    pub fn has_pending_output(&self, request_id: u64) -> bool {
+        self.pending_requests
+            .get(&request_id)
+            .map(|req| req.output_submitted)
+            .unwrap_or(false)
+    }
 }

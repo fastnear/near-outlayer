@@ -147,4 +147,43 @@ impl Contract {
         self.keystore_account_id = Some(keystore_account_id.clone());
         log!("Keystore account set to {}", keystore_account_id);
     }
+
+    /// Admin method to clear all pending requests (only owner can call)
+    /// Used for emergency cleanup or testing
+    ///
+    /// # Arguments
+    /// * `limit` - Maximum number of requests to clear in this call (to avoid gas limits)
+    ///
+    /// # Returns
+    /// Number of requests cleared
+    pub fn clear_all_pending_requests(&mut self, limit: Option<u64>) -> u64 {
+        self.assert_owner();
+
+        let max_limit = limit.unwrap_or(100); // Default to 100 to avoid gas issues
+        let mut cleared = 0;
+
+        for request_id in 0..self.next_request_id {
+            if cleared >= max_limit {
+                break;
+            }
+
+            if let Some(request) = self.pending_requests.remove(&request_id) {
+                // Refund payment to user
+                near_sdk::Promise::new(request.sender_id.clone())
+                    .transfer(NearToken::from_yoctonear(request.payment));
+
+                log!(
+                    "Cleared request {} and refunded {} yoctoNEAR to {}",
+                    request_id,
+                    request.payment,
+                    request.sender_id
+                );
+
+                cleared += 1;
+            }
+        }
+
+        log!("Cleared {} pending requests", cleared);
+        cleared
+    }
 }
