@@ -21,6 +21,20 @@ pub async fn get_wasm(
         .wasm_cache_dir
         .join(format!("{}.wasm", checksum));
 
+    // Check if file exists before reading
+    if !wasm_path.exists() {
+        error!("WASM file not found: {}", checksum);
+
+        // Clean up orphaned metadata if exists
+        let _ = sqlx::query("DELETE FROM wasm_cache WHERE checksum = $1")
+            .bind(&checksum)
+            .execute(&state.db)
+            .await;
+
+        info!("🧹 Cleaned orphaned metadata for missing WASM: {}", checksum);
+        return Err(StatusCode::NOT_FOUND);
+    }
+
     // Update last_accessed_at in database
     let _ = sqlx::query!(
         "UPDATE wasm_cache SET last_accessed_at = NOW(), access_count = access_count + 1 WHERE checksum = $1",
@@ -30,7 +44,7 @@ pub async fn get_wasm(
     .await;
 
     // Read and return file
-    let bytes = tokio::fs::read(wasm_path).await.map_err(|e| {
+    let bytes = tokio::fs::read(&wasm_path).await.map_err(|e| {
         error!("Failed to read WASM file {}: {}", checksum, e);
         StatusCode::NOT_FOUND
     })?;
@@ -51,10 +65,27 @@ pub async fn wasm_exists(
         .wasm_cache_dir
         .join(format!("{}.wasm", checksum));
 
-    let exists = wasm_path.exists();
-    debug!("WASM {} exists: {}", checksum, exists);
+    let file_exists = wasm_path.exists();
 
-    Json(WasmExistsResponse { exists })
+    // If file doesn't exist but metadata exists in DB, clean up metadata
+    if !file_exists {
+        let db_result = sqlx::query("SELECT checksum FROM wasm_cache WHERE checksum = $1")
+            .bind(&checksum)
+            .fetch_optional(&state.db)
+            .await;
+
+        if let Ok(Some(_)) = db_result {
+            // Metadata exists but file is missing - clean up orphaned metadata
+            info!("🧹 Cleaning orphaned WASM metadata: {}", checksum);
+            let _ = sqlx::query("DELETE FROM wasm_cache WHERE checksum = $1")
+                .bind(&checksum)
+                .execute(&state.db)
+                .await;
+        }
+    }
+
+    debug!("WASM {} exists: {}", checksum, file_exists);
+    Json(WasmExistsResponse { exists: file_exists })
 }
 
 /// Upload compiled WASM file

@@ -86,6 +86,35 @@ pub async fn complete_task(
         return StatusCode::INTERNAL_SERVER_ERROR;
     }
 
+    // Save execution history
+    let worker_id = payload.worker_id.clone().unwrap_or_else(|| "unknown".to_string());
+    let instructions = payload.instructions as i64;
+
+    let history_result = sqlx::query!(
+        r#"
+        INSERT INTO execution_history
+        (request_id, data_id, worker_id, success, execution_time_ms, instructions_used,
+         resolve_tx_id, user_account_id, near_payment_yocto, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+        "#,
+        payload.request_id as i64,
+        payload.data_id,
+        worker_id,
+        payload.success,
+        payload.execution_time_ms as i64,
+        instructions,
+        payload.resolve_tx_id,
+        payload.user_account_id,
+        payload.near_payment_yocto
+    )
+    .execute(&state.db)
+    .await;
+
+    if let Err(e) = history_result {
+        error!("Failed to save execution history for task {}: {}", payload.request_id, e);
+        // Don't fail the request, just log the error
+    }
+
     // If this was a successful Compile task, create Execute task
     if payload.success && payload.output.is_some() {
         // Output contains the WASM checksum from compilation

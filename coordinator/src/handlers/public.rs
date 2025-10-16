@@ -1,0 +1,361 @@
+use axum::{
+    extract::{Path, Query, State},
+    http::StatusCode,
+    Json,
+};
+use serde::{Deserialize, Serialize};
+use tracing::error;
+
+use crate::AppState;
+
+/// Public endpoint: List all workers and their status
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct WorkerInfo {
+    pub worker_id: String,
+    pub worker_name: String,
+    pub status: String,
+    pub current_task_id: Option<i64>,
+    pub last_heartbeat_at: String,
+    pub total_tasks_completed: i64,
+    pub total_tasks_failed: i64,
+    pub uptime_seconds: Option<i64>,
+}
+
+pub async fn list_workers(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<WorkerInfo>>, StatusCode> {
+    let workers: Vec<WorkerInfo> = sqlx::query_as(
+        r#"
+        SELECT
+            worker_id,
+            worker_name,
+            status,
+            current_task_id,
+            last_heartbeat_at::TEXT as last_heartbeat_at,
+            total_tasks_completed,
+            total_tasks_failed,
+            EXTRACT(EPOCH FROM (NOW() - created_at))::BIGINT as uptime_seconds
+        FROM worker_status
+        ORDER BY last_heartbeat_at DESC
+        "#
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| {
+        error!("Failed to fetch workers: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(workers))
+}
+
+/// Public endpoint: List execution history
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct ExecutionHistoryEntry {
+    pub id: i64,
+    pub request_id: i64,
+    pub data_id: Option<String>,
+    pub worker_id: String,
+    pub success: bool,
+    pub execution_time_ms: i64,
+    pub instructions_used: Option<i64>,
+    pub resolve_tx_id: Option<String>,
+    pub user_account_id: Option<String>,
+    pub near_payment_yocto: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ExecutionHistoryQuery {
+    #[serde(default = "default_limit")]
+    pub limit: i64,
+    #[serde(default)]
+    pub offset: i64,
+    pub user_account_id: Option<String>,
+}
+
+fn default_limit() -> i64 {
+    50
+}
+
+pub async fn list_executions(
+    State(state): State<AppState>,
+    Query(params): Query<ExecutionHistoryQuery>,
+) -> Result<Json<Vec<ExecutionHistoryEntry>>, StatusCode> {
+    let limit = params.limit.min(100); // Max 100 per page
+
+    let executions: Vec<ExecutionHistoryEntry> = if let Some(user_id) = params.user_account_id {
+        sqlx::query_as(
+            r#"
+            SELECT
+                id,
+                request_id,
+                data_id,
+                worker_id,
+                success,
+                execution_time_ms,
+                instructions_used,
+                resolve_tx_id,
+                user_account_id,
+                near_payment_yocto,
+                created_at::TEXT as created_at
+            FROM execution_history
+            WHERE user_account_id = $1
+            ORDER BY created_at DESC
+            LIMIT $2 OFFSET $3
+            "#
+        )
+        .bind(user_id)
+        .bind(limit)
+        .bind(params.offset)
+        .fetch_all(&state.db)
+        .await
+    } else {
+        sqlx::query_as(
+            r#"
+            SELECT
+                id,
+                request_id,
+                data_id,
+                worker_id,
+                success,
+                execution_time_ms,
+                instructions_used,
+                resolve_tx_id,
+                user_account_id,
+                near_payment_yocto,
+                created_at::TEXT as created_at
+            FROM execution_history
+            ORDER BY created_at DESC
+            LIMIT $1 OFFSET $2
+            "#
+        )
+        .bind(limit)
+        .bind(params.offset)
+        .fetch_all(&state.db)
+        .await
+    }
+    .map_err(|e| {
+        error!("Failed to fetch execution history: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(executions))
+}
+
+/// Public endpoint: Get execution statistics
+#[derive(Debug, Serialize)]
+pub struct ExecutionStats {
+    pub total_executions: i64,
+    pub successful_executions: i64,
+    pub failed_executions: i64,
+    pub total_instructions_used: i64,
+    pub average_execution_time_ms: i64,
+    pub total_near_paid_yocto: String,
+    pub unique_users: i64,
+    pub active_workers: i64,
+}
+
+pub async fn get_stats(State(state): State<AppState>) -> Result<Json<ExecutionStats>, StatusCode> {
+    #[derive(sqlx::FromRow)]
+    struct StatsRow {
+        total: i64,
+        successful: i64,
+        failed: i64,
+        total_instructions: i64,
+        avg_time_ms: i64,
+        unique_users: i64,
+    }
+
+    // Get execution stats
+    let exec_stats: StatsRow = sqlx::query_as(
+        r#"
+        SELECT
+            COUNT(*)::BIGINT as total,
+            COUNT(*) FILTER (WHERE success = true)::BIGINT as successful,
+            COUNT(*) FILTER (WHERE success = false)::BIGINT as failed,
+            COALESCE(SUM(instructions_used), 0)::BIGINT as total_instructions,
+            COALESCE(AVG(execution_time_ms), 0)::BIGINT as avg_time_ms,
+            COUNT(DISTINCT user_account_id)::BIGINT as unique_users
+        FROM execution_history
+        "#
+    )
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| {
+        error!("Failed to fetch execution stats: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    #[derive(sqlx::FromRow)]
+    struct WorkerCount {
+        count: i64,
+    }
+
+    // Get active workers count
+    let active_workers: WorkerCount = sqlx::query_as(
+        r#"
+        SELECT COUNT(*)::BIGINT as count
+        FROM worker_status
+        WHERE status IN ('online', 'busy')
+        AND last_heartbeat_at > NOW() - INTERVAL '5 minutes'
+        "#
+    )
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| {
+        error!("Failed to fetch active workers: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    #[derive(sqlx::FromRow)]
+    struct TotalNear {
+        total: String,
+    }
+
+    // Calculate total NEAR paid (sum all payments - this is approximate)
+    let total_near: TotalNear = sqlx::query_as(
+        r#"
+        SELECT
+            COALESCE(SUM(CAST(near_payment_yocto AS NUMERIC)), 0)::TEXT as total
+        FROM execution_history
+        WHERE near_payment_yocto IS NOT NULL
+        "#
+    )
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| {
+        error!("Failed to calculate total NEAR paid: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(ExecutionStats {
+        total_executions: exec_stats.total,
+        successful_executions: exec_stats.successful,
+        failed_executions: exec_stats.failed,
+        total_instructions_used: exec_stats.total_instructions,
+        average_execution_time_ms: exec_stats.avg_time_ms,
+        total_near_paid_yocto: total_near.total,
+        unique_users: exec_stats.unique_users,
+        active_workers: active_workers.count,
+    }))
+}
+
+/// Public endpoint: Check if WASM exists for repo/commit/target
+#[derive(Debug, Serialize)]
+pub struct WasmInfoResponse {
+    pub exists: bool,
+    pub checksum: Option<String>,
+    pub file_size: Option<i64>,
+    pub created_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WasmInfoQuery {
+    pub repo_url: String,
+    pub commit_hash: String,
+    #[serde(default = "default_build_target")]
+    pub build_target: String,
+}
+
+fn default_build_target() -> String {
+    "wasm32-wasip1".to_string()
+}
+
+#[derive(sqlx::FromRow)]
+struct WasmRow {
+    checksum: String,
+    file_size: i64,
+    created_at: String,
+}
+
+pub async fn get_wasm_info(
+    State(state): State<AppState>,
+    Query(params): Query<WasmInfoQuery>,
+) -> Result<Json<WasmInfoResponse>, StatusCode> {
+    let result: Option<WasmRow> = sqlx::query_as(
+        r#"
+        SELECT checksum, file_size, created_at::TEXT as created_at
+        FROM wasm_cache
+        WHERE repo_url = $1 AND commit_hash = $2 AND build_target = $3
+        "#
+    )
+    .bind(params.repo_url)
+    .bind(params.commit_hash)
+    .bind(params.build_target)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| {
+        error!("Failed to check WASM cache: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    match result {
+        Some(row) => Ok(Json(WasmInfoResponse {
+            exists: true,
+            checksum: Some(row.checksum),
+            file_size: Some(row.file_size),
+            created_at: Some(row.created_at),
+        })),
+        None => Ok(Json(WasmInfoResponse {
+            exists: false,
+            checksum: None,
+            file_size: None,
+            created_at: None,
+        })),
+    }
+}
+
+/// Public endpoint: Get user's earnings
+#[derive(Debug, Serialize)]
+pub struct UserEarnings {
+    pub user_account_id: String,
+    pub total_executions: i64,
+    pub successful_executions: i64,
+    pub total_near_spent_yocto: String,
+    pub total_instructions_used: i64,
+    pub average_execution_time_ms: i64,
+}
+
+#[derive(sqlx::FromRow)]
+struct UserStatsRow {
+    total: i64,
+    successful: i64,
+    total_spent: String,
+    total_instructions: i64,
+    avg_time_ms: i64,
+}
+
+pub async fn get_user_earnings(
+    State(state): State<AppState>,
+    Path(user_account_id): Path<String>,
+) -> Result<Json<UserEarnings>, StatusCode> {
+    let stats: UserStatsRow = sqlx::query_as(
+        r#"
+        SELECT
+            COUNT(*)::BIGINT as total,
+            COUNT(*) FILTER (WHERE success = true)::BIGINT as successful,
+            COALESCE(SUM(CAST(COALESCE(near_payment_yocto, '0') AS NUMERIC)), 0)::TEXT as total_spent,
+            COALESCE(SUM(instructions_used), 0)::BIGINT as total_instructions,
+            COALESCE(AVG(execution_time_ms), 0)::BIGINT as avg_time_ms
+        FROM execution_history
+        WHERE user_account_id = $1
+        "#
+    )
+    .bind(&user_account_id)
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| {
+        error!("Failed to fetch user earnings: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(UserEarnings {
+        user_account_id,
+        total_executions: stats.total,
+        successful_executions: stats.successful,
+        total_near_spent_yocto: stats.total_spent,
+        total_instructions_used: stats.total_instructions,
+        average_execution_time_ms: stats.avg_time_ms,
+    }))
+}

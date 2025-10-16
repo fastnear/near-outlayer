@@ -121,23 +121,25 @@ impl Executor {
     ) -> Result<(Vec<u8>, u64)> {
         // Optimize: if we know build_target, try appropriate executor first
         if let Some(target) = build_target {
+            tracing::debug!("🎯 Build target specified: {:?}", target);
             match target {
                 "wasm32-wasip2" => {
-                    // Try P2 only
-                    if let Ok(result) = wasi_p2::execute(wasm_bytes, input_data, limits, env_vars.clone()).await {
-                        return Ok(result);
-                    }
+                    tracing::debug!("🔹 Trying WASI P2 executor (target: wasm32-wasip2)");
+                    // When target is known, return error directly (don't fallback to other formats)
+                    return wasi_p2::execute(wasm_bytes, input_data, limits, env_vars).await;
                 }
                 "wasm32-wasip1" | "wasm32-wasi" => {
-                    // Try P1 only
-                    if let Ok(result) = wasi_p1::execute(wasm_bytes, input_data, limits, env_vars.clone()).await {
-                        return Ok(result);
-                    }
+                    tracing::debug!("🔹 Trying WASI P1 executor (target: {})", target);
+                    // When target is known, return error directly (don't fallback to other formats)
+                    return wasi_p1::execute(wasm_bytes, input_data, limits, env_vars).await;
                 }
                 _ => {
+                    tracing::debug!("⚠️ Unknown target '{}', fallback to auto-detection", target);
                     // Unknown target, fallback to auto-detection below
                 }
             }
+        } else {
+            tracing::debug!("🔍 No build target specified, auto-detecting format");
         }
 
         // Fallback: auto-detect format (for unknown targets or if specific executor failed)

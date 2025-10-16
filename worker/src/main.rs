@@ -75,6 +75,29 @@ async fn main() -> Result<()> {
     )
     .context("Failed to create NEAR client")?;
 
+    // Start heartbeat task
+    let heartbeat_api_client = api_client.clone();
+    let heartbeat_worker_id = config.worker_id.clone();
+    let heartbeat_worker_name = format!("worker-{}", config.worker_id);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+        loop {
+            interval.tick().await;
+            if let Err(e) = heartbeat_api_client
+                .send_heartbeat(
+                    heartbeat_worker_id.clone(),
+                    heartbeat_worker_name.clone(),
+                    "online",
+                    None,
+                )
+                .await
+            {
+                warn!("Failed to send heartbeat: {}", e);
+            }
+        }
+    });
+    info!("Heartbeat task started (every 30 seconds)");
+
     // Start event monitor if enabled
     if config.enable_event_monitor {
         let event_api_client = api_client.clone();
@@ -176,6 +199,7 @@ async fn worker_iteration(
                 executor,
                 near_client,
                 keystore_client,
+                config,
                 request_id,
                 data_id,
                 code_source,
@@ -199,6 +223,7 @@ async fn worker_iteration(
                 executor,
                 near_client,
                 keystore_client,
+                config,
                 request_id,
                 data_id,
                 wasm_checksum,
@@ -221,6 +246,7 @@ async fn handle_compile_task(
     executor: &Executor,
     near_client: &NearClient,
     keystore_client: Option<&KeystoreClient>,
+    config: &Config,
     request_id: u64,
     data_id: String,
     code_source: CodeSource,
@@ -364,7 +390,15 @@ async fn handle_compile_task(
 
             // Mark task as complete in coordinator
             api_client
-                .complete_task(request_id, result)
+                .complete_task(
+                    request_id,
+                    Some(data_id.clone()),
+                    result,
+                    Some(tx_hash),
+                    None, // TODO: Extract user_account_id from contract request event
+                    None, // TODO: Extract near_payment_yocto from contract request event
+                    config.worker_id.clone(),
+                )
                 .await
                 .context("Failed to complete task in coordinator")?;
 
@@ -392,6 +426,7 @@ async fn handle_execute_task(
     executor: &Executor,
     near_client: &NearClient,
     keystore_client: Option<&KeystoreClient>,
+    config: &Config,
     request_id: u64,
     data_id: String,
     wasm_checksum: String,
@@ -467,12 +502,20 @@ async fn handle_execute_task(
 
     // Submit result to NEAR contract using data_id
     match near_client.submit_execution_result(&data_id, &result).await {
-        Ok(_) => {
-            info!("Successfully submitted result to NEAR for request_id={}", request_id);
+        Ok(tx_hash) => {
+            info!("Successfully submitted result to NEAR for request_id={}, tx_hash={}", request_id, tx_hash);
 
             // Mark task as complete in coordinator
             api_client
-                .complete_task(request_id, result)
+                .complete_task(
+                    request_id,
+                    Some(data_id.clone()),
+                    result,
+                    Some(tx_hash),
+                    None, // TODO: Extract from contract event
+                    None, // TODO: Extract from contract event
+                    config.worker_id.clone(),
+                )
                 .await
                 .context("Failed to complete execute task")?;
         }

@@ -96,10 +96,31 @@ pub async fn execute(
              Make sure you're using [[bin]] format with fn main(), not [lib] with cdylib",
         )?;
 
-    start
-        .call_async(&mut store, ())
-        .await
-        .context("WASI P1 module execution failed")?;
+    let call_result = start.call_async(&mut store, ()).await;
+
+    if let Err(e) = call_result {
+        let error_str = e.to_string();
+        tracing::error!("❌ WASI P1 _start failed: {}", error_str);
+
+        // If it's an exit code error, include input data in error message for developer
+        if error_str.contains("Exited with i32 exit status") {
+            let input_preview = String::from_utf8_lossy(input_data);
+            let preview = if input_preview.len() > 200 {
+                format!("{}...", &input_preview[..200])
+            } else {
+                input_preview.to_string()
+            };
+
+            return Err(anyhow::anyhow!(
+                "WASM program exited with error status. This usually means invalid input_data or panic in code. Input received: {}. Original error: {}",
+                preview,
+                error_str
+            ));
+        }
+
+        // Other execution errors
+        return Err(anyhow::anyhow!("WASM execution failed: {}", error_str));
+    }
 
     debug!("WASI P1 module execution completed");
 

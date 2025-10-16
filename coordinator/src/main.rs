@@ -10,7 +10,7 @@ use axum::{
 };
 use std::sync::Arc;
 use std::time::Duration;
-use tower_http::trace::TraceLayer;
+use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::info;
 
 use config::Config;
@@ -82,20 +82,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Build API router
     let app = Router::new()
-        // Task endpoints
+        // Task endpoints (protected)
         .route("/tasks/poll", get(handlers::tasks::poll_task))
         .route("/tasks/complete", post(handlers::tasks::complete_task))
         .route("/tasks/fail", post(handlers::tasks::fail_task))
         .route("/tasks/create", post(handlers::tasks::create_task))
-        // WASM cache endpoints
+        // WASM cache endpoints (protected)
         .route("/wasm/:checksum", get(handlers::wasm::get_wasm))
         .route("/wasm/upload", post(handlers::wasm::upload_wasm))
         .route("/wasm/exists/:checksum", get(handlers::wasm::wasm_exists))
-        // Lock endpoints
+        // Lock endpoints (protected)
         .route("/locks/acquire", post(handlers::locks::acquire_lock))
         .route(
             "/locks/release/:lock_key",
             delete(handlers::locks::release_lock),
+        )
+        // Worker endpoints (protected)
+        .route("/workers/heartbeat", post(handlers::workers::heartbeat))
+        .route(
+            "/workers/task-completion",
+            post(handlers::workers::notify_task_completion),
+        )
+        // Public endpoints (no auth)
+        .route("/public/workers", get(handlers::public::list_workers))
+        .route("/public/executions", get(handlers::public::list_executions))
+        .route("/public/stats", get(handlers::public::get_stats))
+        .route("/public/wasm/info", get(handlers::public::get_wasm_info))
+        .route(
+            "/public/users/:user_account_id/earnings",
+            get(handlers::public::get_user_earnings),
         )
         // Health check
         .route("/health", get(|| async { "OK" }))
@@ -104,6 +119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             state.clone(),
             auth::auth_middleware,
         ))
+        .layer(CorsLayer::permissive()) // Allow all CORS requests (dev mode)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 

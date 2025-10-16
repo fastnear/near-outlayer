@@ -71,6 +71,18 @@ pub struct CompleteTaskRequest {
     pub output: Option<Vec<u8>>,
     pub error: Option<String>,
     pub execution_time_ms: u64,
+    #[serde(default)]
+    pub instructions: u64,
+    #[serde(default)]
+    pub data_id: Option<String>,
+    #[serde(default)]
+    pub resolve_tx_id: Option<String>,
+    #[serde(default)]
+    pub user_account_id: Option<String>,
+    #[serde(default)]
+    pub near_payment_yocto: Option<String>,
+    #[serde(default)]
+    pub worker_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

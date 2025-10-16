@@ -128,8 +128,22 @@ impl ApiClient {
     ///
     /// # Arguments
     /// * `request_id` - ID of the execution request
+    /// * `data_id` - Data ID from blockchain
     /// * `result` - Execution result (success/failure, output, timing)
-    pub async fn complete_task(&self, request_id: u64, result: ExecutionResult) -> Result<()> {
+    /// * `resolve_tx_id` - Transaction ID of resolve_execution call
+    /// * `user_account_id` - User who requested execution
+    /// * `near_payment_yocto` - Payment amount in yoctoNEAR
+    /// * `worker_id` - This worker's ID
+    pub async fn complete_task(
+        &self,
+        request_id: u64,
+        data_id: Option<String>,
+        result: ExecutionResult,
+        resolve_tx_id: Option<String>,
+        user_account_id: Option<String>,
+        near_payment_yocto: Option<String>,
+        worker_id: String,
+    ) -> Result<()> {
         let url = format!("{}/tasks/complete", self.base_url);
 
         #[derive(Serialize)]
@@ -140,6 +154,11 @@ impl ApiClient {
             error: Option<String>,
             execution_time_ms: u64,
             instructions: u64,
+            data_id: Option<String>,
+            resolve_tx_id: Option<String>,
+            user_account_id: Option<String>,
+            near_payment_yocto: Option<String>,
+            worker_id: Option<String>,
         }
 
         let request = CompleteRequest {
@@ -149,6 +168,11 @@ impl ApiClient {
             error: result.error,
             execution_time_ms: result.execution_time_ms,
             instructions: result.instructions,
+            data_id,
+            resolve_tx_id,
+            user_account_id,
+            near_payment_yocto,
+            worker_id: Some(worker_id),
         };
 
         let response = self
@@ -484,6 +508,57 @@ impl ApiClient {
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
             anyhow::bail!("Create task failed: {}", error_text)
+        }
+
+        Ok(())
+    }
+
+    /// Send heartbeat to coordinator
+    ///
+    /// # Arguments
+    /// * `worker_id` - Unique worker identifier
+    /// * `worker_name` - Human-readable worker name
+    /// * `status` - Current status (online, busy, offline)
+    /// * `current_task_id` - ID of currently executing task (if any)
+    pub async fn send_heartbeat(
+        &self,
+        worker_id: String,
+        worker_name: String,
+        status: &str,
+        current_task_id: Option<i64>,
+    ) -> Result<()> {
+        let url = format!("{}/workers/heartbeat", self.base_url);
+
+        #[derive(Serialize)]
+        struct HeartbeatRequest {
+            worker_id: String,
+            worker_name: String,
+            status: String,
+            current_task_id: Option<i64>,
+        }
+
+        let request = HeartbeatRequest {
+            worker_id,
+            worker_name,
+            status: status.to_string(),
+            current_task_id,
+        };
+
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.auth_token)
+            .json(&request)
+            .send()
+            .await
+            .context("Failed to send heartbeat")?;
+
+        if !response.status().is_success() {
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            anyhow::bail!("Heartbeat failed: {}", error_text)
         }
 
         Ok(())

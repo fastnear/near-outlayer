@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: offchainvm
     ports:
-      - "5432:5432"
+      - "${POSTGRES_EXTERNAL_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -20,7 +20,7 @@ services:
     image: redis:7-alpine
     container_name: offchainvm-redis
     ports:
-      - "6379:6379"
+      - "${REDIS_EXTERNAL_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -39,16 +39,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    environment:
-      HOST: 0.0.0.0
-      PORT: 8080
-      DATABASE_URL: postgres://postgres:postgres@postgres/offchainvm
-      REDIS_URL: redis://redis:6379
-      WASM_CACHE_DIR: /var/offchainvm/wasm
-      REQUIRE_AUTH: "false"  # Disable auth in dev mode
-      RUST_LOG: offchainvm_coordinator=debug
+    env_file:
+      - ./coordinator/.env
     ports:
-      - "8080:8080"
+      - "${COORDINATOR_EXTERNAL_PORT:-8080}:8080"
     volumes:
       - wasm_cache:/var/offchainvm/wasm
 

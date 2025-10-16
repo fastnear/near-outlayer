@@ -15,8 +15,10 @@ pub async fn auth_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    // Skip auth for health check
-    if req.uri().path() == "/health" {
+    let path = req.uri().path();
+
+    // Skip auth for health check and all public endpoints
+    if path == "/health" || path.starts_with("/public/") {
         return Ok(next.run(req).await);
     }
 
