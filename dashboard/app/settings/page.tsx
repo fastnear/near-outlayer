@@ -35,7 +35,7 @@ export default function SettingsPage() {
 
   const formatYoctoNEAR = (yocto: string) => {
     const near = parseFloat(yocto) / 1e24;
-    return near.toFixed(4);
+    return near.toFixed(6);
   };
 
   const formatInstructions = (instructions: number) => {

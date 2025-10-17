@@ -24,6 +24,8 @@ pub mod emit {
         pub resources_used: &'a ResourceMetrics,
         pub success: bool,
         pub error_message: Option<&'a str>,
+        pub payment_charged: U128,    // Actual amount charged (after refund)
+        pub payment_refunded: U128,   // Amount refunded to user
         pub timestamp: u64,
     }
 
@@ -57,6 +59,8 @@ pub mod emit {
         resources_used: &ResourceMetrics,
         success: bool,
         error_message: Option<&str>,
+        payment_charged: U128,
+        payment_refunded: U128,
     ) {
         log_event(
             "execution_completed",
@@ -66,6 +70,8 @@ pub mod emit {
                 resources_used,
                 success,
                 error_message,
+                payment_charged,
+                payment_refunded,
                 timestamp: env::block_timestamp(),
             },
         );

@@ -190,7 +190,7 @@ pub async fn create_task(
         return StatusCode::INTERNAL_SERVER_ERROR;
     }
 
-    // Push to Redis queue - now includes data_id, resource_limits, input_data, encrypted_secrets, response_format and context
+    // Push to Redis queue - now includes data_id, resource_limits, input_data, encrypted_secrets, response_format, context, user_account_id, near_payment_yocto and transaction_hash
     let task = Task::Compile {
         request_id: payload.request_id,
         data_id: payload.data_id.clone(),
@@ -200,6 +200,9 @@ pub async fn create_task(
         encrypted_secrets: payload.encrypted_secrets,
         response_format: payload.response_format,
         context: payload.context,
+        user_account_id: payload.user_account_id,
+        near_payment_yocto: payload.near_payment_yocto,
+        transaction_hash: payload.transaction_hash,
     };
 
     let task_json = match serde_json::to_string(&task) {

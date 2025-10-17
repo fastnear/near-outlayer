@@ -29,7 +29,7 @@ export default function ExecutionsPage() {
   const formatYoctoNEAR = (yocto: string | null) => {
     if (!yocto) return 'N/A';
     const near = parseFloat(yocto) / 1e24;
-    return near.toFixed(4) + ' NEAR';
+    return near.toFixed(6) + ' NEAR';
   };
 
   const formatInstructions = (instructions: number | null) => {

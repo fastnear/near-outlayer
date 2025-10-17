@@ -194,6 +194,9 @@ async fn worker_iteration(
             encrypted_secrets,
             response_format,
             context,
+            user_account_id,
+            near_payment_yocto,
+            transaction_hash: _,
         } => {
             handle_compile_task(
                 api_client,
@@ -210,6 +213,8 @@ async fn worker_iteration(
                 encrypted_secrets,
                 response_format,
                 context,
+                user_account_id,
+                near_payment_yocto,
             )
             .await?;
         }
@@ -223,6 +228,9 @@ async fn worker_iteration(
             build_target,
             response_format,
             context,
+            user_account_id,
+            near_payment_yocto,
+            transaction_hash: _,
         } => {
             handle_execute_task(
                 api_client,
@@ -239,6 +247,8 @@ async fn worker_iteration(
                 build_target,
                 response_format,
                 context,
+                user_account_id,
+                near_payment_yocto,
             )
             .await?;
         }
@@ -298,6 +308,8 @@ async fn handle_compile_task(
     encrypted_secrets: Option<Vec<u8>>,
     response_format: api_client::ResponseFormat,
     context: api_client::ExecutionContext,
+    user_account_id: Option<String>,
+    near_payment_yocto: Option<String>,
 ) -> Result<()> {
     info!("🔨 Starting compilation for request_id={}", request_id);
 
@@ -322,7 +334,7 @@ async fn handle_compile_task(
 
             // Submit error to NEAR contract
             match near_client.submit_execution_result(request_id, &error_result).await {
-                Ok(tx_hash) => {
+                Ok((tx_hash, _outcome)) => {
                     info!("✅ Compilation error submitted to NEAR: tx_hash={}", tx_hash);
                 }
                 Err(submit_err) => {
@@ -442,18 +454,24 @@ async fn handle_compile_task(
     info!("   data_id={}", data_id);
     info!("   success={}", result.success);
     match near_client.submit_execution_result(request_id, &result).await {
-        Ok(tx_hash) => {
+        Ok((tx_hash, outcome)) => {
             info!("✅ Successfully submitted to NEAR: tx_hash={}", tx_hash);
 
-            // Mark task as complete in coordinator
+            // Extract actual cost from contract logs
+            let actual_cost = NearClient::extract_payment_from_logs(&outcome);
+            let actual_cost_near = actual_cost as f64 / 1e24;
+            info!("💰 Extracted execution cost from contract logs: {} yoctoNEAR ({:.6} NEAR)",
+                actual_cost, actual_cost_near);
+
+            // Mark task as complete in coordinator with cost from contract
             api_client
                 .complete_task(
                     request_id,
                     Some(data_id.clone()),
                     result,
                     Some(tx_hash),
-                    None, // TODO: Extract user_account_id from contract request event
-                    None, // TODO: Extract near_payment_yocto from contract request event
+                    user_account_id,
+                    Some(actual_cost.to_string()), // Send cost extracted from contract logs
                     config.worker_id.clone(),
                 )
                 .await
@@ -493,6 +511,8 @@ async fn handle_execute_task(
     build_target: Option<String>,
     response_format: api_client::ResponseFormat,
     context: api_client::ExecutionContext,
+    user_account_id: Option<String>,
+    near_payment_yocto: Option<String>,
 ) -> Result<()> {
     info!(
         "Executing WASM for request_id={}, data_id={}, checksum={}",
@@ -565,18 +585,24 @@ async fn handle_execute_task(
 
     // Submit result to NEAR contract using request_id
     match near_client.submit_execution_result(request_id, &result).await {
-        Ok(tx_hash) => {
+        Ok((tx_hash, outcome)) => {
             info!("Successfully submitted result to NEAR for request_id={}, tx_hash={}", request_id, tx_hash);
 
-            // Mark task as complete in coordinator
+            // Extract actual cost from contract logs (contains estimated_cost from contract calculation)
+            let actual_cost = NearClient::extract_payment_from_logs(&outcome);
+            let actual_cost_near = actual_cost as f64 / 1e24;
+            info!("💰 Extracted execution cost from contract logs: {} yoctoNEAR ({:.6} NEAR)",
+                actual_cost, actual_cost_near);
+
+            // Mark task as complete in coordinator with cost from contract
             api_client
                 .complete_task(
                     request_id,
                     Some(data_id.clone()),
                     result,
                     Some(tx_hash),
-                    None, // TODO: Extract from contract event
-                    None, // TODO: Extract from contract event
+                    user_account_id,
+                    Some(actual_cost.to_string()), // Send cost extracted from contract logs
                     config.worker_id.clone(),
                 )
                 .await

@@ -17,6 +17,8 @@ pub struct ExecutionRequestedEvent {
     pub timestamp: u64,
     #[serde(skip)]
     pub block_height: u64,  // Added locally, not from contract event
+    #[serde(skip)]
+    pub transaction_hash: Option<String>,  // Original transaction hash from neardata
 }
 
 /// Parsed request data from the JSON string
@@ -74,6 +76,7 @@ struct Receipt {
 #[derive(Debug, Deserialize)]
 struct ExecutionOutcome {
     outcome: Option<Outcome>,
+    id: Option<String>,  // receipt_id which can be used as transaction_hash
 }
 
 #[derive(Debug, Deserialize)]
@@ -356,12 +359,14 @@ impl EventMonitor {
 
                     // Process logs from our contract
                     if let Some(execution) = &outcome.execution_outcome {
-                        if let Some(outcome) = &execution.outcome {
-                            if let Some(logs) = &outcome.logs {
+                        if let Some(outcome_data) = &execution.outcome {
+                            if let Some(logs) = &outcome_data.logs {
+                                let transaction_hash = execution.id.clone();
                                 for log in logs {
-                                    if let Some(event) =
+                                    if let Some(mut event) =
                                         self.process_log(log, block_height)
                                     {
+                                        event.transaction_hash = transaction_hash.clone();
                                         events.push(event);
                                     }
                                 }
@@ -491,6 +496,9 @@ impl EventMonitor {
                 request_data.encrypted_secrets.clone(),
                 request_data.response_format.clone(),
                 context,
+                Some(request_data.sender_id.clone()), // user_account_id
+                Some(request_data.payment.clone()),   // near_payment_yocto
+                event.transaction_hash.clone(),       // transaction_hash from neardata
             )
             .await
         {

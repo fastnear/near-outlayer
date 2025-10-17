@@ -29,7 +29,7 @@ export default function StatsPage() {
 
   const formatYoctoNEAR = (yocto: string) => {
     const near = parseFloat(yocto) / 1e24;
-    return near.toFixed(2) + ' NEAR';
+    return near.toFixed(6) + ' NEAR';
   };
 
   const formatInstructions = (instructions: number) => {

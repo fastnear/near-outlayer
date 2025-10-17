@@ -41,6 +41,12 @@ pub enum Task {
         response_format: ResponseFormat,
         #[serde(default)]
         context: ExecutionContext,
+        #[serde(default)]
+        user_account_id: Option<String>,
+        #[serde(default)]
+        near_payment_yocto: Option<String>,
+        #[serde(default)]
+        transaction_hash: Option<String>,
     },
     Execute {
         request_id: u64,
@@ -56,6 +62,12 @@ pub enum Task {
         response_format: ResponseFormat,
         #[serde(default)]
         context: ExecutionContext,
+        #[serde(default)]
+        user_account_id: Option<String>,
+        #[serde(default)]
+        near_payment_yocto: Option<String>,
+        #[serde(default)]
+        transaction_hash: Option<String>,
     },
 }
 
@@ -488,6 +500,8 @@ impl ApiClient {
     /// * `max_execution_seconds` - Maximum execution time
     /// * `input_data` - Input data JSON string
     /// * `encrypted_secrets` - Optional encrypted secrets
+    /// * `user_account_id` - User who requested execution
+    /// * `near_payment_yocto` - Payment amount in yoctoNEAR
     pub async fn create_task(
         &self,
         request_id: u64,
@@ -502,6 +516,9 @@ impl ApiClient {
         encrypted_secrets: Option<Vec<u8>>,
         response_format: ResponseFormat,
         context: ExecutionContext,
+        user_account_id: Option<String>,
+        near_payment_yocto: Option<String>,
+        transaction_hash: Option<String>,
     ) -> Result<()> {
         let url = format!("{}/tasks/create", self.base_url);
 
@@ -516,6 +533,12 @@ impl ApiClient {
             encrypted_secrets: Option<Vec<u8>>,
             response_format: ResponseFormat,
             context: ExecutionContext,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            user_account_id: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            near_payment_yocto: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            transaction_hash: Option<String>,
         }
 
         let request = CreateRequest {
@@ -535,6 +558,9 @@ impl ApiClient {
             encrypted_secrets,
             response_format,
             context,
+            user_account_id,
+            near_payment_yocto,
+            transaction_hash,
         };
 
         let response = self

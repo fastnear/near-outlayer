@@ -38,6 +38,12 @@ pub enum Task {
         response_format: ResponseFormat,
         #[serde(default)]
         context: ExecutionContext,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user_account_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        near_payment_yocto: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transaction_hash: Option<String>,
     },
     Execute {
         request_id: u64,
@@ -51,6 +57,12 @@ pub enum Task {
         build_target: Option<String>,
         response_format: ResponseFormat,
         context: ExecutionContext,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user_account_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        near_payment_yocto: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transaction_hash: Option<String>,
     },
 }
 
@@ -143,4 +155,10 @@ pub struct CreateTaskRequest {
     pub response_format: ResponseFormat,
     #[serde(default)]
     pub context: ExecutionContext,
+    #[serde(default)]
+    pub user_account_id: Option<String>,
+    #[serde(default)]
+    pub near_payment_yocto: Option<String>,
+    #[serde(default)]
+    pub transaction_hash: Option<String>,
 }

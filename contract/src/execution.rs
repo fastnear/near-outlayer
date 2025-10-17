@@ -231,6 +231,9 @@ impl Contract {
                         // Collect fee
                         self.total_fees_collected += cost;
 
+                        // Log payment charged in easy-to-parse format for worker
+                        log!("[[yNEAR charged: \"{}\"]]", cost);
+
                         // Emit success event
                         events::emit::execution_completed(
                             &sender_id,
@@ -238,6 +241,8 @@ impl Contract {
                             &exec_response.resources_used,
                             true,
                             None,
+                            U128(cost),    // payment_charged
+                            U128(refund),  // payment_refunded
                         );
 
                         // Log the execution result with resources used
@@ -313,6 +318,8 @@ impl Contract {
                             &exec_response.resources_used,
                             false,
                             Some(&error_msg),
+                            U128(self.base_fee),  // payment_charged (only base fee)
+                            U128(refund),         // payment_refunded
                         );
 
                         env::panic_str(&format!(
@@ -422,6 +429,9 @@ impl Contract {
 
         let data_id = request.data_id;
 
+        // Calculate estimated cost for logging
+        let estimated_cost = self.calculate_cost(&response.resources_used);
+
         log!(
             "Resolving execution for request_id: {}, data_id: {:?}, success: {}, output_submitted: {}, resources_used: {{ instructions: {}, time_ms: {} }}",
             request_id,
@@ -429,8 +439,11 @@ impl Contract {
             response.success,
             request.output_submitted,
             response.resources_used.instructions,
-            response.resources_used.time_ms
+            response.resources_used.time_ms            
         );
+
+        // Log cost in easy-to-parse format for worker
+        log!("[[yNEAR charged: \"{}\"]]", estimated_cost);
 
         // For large outputs, we only pass metadata through resume (output stays in storage)
         // The callback will retrieve it from pending_output field

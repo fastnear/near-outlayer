@@ -4,15 +4,11 @@ use near_jsonrpc_client::{methods, JsonRpcClient};
 use near_primitives::transaction::{Action, FunctionCallAction, Transaction, TransactionV0};
 use near_primitives::types::{AccountId, BlockReference, Finality};
 use near_primitives::views::FinalExecutionOutcomeView;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::time::Duration;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::api_client::{ExecutionOutput, ExecutionResult};
-
-/// Delay between submit_execution_output and resolve_execution in 2-call flow (milliseconds)
-/// Set to 0 to rely on finalization waiting without additional delay
-const TWO_CALL_DELAY_MS: u64 = 0;
 
 /// NEAR blockchain client for worker operations
 pub struct NearClient {
@@ -38,6 +34,133 @@ impl NearClient {
         })
     }
 
+    /// Extract cost from transaction logs (parses [[yNEAR charged: "..."]] or estimated_cost)
+    /// Parses the "Resolving execution" log from contract which contains estimated_cost
+    /// Returns 0 if not found (will show as 0 NEAR in dashboard)
+    #[allow(dead_code)]
+    pub fn extract_payment_from_logs(outcome: &FinalExecutionOutcomeView) -> u128 {
+        // Collect all logs from transaction and receipt outcomes
+        let mut all_logs = Vec::new();
+
+        info!("📋 Extracting estimated_cost from transaction logs...");
+
+        // Logs from transaction itself
+        info!("   Transaction outcome logs: {}", outcome.transaction_outcome.outcome.logs.len());
+        all_logs.extend(outcome.transaction_outcome.outcome.logs.clone());
+
+        // Logs from all receipts
+        info!("   Receipt outcomes: {}", outcome.receipts_outcome.len());
+        for (i, receipt_outcome) in outcome.receipts_outcome.iter().enumerate() {
+            info!("   Receipt #{} executor: {}, logs: {}",
+                i,
+                receipt_outcome.outcome.executor_id,
+                receipt_outcome.outcome.logs.len()
+            );
+            for (j, log) in receipt_outcome.outcome.logs.iter().enumerate() {
+                let preview = if log.len() > 300 {
+                    format!("{}...", &log[..300])
+                } else {
+                    log.clone()
+                };
+                info!("      Receipt #{} Log #{}: {}", i, j, preview);
+            }
+            all_logs.extend(receipt_outcome.outcome.logs.clone());
+        }
+
+        info!("   Total logs to parse: {}", all_logs.len());
+
+        // Try to find "[[yNEAR charged: \"...\"]]" log (most reliable, set after refund calculation)
+        for (i, log) in all_logs.iter().enumerate() {
+            info!("   Log #{}: {}", i, if log.len() > 200 { &log[..200] } else { log });
+
+            // Parse log format: [[yNEAR charged: "123456789"]] (exact final cost after refunds)
+            if let Some(start) = log.find("[[yNEAR charged: \"") {
+                info!("   ✓ Found '[[yNEAR charged]]' log");
+
+                let after_prefix = &log[start + "[[yNEAR charged: \"".len()..];
+                // Find closing quote
+                if let Some(quote_end) = after_prefix.find('"') {
+                    let cost_str = &after_prefix[..quote_end];
+
+                    match cost_str.parse::<u128>() {
+                        Ok(cost) => {
+                            info!("💰 Successfully extracted yNEAR charged: {} yoctoNEAR ({:.6} NEAR)",
+                                cost, cost as f64 / 1e24);
+                            return cost;
+                        }
+                        Err(e) => {
+                            warn!("   ❌ Failed to parse yNEAR charged '{}' as u128: {}", cost_str, e);
+                        }
+                    }
+                }
+            }
+
+            // Fallback: Parse "estimated_cost" from resolve_execution log (before callback)
+            if log.contains("Resolving execution") && log.contains("estimated_cost:") {
+                info!("   ✓ Found 'Resolving execution' log with estimated_cost");
+
+                // Extract the cost value using string parsing
+                // Format: "estimated_cost: 12345678 yoctoNEAR"
+                if let Some(cost_start) = log.find("estimated_cost: ") {
+                    let after_prefix = &log[cost_start + "estimated_cost: ".len()..];
+                    if let Some(space_pos) = after_prefix.find(' ') {
+                        let cost_str = &after_prefix[..space_pos];
+                        match cost_str.parse::<u128>() {
+                            Ok(cost) => {
+                                info!("💰 Successfully extracted estimated_cost: {} yoctoNEAR ({:.6} NEAR)",
+                                    cost, cost as f64 / 1e24);
+                                return cost;
+                            }
+                            Err(e) => {
+                                warn!("   ❌ Failed to parse estimated_cost '{}' as u128: {}", cost_str, e);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Fallback: Also try EVENT_JSON for backwards compatibility
+            if let Some(event_json) = log.strip_prefix("EVENT_JSON:") {
+                info!("   ✓ Found EVENT_JSON, parsing...");
+
+                match serde_json::from_str::<Value>(event_json) {
+                    Ok(event) => {
+                        if let Some(event_type) = event.get("event").and_then(|e| e.as_str()) {
+                            if event_type == "execution_completed" {
+                                info!("   ✓ Found execution_completed event!");
+
+                                if let Some(data) = event.get("data").and_then(|d| d.as_array()) {
+                                    if let Some(first_data) = data.first() {
+                                        if let Some(payment_str) = first_data.get("payment_charged").and_then(|p| p.as_str()) {
+                                            info!("   ✓ Found payment_charged: {}", payment_str);
+
+                                            match payment_str.parse::<u128>() {
+                                                Ok(payment) => {
+                                                    info!("💰 Successfully extracted payment_charged from event: {} yoctoNEAR ({:.6} NEAR)",
+                                                        payment, payment as f64 / 1e24);
+                                                    return payment;
+                                                }
+                                                Err(e) => {
+                                                    warn!("   ❌ Failed to parse payment_charged: {}", e);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("   ❌ Failed to parse EVENT_JSON: {}", e);
+                    }
+                }
+            }
+        }
+
+        warn!("⚠️  Contract did not provide estimated_cost in logs - will record as 0 NEAR");
+        0
+    }
+
     /// Submit execution result using optimized 1-transaction flow
     ///
     /// This method handles large outputs efficiently by calling the combined
@@ -54,7 +177,7 @@ impl NearClient {
         &self,
         request_id: u64,
         result: &ExecutionResult,
-    ) -> Result<String> {
+    ) -> Result<(String, FinalExecutionOutcomeView)> {
         let output = result.output.as_ref().unwrap();
 
         // Prepare arguments for submit_execution_output_and_resolve
@@ -90,10 +213,16 @@ impl NearClient {
 
         info!("✅ Combined transaction complete: {:?}", outcome.status);
         info!("   Transaction ID: {}", outcome.transaction_outcome.id);
+        info!("   Initial receipt outcomes: {}", outcome.receipts_outcome.len());
 
-        // Return transaction hash
+        // Fetch full transaction status to get all nested receipts (including callbacks)
+        info!("🔍 Fetching full transaction status with ALL nested receipts...");
+        let full_outcome = self.fetch_all_receipts(&outcome.transaction_outcome.id, &self.signer.account_id).await?;
+        info!("   Total receipt outcomes (including nested): {}", full_outcome.receipts_outcome.len());
+
+        // Return transaction hash and FULL outcome
         let tx_hash = format!("{}", outcome.transaction_outcome.id);
-        Ok(tx_hash)
+        Ok((tx_hash, full_outcome))
     }
 
     /// Submit large execution output separately (legacy 2-call flow)
@@ -158,12 +287,12 @@ impl NearClient {
     /// * `result` - Execution result from WASM executor
     ///
     /// # Returns
-    /// * `Ok(tx_hash)` - Transaction hash as hex string
+    /// * `Ok((tx_hash, outcome))` - Transaction hash and full execution outcome
     pub async fn submit_execution_result(
         &self,
         request_id: u64,
         result: &ExecutionResult,
-    ) -> Result<String> {
+    ) -> Result<(String, FinalExecutionOutcomeView)> {
         info!(
             "📡 Submitting execution result: request_id={}, success={}",
             request_id, result.success
@@ -238,10 +367,21 @@ impl NearClient {
 
         info!("✅ Transaction outcome status: {:?}", outcome.status);
         info!("   Transaction ID: {}", outcome.transaction_outcome.id);
+        info!("   Receipt outcomes: {}", outcome.receipts_outcome.len());
 
-        // Return transaction hash as hex string
+        // Log receipt details for debugging
+        for (i, receipt) in outcome.receipts_outcome.iter().enumerate() {
+            info!("   Receipt #{}: executor={}, logs={}",
+                i, receipt.outcome.executor_id, receipt.outcome.logs.len());
+            for (j, log) in receipt.outcome.logs.iter().enumerate() {
+                info!("      Log #{}: {}", j, log);
+            }
+        }
+
+        // Return transaction hash and outcome with receipt logs
+        // Note: The estimated_cost is in the resolve_execution receipt logs
         let tx_hash = format!("{}", outcome.transaction_outcome.id);
-        Ok(tx_hash)
+        Ok((tx_hash, outcome))
     }
 
     /// Call a contract method with explicit nonce
@@ -383,6 +523,67 @@ impl NearClient {
         Ok(outcome)
     }
 
+    /// Fetch transaction with retry to get ALL receipts including callbacks
+    /// promise_yield_resume creates nested callbacks that may not be included immediately
+    async fn fetch_all_receipts(
+        &self,
+        tx_hash: &near_primitives::hash::CryptoHash,
+        sender_id: &AccountId,
+    ) -> Result<FinalExecutionOutcomeView> {
+        // Wait for initial finalization
+        let mut outcome = self.wait_for_transaction(tx_hash, sender_id).await?;
+        let initial_receipts = outcome.receipts_outcome.len();
+
+        info!("🔄 Waiting for all nested receipts to complete...");
+        info!("   Initial receipts: {}", initial_receipts);
+
+        // Retry fetching transaction status to get nested receipts
+        // Nested receipts (callbacks) may take additional time to execute
+        for retry in 0..10 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+
+            match self.wait_for_transaction(tx_hash, sender_id).await {
+                Ok(new_outcome) => {
+                    let new_count = new_outcome.receipts_outcome.len();
+
+                    if new_count > outcome.receipts_outcome.len() {
+                        info!("   Retry #{}: Found {} receipts (was {})", retry + 1, new_count, outcome.receipts_outcome.len());
+                        outcome = new_outcome;
+
+                        // If we found the execution_completed event, we're done
+                        if Self::has_execution_completed_event(&outcome) {
+                            info!("   ✓ Found execution_completed event!");
+                            break;
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("   Retry #{}: Failed to fetch: {}", retry + 1, e);
+                }
+            }
+        }
+
+        info!("   Final receipts: {}", outcome.receipts_outcome.len());
+        Ok(outcome)
+    }
+
+    /// Check if outcome contains execution_completed event or yNEAR charged log
+    fn has_execution_completed_event(outcome: &FinalExecutionOutcomeView) -> bool {
+        for receipt_outcome in &outcome.receipts_outcome {
+            for log in &receipt_outcome.outcome.logs {
+                // Check for yNEAR charged log (appears first, most reliable)
+                if log.contains("[[yNEAR charged:") {
+                    return true;
+                }
+                // Fallback: check for EVENT_JSON
+                if log.contains("EVENT_JSON:") && log.contains("execution_completed") {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Wait for transaction to be finalized
     async fn wait_for_transaction(
         &self,
@@ -401,7 +602,7 @@ impl NearClient {
 
             match self.client.call(tx_request).await {
                 Ok(outcome) => {
-                    info!("Transaction finalized: {}", tx_hash);
+                    debug!("Transaction finalized: {}", tx_hash);
                     // Extract FinalExecutionOutcomeView from the response
                     match outcome.final_execution_outcome {
                         Some(near_primitives::views::FinalExecutionOutcomeViewEnum::FinalExecutionOutcome(view)) => {
