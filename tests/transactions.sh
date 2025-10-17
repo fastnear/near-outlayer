@@ -59,7 +59,7 @@ fi
 
 echo ""
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
-echo -e "${BLUE}Test 1/2: WASI P1 Execution (random-ark)${NC}"
+echo -e "${BLUE}Test 1/3: WASI P1 Execution (random-ark)${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
 echo ""
 
@@ -75,7 +75,7 @@ TX1_OUTPUT=$(near contract call-function as-transaction \
   json-args '{
     "code_source": {
       "repo": "https://github.com/zavodil/random-ark",
-      "commit": "e5b07e548ffa068bce98efea6425086cd2d75f66",
+      "commit": "main",
       "build_target": "wasm32-wasip1"
     },
     "resource_limits": {
@@ -131,7 +131,79 @@ sleep 3
 
 echo ""
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
-echo -e "${BLUE}Test 2/2: WASI P2 Execution (ai-ark)${NC}"
+echo -e "${BLUE}Test 2/3: WASI P1 Execution (echo-ark)${NC}"
+echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
+echo ""
+
+echo "📦 Sending execution request..."
+echo "  Repo: https://github.com/zavodil/echo-ark"
+echo "  Target: wasm32-wasip1"
+echo "  Input: Hello, world"
+echo ""
+
+TX2_OUTPUT=$(near contract call-function as-transaction \
+  "$CONTRACT_ID" \
+  request_execution \
+  json-args '{
+    "code_source": {
+      "repo": "https://github.com/zavodil/echo-ark",
+      "commit": "main",
+      "build_target": "wasm32-wasip1"
+    },
+    "resource_limits": {
+      "max_instructions": 10000000000,
+      "max_memory_mb": 128,
+      "max_execution_seconds": 60
+    },
+    "input_data": "Hello, world"
+  }' \
+  prepaid-gas '300.0 Tgas' \
+  attached-deposit '0.1 NEAR' \
+  sign-as "$CALLER_ACCOUNT" \
+  network-config testnet \
+  $SIGN_METHOD \
+  send 2>&1)
+
+if echo "$TX2_OUTPUT" | grep -q -E "(Transaction ID:|succeeded)"; then
+    echo -e "${GREEN}✓ Transaction 1 sent successfully${NC}"
+    echo ""
+
+    # Extract and display transaction ID
+    TX_ID=$(echo "$TX2_OUTPUT" | grep "Transaction ID:" | sed 's/.*Transaction ID: //' | awk '{print $1}')
+    if [ -n "$TX_ID" ]; then
+        echo -e "${BLUE}Transaction ID:${NC} $TX_ID"
+        echo -e "${BLUE}Explorer:${NC} https://testnet.nearblocks.io/txns/$TX_ID"
+        echo ""
+    fi
+
+    # Display execution result if present
+    echo -e "${BLUE}📋 Execution Result:${NC}"
+    if echo "$TX2_OUTPUT"; then
+        RESULT=$(echo "$TX2_OUTPUT" | tail -1)
+        echo "  $RESULT"
+    fi
+
+    # Display logs
+    echo ""
+    echo -e "${BLUE}📊 Transaction Logs:${NC}"
+    echo "$TX2_OUTPUT" | sed -n '/Function execution logs/,/Function execution return value/p' | grep -E "(Logs|execution_completed|random_number|Resources|Cost|Refund)" | sed 's/^/  /'
+    echo ""
+
+    echo "📍 Next steps:"
+    echo "  • Worker: Watch for compilation and execution logs"
+    echo "  • Contract: https://testnet.nearblocks.io/address/$CONTRACT_ID"
+    echo ""
+else
+    echo -e "${RED}✗ Transaction 2 failed${NC}"
+    echo "$TX2_OUTPUT"
+    exit 1
+fi
+
+sleep 3
+
+echo ""
+echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
+echo -e "${BLUE}Test 3/3: WASI P2 Execution (ai-ark)${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
 echo ""
 

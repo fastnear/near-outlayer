@@ -463,6 +463,13 @@ async fn handle_compile_task(
             info!("💰 Extracted execution cost from contract logs: {} yoctoNEAR ({:.6} NEAR)",
                 actual_cost, actual_cost_near);
 
+            // Extract GitHub repo and commit from code_source
+            let (github_repo, github_commit) = match &code_source {
+                CodeSource::GitHub { repo, commit, .. } => {
+                    (Some(repo.clone()), Some(commit.clone()))
+                }
+            };
+
             // Mark task as complete in coordinator with cost from contract
             api_client
                 .complete_task(
@@ -473,6 +480,8 @@ async fn handle_compile_task(
                     user_account_id,
                     Some(actual_cost.to_string()), // Send cost extracted from contract logs
                     config.worker_id.clone(),
+                    github_repo,
+                    github_commit,
                 )
                 .await
                 .context("Failed to complete task in coordinator")?;
@@ -604,6 +613,8 @@ async fn handle_execute_task(
                     user_account_id,
                     Some(actual_cost.to_string()), // Send cost extracted from contract logs
                     config.worker_id.clone(),
+                    None, // No github_repo for Execute tasks
+                    None, // No github_commit for Execute tasks
                 )
                 .await
                 .context("Failed to complete execute task")?;

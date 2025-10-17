@@ -27,16 +27,18 @@ pub async fn list_workers(
     let workers: Vec<WorkerInfo> = sqlx::query_as(
         r#"
         SELECT
-            worker_id,
-            worker_name,
-            status,
-            current_task_id,
-            last_heartbeat_at::TEXT as last_heartbeat_at,
-            total_tasks_completed,
-            total_tasks_failed,
-            EXTRACT(EPOCH FROM (NOW() - created_at))::BIGINT as uptime_seconds
-        FROM worker_status
-        ORDER BY last_heartbeat_at DESC
+            ws.worker_id,
+            ws.worker_name,
+            ws.status,
+            ws.current_task_id,
+            ws.last_heartbeat_at::TEXT as last_heartbeat_at,
+            COALESCE(COUNT(*) FILTER (WHERE eh.success = true), 0)::BIGINT as total_tasks_completed,
+            COALESCE(COUNT(*) FILTER (WHERE eh.success = false), 0)::BIGINT as total_tasks_failed,
+            EXTRACT(EPOCH FROM (NOW() - ws.created_at))::BIGINT as uptime_seconds
+        FROM worker_status ws
+        LEFT JOIN execution_history eh ON eh.worker_id = ws.worker_id
+        GROUP BY ws.worker_id, ws.worker_name, ws.status, ws.current_task_id, ws.last_heartbeat_at, ws.created_at
+        ORDER BY ws.last_heartbeat_at DESC
         "#
     )
     .fetch_all(&state.db)
@@ -62,6 +64,8 @@ pub struct ExecutionHistoryEntry {
     pub resolve_tx_id: Option<String>,
     pub user_account_id: Option<String>,
     pub near_payment_yocto: Option<String>,
+    pub github_repo: Option<String>,
+    pub github_commit: Option<String>,
     pub created_at: String,
 }
 
@@ -98,6 +102,8 @@ pub async fn list_executions(
                 resolve_tx_id,
                 user_account_id,
                 near_payment_yocto,
+                github_repo,
+                github_commit,
                 created_at::TEXT as created_at
             FROM execution_history
             WHERE user_account_id = $1
@@ -124,6 +130,8 @@ pub async fn list_executions(
                 resolve_tx_id,
                 user_account_id,
                 near_payment_yocto,
+                github_repo,
+                github_commit,
                 created_at::TEXT as created_at
             FROM execution_history
             ORDER BY created_at DESC

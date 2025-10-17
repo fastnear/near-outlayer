@@ -94,8 +94,8 @@ pub async fn complete_task(
         r#"
         INSERT INTO execution_history
         (request_id, data_id, worker_id, success, execution_time_ms, instructions_used,
-         resolve_tx_id, user_account_id, near_payment_yocto, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+         resolve_tx_id, user_account_id, near_payment_yocto, github_repo, github_commit, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
         "#,
         payload.request_id as i64,
         payload.data_id,
@@ -105,7 +105,9 @@ pub async fn complete_task(
         instructions,
         payload.resolve_tx_id,
         payload.user_account_id,
-        payload.near_payment_yocto
+        payload.near_payment_yocto,
+        payload.github_repo,
+        payload.github_commit
     )
     .execute(&state.db)
     .await;

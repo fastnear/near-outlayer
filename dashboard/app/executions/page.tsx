@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { fetchExecutions, ExecutionHistoryEntry } from '@/lib/api';
+import { getTransactionUrl } from '@/lib/explorer';
 import Link from 'next/link';
 
 export default function ExecutionsPage() {
@@ -76,6 +77,7 @@ export default function ExecutionsPage() {
                   <tr>
                     <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Request ID</th>
                     <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Status</th>
+                    <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">GitHub Repo</th>
                     <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">User</th>
                     <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Worker</th>
                     <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Instructions</th>
@@ -88,7 +90,7 @@ export default function ExecutionsPage() {
                 <tbody className="divide-y divide-gray-200 bg-white">
                   {executions.length === 0 ? (
                     <tr>
-                      <td colSpan={9} className="px-3 py-8 text-center text-sm text-gray-500">
+                      <td colSpan={10} className="px-3 py-8 text-center text-sm text-gray-500">
                         No executions found
                       </td>
                     </tr>
@@ -108,6 +110,21 @@ export default function ExecutionsPage() {
                           >
                             {execution.success ? 'Success' : 'Failed'}
                           </span>
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">
+                          {execution.github_repo ? (
+                            <a
+                              href={`${execution.github_repo}/tree/${execution.github_commit}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-blue-600 hover:text-blue-800 hover:underline"
+                              title={`${execution.github_repo} @ ${execution.github_commit}`}
+                            >
+                              {execution.github_repo.replace(/^https?:\/\/(www\.)?github\.com\//, '')}
+                            </a>
+                          ) : (
+                            '-'
+                          )}
                         </td>
                         <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500 font-mono">
                           {execution.user_account_id
@@ -129,12 +146,13 @@ export default function ExecutionsPage() {
                         <td className="whitespace-nowrap px-3 py-4 text-sm">
                           {execution.resolve_tx_id ? (
                             <a
-                              href={`https://testnet.nearblocks.io/txns/${execution.resolve_tx_id}`}
+                              href={getTransactionUrl(execution.resolve_tx_id)}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="text-blue-600 hover:text-blue-800"
+                              className="text-blue-600 hover:text-blue-800 hover:underline"
+                              title={execution.resolve_tx_id}
                             >
-                              View
+                              {execution.resolve_tx_id.substring(0, 8)}...
                             </a>
                           ) : (
                             '-'

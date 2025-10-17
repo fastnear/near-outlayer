@@ -317,20 +317,62 @@ impl NearClient {
         let payload_size = response_json.len();
 
         info!("📊 Response payload size: {} bytes (limit: {} bytes)", payload_size, PAYLOAD_LIMIT);
+        info!("   result.success={}, result.output.is_some()={}, result.error.is_some()={}",
+            result.success, result.output.is_some(), result.error.is_some());
 
-        // Decide flow based on payload size
-        let use_two_call_flow = payload_size >= PAYLOAD_LIMIT && result.success && result.output.is_some();
+        // Check if payload exceeds limit
+        if payload_size >= PAYLOAD_LIMIT {
+            // Payload too large - need to use 2-call flow
+            if result.success && result.output.is_some() {
+                // Success case: use optimized 2-call flow (submit_execution_output_and_resolve)
+                info!("⚠️  Payload exceeds limit ({} >= {}), using 2-call flow (submit_execution_output_and_resolve)",
+                    payload_size, PAYLOAD_LIMIT);
+                return self.submit_result_two_call_flow(request_id, result).await;
+            } else {
+                // Error case: truncate error message to fit in 1024 byte limit
+                // This prevents transaction failure due to large error messages
+                info!("⚠️  Payload exceeds limit ({} >= {}) but execution failed - truncating error message",
+                    payload_size, PAYLOAD_LIMIT);
 
-        if use_two_call_flow {
-            info!("⚠️  Payload exceeds limit, using 2-call flow (submit_execution_output + resolve_execution)");
+                // Calculate how much space we have for error message
+                // Reserve space for JSON structure: {"success":false,"output":null,"error":"...","resources_used":{...}}
+                const MAX_ERROR_SIZE: usize = 512; // Conservative limit to ensure total payload < 1024
 
-            // For 2-call flow, we need to manage nonce manually to avoid nonce conflicts
-            // Get current nonce and block_hash once, then use nonce+1 for second transaction
-            return self.submit_result_two_call_flow(request_id, result).await;
+                let truncated_result = if let Some(ref error_msg) = result.error {
+                    if error_msg.len() > MAX_ERROR_SIZE {
+                        let truncated = format!("{}... (truncated, original size: {} bytes)",
+                            &error_msg[..MAX_ERROR_SIZE], error_msg.len());
+                        info!("   Truncated error from {} to {} bytes", error_msg.len(), MAX_ERROR_SIZE);
+
+                        let mut new_result = result.clone();
+                        new_result.error = Some(truncated);
+                        new_result
+                    } else {
+                        result.clone()
+                    }
+                } else {
+                    result.clone()
+                };
+
+                // Continue with 1-call flow using truncated result
+                return self.submit_small_result(request_id, &truncated_result).await;
+            }
         } else {
             info!("✅ Payload size OK, using 1-call flow (resolve_execution only)");
         }
 
+        // Use standard 1-call flow
+        self.submit_small_result(request_id, result).await
+    }
+
+    /// Submit small execution result using 1-call flow (resolve_execution only)
+    ///
+    /// This method is used when the payload fits within the 1024 byte limit.
+    async fn submit_small_result(
+        &self,
+        request_id: u64,
+        result: &ExecutionResult,
+    ) -> Result<(String, FinalExecutionOutcomeView)> {
         // 1-call flow: Prepare method arguments for resolve_execution with output
         let args = json!({
             "request_id": request_id,

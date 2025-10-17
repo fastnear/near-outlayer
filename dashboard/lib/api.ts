@@ -28,6 +28,8 @@ export interface ExecutionHistoryEntry {
   resolve_tx_id: string | null;
   user_account_id: string | null;
   near_payment_yocto: string | null;
+  github_repo: string | null;
+  github_commit: string | null;
   created_at: string;
 }
 

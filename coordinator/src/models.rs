@@ -134,6 +134,10 @@ pub struct CompleteTaskRequest {
     pub near_payment_yocto: Option<String>,
     #[serde(default)]
     pub worker_id: Option<String>,
+    #[serde(default)]
+    pub github_repo: Option<String>,
+    #[serde(default)]
+    pub github_commit: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

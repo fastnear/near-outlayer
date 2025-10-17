@@ -27,19 +27,6 @@ export default function WorkersPage() {
     }
   };
 
-  const getStatusColor = (status: string) => {
-    switch (status.toLowerCase()) {
-      case 'online':
-        return 'bg-green-100 text-green-800';
-      case 'busy':
-        return 'bg-yellow-100 text-yellow-800';
-      case 'offline':
-        return 'bg-gray-100 text-gray-800';
-      default:
-        return 'bg-gray-100 text-gray-800';
-    }
-  };
-
   const formatUptime = (seconds: number | null) => {
     if (!seconds) return 'N/A';
     const hours = Math.floor(seconds / 3600);
@@ -82,9 +69,6 @@ export default function WorkersPage() {
                 <thead className="bg-gray-50">
                   <tr>
                     <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Worker ID</th>
-                    <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Name</th>
-                    <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Status</th>
-                    <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Current Task</th>
                     <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Completed</th>
                     <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Failed</th>
                     <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Uptime</th>
@@ -94,7 +78,7 @@ export default function WorkersPage() {
                 <tbody className="divide-y divide-gray-200 bg-white">
                   {workers.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="px-3 py-8 text-center text-sm text-gray-500">
+                      <td colSpan={5} className="px-3 py-8 text-center text-sm text-gray-500">
                         No workers found
                       </td>
                     </tr>
@@ -103,17 +87,6 @@ export default function WorkersPage() {
                       <tr key={worker.worker_id}>
                         <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-900 font-mono">
                           {worker.worker_id.substring(0, 12)}...
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-900">
-                          {worker.worker_name}
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-4 text-sm">
-                          <span className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${getStatusColor(worker.status)}`}>
-                            {worker.status}
-                          </span>
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">
-                          {worker.current_task_id || '-'}
                         </td>
                         <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-900">
                           {worker.total_tasks_completed}

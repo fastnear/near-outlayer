@@ -193,6 +193,8 @@ impl ApiClient {
         user_account_id: Option<String>,
         near_payment_yocto: Option<String>,
         worker_id: String,
+        github_repo: Option<String>,
+        github_commit: Option<String>,
     ) -> Result<()> {
         let url = format!("{}/tasks/complete", self.base_url);
 
@@ -209,6 +211,8 @@ impl ApiClient {
             user_account_id: Option<String>,
             near_payment_yocto: Option<String>,
             worker_id: Option<String>,
+            github_repo: Option<String>,
+            github_commit: Option<String>,
         }
 
         let request = CompleteRequest {
@@ -223,6 +227,8 @@ impl ApiClient {
             user_account_id,
             near_payment_yocto,
             worker_id: Some(worker_id),
+            github_repo,
+            github_commit,
         };
 
         let response = self

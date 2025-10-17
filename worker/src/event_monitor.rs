@@ -272,7 +272,7 @@ impl EventMonitor {
 
     /// Load block data from neardata.xyz API
     async fn load_block(&self, block_id: u64) -> Result<BlockData> {
-        let url = format!("{}/{}", self.neardata_api_url, block_id);
+        let url = self.neardata_api_url.replace("{block_id}", &block_id.to_string());
 
         let response = self
             .http_client
