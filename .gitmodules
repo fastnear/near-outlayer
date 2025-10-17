@@ -4,3 +4,6 @@
 [submodule "wasi-examples/ai-ark"]
 	path = wasi-examples/ai-ark
 	url = git@github.com:zavodil/ai-ark.git
+[submodule "wasi-examples/echo-ark"]
+	path = wasi-examples/echo-ark
+	url = git@github.com:zavodil/echo-ark.git
