@@ -196,7 +196,15 @@ export default function JobsPage() {
                           )}
                         </td>
                         <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">
-                          {new Date(job.created_at).toLocaleString()}
+                          {new Date(job.created_at).toLocaleString(undefined, {
+                            year: 'numeric',
+                            month: '2-digit',
+                            day: '2-digit',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            second: '2-digit',
+                            hour12: false
+                          })}
                         </td>
                       </tr>
                     ))

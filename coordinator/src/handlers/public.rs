@@ -31,7 +31,7 @@ pub async fn list_workers(
             ws.worker_name,
             ws.status,
             ws.current_task_id,
-            ws.last_heartbeat_at::TEXT as last_heartbeat_at,
+            to_char(ws.last_heartbeat_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as last_heartbeat_at,
             COALESCE(COUNT(*) FILTER (WHERE eh.success = true), 0)::BIGINT as total_tasks_completed,
             COALESCE(COUNT(*) FILTER (WHERE eh.success = false), 0)::BIGINT as total_tasks_failed,
             EXTRACT(EPOCH FROM (NOW() - ws.created_at))::BIGINT as uptime_seconds
@@ -116,7 +116,7 @@ pub async fn list_jobs(
                 github_repo,
                 github_commit,
                 transaction_hash,
-                created_at::TEXT as created_at
+                to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as created_at
             FROM execution_history
             WHERE user_account_id = $1
             ORDER BY created_at DESC
@@ -150,7 +150,7 @@ pub async fn list_jobs(
                 github_repo,
                 github_commit,
                 transaction_hash,
-                created_at::TEXT as created_at
+                to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as created_at
             FROM execution_history
             ORDER BY created_at DESC
             LIMIT $1 OFFSET $2
