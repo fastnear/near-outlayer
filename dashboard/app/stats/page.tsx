@@ -1,23 +1,31 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { fetchStats, ExecutionStats } from '@/lib/api';
+import { fetchStats, ExecutionStats, fetchPopularRepos, PopularRepo, fetchPricing, PricingConfig } from '@/lib/api';
 
 export default function StatsPage() {
   const [stats, setStats] = useState<ExecutionStats | null>(null);
+  const [repos, setRepos] = useState<PopularRepo[]>([]);
+  const [pricing, setPricing] = useState<PricingConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    loadStats();
-    const interval = setInterval(loadStats, 30000); // Refresh every 30s
+    loadData();
+    const interval = setInterval(loadData, 30000); // Refresh every 30s
     return () => clearInterval(interval);
   }, []);
 
-  const loadStats = async () => {
+  const loadData = async () => {
     try {
-      const data = await fetchStats();
-      setStats(data);
+      const [statsData, reposData, pricingData] = await Promise.all([
+        fetchStats(),
+        fetchPopularRepos(),
+        fetchPricing(),
+      ]);
+      setStats(statsData);
+      setRepos(reposData);
+      setPricing(pricingData);
       setError(null);
     } catch (err) {
       setError('Failed to load statistics');
@@ -29,6 +37,10 @@ export default function StatsPage() {
 
   const formatYoctoNEAR = (yocto: string) => {
     const near = parseFloat(yocto) / 1e24;
+    // Use adaptive precision for very small values
+    if (near === 0) return '0 NEAR';
+    if (near < 0.000001) return near.toExponential(2) + ' NEAR';
+    if (near < 0.001) return near.toFixed(9) + ' NEAR';
     return near.toFixed(6) + ' NEAR';
   };
 
@@ -258,6 +270,116 @@ export default function StatsPage() {
               <div className="mt-2 text-sm text-yellow-700">
                 <p>{stats.failed_executions} executions failed out of {stats.total_executions} total</p>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Popular Repositories */}
+      {repos.length > 0 && (
+        <div className="mt-8">
+          <h2 className="text-2xl font-bold text-gray-900 mb-4">Popular Repositories</h2>
+          <div className="bg-white shadow overflow-hidden sm:rounded-lg">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Repository
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Executions
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Success Rate
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Last Commit
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {repos.map((repo, idx) => {
+                  const successRate = repo.total_executions > 0
+                    ? ((repo.successful_executions / repo.total_executions) * 100).toFixed(1)
+                    : '0';
+                  return (
+                    <tr key={idx}>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <a
+                          href={repo.github_repo}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-blue-600 hover:text-blue-800 hover:underline"
+                        >
+                          {repo.github_repo.replace(/^https?:\/\/(www\.)?github\.com\//, '')}
+                        </a>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {repo.total_executions}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <span className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${
+                          parseFloat(successRate) > 90 ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
+                        }`}>
+                          {successRate}%
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 font-mono">
+                        {repo.last_commit ? repo.last_commit.substring(0, 8) : 'N/A'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Pricing Configuration */}
+      {pricing && (
+        <div className="mt-8">
+          <h2 className="text-2xl font-bold text-gray-900 mb-4">Pricing & Limits</h2>
+          <div className="bg-white shadow overflow-hidden sm:rounded-lg">
+            <div className="px-4 py-5 sm:p-6">
+              <h3 className="text-lg font-medium text-gray-900 mb-4">Pricing Rates</h3>
+              <dl className="grid grid-cols-1 gap-x-4 gap-y-6 sm:grid-cols-2">
+                <div className="sm:col-span-1">
+                  <dt className="text-sm font-medium text-gray-500">Base Fee</dt>
+                  <dd className="mt-1 text-sm text-gray-900">{formatYoctoNEAR(pricing.base_fee)}</dd>
+                </div>
+                <div className="sm:col-span-1">
+                  <dt className="text-sm font-medium text-gray-500">Per Million Instructions</dt>
+                  <dd className="mt-1 text-sm text-gray-900">{formatYoctoNEAR(pricing.per_instruction_fee)}</dd>
+                </div>
+                <div className="sm:col-span-1">
+                  <dt className="text-sm font-medium text-gray-500">Per Millisecond (Execution)</dt>
+                  <dd className="mt-1 text-sm text-gray-900">{formatYoctoNEAR(pricing.per_ms_fee)}</dd>
+                </div>
+                <div className="sm:col-span-1">
+                  <dt className="text-sm font-medium text-gray-500">Per Millisecond (Compilation)</dt>
+                  <dd className="mt-1 text-sm text-gray-900">{formatYoctoNEAR(pricing.per_compile_ms_fee)}</dd>
+                </div>
+              </dl>
+
+              <h3 className="text-lg font-medium text-gray-900 mt-6 mb-4">Resource Limits</h3>
+              <dl className="grid grid-cols-1 gap-x-4 gap-y-6 sm:grid-cols-3">
+                <div className="sm:col-span-1">
+                  <dt className="text-sm font-medium text-gray-500">Max Instructions</dt>
+                  <dd className="mt-1 text-sm text-gray-900">{formatInstructions(pricing.max_instructions)}</dd>
+                  <dd className="mt-1 text-xs text-gray-500">Hard cap on WASM instructions per execution</dd>
+                </div>
+                <div className="sm:col-span-1">
+                  <dt className="text-sm font-medium text-gray-500">Max Execution Time</dt>
+                  <dd className="mt-1 text-sm text-gray-900">{pricing.max_execution_seconds} seconds</dd>
+                  <dd className="mt-1 text-xs text-gray-500">Hard cap on execution duration</dd>
+                </div>
+                <div className="sm:col-span-1">
+                  <dt className="text-sm font-medium text-gray-500">Max Compilation Time</dt>
+                  <dd className="mt-1 text-sm text-gray-900">{pricing.max_compilation_seconds} seconds</dd>
+                  <dd className="mt-1 text-xs text-gray-500">Hard cap on compilation duration</dd>
+                </div>
+              </dl>
             </div>
           </div>
         </div>

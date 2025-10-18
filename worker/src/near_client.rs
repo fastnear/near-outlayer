@@ -5,7 +5,6 @@ use near_primitives::transaction::{Action, FunctionCallAction, Transaction, Tran
 use near_primitives::types::{AccountId, BlockReference, Finality};
 use near_primitives::views::FinalExecutionOutcomeView;
 use serde_json::{json, Value};
-use std::time::Duration;
 use tracing::{debug, info, warn};
 
 use crate::api_client::{ExecutionOutput, ExecutionResult};
@@ -189,6 +188,7 @@ impl NearClient {
             "resources_used": {
                 "instructions": result.instructions,
                 "time_ms": result.execution_time_ms,
+                "compile_time_ms": result.compile_time_ms,
             }
         });
 
@@ -213,16 +213,14 @@ impl NearClient {
 
         info!("✅ Combined transaction complete: {:?}", outcome.status);
         info!("   Transaction ID: {}", outcome.transaction_outcome.id);
-        info!("   Initial receipt outcomes: {}", outcome.receipts_outcome.len());
+        info!("   Receipt outcomes: {}", outcome.receipts_outcome.len());
 
-        // Fetch full transaction status to get all nested receipts (including callbacks)
-        info!("🔍 Fetching full transaction status with ALL nested receipts...");
-        let full_outcome = self.fetch_all_receipts(&outcome.transaction_outcome.id, &self.signer.account_id).await?;
-        info!("   Total receipt outcomes (including nested): {}", full_outcome.receipts_outcome.len());
+        // No need to fetch nested receipts - submit_execution_output_and_resolve
+        // is synchronous (no Promise), all logs are in the initial outcome
 
-        // Return transaction hash and FULL outcome
+        // Return transaction hash and outcome
         let tx_hash = format!("{}", outcome.transaction_outcome.id);
-        Ok((tx_hash, full_outcome))
+        Ok((tx_hash, outcome))
     }
 
     /// Submit large execution output separately (legacy 2-call flow)
@@ -307,6 +305,7 @@ impl NearClient {
             "resources_used": {
                 "instructions": result.instructions,
                 "time_ms": result.execution_time_ms,
+                "compile_time_ms": result.compile_time_ms,
             }
         });
 
@@ -383,6 +382,7 @@ impl NearClient {
                 "resources_used": {
                     "instructions": result.instructions,
                     "time_ms": result.execution_time_ms,
+                    "compile_time_ms": result.compile_time_ms,
                 }
             }
         });
@@ -565,115 +565,6 @@ impl NearClient {
         Ok(outcome)
     }
 
-    /// Fetch transaction with retry to get ALL receipts including callbacks
-    /// promise_yield_resume creates nested callbacks that may not be included immediately
-    async fn fetch_all_receipts(
-        &self,
-        tx_hash: &near_primitives::hash::CryptoHash,
-        sender_id: &AccountId,
-    ) -> Result<FinalExecutionOutcomeView> {
-        // Wait for initial finalization
-        let mut outcome = self.wait_for_transaction(tx_hash, sender_id).await?;
-        let initial_receipts = outcome.receipts_outcome.len();
-
-        info!("🔄 Waiting for all nested receipts to complete...");
-        info!("   Initial receipts: {}", initial_receipts);
-
-        // Retry fetching transaction status to get nested receipts
-        // Nested receipts (callbacks) may take additional time to execute
-        for retry in 0..10 {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-
-            match self.wait_for_transaction(tx_hash, sender_id).await {
-                Ok(new_outcome) => {
-                    let new_count = new_outcome.receipts_outcome.len();
-
-                    if new_count > outcome.receipts_outcome.len() {
-                        info!("   Retry #{}: Found {} receipts (was {})", retry + 1, new_count, outcome.receipts_outcome.len());
-                        outcome = new_outcome;
-
-                        // If we found the execution_completed event, we're done
-                        if Self::has_execution_completed_event(&outcome) {
-                            info!("   ✓ Found execution_completed event!");
-                            break;
-                        }
-                    }
-                }
-                Err(e) => {
-                    warn!("   Retry #{}: Failed to fetch: {}", retry + 1, e);
-                }
-            }
-        }
-
-        info!("   Final receipts: {}", outcome.receipts_outcome.len());
-        Ok(outcome)
-    }
-
-    /// Check if outcome contains execution_completed event or yNEAR charged log
-    fn has_execution_completed_event(outcome: &FinalExecutionOutcomeView) -> bool {
-        for receipt_outcome in &outcome.receipts_outcome {
-            for log in &receipt_outcome.outcome.logs {
-                // Check for yNEAR charged log (appears first, most reliable)
-                if log.contains("[[yNEAR charged:") {
-                    return true;
-                }
-                // Fallback: check for EVENT_JSON
-                if log.contains("EVENT_JSON:") && log.contains("execution_completed") {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    /// Wait for transaction to be finalized
-    async fn wait_for_transaction(
-        &self,
-        tx_hash: &near_primitives::hash::CryptoHash,
-        sender_id: &AccountId,
-    ) -> Result<FinalExecutionOutcomeView> {
-        // Poll for transaction result (up to 60 seconds)
-        for _ in 0..60 {
-            let tx_request = methods::tx::RpcTransactionStatusRequest {
-                transaction_info: methods::tx::TransactionInfo::TransactionId {
-                    tx_hash: tx_hash.clone(),
-                    sender_account_id: sender_id.clone(),
-                },
-                wait_until: near_primitives::views::TxExecutionStatus::Final,
-            };
-
-            match self.client.call(tx_request).await {
-                Ok(outcome) => {
-                    debug!("Transaction finalized: {}", tx_hash);
-                    // Extract FinalExecutionOutcomeView from the response
-                    match outcome.final_execution_outcome {
-                        Some(near_primitives::views::FinalExecutionOutcomeViewEnum::FinalExecutionOutcome(view)) => {
-                            return Ok(view);
-                        }
-                        Some(near_primitives::views::FinalExecutionOutcomeViewEnum::FinalExecutionOutcomeWithReceipt(view)) => {
-                            return Ok(view.final_outcome);
-                        }
-                        None => {
-                            anyhow::bail!("No final execution outcome in response");
-                        }
-                    }
-                }
-                Err(e) => {
-                    // Check if it's a timeout error (transaction not yet processed)
-                    if e.to_string().contains("UNKNOWN_TRANSACTION")
-                        || e.to_string().contains("timeout")
-                    {
-                        debug!("Transaction not yet processed, waiting...");
-                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                        continue;
-                    }
-                    return Err(e).context("Transaction failed");
-                }
-            }
-        }
-
-        anyhow::bail!("Transaction timeout: {}", tx_hash)
-    }
 }
 
 #[cfg(test)]

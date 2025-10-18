@@ -203,6 +203,7 @@ mod tests {
         let metrics = ResourceMetrics {
             instructions: 10_000_000, // 10M instructions
             time_ms: 5000,            // 5000 ms (5 seconds)
+            compile_time_ms: None,    // No compilation
         };
 
         let cost = contract.calculate_cost(&metrics);
@@ -214,6 +215,64 @@ mod tests {
         // Total: 15_000_010_000_000_000_000_000
 
         assert_eq!(cost, 15_000_010_000_000_000_000_000);
+    }
+
+    #[test]
+    fn test_calculate_cost_with_compilation() {
+        let contract = setup_contract();
+
+        let metrics = ResourceMetrics {
+            instructions: 10_000_000, // 10M instructions
+            time_ms: 5000,            // 5000 ms (5 seconds) execution
+            compile_time_ms: Some(3000), // 3000 ms (3 seconds) compilation
+        };
+
+        let cost = contract.calculate_cost(&metrics);
+
+        // Expected:
+        // base_fee: 10_000_000_000_000_000_000_000
+        // instruction_cost: 10 * 1_000_000_000_000_000 = 10_000_000_000_000_000
+        // execution_time_cost: 5000 * 1_000_000_000_000_000_000 = 5_000_000_000_000_000_000_000
+        // compilation_time_cost: 3000 * 1_000_000_000_000_000_000 = 3_000_000_000_000_000_000_000
+        // Total: 18_000_010_000_000_000_000_000
+
+        assert_eq!(cost, 18_000_010_000_000_000_000_000);
+    }
+
+    #[test]
+    fn test_calculate_cost_zero_resources() {
+        let contract = setup_contract();
+
+        let metrics = ResourceMetrics {
+            instructions: 0,
+            time_ms: 0,
+            compile_time_ms: None,
+        };
+
+        let cost = contract.calculate_cost(&metrics);
+
+        // Should only charge base_fee
+        assert_eq!(cost, 10_000_000_000_000_000_000_000); // 0.01 NEAR
+    }
+
+    #[test]
+    fn test_calculate_cost_only_compilation() {
+        let contract = setup_contract();
+
+        let metrics = ResourceMetrics {
+            instructions: 0,
+            time_ms: 0,
+            compile_time_ms: Some(10000), // 10 seconds compilation
+        };
+
+        let cost = contract.calculate_cost(&metrics);
+
+        // Expected:
+        // base_fee: 10_000_000_000_000_000_000_000
+        // compilation_time_cost: 10000 * 1_000_000_000_000_000_000 = 10_000_000_000_000_000_000_000
+        // Total: 20_000_000_000_000_000_000_000
+
+        assert_eq!(cost, 20_000_000_000_000_000_000_000); // 0.02 NEAR
     }
 
     #[test]
@@ -408,6 +467,7 @@ mod tests {
             resources_used: ResourceMetrics {
                 instructions: 1_000_000,
                 time_ms: 100,
+                compile_time_ms: None,
             },
         };
 
@@ -544,6 +604,7 @@ mod tests {
             ResourceMetrics {
                 instructions: 1000,
                 time_ms: 10,
+                compile_time_ms: None,
             },
         );
     }

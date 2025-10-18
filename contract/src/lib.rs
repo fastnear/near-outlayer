@@ -26,6 +26,7 @@ pub const EXECUTION_TIMEOUT: u64 = 600 * 1_000_000_000;
 // Maximum resource limits (hard caps)
 pub const MAX_INSTRUCTIONS: u64 = 100_000_000_000; // 100 billion instructions
 pub const MAX_EXECUTION_SECONDS: u64 = 60; // 60 seconds
+pub const MAX_COMPILATION_SECONDS: u64 = 300; // 5 minutes max compilation time
 
 // Extra fee for submitting large output data separately (covers storage + extra transaction)
 pub const SEPARATE_DATA_SUBMISSION_FEE: Balance = 10_000_000_000_000_000_000_000; // 0.01 NEAR
@@ -164,8 +165,9 @@ pub struct ExecutionResponse {
 #[derive(Clone, Debug)]
 #[near(serializers = [json])]
 pub struct ResourceMetrics {
-    pub instructions: u64,
-    pub time_ms: u64,
+    pub instructions: u64,        // Instructions used during WASM execution
+    pub time_ms: u64,              // Execution time in milliseconds
+    pub compile_time_ms: Option<u64>, // Compilation time in milliseconds (if compiled)
 }
 
 #[derive(BorshDeserialize, BorshSerialize, PanicOnDefault)]
@@ -180,7 +182,8 @@ pub struct Contract {
     // Pricing
     base_fee: Balance,
     per_instruction_fee: Balance,
-    per_ms_fee: Balance,
+    per_ms_fee: Balance,                 // Execution time cost
+    per_compile_ms_fee: Balance,         // Compilation time cost
 
     // Request tracking
     next_request_id: u64,
@@ -205,7 +208,8 @@ impl Contract {
             paused: false,
             base_fee: 10_000_000_000_000_000_000_000, // 0.01 NEAR
             per_instruction_fee: 1_000_000_000_000_000, // 0.000001 NEAR per million instructions
-            per_ms_fee: 1_000_000_000_000_000_000, // 0.000001 NEAR per millisecond
+            per_ms_fee: 1_000_000_000_000_000_000, // 0.001 NEAR per second (execution)
+            per_compile_ms_fee: 1_000_000_000_000_000_000, // 0.001 NEAR per second (compilation)
             next_request_id: 0,
             pending_requests: LookupMap::new(StorageKey::PendingRequests),
             total_executions: 0,
@@ -234,7 +238,12 @@ impl Contract {
             (metrics.instructions / 1_000_000) as u128 * self.per_instruction_fee;
         let time_cost = metrics.time_ms as u128 * self.per_ms_fee;
 
-        self.base_fee + instruction_cost + time_cost
+        // Add compilation cost if compilation occurred (uses separate, higher rate)
+        let compile_cost = metrics.compile_time_ms
+            .map(|ms| ms as u128 * self.per_compile_ms_fee)
+            .unwrap_or(0);
+
+        self.base_fee + instruction_cost + time_cost + compile_cost
     }
 
     /// Estimate cost based on resource limits

@@ -81,7 +81,17 @@ impl Compiler {
     /// # Returns
     /// * `Ok(checksum)` - SHA256 checksum of compiled WASM
     /// * `Err(_)` - Compilation failed
-    pub async fn compile(&self, code_source: &CodeSource) -> Result<String> {
+    /// Compile WASM and return checksum + bytes (does NOT upload to coordinator)
+    /// Use this for job-based workflow where upload happens after execution
+    ///
+    /// # Arguments
+    /// * `code_source` - GitHub repo, commit, and build target
+    /// * `timeout_seconds` - Optional timeout for compilation (kills process if exceeded)
+    pub async fn compile_local(
+        &self,
+        code_source: &CodeSource,
+        timeout_seconds: Option<u64>,
+    ) -> Result<(String, Vec<u8>)> {
         let CodeSource::GitHub {
             repo,
             commit,
@@ -94,7 +104,9 @@ impl Compiler {
         // Check if WASM already exists
         if self.api_client.wasm_exists(&checksum).await? {
             info!("WASM already exists in cache: {}", checksum);
-            return Ok(checksum);
+            // Download and return it
+            let wasm_bytes = self.api_client.download_wasm(&checksum).await?;
+            return Ok((checksum, wasm_bytes));
         }
 
         // Try to acquire distributed lock to prevent duplicate compilations
@@ -116,7 +128,8 @@ impl Compiler {
             // Check if compilation completed
             if self.api_client.wasm_exists(&checksum).await? {
                 info!("WASM compilation completed by another worker");
-                return Ok(checksum);
+                let wasm_bytes = self.api_client.download_wasm(&checksum).await?;
+                return Ok((checksum, wasm_bytes));
             }
 
             anyhow::bail!("Failed to acquire compilation lock and WASM not available");
@@ -124,22 +137,38 @@ impl Compiler {
 
         info!("Acquired compilation lock for {}", repo);
 
-        // Compile WASM from GitHub repository
-        let wasm_bytes = self.compile_from_github(repo, commit, build_target).await?;
-
-        // Upload to coordinator
-        info!("Uploading compiled WASM to coordinator");
-        let upload_result = self.api_client
-            .upload_wasm(checksum.clone(), repo.clone(), commit.clone(), wasm_bytes.clone())
-            .await;
+        // Compile WASM from GitHub repository with timeout
+        let wasm_bytes = if let Some(timeout) = timeout_seconds {
+            info!("⏱️  Compiling with timeout: {}s", timeout);
+            tokio::time::timeout(
+                std::time::Duration::from_secs(timeout),
+                self.compile_from_github(repo, commit, build_target)
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("Compilation timeout exceeded: {}s", timeout))??
+        } else {
+            self.compile_from_github(repo, commit, build_target).await?
+        };
 
         // Release lock
         if let Err(e) = self.api_client.release_lock(&lock_key).await {
             warn!("Failed to release lock {}: {}", lock_key, e);
         }
 
-        // Check upload result
-        upload_result?;
+        info!("✅ WASM compilation complete: {} ({} bytes)", checksum, wasm_bytes.len());
+        Ok((checksum, wasm_bytes))
+    }
+
+    /// OLD METHOD - kept for backward compatibility
+    /// Compile WASM and upload to coordinator immediately
+    pub async fn compile(&self, code_source: &CodeSource) -> Result<String> {
+        let (checksum, wasm_bytes) = self.compile_local(code_source, None).await?;
+
+        // Upload to coordinator
+        info!("Uploading compiled WASM to coordinator");
+        self.api_client
+            .upload_wasm(checksum.clone(), code_source.repo().to_string(), code_source.commit().to_string(), wasm_bytes)
+            .await?;
 
         info!("✅ WASM compilation and upload complete: {}", checksum);
         Ok(checksum)

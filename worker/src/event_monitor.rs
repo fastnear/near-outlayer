@@ -66,22 +66,25 @@ struct ShardData {
 struct ReceiptExecutionOutcome {
     receipt: Option<Receipt>,
     execution_outcome: Option<ExecutionOutcome>,
+    tx_hash: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct Receipt {
     receiver_id: Option<String>,
+    receipt_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ExecutionOutcome {
     outcome: Option<Outcome>,
-    id: Option<String>,  // receipt_id which can be used as transaction_hash
+    id: Option<String>,  // receipt_id
 }
 
 #[derive(Debug, Deserialize)]
 struct Outcome {
     logs: Option<Vec<String>>,
+    receipt_ids: Option<Vec<String>>,
 }
 
 /// FastNEAR status response
@@ -332,25 +335,26 @@ impl EventMonitor {
         let mut receipts_checked = 0;
         let mut contract_receipts = 0;
 
+        // Process receipt execution outcomes
         for shard in shards {
             if let Some(receipt_outcomes) = &shard.receipt_execution_outcomes {
                 for outcome in receipt_outcomes {
                     receipts_checked += 1;
 
-                    // Check receiver_id matches our contract
-                    let is_our_contract = if let Some(receipt) = &outcome.receipt {
+                    // Check receiver_id matches our contract and get tx_hash
+                    let (is_our_contract, transaction_hash) = if let Some(receipt) = &outcome.receipt {
                         if let Some(receiver_id) = &receipt.receiver_id {
                             if receiver_id == self.contract_id.as_str() {
                                 contract_receipts += 1;
-                                true
+                                (true, outcome.tx_hash.clone())
                             } else {
-                                false
+                                (false, None)
                             }
                         } else {
-                            false
+                            (false, None)
                         }
                     } else {
-                        false
+                        (false, None)
                     };
 
                     if !is_our_contract {
@@ -361,7 +365,6 @@ impl EventMonitor {
                     if let Some(execution) = &outcome.execution_outcome {
                         if let Some(outcome_data) = &execution.outcome {
                             if let Some(logs) = &outcome_data.logs {
-                                let transaction_hash = execution.id.clone();
                                 for log in logs {
                                     if let Some(mut event) =
                                         self.process_log(log, block_height)
@@ -484,7 +487,7 @@ impl EventMonitor {
         // Create task in coordinator API
         match self.api_client
             .create_task(
-                request_data.request_id,
+                request_data.request_id,              // request_id from contract
                 data_id_hex.clone(),
                 request_data.code_source.repo.clone(),
                 request_data.code_source.commit.clone(),
@@ -502,14 +505,17 @@ impl EventMonitor {
             )
             .await
         {
-            Ok(_) => {
+            Ok(Some(request_id)) => {
                 info!("✅ Task created in coordinator: request_id={} data_id={}",
-                    request_data.request_id, data_id_hex);
+                    request_id, data_id_hex);
+            }
+            Ok(None) => {
+                info!("ℹ️  Task already exists (duplicate): data_id={}", data_id_hex);
             }
             Err(e) => {
                 error!(
-                    "❌ Failed to create task: {}. request_id={} data_id={} repo={} commit={}",
-                    e, request_data.request_id, data_id_hex,
+                    "❌ Failed to create task: {}. data_id={} repo={} commit={}",
+                    e, data_id_hex,
                     request_data.code_source.repo, request_data.code_source.commit
                 );
                 return Err(e);

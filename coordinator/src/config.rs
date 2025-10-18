@@ -25,6 +25,10 @@ pub struct Config {
     // Timeouts
     pub task_poll_timeout_seconds: u64,
     pub lock_default_ttl_seconds: u64,
+
+    // NEAR contract integration
+    pub near_rpc_url: String,
+    pub contract_id: String,
 }
 
 impl Config {
@@ -69,6 +73,11 @@ impl Config {
             lock_default_ttl_seconds: std::env::var("LOCK_DEFAULT_TTL_SECONDS")
                 .unwrap_or_else(|_| "300".to_string())
                 .parse()?,
+
+            near_rpc_url: std::env::var("NEAR_RPC_URL")
+                .unwrap_or_else(|_| "https://rpc.testnet.near.org".to_string()),
+            contract_id: std::env::var("OFFCHAINVM_CONTRACT_ID")
+                .unwrap_or_else(|_| "offchainvm.testnet".to_string()),
         })
     }
 }

@@ -11,6 +11,8 @@ tests/
 ├── integration.sh   - Integration tests (Coordinator + Worker API)
 ├── e2e.sh          - End-to-end tests (NEAR contract flow)
 ├── transactions.sh  - Transaction tests (real testnet execution)
+├── job_workflow.sh  - ⭐ Job-based workflow tests (NEW!)
+├── verify_jobs.sh   - ⭐ Database verification (NEW!)
 └── run_all.sh      - Run all tests in sequence
 ```
 
@@ -410,8 +412,145 @@ echo ""
 echo "✅ Test passed!"
 ```
 
+## Test 6: Job-Based Workflow ⭐ NEW
+
+**File**: `job_workflow.sh`
+
+**What it tests**:
+- ✅ First execution creates both compile + execute jobs
+- ✅ Second execution reuses cached WASM (execute job only)
+- ✅ Multiple workers don't duplicate work (race condition test)
+- ✅ Job claiming is atomic and conflict-free
+
+**Prerequisites**:
+- Contract deployed on testnet
+- Coordinator running on http://localhost:8080
+- Worker(s) running (recommended: 2+ for race condition test)
+
+**Run**:
+```bash
+./job_workflow.sh
+```
+
+**Expected output**:
+```
+🧪 Job-Based Workflow Integration Test
+=======================================
+
+Part 1: First Execution (Compile + Execute)
+✓ Transaction 1 sent successfully
+  Request ID: 50
+
+📊 Expected worker logs:
+  • 🎯 Claiming jobs for request_id=50
+  • ✅ Claimed 2 job(s) (compile + execute)
+  • 🔨 Starting compilation job_id=101
+  • ✅ Compilation successful: time=45000ms
+  • ⚙️ Starting execution job_id=102
+  • ✅ Execution successful
+
+Part 2: Second Execution (Execute Only - Cached WASM)
+✓ Transaction 2 sent successfully
+  Request ID: 51
+
+📊 Expected worker logs:
+  • ✅ Claimed 1 job(s) (execute ONLY - WASM cached!)
+  • 📥 Downloading WASM: checksum=XXX
+  • ✅ Execution successful
+  ✓ NO COMPILATION - WASM was reused from cache!
+
+Part 3: Race Condition Test
+✓ Transaction 3 sent successfully
+
+Worker 1:
+  • ✅ Claimed 1 job(s)
+  • ✅ Execution successful
+
+Worker 2:
+  • ⚠️ Failed to claim: already claimed by another worker
+  • (Moves to next task)
+  ✓ Only ONE worker processed the task!
+
+✅ Job Workflow Test Completed!
+```
+
+**What to verify**:
+1. First execution: 2 jobs created (compile + execute)
+2. Second execution: 1 job created (execute only)
+3. No duplicate jobs in database
+4. Cache hit ratio > 1 (more executes than compiles)
+
+## Test 7: Database Verification ⭐ NEW
+
+**File**: `verify_jobs.sh`
+
+**What it tests**:
+- ✅ Job statistics and counts
+- ✅ Compilation and execution timing
+- ✅ WASM cache effectiveness
+- ✅ Worker performance metrics
+- ✅ Race condition detection (duplicate jobs)
+- ✅ Failed/pending job analysis
+
+**Prerequisites**:
+- PostgreSQL running (docker-compose up -d)
+- Jobs exist in database (run job_workflow.sh first)
+
+**Run**:
+```bash
+./verify_jobs.sh
+```
+
+**Expected output**:
+```
+🔍 Job Database Verification
+============================
+
+📊 Job Statistics:
+┌──────────┬───────────┬───────┬─────────────────┐
+│ job_type │  status   │ count │ unique_requests │
+├──────────┼───────────┼───────┼─────────────────┤
+│ compile  │ completed │    15 │              15 │
+│ execute  │ completed │    45 │              30 │
+└──────────┴───────────┴───────┴─────────────────┘
+
+🔨 Compilation Jobs (with timing):
+┌────────┬────────────┬─────────────┬──────────┬─────────────────┐
+│ job_id │ request_id │  worker_id  │  status  │ compile_time_ms │
+├────────┼────────────┼─────────────┼──────────┼─────────────────┤
+│    101 │         50 │  worker-1   │completed │       45230     │
+└────────┴────────────┴─────────────┴──────────┴─────────────────┘
+
+⚙️ Execution Jobs (with metrics):
+┌────────┬────────────┬─────────────┬──────────────┬──────────────┐
+│ job_id │ request_id │ exec_time_ms │ instructions │    status    │
+├────────┼────────────┼──────────────┼──────────────┼──────────────┤
+│    102 │         50 │     1234     │   5000000    │  completed   │
+└────────┴────────────┴──────────────┼──────────────┼──────────────┘
+
+📦 WASM Cache Effectiveness:
+┌───────────────────────┬────────────┐
+│   checksum_preview    │ times_used │
+├───────────────────────┼────────────┤
+│ abc123...             │     30     │
+└───────────────────────┴────────────┘
+
+✓ Execute/Compile ratio: 3.00
+✓ WASM cache is being utilized!
+
+🔍 Race Condition Detection:
+✓ No duplicate jobs - UNIQUE constraint working correctly!
+```
+
+**What to verify**:
+1. No duplicate jobs (UNIQUE constraint working)
+2. Execute/Compile ratio > 1 (cache is working)
+3. All compile jobs have time_ms > 0
+4. All execute jobs have instructions > 0
+5. No stuck jobs in pending state
+
 ---
 
-**Last updated**: 2025-10-15
-**Test coverage**: Unit + Integration + E2E
-**Platform**: NEAR Offshore MVP
+**Last updated**: 2025-10-17
+**Test coverage**: Unit + Integration + E2E + Job Workflow
+**Platform**: NEAR Offshore MVP (Job-based workflow)

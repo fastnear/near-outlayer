@@ -2,6 +2,7 @@ mod auth;
 mod config;
 mod handlers;
 mod models;
+mod near_client;
 mod storage;
 
 use axum::{
@@ -9,12 +10,14 @@ use axum::{
     Router,
 };
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
+use tokio::sync::RwLock;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::info;
 
 use config::Config;
 use storage::lru_eviction::LruEviction;
+use models::PricingConfig;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -22,6 +25,8 @@ pub struct AppState {
     pub redis: redis::Client,
     pub config: Arc<Config>,
     pub lru_eviction: Arc<LruEviction>,
+    pub pricing: Arc<RwLock<PricingConfig>>,  // Pricing from contract
+    pub pricing_updated_at: Arc<RwLock<SystemTime>>,  // Last update time
 }
 
 #[tokio::main]
@@ -72,20 +77,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     info!("LRU eviction task started");
 
+    // Fetch pricing from contract
+    info!("📡 Fetching initial pricing from NEAR contract...");
+    let initial_pricing = match near_client::fetch_pricing_from_contract(
+        &config.near_rpc_url,
+        &config.contract_id,
+    )
+    .await
+    {
+        Ok(pricing) => pricing,
+        Err(e) => {
+            tracing::warn!("⚠️ Failed to fetch pricing from contract: {}. Using defaults.", e);
+            near_client::get_default_pricing()
+        }
+    };
+
     // Build application state
     let state = AppState {
         db,
         redis,
         config: config.clone(),
         lru_eviction,
+        pricing: Arc::new(RwLock::new(initial_pricing)),
+        pricing_updated_at: Arc::new(RwLock::new(SystemTime::now())),
     };
 
-    // Build API router
-    let app = Router::new()
-        // Task endpoints (protected)
+    // Build protected routes (require auth)
+    let protected = Router::new()
+        // Job endpoints (protected)
+        .route("/jobs/claim", post(handlers::jobs::claim_job))
+        .route("/jobs/complete", post(handlers::jobs::complete_job))
+        // Task endpoints (protected) - for Redis queue management
         .route("/tasks/poll", get(handlers::tasks::poll_task))
-        .route("/tasks/complete", post(handlers::tasks::complete_task))
-        .route("/tasks/fail", post(handlers::tasks::fail_task))
         .route("/tasks/create", post(handlers::tasks::create_task))
         // WASM cache endpoints (protected)
         .route("/wasm/:checksum", get(handlers::wasm::get_wasm))
@@ -103,22 +126,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/workers/task-completion",
             post(handlers::workers::notify_task_completion),
         )
-        // Public endpoints (no auth)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::auth_middleware,
+        ));
+
+    // Build public routes (no auth required)
+    let public = Router::new()
         .route("/public/workers", get(handlers::public::list_workers))
-        .route("/public/executions", get(handlers::public::list_executions))
+        .route("/public/jobs", get(handlers::public::list_jobs))
         .route("/public/stats", get(handlers::public::get_stats))
+        .route("/public/repos/popular", get(handlers::public::get_popular_repos))
         .route("/public/wasm/info", get(handlers::public::get_wasm_info))
+        .route("/public/pricing", get(handlers::pricing::get_pricing))
+        .route("/public/pricing/refresh", post(handlers::pricing::refresh_pricing))
         .route(
             "/public/users/:user_account_id/earnings",
             get(handlers::public::get_user_earnings),
         )
-        // Health check
-        .route("/health", get(|| async { "OK" }))
-        // Add middleware
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            auth::auth_middleware,
-        ))
+        .route("/health", get(|| async { "OK" }));
+
+    // Combine routers
+    let app = Router::new()
+        .merge(protected)
+        .merge(public)
         .layer(CorsLayer::permissive()) // Allow all CORS requests (dev mode)
         .layer(TraceLayer::new_for_http())
         .with_state(state);

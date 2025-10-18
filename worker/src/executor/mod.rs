@@ -112,6 +112,7 @@ impl Executor {
                                     )),
                                     execution_time_ms,
                                     instructions,
+                                    compile_time_ms: None, // Compilation not tracked in executor
                                 });
                             }
                         }
@@ -124,6 +125,7 @@ impl Executor {
                     error: None,
                     execution_time_ms,
                     instructions,
+                    compile_time_ms: None, // Compilation not tracked in executor
                 })
             }
             Err(e) => {
@@ -134,6 +136,7 @@ impl Executor {
                     error: Some(e.to_string()),
                     execution_time_ms,
                     instructions: 0,
+                    compile_time_ms: None, // Compilation not tracked in executor
                 })
             }
         }

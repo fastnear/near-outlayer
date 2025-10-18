@@ -2,8 +2,8 @@
 
 -- Execution requests tracking
 CREATE TABLE execution_requests (
-    request_id BIGINT PRIMARY KEY,
-    data_id TEXT NOT NULL,
+    request_id BIGSERIAL PRIMARY KEY,
+    data_id TEXT NOT NULL UNIQUE,
     status TEXT NOT NULL DEFAULT 'pending',
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
@@ -11,6 +11,7 @@ CREATE TABLE execution_requests (
 
 CREATE INDEX idx_requests_status ON execution_requests(status);
 CREATE INDEX idx_requests_created ON execution_requests(created_at);
+CREATE INDEX idx_requests_data_id ON execution_requests(data_id);
 
 -- WASM cache metadata (local filesystem with LRU)
 CREATE TABLE wasm_cache (

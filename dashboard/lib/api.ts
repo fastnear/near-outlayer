@@ -17,19 +17,25 @@ export interface WorkerInfo {
   uptime_seconds: number | null;
 }
 
-export interface ExecutionHistoryEntry {
+export interface JobHistoryEntry {
   id: number;
+  job_id: number | null;
   request_id: number;
   data_id: string | null;
   worker_id: string;
   success: boolean;
-  execution_time_ms: number;
+  job_type: string | null;
+  execution_time_ms: number | null;
+  compile_time_ms: number | null;
   instructions_used: number | null;
   resolve_tx_id: string | null;
   user_account_id: string | null;
   near_payment_yocto: string | null;
+  actual_cost_yocto: string | null;
+  compile_cost_yocto: string | null;
   github_repo: string | null;
   github_commit: string | null;
+  transaction_hash: string | null;
   created_at: string;
 }
 
@@ -60,6 +66,23 @@ export interface UserEarnings {
   average_execution_time_ms: number;
 }
 
+export interface PopularRepo {
+  github_repo: string;
+  total_executions: number;
+  successful_executions: number;
+  last_commit: string | null;
+}
+
+export interface PricingConfig {
+  base_fee: string;
+  per_instruction_fee: string;
+  per_ms_fee: string;
+  per_compile_ms_fee: string;
+  max_compilation_seconds: number;
+  max_instructions: number;
+  max_execution_seconds: number;
+}
+
 /**
  * Fetch list of workers
  */
@@ -69,18 +92,18 @@ export async function fetchWorkers(): Promise<WorkerInfo[]> {
 }
 
 /**
- * Fetch execution history
+ * Fetch job history
  */
-export async function fetchExecutions(
+export async function fetchJobs(
   limit: number = 50,
   offset: number = 0,
   userAccountId?: string
-): Promise<ExecutionHistoryEntry[]> {
+): Promise<JobHistoryEntry[]> {
   const params: any = { limit, offset };
   if (userAccountId) {
     params.user_account_id = userAccountId;
   }
-  const response = await axios.get(`${API_BASE_URL}/public/executions`, { params });
+  const response = await axios.get(`${API_BASE_URL}/public/jobs`, { params });
   return response.data;
 }
 
@@ -115,5 +138,21 @@ export async function checkWasmExists(
  */
 export async function fetchUserEarnings(userAccountId: string): Promise<UserEarnings> {
   const response = await axios.get(`${API_BASE_URL}/public/users/${userAccountId}/earnings`);
+  return response.data;
+}
+
+/**
+ * Fetch popular repositories
+ */
+export async function fetchPopularRepos(): Promise<PopularRepo[]> {
+  const response = await axios.get(`${API_BASE_URL}/public/repos/popular`);
+  return response.data;
+}
+
+/**
+ * Fetch pricing configuration
+ */
+export async function fetchPricing(): Promise<PricingConfig> {
+  const response = await axios.get(`${API_BASE_URL}/public/pricing`);
   return response.data;
 }

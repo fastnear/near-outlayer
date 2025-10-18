@@ -1,5 +1,17 @@
 use serde::{Deserialize, Serialize};
 
+/// Pricing configuration from NEAR contract
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PricingConfig {
+    pub base_fee: String,                // yoctoNEAR
+    pub per_instruction_fee: String,     // yoctoNEAR per million instructions
+    pub per_ms_fee: String,              // yoctoNEAR per millisecond (execution)
+    pub per_compile_ms_fee: String,      // yoctoNEAR per millisecond (compilation)
+    pub max_compilation_seconds: u64,    // Maximum compilation time (from pricing)
+    pub max_instructions: u64,           // Hard cap on instructions
+    pub max_execution_seconds: u64,      // Hard cap on execution time
+}
+
 /// Response format for execution output
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub enum ResponseFormat {
@@ -22,7 +34,15 @@ pub struct ExecutionContext {
     pub contract_id: Option<String>,
 }
 
-/// Task types
+/// Job types
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JobType {
+    Compile,
+    Execute,
+}
+
+/// Task types (kept for backward compatibility with worker polling)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Task {
@@ -115,6 +135,25 @@ pub enum ExecutionOutput {
     Json(serde_json::Value),
 }
 
+/// Complete job request - worker finished a job
+#[derive(Debug, Deserialize)]
+pub struct CompleteJobRequest {
+    pub job_id: i64,
+    pub success: bool,
+    pub output: Option<ExecutionOutput>,
+    pub error: Option<String>,
+    pub time_ms: u64,
+    #[serde(default)]
+    pub instructions: u64,
+    #[serde(default)]
+    pub wasm_checksum: Option<String>,
+    #[serde(default)]
+    pub actual_cost_yocto: Option<String>,
+    #[serde(default)]
+    pub compile_cost_yocto: Option<String>,
+}
+
+/// Legacy: Complete task request
 #[derive(Debug, Deserialize)]
 pub struct CompleteTaskRequest {
     pub request_id: u64,
@@ -146,6 +185,38 @@ pub struct FailTaskRequest {
     pub error: String,
 }
 
+/// Claim job request - worker wants to claim work for a task
+#[derive(Debug, Deserialize)]
+pub struct ClaimJobRequest {
+    pub request_id: u64,
+    pub data_id: String,
+    pub worker_id: String,
+    pub code_source: CodeSource,
+    pub resource_limits: ResourceLimits,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_account_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub near_payment_yocto: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transaction_hash: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ClaimJobResponse {
+    pub jobs: Vec<JobInfo>,
+    pub pricing: PricingConfig,  // Pricing from contract for budget validation
+}
+
+#[derive(Debug, Serialize)]
+pub struct JobInfo {
+    pub job_id: i64,
+    pub job_type: JobType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wasm_checksum: Option<String>,
+    pub allowed: bool,
+}
+
+/// Legacy: Create task request (event monitor)
 #[derive(Debug, Deserialize)]
 pub struct CreateTaskRequest {
     pub request_id: u64,
@@ -165,4 +236,10 @@ pub struct CreateTaskRequest {
     pub near_payment_yocto: Option<String>,
     #[serde(default)]
     pub transaction_hash: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateTaskResponse {
+    pub request_id: i64,
+    pub created: bool,
 }

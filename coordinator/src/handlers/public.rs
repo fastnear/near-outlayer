@@ -51,26 +51,32 @@ pub async fn list_workers(
     Ok(Json(workers))
 }
 
-/// Public endpoint: List execution history
+/// Public endpoint: List job history
 #[derive(Debug, Serialize, sqlx::FromRow)]
-pub struct ExecutionHistoryEntry {
+pub struct JobHistoryEntry {
     pub id: i64,
+    pub job_id: Option<i64>,
     pub request_id: i64,
     pub data_id: Option<String>,
     pub worker_id: String,
     pub success: bool,
-    pub execution_time_ms: i64,
+    pub job_type: Option<String>,
+    pub execution_time_ms: Option<i64>,
+    pub compile_time_ms: Option<i64>,
     pub instructions_used: Option<i64>,
     pub resolve_tx_id: Option<String>,
     pub user_account_id: Option<String>,
     pub near_payment_yocto: Option<String>,
+    pub actual_cost_yocto: Option<String>,
+    pub compile_cost_yocto: Option<String>,
     pub github_repo: Option<String>,
     pub github_commit: Option<String>,
+    pub transaction_hash: Option<String>,
     pub created_at: String,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ExecutionHistoryQuery {
+pub struct JobHistoryQuery {
     #[serde(default = "default_limit")]
     pub limit: i64,
     #[serde(default)]
@@ -82,28 +88,34 @@ fn default_limit() -> i64 {
     50
 }
 
-pub async fn list_executions(
+pub async fn list_jobs(
     State(state): State<AppState>,
-    Query(params): Query<ExecutionHistoryQuery>,
-) -> Result<Json<Vec<ExecutionHistoryEntry>>, StatusCode> {
+    Query(params): Query<JobHistoryQuery>,
+) -> Result<Json<Vec<JobHistoryEntry>>, StatusCode> {
     let limit = params.limit.min(100); // Max 100 per page
 
-    let executions: Vec<ExecutionHistoryEntry> = if let Some(user_id) = params.user_account_id {
+    let jobs: Vec<JobHistoryEntry> = if let Some(user_id) = params.user_account_id {
         sqlx::query_as(
             r#"
             SELECT
                 id,
+                job_id,
                 request_id,
                 data_id,
                 worker_id,
                 success,
+                job_type,
                 execution_time_ms,
+                compile_time_ms,
                 instructions_used,
                 resolve_tx_id,
                 user_account_id,
                 near_payment_yocto,
+                actual_cost_yocto,
+                compile_cost_yocto,
                 github_repo,
                 github_commit,
+                transaction_hash,
                 created_at::TEXT as created_at
             FROM execution_history
             WHERE user_account_id = $1
@@ -121,17 +133,23 @@ pub async fn list_executions(
             r#"
             SELECT
                 id,
+                job_id,
                 request_id,
                 data_id,
                 worker_id,
                 success,
+                job_type,
                 execution_time_ms,
+                compile_time_ms,
                 instructions_used,
                 resolve_tx_id,
                 user_account_id,
                 near_payment_yocto,
+                actual_cost_yocto,
+                compile_cost_yocto,
                 github_repo,
                 github_commit,
+                transaction_hash,
                 created_at::TEXT as created_at
             FROM execution_history
             ORDER BY created_at DESC
@@ -144,11 +162,11 @@ pub async fn list_executions(
         .await
     }
     .map_err(|e| {
-        error!("Failed to fetch execution history: {}", e);
+        error!("Failed to fetch job history: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    Ok(Json(executions))
+    Ok(Json(jobs))
 }
 
 /// Public endpoint: Get execution statistics
@@ -366,4 +384,58 @@ pub async fn get_user_earnings(
         total_instructions_used: stats.total_instructions,
         average_execution_time_ms: stats.avg_time_ms,
     }))
+}
+
+/// Public endpoint: Get popular repositories
+#[derive(Debug, Serialize)]
+pub struct PopularRepo {
+    pub github_repo: String,
+    pub total_executions: i64,
+    pub successful_executions: i64,
+    pub last_commit: Option<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct PopularRepoRow {
+    github_repo: String,
+    total_executions: i64,
+    successful_executions: i64,
+    last_commit: Option<String>,
+}
+
+pub async fn get_popular_repos(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<PopularRepo>>, StatusCode> {
+    let repos: Vec<PopularRepoRow> = sqlx::query_as(
+        r#"
+        SELECT
+            github_repo,
+            COUNT(*)::BIGINT as total_executions,
+            COUNT(*) FILTER (WHERE success = true)::BIGINT as successful_executions,
+            (ARRAY_AGG(github_commit ORDER BY created_at DESC))[1] as last_commit
+        FROM execution_history
+        WHERE github_repo IS NOT NULL
+        GROUP BY github_repo
+        ORDER BY total_executions DESC
+        LIMIT 10
+        "#
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| {
+        error!("Failed to fetch popular repos: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let result = repos
+        .into_iter()
+        .map(|r| PopularRepo {
+            github_repo: r.github_repo,
+            total_executions: r.total_executions,
+            successful_executions: r.successful_executions,
+            last_commit: r.last_commit,
+        })
+        .collect();
+
+    Ok(Json(result))
 }

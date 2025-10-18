@@ -268,7 +268,7 @@ impl Contract {
                             let log_preview = match &output {
                                 ExecutionOutput::Bytes(bytes) => format!("Bytes({} bytes)", bytes.len()),
                                 ExecutionOutput::Text(text) => {
-                                    let preview = if text.len() > 100 { &text[..100] } else { text };
+                                    let preview: String = text.chars().take(100).collect();
                                     format!("Text: {}", preview)
                                 }
                                 ExecutionOutput::Json(value) => {
@@ -433,13 +433,14 @@ impl Contract {
         let estimated_cost = self.calculate_cost(&response.resources_used);
 
         log!(
-            "Resolving execution for request_id: {}, data_id: {:?}, success: {}, output_submitted: {}, resources_used: {{ instructions: {}, time_ms: {} }}",
+            "Resolving execution for request_id: {}, data_id: {:?}, success: {}, output_submitted: {}, resources_used: {{ instructions: {}, time_ms: {}, compile_time_ms: {:?} }}",
             request_id,
             data_id,
             response.success,
             request.output_submitted,
             response.resources_used.instructions,
-            response.resources_used.time_ms            
+            response.resources_used.time_ms,
+            response.resources_used.compile_time_ms
         );
 
         // Log cost in easy-to-parse format for worker

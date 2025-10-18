@@ -81,6 +81,20 @@ pub enum CodeSource {
     },
 }
 
+impl CodeSource {
+    pub fn repo(&self) -> &str {
+        match self {
+            CodeSource::GitHub { repo, .. } => repo,
+        }
+    }
+
+    pub fn commit(&self) -> &str {
+        match self {
+            CodeSource::GitHub { commit, .. } => commit,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceLimits {
     pub max_instructions: u64,
@@ -104,6 +118,42 @@ pub struct ExecutionResult {
     pub error: Option<String>,
     pub execution_time_ms: u64,
     pub instructions: u64,
+    pub compile_time_ms: Option<u64>, // Compilation time if WASM was compiled in this execution
+}
+
+/// Job type - compile or execute
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JobType {
+    Compile,
+    Execute,
+}
+
+/// Job information returned by claim_job
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobInfo {
+    pub job_id: i64,
+    pub job_type: JobType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wasm_checksum: Option<String>,
+    pub allowed: bool,
+}
+
+/// Pricing configuration from coordinator (fetched from NEAR contract)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PricingConfig {
+    pub base_fee: String,                // yoctoNEAR
+    pub per_instruction_fee: String,     // yoctoNEAR per million instructions
+    pub per_ms_fee: String,              // yoctoNEAR per millisecond (execution)
+    pub per_compile_ms_fee: String,      // yoctoNEAR per millisecond (compilation)
+    pub max_compilation_seconds: u64,    // Maximum compilation time
+}
+
+/// Response from claim_job endpoint
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaimJobResponse {
+    pub jobs: Vec<JobInfo>,
+    pub pricing: PricingConfig,
 }
 
 /// API client for communicating with Coordinator API
@@ -284,6 +334,178 @@ impl ApiClient {
             anyhow::bail!("Fail task failed: {}", error_text)
         }
 
+        Ok(())
+    }
+
+    /// Claim job(s) for a task
+    ///
+    /// # Arguments
+    /// * `request_id` - Request ID from contract
+    /// * `data_id` - Data ID from contract event
+    /// * `worker_id` - This worker's ID
+    /// * `code_source` - Code source details
+    /// * `resource_limits` - Resource limits for execution
+    /// * `user_account_id` - Optional user account ID from contract
+    /// * `near_payment_yocto` - Optional payment amount from contract
+    /// * `transaction_hash` - Optional transaction hash from contract
+    ///
+    /// # Returns
+    /// * `Ok(jobs)` - Array of jobs to process (compile and/or execute)
+    /// * `Err(_)` - Request failed or task already claimed
+    pub async fn claim_job(
+        &self,
+        request_id: u64,
+        data_id: String,
+        worker_id: String,
+        code_source: &CodeSource,
+        resource_limits: &ResourceLimits,
+        user_account_id: Option<String>,
+        near_payment_yocto: Option<String>,
+        transaction_hash: Option<String>,
+    ) -> Result<ClaimJobResponse> {
+        let url = format!("{}/jobs/claim", self.base_url);
+
+        #[derive(Serialize)]
+        struct ClaimRequest {
+            request_id: u64,
+            data_id: String,
+            worker_id: String,
+            code_source: CodeSource,
+            resource_limits: ResourceLimits,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            user_account_id: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            near_payment_yocto: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            transaction_hash: Option<String>,
+        }
+
+        let request = ClaimRequest {
+            request_id,
+            data_id,
+            worker_id,
+            code_source: code_source.clone(),
+            resource_limits: resource_limits.clone(),
+            user_account_id,
+            near_payment_yocto,
+            transaction_hash,
+        };
+
+        tracing::debug!("🎯 Claiming job for request_id={}", request_id);
+
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.auth_token)
+            .json(&request)
+            .send()
+            .await
+            .context("Failed to send claim job request")?;
+
+        match response.status() {
+            StatusCode::OK => {
+                let claim_response: ClaimJobResponse = response
+                    .json()
+                    .await
+                    .context("Failed to parse claim job response")?;
+                tracing::info!(
+                    "✅ Claimed {} job(s) for request_id={}",
+                    claim_response.jobs.len(),
+                    request_id
+                );
+                Ok(claim_response)
+            }
+            StatusCode::CONFLICT => {
+                anyhow::bail!("Task already claimed by another worker")
+            }
+            status => {
+                let error_text = response
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "Unknown error".to_string());
+                tracing::error!("❌ Claim job failed with status {}: {}", status, error_text);
+                anyhow::bail!("Claim job failed with status {}: {}", status, error_text)
+            }
+        }
+    }
+
+    /// Complete a job with result
+    ///
+    /// # Arguments
+    /// * `job_id` - Job ID from coordinator
+    /// * `success` - Whether job succeeded
+    /// * `output` - Execution output (for execute jobs)
+    /// * `error` - Error message (if failed)
+    /// * `time_ms` - Time taken in milliseconds
+    /// * `instructions` - Instructions consumed (for execute jobs, 0 for compile)
+    /// * `wasm_checksum` - WASM checksum (for compile jobs)
+    /// * `actual_cost_yocto` - Total cost from contract (for execute jobs)
+    /// * `compile_cost_yocto` - Compilation cost calculated by worker (for compile jobs)
+    pub async fn complete_job(
+        &self,
+        job_id: i64,
+        success: bool,
+        output: Option<ExecutionOutput>,
+        error: Option<String>,
+        time_ms: u64,
+        instructions: u64,
+        wasm_checksum: Option<String>,
+        actual_cost_yocto: Option<String>,
+        compile_cost_yocto: Option<String>,
+    ) -> Result<()> {
+        let url = format!("{}/jobs/complete", self.base_url);
+
+        #[derive(Serialize)]
+        struct CompleteJobRequest {
+            job_id: i64,
+            success: bool,
+            output: Option<ExecutionOutput>,
+            error: Option<String>,
+            time_ms: u64,
+            instructions: u64,
+            wasm_checksum: Option<String>,
+            actual_cost_yocto: Option<String>,
+            compile_cost_yocto: Option<String>,
+        }
+
+        let request = CompleteJobRequest {
+            job_id,
+            success,
+            output,
+            error: error.clone(),
+            time_ms,
+            instructions,
+            wasm_checksum,
+            actual_cost_yocto,
+            compile_cost_yocto,
+        };
+
+        tracing::debug!(
+            "📤 Completing job_id={} success={} time_ms={}",
+            job_id,
+            success,
+            time_ms
+        );
+
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.auth_token)
+            .json(&request)
+            .send()
+            .await
+            .context("Failed to send complete job request")?;
+
+        if !response.status().is_success() {
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            tracing::error!("❌ Complete job failed: {}", error_text);
+            anyhow::bail!("Complete job failed: {}", error_text)
+        }
+
+        tracing::info!("✅ Job {} completed successfully", job_id);
         Ok(())
     }
 
@@ -508,6 +730,8 @@ impl ApiClient {
     /// * `encrypted_secrets` - Optional encrypted secrets
     /// * `user_account_id` - User who requested execution
     /// * `near_payment_yocto` - Payment amount in yoctoNEAR
+    ///
+    /// Returns `Ok(Some(request_id))` if task was created, `Ok(None)` if duplicate
     pub async fn create_task(
         &self,
         request_id: u64,
@@ -525,7 +749,7 @@ impl ApiClient {
         user_account_id: Option<String>,
         near_payment_yocto: Option<String>,
         transaction_hash: Option<String>,
-    ) -> Result<()> {
+    ) -> Result<Option<u64>> {
         let url = format!("{}/tasks/create", self.base_url);
 
         #[derive(Serialize)]
@@ -545,6 +769,12 @@ impl ApiClient {
             near_payment_yocto: Option<String>,
             #[serde(skip_serializing_if = "Option::is_none")]
             transaction_hash: Option<String>,
+        }
+
+        #[derive(Deserialize)]
+        struct CreateResponse {
+            request_id: i64,
+            created: bool,
         }
 
         let request = CreateRequest {
@@ -586,7 +816,13 @@ impl ApiClient {
             anyhow::bail!("Create task failed: {}", error_text)
         }
 
-        Ok(())
+        let create_response: CreateResponse = response.json().await.context("Failed to parse create task response")?;
+
+        if create_response.created {
+            Ok(Some(create_response.request_id as u64))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Send heartbeat to coordinator

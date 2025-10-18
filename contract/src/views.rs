@@ -13,11 +13,13 @@ impl Contract {
     }
 
     /// Get current pricing
-    pub fn get_pricing(&self) -> (U128, U128, U128) {
+    /// Returns: (base_fee, per_instruction_fee, per_ms_fee, per_compile_ms_fee)
+    pub fn get_pricing(&self) -> (U128, U128, U128, U128) {
         (
             U128(self.base_fee),
             U128(self.per_instruction_fee),
             U128(self.per_ms_fee),
+            U128(self.per_compile_ms_fee),
         )
     }
 
@@ -28,8 +30,9 @@ impl Contract {
     }
 
     /// Get maximum resource limits (hard caps)
-    pub fn get_max_limits(&self) -> (u64, u64) {
-        (MAX_INSTRUCTIONS, MAX_EXECUTION_SECONDS)
+    /// Returns: (max_instructions, max_execution_seconds, max_compilation_seconds)
+    pub fn get_max_limits(&self) -> (u64, u64, u64) {
+        (MAX_INSTRUCTIONS, MAX_EXECUTION_SECONDS, MAX_COMPILATION_SECONDS)
     }
 
     /// Check if contract is paused
