@@ -151,6 +151,7 @@ impl Contract {
         success: bool,
         error: Option<String>,
         resources_used: ResourceMetrics,
+        compilation_note: Option<String>,
     ) {
         // Only operator can submit execution data
         self.assert_operator();
@@ -164,10 +165,11 @@ impl Contract {
             output: None, // Output already stored above
             error,
             resources_used,
+            compilation_note,
         };
 
         log!(
-            "Resolving execution for request_id: {} (combined flow, synchronous)",
+            "Resolving execution for request_id: {} (combined flow)",
             request_id
         );
 
@@ -243,6 +245,7 @@ impl Contract {
                             None,
                             U128(cost),    // payment_charged
                             U128(refund),  // payment_refunded
+                            exec_response.compilation_note.as_deref(),
                         );
 
                         // Log the execution result with resources used
@@ -277,23 +280,35 @@ impl Contract {
                                 }
                             };
 
+                            let compilation_info = exec_response.compilation_note
+                                .as_ref()
+                                .map(|note| format!(", {}", note))
+                                .unwrap_or_default();
+
                             log!(
-                                "Execution completed successfully. Output: {}, Resources: {{ instructions: {}, time_ms: {} }}, Cost: {} yoctoNEAR, Refund: {} yoctoNEAR",
+                                "Execution completed successfully. Output: {}, Resources: {{ instructions: {}, time_ms: {} }}, Cost: {} yoctoNEAR, Refund: {} yoctoNEAR{}",
                                 log_preview,
                                 exec_response.resources_used.instructions,
                                 exec_response.resources_used.time_ms,
                                 cost,
-                                refund
+                                refund,
+                                compilation_info
                             );
 
                             Some(json_value)
                         } else {
+                            let compilation_info = exec_response.compilation_note
+                                .as_ref()
+                                .map(|note| format!(", {}", note))
+                                .unwrap_or_default();
+
                             log!(
-                                "Execution has no output value. Resources: {{ instructions: {}, time_ms: {} }}, Cost: {} yoctoNEAR, Refund: {} yoctoNEAR",
+                                "Execution has no output value. Resources: {{ instructions: {}, time_ms: {} }}, Cost: {} yoctoNEAR, Refund: {} yoctoNEAR{}",
                                 exec_response.resources_used.instructions,
                                 exec_response.resources_used.time_ms,
                                 cost,
-                                refund
+                                refund,
+                                compilation_info
                             );
 
                             None
@@ -320,6 +335,7 @@ impl Contract {
                             Some(&error_msg),
                             U128(self.base_fee),  // payment_charged (only base fee)
                             U128(refund),         // payment_refunded
+                            exec_response.compilation_note.as_deref(),
                         );
 
                         env::panic_str(&format!(

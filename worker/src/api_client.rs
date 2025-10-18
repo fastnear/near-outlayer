@@ -119,6 +119,7 @@ pub struct ExecutionResult {
     pub execution_time_ms: u64,
     pub instructions: u64,
     pub compile_time_ms: Option<u64>, // Compilation time if WASM was compiled in this execution
+    pub compilation_note: Option<String>, // e.g., "Cached WASM from 2025-01-10 14:30 UTC"
 }
 
 /// Job type - compile or execute
@@ -604,9 +605,8 @@ impl ApiClient {
     /// * `checksum` - SHA256 checksum of the WASM file
     ///
     /// # Returns
-    /// * `Ok(true)` - File exists in cache
-    /// * `Ok(false)` - File does not exist
-    pub async fn wasm_exists(&self, checksum: &str) -> Result<bool> {
+    /// * `Ok((exists, created_at))` - Whether file exists and optional creation timestamp
+    pub async fn wasm_exists(&self, checksum: &str) -> Result<(bool, Option<String>)> {
         let url = format!("{}/wasm/exists/{}", self.base_url, checksum);
 
         let response = self
@@ -624,6 +624,7 @@ impl ApiClient {
         #[derive(Deserialize)]
         struct ExistsResponse {
             exists: bool,
+            created_at: Option<String>,
         }
 
         let result = response
@@ -631,7 +632,7 @@ impl ApiClient {
             .await
             .context("Failed to parse exists response")?;
 
-        Ok(result.exists)
+        Ok((result.exists, result.created_at))
     }
 
     /// Acquire a distributed lock

@@ -26,6 +26,7 @@ pub mod emit {
         pub error_message: Option<&'a str>,
         pub payment_charged: U128,    // Actual amount charged (after refund)
         pub payment_refunded: U128,   // Amount refunded to user
+        pub compilation_note: Option<&'a str>, // e.g., "Cached WASM from 2025-01-10 14:30 UTC"
         pub timestamp: u64,
     }
 
@@ -61,6 +62,7 @@ pub mod emit {
         error_message: Option<&str>,
         payment_charged: U128,
         payment_refunded: U128,
+        compilation_note: Option<&str>,
     ) {
         log_event(
             "execution_completed",
@@ -72,6 +74,7 @@ pub mod emit {
                 error_message,
                 payment_charged,
                 payment_refunded,
+                compilation_note,
                 timestamp: env::block_timestamp(),
             },
         );

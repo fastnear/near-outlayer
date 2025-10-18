@@ -113,6 +113,7 @@ impl Executor {
                                     execution_time_ms,
                                     instructions,
                                     compile_time_ms: None, // Compilation not tracked in executor
+                                    compilation_note: None,
                                 });
                             }
                         }
@@ -126,6 +127,7 @@ impl Executor {
                     execution_time_ms,
                     instructions,
                     compile_time_ms: None, // Compilation not tracked in executor
+                    compilation_note: None,
                 })
             }
             Err(e) => {
@@ -137,6 +139,7 @@ impl Executor {
                     execution_time_ms,
                     instructions: 0,
                     compile_time_ms: None, // Compilation not tracked in executor
+                    compilation_note: None,
                 })
             }
         }

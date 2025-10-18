@@ -189,7 +189,8 @@ impl NearClient {
                 "instructions": result.instructions,
                 "time_ms": result.execution_time_ms,
                 "compile_time_ms": result.compile_time_ms,
-            }
+            },
+            "compilation_note": result.compilation_note,
         });
 
         let args_json = serde_json::to_string(&args)
@@ -306,7 +307,8 @@ impl NearClient {
                 "instructions": result.instructions,
                 "time_ms": result.execution_time_ms,
                 "compile_time_ms": result.compile_time_ms,
-            }
+            },
+            "compilation_note": result.compilation_note,
         });
 
         let response_json = serde_json::to_string(&full_response)
@@ -383,7 +385,8 @@ impl NearClient {
                     "instructions": result.instructions,
                     "time_ms": result.execution_time_ms,
                     "compile_time_ms": result.compile_time_ms,
-                }
+                },
+                "compilation_note": result.compilation_note,
             }
         });
 

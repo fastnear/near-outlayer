@@ -4,7 +4,8 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use tracing::{debug, error, info};
+use chrono::{DateTime, Utc};
+use tracing::{debug, error, info, warn};
 
 use crate::models::WasmExistsResponse;
 use crate::AppState;
@@ -67,8 +68,29 @@ pub async fn wasm_exists(
 
     let file_exists = wasm_path.exists();
 
-    // If file doesn't exist but metadata exists in DB, clean up metadata
-    if !file_exists {
+    // Get created_at timestamp from database if file exists
+    let created_at = if file_exists {
+        let db_result = sqlx::query_as::<_, (DateTime<Utc>,)>(
+            "SELECT created_at AT TIME ZONE 'UTC' as created_at FROM wasm_cache WHERE checksum = $1"
+        )
+        .bind(&checksum)
+        .fetch_optional(&state.db)
+        .await;
+
+        match db_result {
+            Ok(Some((timestamp,))) => Some(timestamp.to_rfc3339()),
+            Ok(None) => {
+                // File exists but no metadata - this shouldn't happen normally
+                debug!("WASM file exists but no metadata found for: {}", checksum);
+                None
+            }
+            Err(e) => {
+                warn!("Failed to fetch WASM metadata for {}: {}", checksum, e);
+                None
+            }
+        }
+    } else {
+        // If file doesn't exist but metadata exists in DB, clean up metadata
         let db_result = sqlx::query("SELECT checksum FROM wasm_cache WHERE checksum = $1")
             .bind(&checksum)
             .fetch_optional(&state.db)
@@ -82,10 +104,15 @@ pub async fn wasm_exists(
                 .execute(&state.db)
                 .await;
         }
-    }
 
-    debug!("WASM {} exists: {}", checksum, file_exists);
-    Json(WasmExistsResponse { exists: file_exists })
+        None
+    };
+
+    debug!("WASM {} exists: {}, created_at: {:?}", checksum, file_exists, created_at);
+    Json(WasmExistsResponse {
+        exists: file_exists,
+        created_at,
+    })
 }
 
 /// Upload compiled WASM file

@@ -91,7 +91,7 @@ impl Compiler {
         &self,
         code_source: &CodeSource,
         timeout_seconds: Option<u64>,
-    ) -> Result<(String, Vec<u8>)> {
+    ) -> Result<(String, Vec<u8>, Option<String>)> {
         let CodeSource::GitHub {
             repo,
             commit,
@@ -102,11 +102,12 @@ impl Compiler {
         let checksum = self.compute_checksum(repo, commit, build_target);
 
         // Check if WASM already exists
-        if self.api_client.wasm_exists(&checksum).await? {
-            info!("WASM already exists in cache: {}", checksum);
+        let (exists, created_at) = self.api_client.wasm_exists(&checksum).await?;
+        if exists {
+            info!("WASM already exists in cache: {} (created: {:?})", checksum, created_at);
             // Download and return it
             let wasm_bytes = self.api_client.download_wasm(&checksum).await?;
-            return Ok((checksum, wasm_bytes));
+            return Ok((checksum, wasm_bytes, created_at));
         }
 
         // Try to acquire distributed lock to prevent duplicate compilations
@@ -126,10 +127,11 @@ impl Compiler {
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
             // Check if compilation completed
-            if self.api_client.wasm_exists(&checksum).await? {
-                info!("WASM compilation completed by another worker");
+            let (exists, created_at) = self.api_client.wasm_exists(&checksum).await?;
+            if exists {
+                info!("WASM compilation completed by another worker (created: {:?})", created_at);
                 let wasm_bytes = self.api_client.download_wasm(&checksum).await?;
-                return Ok((checksum, wasm_bytes));
+                return Ok((checksum, wasm_bytes, created_at));
             }
 
             anyhow::bail!("Failed to acquire compilation lock and WASM not available");
@@ -156,13 +158,13 @@ impl Compiler {
         }
 
         info!("✅ WASM compilation complete: {} ({} bytes)", checksum, wasm_bytes.len());
-        Ok((checksum, wasm_bytes))
+        Ok((checksum, wasm_bytes, None)) // Fresh compilation, no created_at yet
     }
 
     /// OLD METHOD - kept for backward compatibility
     /// Compile WASM and upload to coordinator immediately
     pub async fn compile(&self, code_source: &CodeSource) -> Result<String> {
-        let (checksum, wasm_bytes) = self.compile_local(code_source, None).await?;
+        let (checksum, wasm_bytes, _created_at) = self.compile_local(code_source, None).await?;
 
         // Upload to coordinator
         info!("Uploading compiled WASM to coordinator");

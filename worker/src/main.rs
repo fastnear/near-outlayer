@@ -254,7 +254,7 @@ async fn worker_iteration(
     );
 
     // Local WASM cache - if we compile, we keep it in memory for execute job
-    let mut compiled_wasm: Option<(String, Vec<u8>, u64)> = None; // (checksum, bytes, compile_time_ms)
+    let mut compiled_wasm: Option<(String, Vec<u8>, u64, Option<String>)> = None; // (checksum, bytes, compile_time_ms, created_at)
 
     // Process each job in order
     for job in claim_response.jobs {
@@ -276,9 +276,9 @@ async fn worker_iteration(
                     near_payment_yocto.as_ref(),
                 )
                 .await {
-                    Ok((checksum, wasm_bytes, compile_time_ms)) => {
-                        // Store in local cache for execute job (including compile time)
-                        compiled_wasm = Some((checksum, wasm_bytes, compile_time_ms));
+                    Ok((checksum, wasm_bytes, compile_time_ms, created_at)) => {
+                        // Store in local cache for execute job (including compile time and created_at)
+                        compiled_wasm = Some((checksum, wasm_bytes, compile_time_ms, created_at));
                     }
                     Err(e) => {
                         // Compilation failed - notify contract
@@ -292,6 +292,7 @@ async fn worker_iteration(
                             execution_time_ms: 0,
                             instructions: 0,
                             compile_time_ms: None,
+                            compilation_note: None,
                         };
 
                         if let Err(submit_err) = near_client
@@ -325,7 +326,7 @@ async fn worker_iteration(
                     near_payment_yocto.as_ref(),
                     request_id,
                     &data_id,
-                    compiled_wasm.as_ref(), // Pass local WASM cache
+                    compiled_wasm.as_ref().map(|(cs, b, ct, ca)| (cs, b, ct, ca.as_deref())), // Pass local WASM cache
                 )
                 .await?;
             }
@@ -333,7 +334,7 @@ async fn worker_iteration(
     }
 
     // Upload WASM to coordinator after all work is done (non-critical)
-    if let Some((checksum, wasm_bytes, _compile_time_ms)) = compiled_wasm {
+    if let Some((checksum, wasm_bytes, _compile_time_ms, _created_at)) = compiled_wasm {
         info!("📤 Uploading compiled WASM to coordinator (background)");
         if let Err(e) = api_client.upload_wasm(checksum, code_source.repo().to_string(), code_source.commit().to_string(), wasm_bytes).await {
             warn!("⚠️ Failed to upload WASM to coordinator: {}", e);
@@ -388,7 +389,7 @@ async fn handle_compile_job(
     code_source: &CodeSource,
     pricing: &api_client::PricingConfig,
     user_payment: Option<&String>,
-) -> Result<(String, Vec<u8>, u64)> {
+) -> Result<(String, Vec<u8>, u64, Option<String>)> {
     info!("🔨 Starting compilation job_id={}", job.job_id);
 
     // Validate compilation budget
@@ -456,9 +457,9 @@ async fn handle_compile_job(
     let compile_time_ms = start_time.elapsed().as_millis() as u64;
 
     match compile_result {
-        Ok((checksum, wasm_bytes)) => {
-            info!("✅ Compilation successful: checksum={} size={} bytes time={}ms",
-                checksum, wasm_bytes.len(), compile_time_ms);
+        Ok((checksum, wasm_bytes, created_at)) => {
+            info!("✅ Compilation successful: checksum={} size={} bytes time={}ms cached={:?}",
+                checksum, wasm_bytes.len(), compile_time_ms, created_at.is_some());
 
             // Calculate compilation cost: compile_time_ms * per_compile_ms_fee
             let per_compile_ms_fee: u128 = pricing.per_compile_ms_fee.parse()
@@ -496,7 +497,7 @@ async fn handle_compile_job(
                 // Continue anyway - will upload later
             }
 
-            Ok((checksum, wasm_bytes, compile_time_ms))
+            Ok((checksum, wasm_bytes, compile_time_ms, created_at))
         }
         Err(e) => {
             let error_msg = format!("Compilation failed: {}", e);
@@ -542,7 +543,7 @@ async fn handle_execute_job(
     near_payment_yocto: Option<&String>,
     request_id: u64,
     data_id: &str,
-    compiled_wasm: Option<&(String, Vec<u8>, u64)>, // Local cache from compile job (checksum, bytes, compile_time_ms)
+    compiled_wasm: Option<(&String, &Vec<u8>, &u64, Option<&str>)>, // Local cache from compile job (checksum, bytes, compile_time_ms, created_at)
 ) -> Result<()> {
     info!("⚙️ Starting execution job_id={}", job.job_id);
 
@@ -550,26 +551,32 @@ async fn handle_execute_job(
     let wasm_checksum = job.wasm_checksum.as_ref()
         .ok_or_else(|| anyhow::anyhow!("Execute job missing wasm_checksum"))?;
 
-    // Get WASM bytes and compile time - use local cache if available, otherwise download
-    let (wasm_bytes, compile_time_ms) = if let Some((cached_checksum, cached_bytes, cached_compile_time)) = compiled_wasm {
+    // Get WASM bytes, compile time, and creation timestamp - use local cache if available, otherwise download
+    let (wasm_bytes, compile_time_ms, created_at) = if let Some((cached_checksum, cached_bytes, cached_compile_time, cached_created_at)) = compiled_wasm {
         if cached_checksum == wasm_checksum {
             info!("✅ Using locally compiled WASM: {} bytes (cache hit!) compiled in {}ms", cached_bytes.len(), cached_compile_time);
-            (cached_bytes.clone(), Some(*cached_compile_time))
+            (cached_bytes.clone(), Some(*cached_compile_time), cached_created_at.map(|s| s.to_string()))
         } else {
             warn!("⚠️ Checksum mismatch - downloading from coordinator");
-            info!("📥 Downloading WASM: checksum={}", wasm_checksum);
+            // Check cache metadata to get created_at timestamp
+            let (_exists, created_at) = api_client.wasm_exists(wasm_checksum).await
+                .context("Failed to check WASM existence")?;
+            info!("📥 Downloading WASM: checksum={} (cached since: {:?})", wasm_checksum, created_at);
             let bytes = api_client.download_wasm(wasm_checksum).await
                 .context("Failed to download WASM")?;
             info!("✅ Downloaded WASM: {} bytes", bytes.len());
-            (bytes, None) // Unknown compile time for cached WASM
+            (bytes, None, created_at)
         }
     } else {
         // No local cache - download from coordinator
-        info!("📥 Downloading WASM: checksum={}", wasm_checksum);
+        // Check cache metadata to get created_at timestamp
+        let (_exists, created_at) = api_client.wasm_exists(wasm_checksum).await
+            .context("Failed to check WASM existence")?;
+        info!("📥 Downloading WASM: checksum={} (cached since: {:?})", wasm_checksum, &created_at);
         let bytes = api_client.download_wasm(wasm_checksum).await
             .context("Failed to download WASM")?;
-        info!("✅ Downloaded WASM: {} bytes", bytes.len());
-        (bytes, None) // Unknown compile time for cached WASM
+        info!("✅ Downloaded WASM: {} bytes, created_at={:?}", bytes.len(), &created_at);
+        (bytes, None, created_at)
     };
 
     // Decrypt secrets if provided
@@ -621,6 +628,13 @@ async fn handle_execute_job(
             // Add compilation time if WASM was compiled in this execution
             execution_result.compile_time_ms = compile_time_ms;
 
+            // Add compilation note if WASM was from cache
+            execution_result.compilation_note = created_at.as_ref().map(|timestamp| {
+                format!("Cached WASM from {}", timestamp)
+            });
+
+            info!("🔍 DEBUG: created_at={:?}, compilation_note={:?}", &created_at, &execution_result.compilation_note);
+
             if let Some(ct) = compile_time_ms {
                 info!(
                     "✅ Execution successful: compile={}ms execute={}ms instructions={}",
@@ -628,8 +642,10 @@ async fn handle_execute_job(
                 );
             } else {
                 info!(
-                    "✅ Execution successful: time={}ms instructions={} (using cached WASM)",
-                    execution_result.execution_time_ms, execution_result.instructions
+                    "✅ Execution successful: time={}ms instructions={} (using cached WASM{})",
+                    execution_result.execution_time_ms,
+                    execution_result.instructions,
+                    created_at.as_ref().map(|t| format!(" from {}", t)).unwrap_or_default()
                 );
             }
 
@@ -705,6 +721,7 @@ async fn handle_execute_job(
                 execution_time_ms: 0,
                 instructions: 0,
                 compile_time_ms,
+                compilation_note: None,
             };
 
             // Submit error to NEAR contract (critical path)
@@ -786,6 +803,7 @@ async fn handle_compile_task(
                 execution_time_ms: 0,
                 instructions: 0,
                 compile_time_ms: None, // Compilation failed before execute
+                compilation_note: None,
             };
 
             // Submit error to NEAR contract

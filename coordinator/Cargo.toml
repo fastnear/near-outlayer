@@ -13,7 +13,7 @@ tower-http = { version = "0.5", features = ["trace", "cors"] }
 tokio = { version = "1.40", features = ["full"] }
 
 # Database
-sqlx = { version = "0.7", features = ["postgres", "runtime-tokio-native-tls", "macros", "time", "bigdecimal"] }
+sqlx = { version = "0.7", features = ["postgres", "runtime-tokio-native-tls", "macros", "time", "bigdecimal", "chrono"] }
 
 # Redis
 redis = { version = "0.24", features = ["tokio-comp", "connection-manager"] }
@@ -42,5 +42,6 @@ multer = "3.0"
 
 # HTTP client (for NEAR RPC calls)
 reqwest = { version = "0.11", features = ["json"] }
+chrono = { version = "0.4.42", features = ["serde"] }
 
 [dev-dependencies]

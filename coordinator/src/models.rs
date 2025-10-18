@@ -125,6 +125,7 @@ pub struct AcquireLockResponse {
 #[derive(Debug, Serialize)]
 pub struct WasmExistsResponse {
     pub exists: bool,
+    pub created_at: Option<String>, // ISO 8601 timestamp when WASM was compiled
 }
 
 /// Execution output - can be bytes, text, or parsed JSON

@@ -159,6 +159,7 @@ pub struct ExecutionResponse {
     pub output: Option<ExecutionOutput>,
     pub error: Option<String>,
     pub resources_used: ResourceMetrics,
+    pub compilation_note: Option<String>, // e.g., "Cached WASM from 2025-01-10 14:30 UTC"
 }
 
 /// Resource usage metrics
