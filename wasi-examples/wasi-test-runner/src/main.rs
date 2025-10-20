@@ -31,6 +31,10 @@ struct Args {
     #[arg(long, default_value = "128")]
     max_memory_mb: u64,
 
+    /// Environment variables (format: KEY=value, can be specified multiple times)
+    #[arg(short, long)]
+    env: Vec<String>,
+
     /// Verbose output
     #[arg(short, long)]
     verbose: bool,
@@ -86,6 +90,9 @@ async fn main() -> Result<()> {
     println!("📝 Input: {}", input_data);
     println!("⚙️  Max instructions: {}", args.max_instructions);
     println!("💾 Max memory: {} MB", args.max_memory_mb);
+    if !args.env.is_empty() {
+        println!("🔑 Environment variables: {}", args.env.len());
+    }
     println!();
 
     // Try to execute
@@ -194,6 +201,13 @@ async fn execute_wasi_p2(
         wasmtime_wasi::FilePerms::all(),
     )?;
 
+    // Add environment variables
+    for env_var in &args.env {
+        if let Some((key, value)) = env_var.split_once('=') {
+            wasi_builder.env(key, value);
+        }
+    }
+
     let host_state = HostState {
         wasi_ctx: wasi_builder.build(),
         wasi_http_ctx: WasiHttpCtx::new(),
@@ -240,6 +254,13 @@ async fn execute_wasi_p1(
     wasi_builder.stdin(stdin_pipe);
     wasi_builder.stdout(stdout_pipe.clone());
     wasi_builder.stderr(wasmtime_wasi::pipe::MemoryOutputPipe::new(1024 * 1024));
+
+    // Add environment variables
+    for env_var in &args.env {
+        if let Some((key, value)) = env_var.split_once('=') {
+            wasi_builder.env(key, value);
+        }
+    }
 
     let wasi_p1_ctx = wasi_builder.build_p1();
 

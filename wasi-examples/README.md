@@ -42,6 +42,16 @@ HTTP client for AI APIs demonstrating:
 
 **Use case**: HTTP requests, API calls, external data fetching
 
+### [oracle-ark](./oracle-ark/) - WASI P2
+On-demand price oracle demonstrating:
+- ✅ WASI Preview 2 (wasm32-wasip2)
+- ✅ Multiple HTTP sources (CoinGecko, CoinMarketCap, TwelveData)
+- ✅ Price aggregation (average, median, weighted)
+- ✅ Encrypted API keys via env vars
+- ✅ Batch requests (up to 10 tokens)
+
+**Use case**: Decentralized oracles, price feeds, multi-source data aggregation
+
 ## 🚀 Quick Start
 
 ### 1. Choose Your WASI Version
