@@ -49,7 +49,7 @@ const PRESETS: Preset[] = [
     commit: '88b72003a06dc8d1972b39240e01aa9c0c7bbe24',
     buildTarget: 'wasm32-wasip2',
     args: '{"requests":[{"id":"eur_usd_rate","sources":[{"name":"custom","custom":{"url":"https://open.er-api.com/v6/latest/EUR","json_path":"rates.USD","value_type":"number","method":"GET","headers":[]}}]},{"id":"near_price","sources":[{"name":"coingecko","id":"near"},{"name":"binance","id":"NEARUSDT"},{"name":"huobi","id":"nearusdt"},{"name":"cryptocom","id":"NEAR_USDT"},{"name":"kucoin","id":"NEAR-USDT"},{"name":"gate","id":"near_usdt"},{"name":"pyth","id":"0xc415de8d2eba7db216527dff4b60e8f3a5311c740dadb233e13e12547e226750"}],"aggregation_method":"median","min_sources_num":4},{"id":"near_last_block_validator","sources":[{"name":"custom","custom":{"url":"https://api.nearblocks.io/v1/blocks/latest?limit=1","json_path":"blocks.0.author_account_id","value_type":"string","method":"GET","headers":[]}}]},{"id":"elden_ring_price_cents","sources":[{"name":"custom","custom":{"url":"https://store.steampowered.com/api/appdetails/?appids=1245620&cc=us","json_path":"1245620.data.price_overview.final","value_type":"number","method":"GET","headers":[]}}]}],"max_price_deviation_percent":10.0}',
-    responseFormat: 'Text',
+    responseFormat: 'Json',
     encryptedSecrets: '[65,74,0,205,58,188,20,16,127,89,54,123,149,148,130,105,208,124,211,23,136,65,168,135,227,161,128,11,79,15,222,89,127,91,118,188,78,220,100,29,4,94,56,109,140,145,230,16,201,3,162,125,159,78,179,228,173]',
   },
   // Add more presets here
