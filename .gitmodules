@@ -7,3 +7,6 @@
 [submodule "wasi-examples/echo-ark"]
 	path = wasi-examples/echo-ark
 	url = git@github.com:zavodil/echo-ark.git
+[submodule "wasi-examples/oracle-ark"]
+	path = wasi-examples/oracle-ark
+	url = git@github.com:zavodil/oracle-ark.git
