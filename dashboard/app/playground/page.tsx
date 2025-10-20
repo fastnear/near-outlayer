@@ -68,9 +68,9 @@ export default function PlaygroundPage() {
   const [encryptedSecrets, setEncryptedSecrets] = useState(PRESETS[0].encryptedSecrets || '');
 
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<any>(null);
+  const [result, setResult] = useState<{ transaction: Record<string, unknown>; executionOutput: string | null; transactionHash: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [wasmInfo, setWasmInfo] = useState<any>(null);
+  const [wasmInfo, setWasmInfo] = useState<{ exists: boolean; checksum: string | null; file_size: number | null; created_at: string | null } | null>(null);
 
   // Encryption modal state
   const [showEncryptModal, setShowEncryptModal] = useState(false);
@@ -156,8 +156,8 @@ export default function PlaygroundPage() {
       setEncryptedSecrets(encryptedJson);
       setShowEncryptModal(false);
       setPlaintextSecrets('{"OPENAI_KEY":"sk-..."}'); // Reset
-    } catch (err: any) {
-      setEncryptError(err.message || 'Failed to encrypt secrets');
+    } catch (err: unknown) {
+      setEncryptError((err as Error).message || 'Failed to encrypt secrets');
       console.error('Encryption error:', err);
     } finally {
       setEncrypting(false);
@@ -224,8 +224,8 @@ export default function PlaygroundPage() {
       const action = actionCreators.functionCall(
         'request_execution',
         transactionArgs,
-        '300000000000000', // 300 TGas
-        '100000000000000000000000' // 0.1 NEAR
+        BigInt('300000000000000'), // 300 TGas
+        BigInt('100000000000000000000000') // 0.1 NEAR
       );
 
       // Prepare transaction for wallet selector
@@ -256,8 +256,8 @@ export default function PlaygroundPage() {
         executionOutput,
         transactionHash: txResult?.transaction?.hash,
       });
-    } catch (err: any) {
-      setError(err.message || 'Transaction failed');
+    } catch (err: unknown) {
+      setError((err as Error).message || 'Transaction failed');
       console.error(err);
     } finally {
       setLoading(false);

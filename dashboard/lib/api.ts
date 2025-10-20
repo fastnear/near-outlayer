@@ -99,7 +99,7 @@ export async function fetchJobs(
   offset: number = 0,
   userAccountId?: string
 ): Promise<JobHistoryEntry[]> {
-  const params: any = { limit, offset };
+  const params: Record<string, string | number> = { limit, offset };
   if (userAccountId) {
     params.user_account_id = userAccountId;
   }

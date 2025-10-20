@@ -3,7 +3,6 @@
 import { useEffect, useState } from 'react';
 import { fetchJobs, JobHistoryEntry } from '@/lib/api';
 import { getTransactionUrl } from '@/lib/explorer';
-import Link from 'next/link';
 
 export default function JobsPage() {
   const [jobs, setJobs] = useState<JobHistoryEntry[]>([]);
