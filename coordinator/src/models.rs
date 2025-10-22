@@ -34,6 +34,13 @@ pub struct ExecutionContext {
     pub contract_id: Option<String>,
 }
 
+/// Reference to secrets stored in contract (repo-based system)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretsReference {
+    pub profile: String,
+    pub account_id: String,
+}
+
 /// Job types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -53,29 +60,10 @@ pub enum Task {
         resource_limits: ResourceLimits,
         input_data: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        encrypted_secrets: Option<Vec<u8>>,
+        secrets_ref: Option<SecretsReference>,
         #[serde(default)]
         response_format: ResponseFormat,
         #[serde(default)]
-        context: ExecutionContext,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        user_account_id: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        near_payment_yocto: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        transaction_hash: Option<String>,
-    },
-    Execute {
-        request_id: u64,
-        data_id: String,
-        wasm_checksum: String,
-        resource_limits: ResourceLimits,
-        input_data: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        encrypted_secrets: Option<Vec<u8>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        build_target: Option<String>,
-        response_format: ResponseFormat,
         context: ExecutionContext,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         user_account_id: Option<String>,
@@ -217,7 +205,7 @@ pub struct JobInfo {
     pub allowed: bool,
 }
 
-/// Legacy: Create task request (event monitor)
+/// Create task request (event monitor)
 #[derive(Debug, Deserialize)]
 pub struct CreateTaskRequest {
     pub request_id: u64,
@@ -226,7 +214,7 @@ pub struct CreateTaskRequest {
     pub input_data: String,
     pub data_id: String,
     #[serde(default)]
-    pub encrypted_secrets: Option<Vec<u8>>,
+    pub secrets_ref: Option<SecretsReference>, // Reference to contract-stored secrets
     #[serde(default)]
     pub response_format: ResponseFormat,
     #[serde(default)]

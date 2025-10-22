@@ -44,7 +44,7 @@ pub async fn claim_job(
         CodeSource::GitHub { repo, commit, .. } => (Some(repo.clone()), Some(commit.clone())),
     };
 
-    // Check if WASM exists in cache
+    // Check if WASM exists in cache (both DB record and physical file)
     let wasm_exists = sqlx::query!(
         "SELECT checksum FROM wasm_cache WHERE checksum = $1",
         wasm_checksum
@@ -56,12 +56,38 @@ pub async fn claim_job(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
+    // Verify physical file exists if DB record exists
+    let wasm_file_exists = if wasm_exists.is_some() {
+        let wasm_path = state.config.wasm_cache_dir.join(&format!("{}.wasm", wasm_checksum));
+        let file_exists = wasm_path.exists();
+
+        if !file_exists {
+            info!(
+                "⚠️ WASM checksum {} in DB but file missing at {:?}, will recompile",
+                wasm_checksum, wasm_path
+            );
+            // Delete stale DB record
+            if let Err(e) = sqlx::query!(
+                "DELETE FROM wasm_cache WHERE checksum = $1",
+                wasm_checksum
+            )
+            .execute(&state.db)
+            .await {
+                error!("Failed to delete stale WASM cache record: {}", e);
+            }
+        }
+
+        file_exists
+    } else {
+        false
+    };
+
     let mut jobs = Vec::new();
 
-    // Create compile job if WASM not in cache
-    if wasm_exists.is_none() {
-        info!(
-            "🔨 WASM not in cache, creating compile job for request_id={} checksum={}",
+    // Create compile job if WASM not in cache (or file missing)
+    if !wasm_file_exists {
+        debug!(
+            "🔨 WASM not available, creating compile job for request_id={} checksum={}",
             payload.request_id, wasm_checksum
         );
 

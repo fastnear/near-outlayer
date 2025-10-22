@@ -1,0 +1,471 @@
+use crate::*;
+use near_sdk::env;
+
+/// Storage cost per byte in NEAR
+const STORAGE_PRICE_PER_BYTE: Balance = 10_000_000_000_000_000_000; // 0.00001 NEAR per byte
+
+#[near_bindgen]
+impl Contract {
+    /// Store secrets for a repository with access control
+    ///
+    /// User must attach storage deposit to cover the cost of storing secrets.
+    /// The deposit will be refunded when secrets are deleted.
+    ///
+    /// # Arguments
+    /// * `repo` - Repository identifier (e.g., "owner/repo")
+    /// * `branch` - Optional branch name (None = all branches)
+    /// * `profile` - Profile name (e.g., "default", "premium", "staging")
+    /// * `encrypted_secrets_base64` - Base64-encoded encrypted secrets
+    /// * `access` - Access control rules
+    #[payable]
+    pub fn store_secrets(
+        &mut self,
+        repo: String,
+        branch: Option<String>,
+        profile: String,
+        encrypted_secrets_base64: String,
+        access: types::AccessCondition,
+    ) {
+        let caller = env::predecessor_account_id();
+
+        // Validate inputs
+        assert!(!repo.is_empty(), "Repository cannot be empty");
+        assert!(!profile.is_empty(), "Profile cannot be empty");
+        assert!(profile.len() <= 64, "Profile name too long (max 64 chars)");
+        assert!(
+            profile.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_'),
+            "Profile name must contain only alphanumeric, dash, or underscore"
+        );
+        assert!(
+            !encrypted_secrets_base64.is_empty(),
+            "Encrypted secrets cannot be empty"
+        );
+
+        // Validate branch name if provided
+        if let Some(ref b) = branch {
+            assert!(!b.is_empty(), "Branch name cannot be empty if provided");
+            assert!(b.len() <= 255, "Branch name too long (max 255 chars)");
+        }
+
+        // Create secret key
+        let key = SecretKey {
+            repo: repo.clone(),
+            branch: branch.clone(),
+            profile: profile.clone(),
+            owner: caller.clone(),
+        };
+
+        // Calculate storage cost
+        let storage_usage = self.calculate_secret_storage_size(&key, &encrypted_secrets_base64, &access);
+        let required_deposit = storage_usage as u128 * STORAGE_PRICE_PER_BYTE;
+        let attached_deposit = env::attached_deposit().as_yoctonear();
+
+        assert!(
+            attached_deposit >= required_deposit,
+            "Insufficient storage deposit. Required: {} yoctoNEAR, attached: {} yoctoNEAR",
+            required_deposit,
+            attached_deposit
+        );
+
+        // Check if updating existing secrets
+        let is_new = self.secrets_storage.get(&key).is_none();
+
+        if let Some(existing) = self.secrets_storage.get(&key) {
+            // Refund old storage deposit to caller
+            log!(
+                "Updating existing secrets for {}/{:?}/{} - refunding {} yoctoNEAR",
+                repo,
+                branch,
+                profile,
+                existing.storage_deposit
+            );
+
+            // Refund the difference if new secrets are smaller
+            if attached_deposit > required_deposit {
+                let refund = attached_deposit - required_deposit + existing.storage_deposit;
+                if refund > 0 {
+                    near_sdk::Promise::new(caller.clone()).transfer(NearToken::from_yoctonear(refund));
+                }
+            } else {
+                // Just refund old deposit
+                if existing.storage_deposit > 0 {
+                    near_sdk::Promise::new(caller.clone()).transfer(NearToken::from_yoctonear(existing.storage_deposit));
+                }
+            }
+        } else {
+            // New secrets - refund excess if any
+            if attached_deposit > required_deposit {
+                let refund = attached_deposit - required_deposit;
+                near_sdk::Promise::new(caller.clone()).transfer(NearToken::from_yoctonear(refund));
+            }
+        }
+
+        // Store secret profile
+        let profile_data = SecretProfile {
+            encrypted_secrets: encrypted_secrets_base64,
+            access,
+            created_at: env::block_timestamp(),
+            updated_at: env::block_timestamp(),
+            storage_deposit: required_deposit,
+        };
+
+        self.secrets_storage.insert(&key, &profile_data);
+
+        // Add to user index if new
+        if is_new {
+            let mut user_secrets = self
+                .user_secrets_index
+                .get(&caller)
+                .unwrap_or_else(|| UnorderedSet::new(StorageKey::UserSecretsList { account_id: caller.clone() }));
+
+            user_secrets.insert(&key);
+            self.user_secrets_index.insert(&caller, &user_secrets);
+        }
+
+        log!(
+            "Secrets stored: repo={}, branch={:?}, profile={}, owner={}, deposit={} yoctoNEAR",
+            repo,
+            branch,
+            profile,
+            caller,
+            required_deposit
+        );
+    }
+
+    /// Delete secrets and refund storage deposit
+    pub fn delete_secrets(
+        &mut self,
+        repo: String,
+        branch: Option<String>,
+        profile: String,
+    ) {
+        let caller = env::predecessor_account_id();
+
+        let key = SecretKey {
+            repo: repo.clone(),
+            branch: branch.clone(),
+            profile: profile.clone(),
+            owner: caller.clone(),
+        };
+
+        let profile_data = self.secrets_storage.get(&key)
+            .expect("Secrets not found");
+
+        // Remove from storage
+        self.secrets_storage.remove(&key);
+
+        // Remove from user index
+        if let Some(mut user_secrets) = self.user_secrets_index.get(&caller) {
+            user_secrets.remove(&key);
+            if user_secrets.is_empty() {
+                // Remove empty set
+                self.user_secrets_index.remove(&caller);
+            } else {
+                self.user_secrets_index.insert(&caller, &user_secrets);
+            }
+        }
+
+        // Refund storage deposit
+        if profile_data.storage_deposit > 0 {
+            near_sdk::Promise::new(caller.clone())
+                .transfer(NearToken::from_yoctonear(profile_data.storage_deposit));
+        }
+
+        log!(
+            "Secrets deleted: repo={}, branch={:?}, profile={}, refunded={} yoctoNEAR",
+            repo,
+            branch,
+            profile,
+            profile_data.storage_deposit
+        );
+    }
+
+    /// Update access control rules for existing secrets
+    pub fn update_access(
+        &mut self,
+        repo: String,
+        branch: Option<String>,
+        profile: String,
+        new_access: types::AccessCondition,
+    ) {
+        let caller = env::predecessor_account_id();
+
+        let key = SecretKey {
+            repo: repo.clone(),
+            branch: branch.clone(),
+            profile: profile.clone(),
+            owner: caller.clone(),
+        };
+
+        let mut profile_data = self.secrets_storage.get(&key)
+            .expect("Secrets not found");
+
+        // Update access rules and timestamp
+        profile_data.access = new_access;
+        profile_data.updated_at = env::block_timestamp();
+
+        self.secrets_storage.insert(&key, &profile_data);
+
+        log!(
+            "Access control updated: repo={}, branch={:?}, profile={}",
+            repo,
+            branch,
+            profile
+        );
+    }
+
+    /// Calculate storage size for secrets (in bytes)
+    fn calculate_secret_storage_size(
+        &self,
+        key: &SecretKey,
+        encrypted_secrets: &str,
+        access: &types::AccessCondition,
+    ) -> u64 {
+        // Approximate storage calculation:
+        // - SecretKey: repo + branch + profile + owner
+        // - SecretProfile: encrypted_secrets + access + timestamps + deposit
+        // - User index entry: pointer in UnorderedSet (for new entries)
+
+        let key_size = key.repo.len()
+            + key.branch.as_ref().map(|b| b.len()).unwrap_or(0)
+            + key.profile.len()
+            + key.owner.as_str().len();
+
+        let value_size = encrypted_secrets.len()
+            + 100 // Approximate size for access condition (varies)
+            + 8 + 8 + 16; // timestamps + deposit
+
+        // Add overhead for user index entry (only for new entries, but we charge upfront)
+        let index_overhead = if self.secrets_storage.get(key).is_none() {
+            64 // Approximate overhead for UnorderedSet entry
+        } else {
+            0 // Updating existing entry, no new index entry
+        };
+
+        (key_size + value_size + index_overhead) as u64
+    }
+}
+
+// View methods
+#[near_bindgen]
+impl Contract {
+    /// Get secrets for a repository (for keystore worker to read)
+    ///
+    /// If querying with a specific branch returns None, automatically tries
+    /// with branch=null to find wildcard secrets (secrets that work for all branches).
+    pub fn get_secrets(
+        &self,
+        repo: String,
+        branch: Option<String>,
+        profile: String,
+        owner: AccountId,
+    ) -> Option<SecretProfileView> {
+        let key = SecretKey {
+            repo: repo.clone(),
+            branch: branch.clone(),
+            profile: profile.clone(),
+            owner: owner.clone(),
+        };
+
+        // Try with specified branch first
+        let result = self.secrets_storage.get(&key);
+
+        // If not found and branch was specified, try with branch=null (wildcard)
+        if result.is_none() && branch.is_some() {
+            let wildcard_key = SecretKey {
+                repo,
+                branch: None,
+                profile,
+                owner,
+            };
+            return self.secrets_storage.get(&wildcard_key).map(Into::into);
+        }
+
+        result.map(Into::into)
+    }
+
+    /// List all profile names for a repository owned by caller
+    pub fn list_profiles(
+        &self,
+        repo: String,
+        branch: Option<String>,
+    ) -> Vec<String> {
+        let caller = env::predecessor_account_id();
+
+        // Note: This is inefficient and should be optimized with indexing in production
+        // For MVP, we accept O(n) iteration
+        let mut profiles = Vec::new();
+
+        // We can't iterate LookupMap directly, so this would require maintaining
+        // a separate index. For now, return empty vector with a note.
+        log!("WARNING: list_profiles requires indexing implementation");
+
+        profiles
+    }
+
+    /// Check if secrets exist for a given key
+    pub fn secrets_exist(
+        &self,
+        repo: String,
+        branch: Option<String>,
+        profile: String,
+        owner: AccountId,
+    ) -> bool {
+        let key = SecretKey {
+            repo,
+            branch,
+            profile,
+            owner,
+        };
+
+        self.secrets_storage.get(&key).is_some()
+    }
+
+    /// List all secrets for a user
+    ///
+    /// Returns array of secret metadata with repository, branch, profile info
+    pub fn list_user_secrets(&self, account_id: AccountId) -> Vec<UserSecretInfo> {
+        let user_secrets = self.user_secrets_index.get(&account_id);
+
+        match user_secrets {
+            Some(secrets_set) => {
+                secrets_set
+                    .iter()
+                    .filter_map(|key| {
+                        self.secrets_storage.get(&key).map(|profile| UserSecretInfo {
+                            repo: key.repo.clone(),
+                            branch: key.branch.clone(),
+                            profile: key.profile.clone(),
+                            created_at: profile.created_at,
+                            updated_at: profile.updated_at,
+                            storage_deposit: U128(profile.storage_deposit),
+                            access: profile.access,
+                        })
+                    })
+                    .collect()
+            }
+            None => vec![],
+        }
+    }
+}
+
+/// User secret metadata for list view
+#[derive(Clone, Debug)]
+#[near(serializers = [json])]
+pub struct UserSecretInfo {
+    pub repo: String,
+    pub branch: Option<String>,
+    pub profile: String,
+    pub created_at: u64,
+    pub updated_at: u64,
+    pub storage_deposit: U128,
+    pub access: types::AccessCondition,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use near_sdk::test_utils::{accounts, VMContextBuilder};
+    use near_sdk::testing_env;
+
+    fn get_context(predecessor: AccountId, attached_deposit: NearToken) -> VMContextBuilder {
+        let mut builder = VMContextBuilder::new();
+        builder
+            .predecessor_account_id(predecessor)
+            .attached_deposit(attached_deposit);
+        builder
+    }
+
+    #[test]
+    fn test_store_secrets() {
+        let owner = accounts(0);
+        let operator = accounts(1);
+        let user = accounts(2);
+
+        let context = get_context(owner.clone(), NearToken::from_near(0));
+        testing_env!(context.build());
+
+        let mut contract = Contract::new(owner.clone(), Some(operator));
+
+        // Store secrets with sufficient deposit
+        let context = get_context(user.clone(), NearToken::from_near(1));
+        testing_env!(context.build());
+
+        contract.store_secrets(
+            "github.com/alice/project".to_string(),
+            None,
+            "default".to_string(),
+            "base64encodeddata".to_string(),
+            types::AccessCondition::AllowAll,
+        );
+
+        // Verify secrets exist
+        assert!(contract.secrets_exist(
+            "github.com/alice/project".to_string(),
+            None,
+            "default".to_string(),
+            user.clone(),
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "Profile name must contain only alphanumeric")]
+    fn test_invalid_profile_name() {
+        let owner = accounts(0);
+        let user = accounts(2);
+
+        let context = get_context(owner.clone(), NearToken::from_near(0));
+        testing_env!(context.build());
+
+        let mut contract = Contract::new(owner.clone(), None);
+
+        let context = get_context(user.clone(), NearToken::from_near(1));
+        testing_env!(context.build());
+
+        contract.store_secrets(
+            "github.com/alice/project".to_string(),
+            None,
+            "invalid profile!".to_string(), // Invalid characters
+            "base64encodeddata".to_string(),
+            types::AccessCondition::AllowAll,
+        );
+    }
+
+    #[test]
+    fn test_delete_secrets() {
+        let owner = accounts(0);
+        let user = accounts(2);
+
+        let context = get_context(owner.clone(), NearToken::from_near(0));
+        testing_env!(context.build());
+
+        let mut contract = Contract::new(owner.clone(), None);
+
+        // Store secrets
+        let context = get_context(user.clone(), NearToken::from_near(1));
+        testing_env!(context.build());
+
+        contract.store_secrets(
+            "github.com/alice/project".to_string(),
+            None,
+            "default".to_string(),
+            "base64encodeddata".to_string(),
+            types::AccessCondition::AllowAll,
+        );
+
+        // Delete secrets
+        contract.delete_secrets(
+            "github.com/alice/project".to_string(),
+            None,
+            "default".to_string(),
+        );
+
+        // Verify secrets don't exist
+        assert!(!contract.secrets_exist(
+            "github.com/alice/project".to_string(),
+            None,
+            "default".to_string(),
+            user.clone(),
+        ));
+    }
+}

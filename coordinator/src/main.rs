@@ -1,5 +1,6 @@
 mod auth;
 mod config;
+mod github;
 mod handlers;
 mod models;
 mod near_client;
@@ -144,6 +145,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/public/users/:user_account_id/earnings",
             get(handlers::public::get_user_earnings),
         )
+        .route("/github/resolve-branch", get(handlers::github::resolve_branch))
+        .route("/secrets/pubkey", get(handlers::github::get_secrets_pubkey))
         .route("/health", get(|| async { "OK" }));
 
     // Combine routers

@@ -90,69 +90,6 @@ impl Contract {
         }
     }
 
-    /// Set keystore account ID and public key (only owner or keystore can call)
-    ///
-    /// This method allows the keystore worker to register itself with the contract.
-    /// The public key is stored on-chain so users can encrypt secrets before calling request_execution.
-    ///
-    /// # Arguments
-    /// * `pubkey` - Public key in hex format (64 chars) or NEAR format (ed25519:base58)
-    ///
-    /// # Examples
-    /// - Hex: "53965a1377f93aa3ed819339a973d9438410e33bf43b3efc2b965a96a9af7595"
-    /// - NEAR: "ed25519:6dHp2jhzeGPgMTXACkHYNE4nYo8smp9vZoDVDyEGnoqe"
-    pub fn set_keystore_pubkey(&mut self, pubkey: String) {
-        let caller = env::predecessor_account_id();
-
-        // Allow owner to set any keystore account
-        // Or allow keystore account itself to update its pubkey
-        let is_authorized = caller == self.owner_id
-            || self
-                .keystore_account_id
-                .as_ref()
-                .map(|k| caller == *k)
-                .unwrap_or(false);
-
-        assert!(is_authorized, "Only owner or keystore can set pubkey");
-
-        // Parse and normalize to hex format
-        let pubkey_hex = if pubkey.starts_with("ed25519:") {
-            // NEAR base58 format - convert to hex
-            let base58_part = pubkey.strip_prefix("ed25519:").unwrap();
-
-            // Decode base58 to bytes
-            let bytes = bs58::decode(base58_part)
-                .into_vec()
-                .expect("Invalid base58 encoding");
-
-            assert_eq!(bytes.len(), 32, "Public key must be 32 bytes");
-
-            // Convert to hex
-            hex::encode(bytes)
-        } else if pubkey.len() == 64 && pubkey.chars().all(|c| c.is_ascii_hexdigit()) {
-            // Already in hex format
-            pubkey
-        } else {
-            env::panic_str("Public key must be either 64 hex characters or NEAR format (ed25519:base58)")
-        };
-
-        // If keystore account not set yet, set it to caller
-        if self.keystore_account_id.is_none() {
-            self.keystore_account_id = Some(caller.clone());
-            log!("Keystore account set to {}", caller);
-        }
-
-        self.keystore_pubkey = Some(pubkey_hex.clone());
-        log!("Keystore public key updated: {}", pubkey_hex);
-    }
-
-    /// Set keystore account ID (only owner can call)
-    pub fn set_keystore_account(&mut self, keystore_account_id: AccountId) {
-        self.assert_owner();
-        self.keystore_account_id = Some(keystore_account_id.clone());
-        log!("Keystore account set to {}", keystore_account_id);
-    }
-
     /// Admin method to clear all pending requests (only owner can call)
     /// Used for emergency cleanup or testing
     ///

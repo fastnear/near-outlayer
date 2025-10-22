@@ -9,21 +9,21 @@ impl Contract {
     /// * `code_source` - GitHub repository and commit to compile
     /// * `resource_limits` - Optional resource limits for execution (default: 1B instructions, 128MB, 60s)
     /// * `input_data` - Optional input data for the WASM program (default: empty string)
-    /// * `encrypted_secrets` - Optional secrets encrypted with keystore public key
+    /// * `secrets_ref` - Optional reference to repo-based secrets (profile + account_id)
     /// * `response_format` - Optional output format: Bytes, Text, or Json (default: Text)
     ///
-    /// # Secrets Encryption
-    /// If you need to pass secrets (API keys, credentials) to the execution:
-    /// 1. Get keystore public key: `get_keystore_pubkey()`
-    /// 2. Encrypt your secrets with this public key
-    /// 3. Pass encrypted data in `encrypted_secrets` parameter
+    /// # Repo-Based Secrets (New Approach)
+    /// Secrets are now stored in contract per repository and accessed via references:
+    /// 1. Store secrets once: `store_secrets(repo, branch, profile, encrypted_data, access_rules)`
+    /// 2. Reference them in execution: `secrets_ref: { profile: "default", account_id: "alice.near" }`
+    /// 3. Worker will fetch secrets from contract via keystore
     #[payable]
     pub fn request_execution(
         &mut self,
         code_source: CodeSource,
         resource_limits: Option<ResourceLimits>,
         input_data: Option<String>,
-        encrypted_secrets: Option<Vec<u8>>,
+        secrets_ref: Option<SecretsReference>,
         response_format: Option<ResponseFormat>,
     ) {
         self.assert_not_paused();
@@ -72,8 +72,8 @@ impl Contract {
             "sender_id": sender_id,
             "code_source": code_source,
             "resource_limits": limits,
-            "input_data": input_data.unwrap_or_else(|| String::new()),
-            "encrypted_secrets": encrypted_secrets.as_ref().map(|s| s.clone()),
+            "input_data": input_data.as_ref().cloned().unwrap_or_default(),
+            "secrets_ref": secrets_ref.as_ref(),
             "response_format": format,
             "payment": U128::from(payment),
             "timestamp": env::block_timestamp()
@@ -103,8 +103,9 @@ impl Contract {
             resource_limits: limits.clone(),
             payment,
             timestamp: env::block_timestamp(),
-            encrypted_secrets,
+            secrets_ref,
             response_format: format.clone(),
+            input_data,
             pending_output: None,
             output_submitted: false,
         };

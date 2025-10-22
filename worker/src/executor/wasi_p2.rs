@@ -87,16 +87,17 @@ pub async fn execute(
     wasmtime_wasi::add_to_linker_async(&mut linker)?;
     wasmtime_wasi_http::add_only_http_to_linker_async(&mut linker)?;
 
-    // Prepare stdin/stdout pipes
+    // Prepare stdin/stdout/stderr pipes
     let stdin_pipe = wasmtime_wasi::pipe::MemoryInputPipe::new(input_data.to_vec());
     let stdout_pipe =
         wasmtime_wasi::pipe::MemoryOutputPipe::new((limits.max_memory_mb as usize) * 1024 * 1024);
+    let stderr_pipe = wasmtime_wasi::pipe::MemoryOutputPipe::new(1024 * 1024);
 
     // Build WASI context
     let mut wasi_builder = WasiCtxBuilder::new();
     wasi_builder.stdin(stdin_pipe);
     wasi_builder.stdout(stdout_pipe.clone());
-    wasi_builder.stderr(wasmtime_wasi::pipe::MemoryOutputPipe::new(1024 * 1024));
+    wasi_builder.stderr(stderr_pipe.clone());
 
     // Add preopened directory (required for WASI P2 filesystem interface)
     wasi_builder.preopened_dir(
@@ -131,19 +132,34 @@ pub async fn execute(
         .context("Failed to instantiate component")?;
 
     debug!("Running wasi:cli/run");
-    command
+    let execution_result = command
         .wasi_cli_run()
         .call_run(&mut store)
-        .await?
-        .map_err(|_| anyhow::anyhow!("Component execution failed"))?;
+        .await;
 
-    debug!("Component execution completed");
-
-    // Get results
+    // Get fuel consumed before checking result
     let fuel_consumed = limits.max_instructions - store.get_fuel().unwrap_or(0);
     debug!("Component consumed {} instructions", fuel_consumed);
 
-    let output = stdout_pipe.contents().to_vec();
+    // Check execution result
+    match execution_result {
+        Ok(Ok(())) => {
+            debug!("Component execution completed successfully");
+            let output = stdout_pipe.contents().to_vec();
+            Ok((output, fuel_consumed))
+        }
+        Ok(Err(_)) | Err(_) => {
+            // Component exited with error or trapped
+            // Read stderr to get error message
+            let stderr_contents = stderr_pipe.contents();
+            let error_msg = if !stderr_contents.is_empty() {
+                String::from_utf8_lossy(&stderr_contents).to_string()
+            } else {
+                "Component execution failed (no error message in stderr)".to_string()
+            };
 
-    Ok((output, fuel_consumed))
+            debug!("Component execution failed: {}", error_msg);
+            Err(anyhow::anyhow!("{}", error_msg))
+        }
+    }
 }

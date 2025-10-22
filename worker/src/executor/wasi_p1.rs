@@ -59,12 +59,13 @@ pub async fn execute(
     let stdin_pipe = wasmtime_wasi::pipe::MemoryInputPipe::new(input_data.to_vec());
     let stdout_pipe =
         wasmtime_wasi::pipe::MemoryOutputPipe::new((limits.max_memory_mb as usize) * 1024 * 1024);
+    let stderr_pipe = wasmtime_wasi::pipe::MemoryOutputPipe::new(1024 * 1024);
 
     // Build WASI P1 context
     let mut wasi_builder = WasiCtxBuilder::new();
     wasi_builder.stdin(stdin_pipe);
     wasi_builder.stdout(stdout_pipe.clone());
-    wasi_builder.stderr(wasmtime_wasi::pipe::MemoryOutputPipe::new(1024 * 1024));
+    wasi_builder.stderr(stderr_pipe.clone());
 
     // Add environment variables (from encrypted secrets)
     if let Some(env_map) = env_vars {
@@ -102,8 +103,21 @@ pub async fn execute(
         let error_str = e.to_string();
         tracing::error!("❌ WASI P1 _start failed: {}", error_str);
 
-        // If it's an exit code error, include input data in error message for developer
+        // Read stderr to get program's error message
+        let stderr_contents = stderr_pipe.contents();
+        let stderr_msg = if !stderr_contents.is_empty() {
+            String::from_utf8_lossy(&stderr_contents).to_string()
+        } else {
+            String::new()
+        };
+
+        // If it's an exit code error, include stderr and input data in error message
         if error_str.contains("Exited with i32 exit status") {
+            if !stderr_msg.is_empty() {
+                // Program printed error to stderr
+                return Err(anyhow::anyhow!("{}", stderr_msg));
+            }
+
             let input_preview = String::from_utf8_lossy(input_data);
             let preview = if input_preview.len() > 200 {
                 format!("{}...", &input_preview[..200])

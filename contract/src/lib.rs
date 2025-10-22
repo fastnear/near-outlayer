@@ -1,5 +1,5 @@
 use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
-use near_sdk::collections::LookupMap;
+use near_sdk::collections::{LookupMap, UnorderedSet};
 use near_sdk::json_types::U128;
 use near_sdk::serde::Serialize;
 use near_sdk::{
@@ -11,6 +11,8 @@ use std::convert::TryInto;
 mod admin;
 mod events;
 mod execution;
+mod secrets;
+mod types;
 mod views;
 
 pub type Balance = u128;
@@ -35,6 +37,9 @@ pub const SEPARATE_DATA_SUBMISSION_FEE: Balance = 10_000_000_000_000_000_000_000
 #[borsh(crate = "near_sdk::borsh")]
 enum StorageKey {
     PendingRequests,
+    SecretsStorage,
+    UserSecretsIndex,
+    UserSecretsList { account_id: AccountId },
 }
 
 /// Code source specification
@@ -94,8 +99,9 @@ pub struct ExecutionRequest {
     pub resource_limits: ResourceLimits,
     pub payment: Balance,
     pub timestamp: u64,
-    pub encrypted_secrets: Option<Vec<u8>>, // Secrets encrypted with keystore pubkey
+    pub secrets_ref: Option<SecretsReference>, // Reference to repo-based secrets
     pub response_format: ResponseFormat,
+    pub input_data: Option<String>, // Optional input data for execution
 
     // Large output handling (2-call flow)
     pub pending_output: Option<StoredOutput>, // Temporary storage for large output data
@@ -171,6 +177,58 @@ pub struct ResourceMetrics {
     pub compile_time_ms: Option<u64>, // Compilation time in milliseconds (if compiled)
 }
 
+/// Reference to secrets stored in contract (new approach)
+#[derive(Clone, Debug)]
+#[near(serializers = [borsh, json])]
+pub struct SecretsReference {
+    pub profile: String,      // Profile name (e.g., "default", "premium")
+    pub account_id: AccountId, // Account that owns the secrets
+}
+
+/// Secret profile stored in contract (internal storage)
+#[derive(Clone, Debug)]
+#[near(serializers = [borsh])]
+pub struct SecretProfile {
+    pub encrypted_secrets: String,  // base64-encoded encrypted secrets
+    pub access: types::AccessCondition, // Access control rules
+    pub created_at: u64,            // Timestamp when created
+    pub updated_at: u64,            // Timestamp when last updated
+    pub storage_deposit: Balance,   // Storage staking amount (u128 for cheaper storage)
+}
+
+/// Secret profile for JSON view (returned from view methods)
+#[derive(Clone, Debug)]
+#[near(serializers = [json])]
+pub struct SecretProfileView {
+    pub encrypted_secrets: String,  // base64-encoded encrypted secrets
+    pub access: types::AccessCondition, // Access control rules
+    pub created_at: u64,            // Timestamp when created
+    pub updated_at: u64,            // Timestamp when last updated
+    pub storage_deposit: U128,      // Storage staking amount (U128 for JSON)
+}
+
+impl From<SecretProfile> for SecretProfileView {
+    fn from(profile: SecretProfile) -> Self {
+        Self {
+            encrypted_secrets: profile.encrypted_secrets,
+            access: profile.access,
+            created_at: profile.created_at,
+            updated_at: profile.updated_at,
+            storage_deposit: U128(profile.storage_deposit),
+        }
+    }
+}
+
+/// Composite key for secrets storage: (repo, branch, profile, owner)
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[near(serializers = [borsh])]
+pub struct SecretKey {
+    pub repo: String,           // Normalized repo path: "github.com/owner/repo"
+    pub branch: Option<String>, // Branch name or None for all branches
+    pub profile: String,        // Profile name: "default", "premium", etc.
+    pub owner: AccountId,       // Account that created these secrets
+}
+
 #[derive(BorshDeserialize, BorshSerialize, PanicOnDefault)]
 #[borsh(crate = "near_sdk::borsh")]
 #[near_bindgen]
@@ -194,9 +252,11 @@ pub struct Contract {
     total_executions: u64,
     total_fees_collected: Balance,
 
-    // Keystore integration
-    keystore_account_id: Option<AccountId>,
-    keystore_pubkey: Option<String>, // hex encoded public key
+    // Repo-based secrets storage
+    secrets_storage: LookupMap<SecretKey, SecretProfile>,
+
+    // User secrets index: account_id -> set of SecretKey
+    user_secrets_index: LookupMap<AccountId, UnorderedSet<SecretKey>>,
 }
 
 #[near_bindgen]
@@ -215,8 +275,8 @@ impl Contract {
             pending_requests: LookupMap::new(StorageKey::PendingRequests),
             total_executions: 0,
             total_fees_collected: 0,
-            keystore_account_id: None,
-            keystore_pubkey: None,
+            secrets_storage: LookupMap::new(StorageKey::SecretsStorage),
+            user_secrets_index: LookupMap::new(StorageKey::UserSecretsIndex),
         }
     }
 }

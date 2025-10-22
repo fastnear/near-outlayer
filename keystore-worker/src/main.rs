@@ -4,15 +4,17 @@
 //! secure decryption of user secrets for executor workers.
 //!
 //! Architecture:
-//! 1. Keystore worker generates master keypair on first start
-//! 2. Public key is published to NEAR contract
-//! 3. Users encrypt secrets with this public key
-//! 4. Executor workers request decryption with TEE attestation proof
-//! 5. Keystore verifies attestation and decrypts secrets
-//! 6. Secrets are returned only to verified TEE workers
+//! 1. Keystore worker has a master_secret that NEVER leaves TEE
+//! 2. Per-repo keypairs are derived using HMAC-SHA256(master_secret, seed)
+//! 3. Seed format: "github.com/owner/repo:account_id[:branch]"
+//! 4. Users encrypt secrets with repo-specific public key from coordinator
+//! 5. Executor workers request decryption with TEE attestation proof
+//! 6. Keystore verifies attestation and decrypts secrets
+//! 7. Secrets are returned only to verified TEE workers
 //!
 //! Security guarantees:
-//! - Private key NEVER leaves TEE memory
+//! - Master secret NEVER leaves TEE memory
+//! - Each repo/branch/owner gets a unique keypair
 //! - Only verified workers (via attestation) can decrypt
 //! - All operations are async and non-blocking
 //! - Token-based authentication for API access
@@ -22,11 +24,12 @@ mod attestation;
 mod config;
 mod crypto;
 mod near;
+mod types;
+mod utils;
 
 use anyhow::{Context, Result};
 use config::Config;
 use crypto::Keystore;
-use std::sync::Arc;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -53,45 +56,40 @@ async fn main() -> Result<()> {
         "Configuration loaded"
     );
 
-    // Initialize or load keystore
+    // Initialize or load keystore (master secret based)
     let keystore = initialize_keystore(&config).await?;
 
-    tracing::info!(
-        public_key = %keystore.public_key_hex(),
-        "Keystore initialized"
-    );
+    tracing::info!("Keystore initialized with master secret derivation");
+    tracing::info!("Each repo will have a unique keypair derived from master_secret + seed");
 
-    // Verify public key matches contract (critical security check)
-    let near_client = near::NearClient::new(
-        &config.near_rpc_url,
-        &config.keystore_account_id,
-        &config.keystore_private_key,
-        &config.offchainvm_contract_id,
-    )?;
+    // Initialize NEAR RPC client for reading secrets from contract
+    // Only NEAR_RPC_URL and NEAR_CONTRACT_ID are required (read-only)
+    let near_client = if let (Ok(rpc_url), Ok(contract_id)) = (
+        std::env::var("NEAR_RPC_URL"),
+        std::env::var("NEAR_CONTRACT_ID"),
+    ) {
+        tracing::info!("Initializing NEAR RPC client (read-only)");
 
-    let pubkey_hex = keystore.public_key_hex();
-    let matches = near_client
-        .verify_public_key(&pubkey_hex)
-        .await
-        .context("Failed to verify public key")?;
-
-    if !matches {
-        tracing::error!("Public key mismatch detected!");
-        tracing::error!("This keystore's public key does not match the contract's stored key.");
-        tracing::error!("Expected: {}", pubkey_hex);
-        tracing::error!("This is a critical security error. Possible causes:");
-        tracing::error!("1. Wrong private key in KEYSTORE_PRIVATE_KEY");
-        tracing::error!("2. Contract has different public key set");
-        tracing::error!("3. Wrong contract ID in OFFCHAINVM_CONTRACT_ID");
-        tracing::error!("");
-        tracing::error!("To fix: Call set_keystore_pubkey on contract or use correct private key");
-        anyhow::bail!("Public key mismatch - keystore cannot operate safely");
-    }
-
-    tracing::info!("✓ Public key verified - matches contract");
+        match near::NearClient::new(&rpc_url, &contract_id) {
+            Ok(client) => {
+                tracing::info!("✅ NEAR RPC client initialized");
+                Some(client)
+            }
+            Err(e) => {
+                tracing::warn!("❌ Failed to initialize NEAR client: {}", e);
+                tracing::warn!("   Secrets reading from contract will not work");
+                None
+            }
+        }
+    } else {
+        tracing::warn!("NEAR_RPC_URL or NEAR_CONTRACT_ID not set");
+        tracing::warn!("Secrets reading from contract will be disabled");
+        tracing::warn!("Required env vars: NEAR_RPC_URL, NEAR_CONTRACT_ID");
+        None
+    };
 
     // Create API server
-    let app_state = api::AppState::new(keystore, config.clone());
+    let app_state = api::AppState::new(keystore, config.clone(), near_client);
     let router = api::create_router(app_state);
 
     // Start server
@@ -116,67 +114,36 @@ async fn main() -> Result<()> {
 /// Initialize keystore from environment or generate new one
 ///
 /// In production TEE:
-/// - First start: Generate new keypair, seal to TEE storage, publish to contract
+/// - First start: Generate master_secret, seal to TEE storage
 /// - Subsequent starts: Load from sealed storage
 ///
 /// For MVP (non-TEE):
-/// - Use KEYSTORE_PRIVATE_KEY from environment
-async fn initialize_keystore(config: &Config) -> Result<Keystore> {
-    match config.tee_mode {
-        config::TeeMode::Sgx | config::TeeMode::Sev => {
-            // TODO: Implement TEE sealed storage
-            // Steps:
-            // 1. Check if sealed key exists in TEE persistent storage
-            // 2. If yes: Unseal and load
-            // 3. If no: Generate new key, seal it, publish to contract
-            tracing::warn!("TEE mode enabled but sealed storage not implemented");
-            tracing::warn!("Falling back to loading key from environment");
-            load_keystore_from_env(config)
-        }
-        config::TeeMode::Simulated => {
-            tracing::info!("Simulated TEE mode - loading key from environment");
-            load_keystore_from_env(config)
-        }
-        config::TeeMode::None => {
-            tracing::info!("Dev mode (no TEE) - loading key from environment");
-            load_keystore_from_env(config)
-        }
+/// - Use KEYSTORE_MASTER_SECRET from environment (if set)
+/// - Otherwise: Generate new master_secret and warn user to save it
+async fn initialize_keystore(_config: &Config) -> Result<Keystore> {
+    // Try to load from environment variable
+    if let Ok(master_secret_hex) = std::env::var("KEYSTORE_MASTER_SECRET") {
+        tracing::info!("Loading keystore from KEYSTORE_MASTER_SECRET");
+        Keystore::from_master_secret_hex(&master_secret_hex)
+            .context("Failed to load keystore from master secret")
+    } else {
+        // Generate new master secret
+        tracing::warn!("KEYSTORE_MASTER_SECRET not found - generating new master secret");
+        let keystore = Keystore::generate();
+
+        // Get hex representation for user to save
+        let master_hex = keystore.master_secret_hex();
+
+        tracing::warn!("");
+        tracing::warn!("=================================================================");
+        tracing::warn!("IMPORTANT: Save this master secret to persist keystore:");
+        tracing::warn!("KEYSTORE_MASTER_SECRET={}", master_hex);
+        tracing::warn!("");
+        tracing::warn!("Add this to your .env file to avoid generating a new secret");
+        tracing::warn!("on next restart (which would invalidate all encrypted secrets)");
+        tracing::warn!("=================================================================");
+        tracing::warn!("");
+
+        Ok(keystore)
     }
-}
-
-/// Load keystore from KEYSTORE_PRIVATE_KEY environment variable
-fn load_keystore_from_env(config: &Config) -> Result<Keystore> {
-    Keystore::from_private_key(&config.keystore_private_key)
-        .context("Failed to load keystore from private key")
-}
-
-/// Generate new keystore and publish to contract (for first-time setup)
-#[allow(dead_code)]
-async fn generate_and_publish_keystore(config: &Config) -> Result<Keystore> {
-    tracing::info!("Generating new keystore keypair");
-
-    let keystore = Keystore::generate();
-    let pubkey_hex = keystore.public_key_hex();
-
-    tracing::info!(
-        pubkey = %pubkey_hex,
-        "Generated new keypair"
-    );
-
-    // Publish to contract
-    let near_client = near::NearClient::new(
-        &config.near_rpc_url,
-        &config.keystore_account_id,
-        &config.keystore_private_key,
-        &config.offchainvm_contract_id,
-    )?;
-
-    near_client
-        .publish_public_key(&pubkey_hex)
-        .await
-        .context("Failed to publish public key to contract")?;
-
-    tracing::info!("Successfully published public key to contract");
-
-    Ok(keystore)
 }

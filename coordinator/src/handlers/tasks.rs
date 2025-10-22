@@ -69,7 +69,7 @@ pub async fn poll_task(
 pub async fn create_task(
     State(state): State<AppState>,
     Json(payload): Json<CreateTaskRequest>,
-) -> Result<Json<CreateTaskResponse>, StatusCode> {
+) -> Result<(StatusCode, Json<CreateTaskResponse>), StatusCode> {
     debug!("Creating task for request_id={} data_id={}", payload.request_id, payload.data_id);
 
     let request_id = payload.request_id;
@@ -81,7 +81,7 @@ pub async fn create_task(
         code_source: payload.code_source,
         resource_limits: payload.resource_limits,
         input_data: payload.input_data,
-        encrypted_secrets: payload.encrypted_secrets,
+        secrets_ref: payload.secrets_ref, // Reference to contract-stored secrets
         response_format: payload.response_format,
         context: payload.context,
         user_account_id: payload.user_account_id,
@@ -107,8 +107,8 @@ pub async fn create_task(
         })?;
 
     debug!("Task {} pushed to queue", request_id);
-    Ok(Json(CreateTaskResponse {
+    Ok((StatusCode::CREATED, Json(CreateTaskResponse {
         request_id: request_id as i64,
         created: true,
-    }))
+    })))
 }

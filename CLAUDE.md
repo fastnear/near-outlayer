@@ -4,6 +4,8 @@
 You are an assistant, you must write correct and clean code. You speak with a programmer human, you can always ask human's point of view. Do not introduce tasks that were not mentioned by user, he is technical and he knows the potencial scope. Thus said, be sure human's knowledge is limited so you can alsways suggest a better way to solve the problem, but didn't write code if you have something to dicsuss first.
 
 If you are not sure, just reply "I don't know how to do it". It's totally ok, hyman will provide more details
+
+**IMPORTANT**: Human will manage coordinator restarts, docker-compose, and contract deployment himself. DO NOT try to restart coordinator, deploy contract, or manage docker containers. Just write code and let human handle the deployment.
 </CRITICAL>
 
 # NEAR Offshore MVP Development - Context
@@ -18,7 +20,7 @@ If you are not sure, just reply "I don't know how to do it". It's totally ok, hy
 
 Build a production-ready MVP without TEE (Trusted Execution Environment), with architecture that allows easy TEE integration via Phala Network in Phase 2.
 
-## 📊 Current Progress (Updated: 2025-10-09)
+## 📊 Current Progress (Updated: 2025-10-22)
 
 ### ✅ Already Implemented:
 
@@ -27,13 +29,21 @@ Build a production-ready MVP without TEE (Trusted Execution Environment), with a
 - ✅ **promise_yield_create / promise_yield_resume** - correct yield/resume implementation
 - ✅ **DATA_ID_REGISTER** (register 37) for data_id
 - ✅ **Modular structure**: lib.rs, execution.rs, events.rs, views.rs, admin.rs, tests/
-- ✅ **Functions**:
+- ✅ **Execution Functions**:
   - `request_execution` - request off-chain execution with payment (with resource limit validation)
   - `resolve_execution` - resolve by operator (with resources_used logging)
   - `on_execution_response` - callback with result (cost calculation, refund, resources_used logging)
   - `cancel_stale_execution` - cancel stale requests (10 min timeout)
-  - Admin: set_owner, set_operator, set_paused, set_pricing, emergency_cancel_execution
-  - Views: get_request, get_stats, get_pricing, get_config, is_paused, **estimate_execution_cost**, **get_max_limits**
+- ✅ **Secrets Management Functions** ✨ **NEW (2025-10-22)**:
+  - `store_secrets` - Store encrypted secrets with repo/branch/profile/access_condition
+  - `delete_secrets` - Delete secrets and refund storage deposit
+  - `get_secrets` - Retrieve encrypted secrets (access control validated by keystore)
+  - `secrets_exist` - Check if secrets exist for given key
+  - `list_user_secrets` - List all secrets owned by a user (with indexing)
+  - **User index**: `LookupMap<AccountId, UnorderedSet<SecretKey>>` for efficient lookups
+  - **Storage cost**: Proportional to data size + ~64 bytes for index entry
+- ✅ **Admin Functions**: set_owner, set_operator, set_paused, set_pricing, emergency_cancel_execution
+- ✅ **View Functions**: get_request, get_stats, get_pricing, get_config, is_paused, **estimate_execution_cost**, **get_max_limits**, **list_user_secrets**
 - ✅ **NEW: Dynamic pricing based on resource limits**:
   - `estimate_cost()` - calculates cost based on requested limits (not fixed base fee)
   - `estimate_execution_cost()` - public view method for users
@@ -133,24 +143,96 @@ Build a production-ready MVP without TEE (Trusted Execution Environment), with a
 - ✅ **.env.example** - Complete configuration template with API key examples
 - ✅ **Compiles successfully** - warnings only (unused fields), 0 errors
 
-#### 5. **Keystore Worker** (`/keystore-worker`) - 100% ✅ COMPLETE
-- ✅ **Python Flask API server** for secret management
-- ✅ **Endpoints**:
-  - `GET /pubkey` - Get encryption public key
-  - `POST /decrypt` - Decrypt secrets with TEE attestation verification
+#### 5. **Keystore Worker** (`/keystore-worker`) - 100% ✅ COMPLETE + ENHANCED
+- ✅ **Python Flask API server** for secret management running on port 8081
+- ✅ **Secrets Endpoints**:
+  - `GET /pubkey?repo=X&owner=Y&branch=Z` - Get encryption public key for specific repo
+  - `POST /decrypt` - Decrypt secrets with TEE attestation + access control validation
   - `GET /health` - Health check
+- ✅ **GitHub Endpoints** ✨ **NEW (2025-10-22)**:
+  - `GET /github/secrets-pubkey?repo=X&owner=Y` - Get public key from Coordinator API
+  - Integration with Coordinator API for centralized key management
+- ✅ **Access Control Validation** ✨ **NEW**:
+  - Validates access conditions before decrypting (AllowAll, Whitelist, AccountPattern, NEAR balance, FT balance, NFT ownership)
+  - Makes RPC calls to NEAR for balance checks
+  - Supports complex Logic conditions (AND/OR/NOT)
 - ✅ **Simple XOR encryption** (MVP) - will be replaced with ChaCha20-Poly1305 in production
 - ✅ **Attestation verification** - validates worker's TEE measurements
 - ✅ **encrypt_secrets.py** - Helper script to encrypt secrets:
-  - **NEW: JSON format** - accepts `{"KEY":"value"}` instead of `KEY=value,KEY2=value2`
+  - **JSON format** - accepts `{"KEY":"value"}` instead of `KEY=value,KEY2=value2`
   - Validates JSON structure before encryption
   - Outputs encrypted array for contract calls
 - ✅ **Docker support** with docker-compose.yml
-- ✅ Running on port 8081
 
-### 🔧 Recent Enhancements (2025-10-10):
+#### 6. **Dashboard** (`/dashboard`) - 100% ✅ COMPLETE + REFACTORED
+- ✅ **Next.js 15 + TypeScript** web application running on port 3000
+- ✅ **NEAR Wallet Integration** via @near-wallet-selector
+- ✅ **Pages**:
+  - `/` - Home page with project overview
+  - `/executions` - List execution requests and results
+  - `/secrets` - **Secrets management** ✨ **FULLY REFACTORED (2025-10-22)**
+  - `/stats` - Platform statistics
+  - `/workers` - Worker monitoring
+  - `/settings` - User settings and earnings
+  - `/playground` - Test WASM execution
+- ✅ **Secrets Page Architecture** ✨ **NEW (2025-10-22)**:
+  - **Modular component structure** (6 files, ~480 lines):
+    - `page.tsx` (168 lines) - Main page with state management
+    - `types.ts` - TypeScript type definitions
+    - `utils.ts` - Helper functions with proper type guards
+    - `AccessConditionBuilder.tsx` - Form for access conditions
+    - `SecretCard.tsx` - Individual secret display card
+    - `SecretsList.tsx` - List container with loading/empty states
+    - `SecretsForm.tsx` - Create/edit form with client-side encryption
+  - **Features**:
+    - View all user's secrets via `list_user_secrets` contract method
+    - Create new secrets with repo/branch/profile/access control
+    - Edit existing secrets (loads data into form)
+    - Delete secrets with confirmation + storage refund
+    - Client-side encryption using **coordinator proxy** (`/secrets/pubkey` endpoint)
+    - Access condition builder with all types (AllowAll, Whitelist, NEAR balance, FT, NFT, Logic)
+    - Real-time secrets list refresh after operations
+  - **Security**: Dashboard never directly accesses keystore (port 8081) - all requests go through coordinator proxy
+    - Responsive design with Tailwind CSS
+- ✅ **Build Status**: TypeScript compilation successful, no errors
+- ✅ **Documentation**: Full refactoring summary in `REFACTORING_SUMMARY.md`
 
-1. **Encrypted Secrets with WASI Environment Variables** ✨ **NEW**:
+### 🔧 Recent Enhancements (2025-10-22):
+
+1. **Branch Resolution via Coordinator API with Redis Caching** ✨ **NEW (2025-10-22)**:
+   - **Architecture**: Coordinator handles GitHub API + Redis caching, workers call coordinator
+   - **Coordinator** (`coordinator/src/handlers/github.rs`):
+     - Endpoint: `GET /github/resolve-branch?repo=...&commit=...` (public, no auth)
+     - Detects if commit is SHA (40/7-8 hex chars) or branch name
+     - **For SHA commits**: Queries GitHub API `/commits/{sha}/branches-where-head`
+     - **For branch names**: Returns as-is without API call (fast path)
+     - **Caching**: All results cached in Redis for 7 days
+   - **Worker** (`worker/src/api_client.rs`):
+     - New method: `api_client.resolve_branch(repo, commit)`
+     - Calls coordinator before secrets decryption in Compile/Execute tasks
+     - Fallback to `branch=None` if coordinator API fails
+   - **Benefits**: Centralized rate limit management, Redis caching, enables per-branch secrets
+   - **No API key required** for public repositories
+
+2. **Repo-Based Secrets Management** ✨ **NEW**:
+   - Contract: `store_secrets`, `delete_secrets`, `get_secrets`, `secrets_exist`, `list_user_secrets`
+   - User index: `LookupMap<AccountId, UnorderedSet<SecretKey>>` for O(1) user lookups
+   - Storage cost: Base data + ~64 bytes for index entry, refunded on delete
+   - Access control: AllowAll, Whitelist, AccountPattern, NEAR/FT/NFT balance checks, Logic (AND/OR/NOT)
+   - Keystore integration: Validates access conditions before decryption
+   - Worker integration: Fetches secrets from contract, decrypts via keystore, injects into WASI env
+
+3. **Dashboard Secrets Page Refactoring** ✨ **NEW**:
+   - Reduced main page from 667 → 168 lines (75% reduction)
+   - Created 5 reusable components (types, utils, form, list, card, builder)
+   - Improved type safety: replaced `any` with `unknown` + type guards
+   - React best practices: useCallback, proper dependencies
+   - Features: view/create/edit/delete secrets with real-time updates
+   - Client-side encryption with XOR (MVP)
+
+### 🔧 Previous Enhancements (2025-10-10):
+
+1. **Encrypted Secrets with WASI Environment Variables**:
    - Changed secrets format from `KEY1=value1,KEY2=value2` to JSON `{"KEY1":"value1","KEY2":"value2"}`
    - Worker automatically decrypts secrets via keystore
    - Parses JSON to HashMap and injects into WASI environment
@@ -371,7 +453,67 @@ cp .env.example .env
 cargo run
 ```
 
-### Using Encrypted Secrets (NEW!)
+### Using Repo-Based Secrets (NEW - Recommended!)
+```bash
+# 1. Start dashboard
+cd dashboard
+npm run dev
+# Open http://localhost:3000/secrets
+
+# 2. Connect wallet and create secrets via UI:
+#    - Enter repo: github.com/alice/myproject
+#    - Enter branch (optional): main
+#    - Enter profile: production
+#    - Enter JSON secrets: {"OPENAI_KEY":"sk-...", "API_TOKEN":"secret123"}
+#    - Select access condition (e.g., AllowAll, Whitelist, NEAR balance)
+#    - Click "Encrypt & Store Secrets"
+#    - Secrets are encrypted client-side and stored on contract
+
+# 3. Request execution with secrets_ref
+near call offchainvm.testnet request_execution \
+  '{
+    "code_source": {
+      "repo": "https://github.com/alice/myproject",
+      "commit": "main",
+      "build_target": "wasm32-wasip1"
+    },
+    "secrets_ref": {
+      "profile": "production",
+      "account_id": "alice.testnet"
+    },
+    "resource_limits": {
+      "max_instructions": 1000000000,
+      "max_memory_mb": 128,
+      "max_execution_seconds": 60
+    },
+    "input_data": "{}"
+  }' \
+  --accountId user.testnet \
+  --deposit 0.1
+
+# 4. Worker will automatically:
+#    - Fetch encrypted secrets from contract (repo + branch + profile + owner)
+#    - Validate access conditions via keystore
+#    - Decrypt secrets via keystore
+#    - Parse JSON: {"OPENAI_KEY":"sk-...", "API_TOKEN":"secret123"}
+#    - Inject into WASI environment
+#    - Your WASM code can use: std::env::var("OPENAI_KEY")
+
+# View all your secrets:
+near view offchainvm.testnet list_user_secrets '{"account_id":"alice.testnet"}'
+
+# Delete secrets (with storage refund):
+near call offchainvm.testnet delete_secrets \
+  '{
+    "repo": "github.com/alice/myproject",
+    "branch": "main",
+    "profile": "production"
+  }' \
+  --accountId alice.testnet \
+  --depositYocto 1
+```
+
+### Using Inline Encrypted Secrets (Legacy - for backward compatibility)
 ```bash
 # 1. Start keystore worker
 cd keystore-worker
@@ -383,13 +525,13 @@ docker-compose up -d
 # Output example:
 # [123, 45, 67, 89, ...]  <- Use this in contract call
 
-# 3. Call contract with encrypted secrets
+# 3. Call contract with encrypted_secrets (inline)
 near call offchainvm.testnet request_execution \
   '{
     "code_source": {
       "repo": "https://github.com/user/repo",
       "commit": "abc123",
-      "build_target": "wasm32-wasi"
+      "build_target": "wasm32-wasip1"
     },
     "resource_limits": {
       "max_instructions": 1000000000,
@@ -401,12 +543,6 @@ near call offchainvm.testnet request_execution \
   }' \
   --accountId user.testnet \
   --deposit 0.1
-
-# 4. Worker will automatically:
-#    - Decrypt secrets via keystore
-#    - Parse JSON: {"OPENAI_KEY":"sk-...", "API_TOKEN":"secret123"}
-#    - Inject into WASI environment
-#    - Your WASM code can use: std::env::var("OPENAI_KEY")
 ```
 
 ## 📚 Documentation
@@ -417,6 +553,7 @@ near call offchainvm.testnet request_execution \
 - [README.md](README.md) - Quick start guide
 - [contract/README.md](contract/README.md) - Contract API documentation
 - [worker/README.md](worker/README.md) - Worker setup and configuration
+- [dashboard/REFACTORING_SUMMARY.md](dashboard/REFACTORING_SUMMARY.md) - Dashboard refactoring details ✨ **NEW**
 
 ## 🎯 Timeline
 
@@ -430,15 +567,21 @@ near call offchainvm.testnet request_execution \
 ## 💡 Important Notes
 
 1. **Coordinator API running on port 8080** - can test endpoints right now
-2. **Keystore worker running on port 8081** - handles encrypted secrets decryption
-3. **Auth disabled in dev mode** (`REQUIRE_AUTH=false` in `.env`) - can make requests without token
-4. **WASM cache** created in `/tmp/offchainvm/wasm` - remember to change to production path
-5. **PostgreSQL and Redis** running via docker-compose
-6. **All SQL migrations applied** - database is ready
-7. **Resource metrics are now real** - instructions and time_ms from actual execution
-8. **Dynamic pricing** - users see estimated cost before execution
-9. **API keys** - can be embedded in NEAR_RPC_URL and NEARDATA_API_URL for paid services
-10. **Encrypted secrets** - JSON format `{"KEY":"value"}`, automatically injected into WASI environment
+2. **Keystore worker running on port 8081** - **ISOLATED, accessed only via coordinator proxy** (not directly from outside)
+   - **Docker networking**: Coordinator uses `host.docker.internal:8081` on Mac/Windows
+   - Set `KEYSTORE_BASE_URL=http://host.docker.internal:8081` in `coordinator/.env`
+3. **Dashboard running on port 3000** - full UI for secrets management ✨ **NEW**
+   - Dashboard uses coordinator endpoints (`/secrets/pubkey`, `/github/resolve-branch`)
+   - **Never directly accesses keystore (port 8081)** for security
+4. **Auth disabled in dev mode** (`REQUIRE_AUTH=false` in `.env`) - can make requests without token
+5. **WASM cache** created in `/tmp/offchainvm/wasm` - remember to change to production path
+6. **PostgreSQL and Redis** running via docker-compose
+7. **All SQL migrations applied** - database is ready
+8. **Resource metrics are now real** - instructions and time_ms from actual execution
+9. **Dynamic pricing** - users see estimated cost before execution
+10. **API keys** - can be embedded in NEAR_RPC_URL and NEARDATA_API_URL for paid services
+11. **Repo-based secrets** - Store once, use everywhere. Secrets indexed by user for O(1) lookups ✨ **NEW**
+12. **Access control** - Whitelist, NEAR/FT/NFT balance checks, regex patterns, complex Logic conditions ✨ **NEW**
 
 ## 🔄 Next Actions
 
@@ -464,6 +607,6 @@ near call offchainvm.testnet request_execution \
 
 ---
 
-**Current Date**: 2025-10-10
+**Current Date**: 2025-10-22
 **Version**: MVP Phase 1 (without TEE)
-**Status**: Contract ✅ | Coordinator ✅ | Worker ✅ | Keystore ✅ | Encrypted Secrets ✅ - Ready for integration testing
+**Status**: Contract ✅ | Coordinator ✅ | Worker ✅ | Keystore ✅ | Dashboard ✅ | Repo-Based Secrets ✅ - Ready for integration testing

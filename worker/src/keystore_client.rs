@@ -19,14 +19,6 @@ pub struct Attestation {
     pub timestamp: u64,
 }
 
-/// Request to decrypt secrets
-#[derive(Debug, Serialize)]
-struct DecryptRequest {
-    encrypted_secrets: String,
-    attestation: Attestation,
-    task_id: Option<String>,
-}
-
 /// Response with decrypted secrets
 #[derive(Debug, Deserialize)]
 struct DecryptResponse {
@@ -131,24 +123,73 @@ impl KeystoreClient {
         }
     }
 
-    /// Decrypt secrets using keystore worker
+    /// Get keystore public key (for testing/verification)
+    pub async fn get_public_key(&self) -> Result<String> {
+        let url = format!("{}/pubkey", self.base_url);
+
+        let response = self
+            .http_client
+            .get(&url)
+            .send()
+            .await
+            .context("Failed to get public key")?;
+
+        let data: serde_json::Value = response
+            .json()
+            .await
+            .context("Failed to parse pubkey response")?;
+
+        let pubkey_hex = data["public_key_hex"]
+            .as_str()
+            .context("Missing public_key_hex in response")?
+            .to_string();
+
+        Ok(pubkey_hex)
+    }
+
+    /// Decrypt secrets from contract (new repo-based system)
     ///
-    /// Sends encrypted secrets + attestation to keystore.
-    /// Keystore verifies attestation and returns plaintext JSON.
+    /// This method:
+    /// 1. Calls keystore with repo, branch, profile, owner
+    /// 2. Keystore reads secrets from NEAR contract
+    /// 3. Keystore validates access conditions
+    /// 4. Keystore decrypts using derived key for seed (repo:owner[:branch])
+    /// 5. Returns HashMap of environment variables
     ///
-    /// Returns: HashMap of environment variables (key-value pairs)
-    pub async fn decrypt_secrets(
+    /// Note: This requires keystore to have NEAR RPC access configured
+    pub async fn decrypt_secrets_from_contract(
         &self,
-        encrypted_secrets: &[u8],
+        repo: &str,
+        branch: Option<&str>,
+        profile: &str,
+        owner: &str,
         task_id: Option<&str>,
     ) -> Result<std::collections::HashMap<String, String>> {
+        tracing::info!(
+            "🔑 decrypt_secrets_from_contract called: repo={}, branch={:?}, profile={}, owner={}, task_id={:?}",
+            repo, branch, profile, owner, task_id
+        );
+
         // Generate attestation
         let attestation = self.generate_attestation()
             .context("Failed to generate attestation")?;
 
-        // Prepare request
-        let request = DecryptRequest {
-            encrypted_secrets: base64::encode(encrypted_secrets),
+        // Prepare request with new fields
+        #[derive(Debug, Serialize)]
+        struct DecryptFromContractRequest {
+            repo: String,
+            branch: Option<String>,
+            profile: String,
+            owner: String,
+            attestation: Attestation,
+            task_id: Option<String>,
+        }
+
+        let request = DecryptFromContractRequest {
+            repo: repo.to_string(),
+            branch: branch.map(|s| s.to_string()),
+            profile: profile.to_string(),
+            owner: owner.to_string(),
             attestation,
             task_id: task_id.map(|s| s.to_string()),
         };
@@ -158,8 +199,11 @@ impl KeystoreClient {
 
         tracing::debug!(
             url = %url,
+            repo = %repo,
+            profile = %profile,
+            owner = %owner,
             task_id = ?task_id,
-            "Requesting secret decryption from keystore"
+            "Requesting secret decryption from contract via keystore"
         );
 
         let response = self
@@ -191,9 +235,10 @@ impl KeystoreClient {
             .context("Failed to decode plaintext secrets")?;
 
         tracing::info!(
-            task_id = ?task_id,
+            repo = %repo,
+            profile = %profile,
             plaintext_size = plaintext.len(),
-            "Successfully decrypted secrets"
+            "Successfully decrypted secrets from contract"
         );
 
         // Parse JSON to HashMap
@@ -204,36 +249,12 @@ impl KeystoreClient {
             .context("Failed to parse decrypted secrets as JSON object")?;
 
         tracing::debug!(
-            task_id = ?task_id,
+            repo = %repo,
             env_count = env_vars.len(),
             "Parsed environment variables from decrypted secrets"
         );
 
         Ok(env_vars)
-    }
-
-    /// Get keystore public key (for testing/verification)
-    pub async fn get_public_key(&self) -> Result<String> {
-        let url = format!("{}/pubkey", self.base_url);
-
-        let response = self
-            .http_client
-            .get(&url)
-            .send()
-            .await
-            .context("Failed to get public key")?;
-
-        let data: serde_json::Value = response
-            .json()
-            .await
-            .context("Failed to parse pubkey response")?;
-
-        let pubkey_hex = data["public_key_hex"]
-            .as_str()
-            .context("Missing public_key_hex in response")?
-            .to_string();
-
-        Ok(pubkey_hex)
     }
 }
 

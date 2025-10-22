@@ -47,14 +47,30 @@ cargo install sqlx-cli --no-default-features --features rustls,postgres
 sqlx migrate run
 ```
 
-### 3. Start Coordinator API
+### 3. Start Keystore (Optional - for encrypted secrets)
+
+```bash
+cd keystore-worker
+docker-compose up -d
+
+# Or run without Docker:
+pip install -r requirements.txt
+python src/api.py
+```
+
+**Important**: If running coordinator in Docker, set `KEYSTORE_BASE_URL=http://host.docker.internal:8081` in `coordinator/.env`
+
+### 4. Start Coordinator API
 
 ```bash
 cd coordinator
 cargo run --release
+
+# Or with Docker:
+docker-compose up -d coordinator
 ```
 
-### 4. Start Workers
+### 5. Start Workers
 
 ```bash
 cd worker
@@ -81,19 +97,35 @@ cargo run --release
    - Yield/resume mechanism integration
 
 2. **Coordinator API Server**
-   - Central HTTP API server
+   - Central HTTP API server (port 8080)
    - PostgreSQL + Redis + Local WASM cache
    - Worker authentication via bearer tokens
    - LRU cache eviction
+   - Proxies requests to Keystore (isolated)
+   - GitHub API integration with Redis caching
 
-3. **Workers**
+3. **Keystore Worker** (Optional)
+   - Encrypted secrets management (port 8081)
+   - **Isolated**: Only accessible via Coordinator proxy
+   - Access control validation (Whitelist, NEAR/FT/NFT balance, Logic)
+   - Public key generation for client-side encryption
+
+4. **Workers**
    - Poll tasks from Coordinator API
    - Compile GitHub repos to WASM (Docker sandboxed)
    - Execute WASM with resource limits (wasmi)
    - Report results to contract
+   - Decrypt secrets via Keystore (if provided)
 
-4. **Test WASM Project**
-   - Random number generator
+5. **Dashboard** (Optional)
+   - Next.js web UI (port 3000)
+   - Secrets management interface
+   - Execution history and monitoring
+   - Worker status tracking
+
+6. **Test WASM Projects**
+   - Random number generator (random-ark)
+   - AI integration examples (ai-ark)
    - Used for end-to-end testing
 
 ## Development

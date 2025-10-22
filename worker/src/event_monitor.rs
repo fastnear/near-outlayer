@@ -30,7 +30,7 @@ pub struct RequestData {
     pub resource_limits: ResourceLimits,
     pub input_data: String,
     #[serde(default)]
-    pub encrypted_secrets: Option<Vec<u8>>,
+    pub secrets_ref: Option<crate::api_client::SecretsReference>,
     pub payment: String,
     pub timestamp: u64,
     #[serde(default)]
@@ -437,7 +437,7 @@ impl EventMonitor {
             }
         };
 
-        info!("request_data {:?}", request_data.encrypted_secrets);
+        info!("request_data secrets_ref: {:?}", request_data.secrets_ref);
 
         // Default to wasm32-wasi if not specified (will be normalized to wasm32-wasip1 by compiler)
         if request_data.code_source.build_target.is_none() {
@@ -496,7 +496,7 @@ impl EventMonitor {
                 request_data.resource_limits.max_memory_mb,
                 request_data.resource_limits.max_execution_seconds,
                 request_data.input_data.clone(),
-                request_data.encrypted_secrets.clone(),
+                request_data.secrets_ref.clone(),
                 request_data.response_format.clone(),
                 context,
                 Some(request_data.sender_id.clone()), // user_account_id

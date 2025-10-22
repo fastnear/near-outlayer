@@ -1,3 +1,4 @@
+pub mod github;
 pub mod jobs;
 pub mod locks;
 pub mod pricing;

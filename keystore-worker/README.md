@@ -124,7 +124,7 @@ Create a `.env` file (see `.env.example`):
 SERVER_HOST=0.0.0.0
 SERVER_PORT=8081
 
-# NEAR
+# NEAR Configuration
 NEAR_NETWORK=testnet
 NEAR_RPC_URL=https://rpc.testnet.fastnear.com?apiKey=FASTNEARDEVSUoeFIcg7PpuKnAcwlz4FGPMM2K7GTgWP
 OFFCHAINVM_CONTRACT_ID=offchainvm.testnet
@@ -132,6 +132,14 @@ OFFCHAINVM_CONTRACT_ID=offchainvm.testnet
 # Keystore account (must be authorized in contract)
 KEYSTORE_ACCOUNT_ID=keystore.testnet
 KEYSTORE_PRIVATE_KEY=ed25519:...
+
+# NEAR RPC Client (for reading secrets from contract)
+# Both are REQUIRED for repo-based secrets to work:
+NEAR_CONTRACT_ID=offchainvm.testnet
+
+# Master Secret for Key Derivation
+# Generate: openssl rand -hex 32
+KEYSTORE_MASTER_SECRET=your_master_secret_hex_64_chars
 
 # Worker authentication (SHA256 hashes of bearer tokens)
 ALLOWED_WORKER_TOKEN_HASHES=hash1,hash2,hash3

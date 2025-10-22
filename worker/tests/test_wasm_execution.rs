@@ -49,7 +49,10 @@ async fn test_wasm_execution() {
 
     // Execute WASM
     println!("⚙️  Executing WASM...");
-    match executor.execute(&wasm_bytes, &input_data, &resource_limits, None, None).await {
+    use offchainvm_worker::api_client::ResponseFormat;
+    let response_format = ResponseFormat::Text;
+
+    match executor.execute(&wasm_bytes, &input_data, &resource_limits, None, None, &response_format).await {
         Ok(result) => {
             println!("✅ Execution result:");
             println!("   Success: {}", result.success);
@@ -61,8 +64,8 @@ async fn test_wasm_execution() {
                 panic!("WASM execution failed: {:?}", result.error);
             }
 
-            if let Some(output) = result.output {
-                println!("   Output as string: {}", String::from_utf8_lossy(&output));
+            if let Some(output) = &result.output {
+                println!("   Output data: {:?}", output);
             }
         }
         Err(e) => {
@@ -91,7 +94,10 @@ async fn test_minimal_wasm() {
     };
 
     println!("⚙️  Testing minimal WASM...");
-    match executor.execute(&minimal_wasm, &[], &resource_limits, None, None).await {
+    use offchainvm_worker::api_client::ResponseFormat;
+    let response_format = ResponseFormat::Text;
+
+    match executor.execute(&minimal_wasm, &[], &resource_limits, None, None, &response_format).await {
         Ok(result) => {
             println!("Result: success={}, error={:?}", result.success, result.error);
         }

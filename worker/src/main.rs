@@ -7,6 +7,7 @@ mod keystore_client;
 mod near_client;
 
 use anyhow::{Context, Result};
+use std::collections::HashMap;
 use tracing::{error, info, warn};
 
 use api_client::{ApiClient, CodeSource, ExecutionResult, JobInfo, JobType, Task};
@@ -184,14 +185,14 @@ async fn worker_iteration(
     info!("📨 Received task: {:?}", task);
 
     // Extract task details
-    let (request_id, data_id, code_source, resource_limits, input_data, encrypted_secrets, response_format, context, user_account_id, near_payment_yocto, transaction_hash) = match &task {
+    let (request_id, data_id, code_source, resource_limits, input_data, secrets_ref, response_format, context, user_account_id, near_payment_yocto, transaction_hash) = match &task {
         Task::Compile {
             request_id,
             data_id,
             code_source,
             resource_limits,
             input_data,
-            encrypted_secrets,
+            secrets_ref,
             response_format,
             context,
             user_account_id,
@@ -204,7 +205,7 @@ async fn worker_iteration(
             code_source.clone(),
             resource_limits.clone(),
             input_data.clone(),
-            encrypted_secrets.clone(),
+            secrets_ref.clone(),
             response_format.clone(),
             context.clone(),
             user_account_id.clone(),
@@ -319,7 +320,7 @@ async fn worker_iteration(
                     &code_source,
                     &resource_limits,
                     &input_data,
-                    encrypted_secrets.as_ref(),
+                    secrets_ref.as_ref(),
                     &response_format,
                     &context,
                     user_account_id.as_ref(),
@@ -536,7 +537,7 @@ async fn handle_execute_job(
     code_source: &CodeSource,
     resource_limits: &api_client::ResourceLimits,
     input_data: &str,
-    encrypted_secrets: Option<&Vec<u8>>,
+    secrets_ref: Option<&api_client::SecretsReference>,
     response_format: &api_client::ResponseFormat,
     context: &api_client::ExecutionContext,
     user_account_id: Option<&String>,
@@ -559,36 +560,89 @@ async fn handle_execute_job(
         } else {
             warn!("⚠️ Checksum mismatch - downloading from coordinator");
             // Check cache metadata to get created_at timestamp
-            let (_exists, created_at) = api_client.wasm_exists(wasm_checksum).await
-                .context("Failed to check WASM existence")?;
+            let (_exists, created_at) = match api_client.wasm_exists(wasm_checksum).await {
+                Ok(result) => result,
+                Err(e) => {
+                    let error_msg = format!("Failed to check WASM existence: {}", e);
+                    error!("❌ {}", error_msg);
+                    api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None).await?;
+                    return Ok(());
+                }
+            };
             info!("📥 Downloading WASM: checksum={} (cached since: {:?})", wasm_checksum, created_at);
-            let bytes = api_client.download_wasm(wasm_checksum).await
-                .context("Failed to download WASM")?;
+            let bytes = match api_client.download_wasm(wasm_checksum).await {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    let error_msg = format!("Failed to download WASM: {}", e);
+                    error!("❌ {}", error_msg);
+                    api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None).await?;
+                    return Ok(());
+                }
+            };
             info!("✅ Downloaded WASM: {} bytes", bytes.len());
             (bytes, None, created_at)
         }
     } else {
         // No local cache - download from coordinator
         // Check cache metadata to get created_at timestamp
-        let (_exists, created_at) = api_client.wasm_exists(wasm_checksum).await
-            .context("Failed to check WASM existence")?;
+        let (_exists, created_at) = match api_client.wasm_exists(wasm_checksum).await {
+            Ok(result) => result,
+            Err(e) => {
+                let error_msg = format!("Failed to check WASM existence: {}", e);
+                error!("❌ {}", error_msg);
+                api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None).await?;
+                return Ok(());
+            }
+        };
         info!("📥 Downloading WASM: checksum={} (cached since: {:?})", wasm_checksum, &created_at);
-        let bytes = api_client.download_wasm(wasm_checksum).await
-            .context("Failed to download WASM")?;
+        let bytes = match api_client.download_wasm(wasm_checksum).await {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                let error_msg = format!("Failed to download WASM: {}", e);
+                error!("❌ {}", error_msg);
+                api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None).await?;
+                return Ok(());
+            }
+        };
         info!("✅ Downloaded WASM: {} bytes, created_at={:?}", bytes.len(), &created_at);
         (bytes, None, created_at)
     };
 
-    // Decrypt secrets if provided
-    let user_secrets = if let (Some(encrypted), Some(keystore)) = (encrypted_secrets, keystore_client) {
-        info!("🔐 Decrypting secrets via keystore...");
-        match keystore.decrypt_secrets(encrypted, Some(data_id)).await {
+    // Decrypt secrets from contract if provided (new repo-based system)
+    info!("🔍 DEBUG secrets_ref: {:?}", secrets_ref);
+    info!("🔍 DEBUG keystore_client: {}", if keystore_client.is_some() { "Some" } else { "None" });
+
+    let user_secrets = if let (Some(secrets_ref), Some(keystore)) = (secrets_ref, keystore_client) {
+        info!("🔐 Decrypting repo-based secrets: profile={}, owner={}", secrets_ref.profile, secrets_ref.account_id);
+
+        // Get repo from code_source
+        let repo = code_source.repo();
+
+        // Resolve branch from commit via coordinator API (with caching)
+        let commit = code_source.commit();
+        let branch = match api_client.resolve_branch(repo, commit).await {
+            Ok(b) => {
+                if let Some(ref branch_name) = b {
+                    info!("✅ Coordinator resolved '{}' → branch '{}'", commit, branch_name);
+                } else {
+                    info!("⚠️  Coordinator: commit '{}' not found, using wildcard (branch=None)", commit);
+                }
+                b
+            }
+            Err(e) => {
+                warn!("⚠️  Coordinator API failed: {}, using wildcard (branch=None)", e);
+                None
+            }
+        };
+
+        // Call keystore to decrypt secrets from contract
+        match keystore.decrypt_secrets_from_contract(repo, branch.as_deref(), &secrets_ref.profile, &secrets_ref.account_id, Some(data_id)).await {
             Ok(secrets) => {
-                info!("✅ Secrets decrypted successfully");
+                info!("✅ Secrets decrypted successfully: {} environment variables", secrets.len());
                 Some(secrets)
             }
             Err(e) => {
-                let error_msg = format!("Failed to decrypt secrets: {}", e);
+                let error_msg = format!("Failed to decrypt repo-based secrets: {}", e);
                 error!("❌ {}", error_msg);
 
                 // Fail the job
@@ -777,7 +831,7 @@ async fn handle_compile_task(
     code_source: CodeSource,
     resource_limits: api_client::ResourceLimits,
     input_data: String,
-    encrypted_secrets: Option<Vec<u8>>,
+    secrets_ref: Option<api_client::SecretsReference>,
     response_format: api_client::ResponseFormat,
     context: api_client::ExecutionContext,
     user_account_id: Option<String>,
@@ -841,30 +895,49 @@ async fn handle_compile_task(
         }
     };
 
-    // Step 3: Decrypt secrets if provided
-    let env_vars = if let Some(encrypted) = &encrypted_secrets {
-        info!("🔐 Found encrypted_secrets field: {} bytes", encrypted.len());
+    // Step 3: Decrypt secrets from contract if provided (new repo-based system)
+    let env_vars = if let Some(secrets_ref) = &secrets_ref {
+        info!("🔐 Decrypting repo-based secrets: profile={}, owner={}", secrets_ref.profile, secrets_ref.account_id);
+
         if let Some(keystore) = keystore_client {
-            info!("🔑 Keystore client configured, attempting decryption...");
-            match keystore.decrypt_secrets(encrypted, Some(&request_id.to_string())).await {
+            // Get repo from code_source
+            let repo = code_source.repo();
+
+            // Resolve branch from commit via coordinator API (with caching)
+            let commit = code_source.commit();
+            let branch = match api_client.resolve_branch(repo, commit).await {
+                Ok(b) => {
+                    if let Some(ref branch_name) = b {
+                        info!("✅ Coordinator resolved '{}' → branch '{}'", commit, branch_name);
+                    } else {
+                        info!("⚠️  Coordinator: commit '{}' not found, using wildcard (branch=None)", commit);
+                    }
+                    b
+                }
+                Err(e) => {
+                    warn!("⚠️  Coordinator API failed: {}, using wildcard (branch=None)", e);
+                    None
+                }
+            };
+
+            match keystore.decrypt_secrets_from_contract(repo, branch.as_deref(), &secrets_ref.profile, &secrets_ref.account_id, Some(&request_id.to_string())).await {
                 Ok(secrets) => {
                     info!("✅ Secrets decrypted successfully! {} environment variables", secrets.len());
-                    info!("📝 Environment variables: {:?}", secrets.keys().collect::<Vec<_>>());
                     Some(secrets)
                 }
                 Err(e) => {
-                    let error_msg = format!("Failed to decrypt secrets: {}", e);
+                    let error_msg = format!("Failed to decrypt repo-based secrets: {}", e);
                     warn!("❌ {}", error_msg);
                     api_client.fail_task(request_id, error_msg).await?;
                     return Ok(());
                 }
             }
         } else {
-            warn!("⚠️  Encrypted secrets provided ({} bytes) but keystore not configured - ignoring", encrypted.len());
+            warn!("⚠️  secrets_ref provided but keystore not configured - ignoring");
             None
         }
     } else {
-        info!("ℹ️  No encrypted_secrets in task");
+        info!("ℹ️  No secrets_ref in task");
         None
     };
 
@@ -990,7 +1063,7 @@ async fn handle_execute_task(
     wasm_checksum: String,
     resource_limits: api_client::ResourceLimits,
     input_data: String,
-    encrypted_secrets: Option<Vec<u8>>,
+    secrets_ref: Option<api_client::SecretsReference>,
     build_target: Option<String>,
     response_format: api_client::ResponseFormat,
     context: api_client::ExecutionContext,
@@ -1017,30 +1090,20 @@ async fn handle_execute_task(
         }
     };
 
-    // Decrypt secrets if provided
-    let env_vars = if let Some(encrypted) = &encrypted_secrets {
-        info!("🔐 Found encrypted_secrets field: {} bytes", encrypted.len());
-        if let Some(keystore) = keystore_client {
-            info!("🔑 Keystore client configured, attempting decryption...");
-            match keystore.decrypt_secrets(encrypted, Some(&request_id.to_string())).await {
-                Ok(secrets) => {
-                    info!("✅ Secrets decrypted successfully! {} environment variables", secrets.len());
-                    info!("📝 Environment variables: {:?}", secrets.keys().collect::<Vec<_>>());
-                    Some(secrets)
-                }
-                Err(e) => {
-                    let error_msg = format!("Failed to decrypt secrets: {}", e);
-                    warn!("❌ {}", error_msg);
-                    api_client.fail_task(request_id, error_msg).await?;
-                    return Ok(());
-                }
-            }
-        } else {
-            warn!("⚠️  Encrypted secrets provided ({} bytes) but keystore not configured - ignoring", encrypted.len());
-            None
-        }
+    // Get secrets from contract and decrypt via keystore (new repo-based system)
+    let env_vars = if let Some(secrets_ref) = &secrets_ref {
+        info!("🔐 Decrypting repo-based secrets: profile={}, owner={}", secrets_ref.profile, secrets_ref.account_id);
+
+        // NOTE: This function (handle_execute_task) is deprecated in favor of job-based workflow
+        // In job-based workflow, code_source is always available (via handle_execute_job)
+        // For direct Execute tasks, we'd need to either:
+        // 1. Add code_source to Task::Execute
+        // 2. Query coordinator for wasm metadata to get repo
+        // For now, skip secrets in this deprecated path
+        warn!("⚠️  Direct Execute task with secrets_ref not supported (use job-based workflow)");
+        None
     } else {
-        info!("ℹ️  No encrypted_secrets in task");
+        info!("ℹ️  No secrets_ref in task");
         None
     };
 
@@ -1112,3 +1175,6 @@ async fn handle_execute_task(
 
     Ok(())
 }
+
+// Tests moved to coordinator/src/handlers/github.rs
+// Branch resolution is now done via coordinator API with Redis caching

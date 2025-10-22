@@ -29,6 +29,9 @@ pub struct Config {
     // NEAR contract integration
     pub near_rpc_url: String,
     pub contract_id: String,
+
+    // Keystore integration
+    pub keystore_base_url: Option<String>,
 }
 
 impl Config {
@@ -78,6 +81,8 @@ impl Config {
                 .unwrap_or_else(|_| "https://rpc.testnet.near.org".to_string()),
             contract_id: std::env::var("OFFCHAINVM_CONTRACT_ID")
                 .unwrap_or_else(|_| "offchainvm.testnet".to_string()),
+
+            keystore_base_url: std::env::var("KEYSTORE_BASE_URL").ok(),
         })
     }
 }

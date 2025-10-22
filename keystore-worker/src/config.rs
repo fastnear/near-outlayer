@@ -19,12 +19,6 @@ pub struct Config {
     /// OffchainVM contract account ID
     pub offchainvm_contract_id: String,
 
-    /// Keystore account ID (for signing transactions)
-    pub keystore_account_id: String,
-
-    /// Keystore private key (for signing transactions)
-    pub keystore_private_key: String,
-
     /// Allowed worker token hashes (SHA256)
     pub allowed_worker_token_hashes: Vec<String>,
 
@@ -64,10 +58,6 @@ impl Config {
             .context("NEAR_RPC_URL is required")?;
         let offchainvm_contract_id = std::env::var("OFFCHAINVM_CONTRACT_ID")
             .context("OFFCHAINVM_CONTRACT_ID is required")?;
-        let keystore_account_id = std::env::var("KEYSTORE_ACCOUNT_ID")
-            .context("KEYSTORE_ACCOUNT_ID is required")?;
-        let keystore_private_key = std::env::var("KEYSTORE_PRIVATE_KEY")
-            .context("KEYSTORE_PRIVATE_KEY is required")?;
 
         let allowed_worker_token_hashes = std::env::var("ALLOWED_WORKER_TOKEN_HASHES")
             .unwrap_or_default()
@@ -89,8 +79,6 @@ impl Config {
             near_network,
             near_rpc_url,
             offchainvm_contract_id,
-            keystore_account_id,
-            keystore_private_key,
             allowed_worker_token_hashes,
             tee_mode,
         })
@@ -100,16 +88,6 @@ impl Config {
     pub fn validate(&self) -> Result<()> {
         if self.allowed_worker_token_hashes.is_empty() {
             tracing::warn!("No worker token hashes configured - all requests will be rejected");
-        }
-
-        // Validate account ID format
-        if !self.keystore_account_id.contains('.') && self.keystore_account_id.len() < 64 {
-            anyhow::bail!("Invalid KEYSTORE_ACCOUNT_ID format");
-        }
-
-        // Validate private key format
-        if !self.keystore_private_key.starts_with("ed25519:") {
-            anyhow::bail!("KEYSTORE_PRIVATE_KEY must start with 'ed25519:'");
         }
 
         Ok(())

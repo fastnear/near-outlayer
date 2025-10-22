@@ -36,6 +36,9 @@ export default function RootLayout({
                       <Link href="/executions" className="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">
                         Executions
                       </Link>
+                      <Link href="/secrets" className="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">
+                        🔐 Secrets
+                      </Link>
                       <Link href="/stats" className="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">
                         Stats
                       </Link>

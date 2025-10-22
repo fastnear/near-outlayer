@@ -237,7 +237,7 @@ PAYMENT=0.5 ./e2e.sh
 ========================================
 
 📝 Configuration:
-  Contract: c3.offchainvm.testnet
+  Contract: c5.offchainvm.testnet
   Caller: offchainvm.testnet
   Payment: 0.1 NEAR
   Repo: https://github.com/zavodil/random-ark

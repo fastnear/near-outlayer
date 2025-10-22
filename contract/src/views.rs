@@ -45,19 +45,6 @@ impl Contract {
         (self.owner_id.clone(), self.operator_id.clone())
     }
 
-    /// Get keystore public key (for encrypting secrets)
-    ///
-    /// Returns None if keystore is not configured.
-    /// Users should encrypt their secrets with this public key before calling request_execution.
-    pub fn get_keystore_pubkey(&self) -> Option<String> {
-        self.keystore_pubkey.clone()
-    }
-
-    /// Get keystore account ID
-    pub fn get_keystore_account(&self) -> Option<AccountId> {
-        self.keystore_account_id.clone()
-    }
-
     /// Get pending output data for a given request_id
     /// Used by coordinator to check if large output was submitted
     pub fn get_pending_output(&self, request_id: u64) -> Option<ExecutionOutput> {

@@ -36,7 +36,7 @@ pub enum Task {
         resource_limits: ResourceLimits,
         input_data: String,
         #[serde(default)]
-        encrypted_secrets: Option<Vec<u8>>,
+        secrets_ref: Option<SecretsReference>,
         #[serde(default)]
         response_format: ResponseFormat,
         #[serde(default)]
@@ -55,7 +55,7 @@ pub enum Task {
         resource_limits: ResourceLimits,
         input_data: String,
         #[serde(default)]
-        encrypted_secrets: Option<Vec<u8>>,
+        secrets_ref: Option<SecretsReference>,
         #[serde(default)]
         build_target: Option<String>,
         #[serde(default)]
@@ -79,6 +79,13 @@ pub enum CodeSource {
         commit: String,
         build_target: String,
     },
+}
+
+/// Reference to secrets stored in contract (new repo-based system)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretsReference {
+    pub profile: String,
+    pub account_id: String,
 }
 
 impl CodeSource {
@@ -728,7 +735,7 @@ impl ApiClient {
     /// * `max_memory_mb` - Maximum memory in MB
     /// * `max_execution_seconds` - Maximum execution time
     /// * `input_data` - Input data JSON string
-    /// * `encrypted_secrets` - Optional encrypted secrets
+    /// * `secrets_ref` - Optional reference to secrets stored in contract
     /// * `user_account_id` - User who requested execution
     /// * `near_payment_yocto` - Payment amount in yoctoNEAR
     ///
@@ -744,7 +751,7 @@ impl ApiClient {
         max_memory_mb: u32,
         max_execution_seconds: u64,
         input_data: String,
-        encrypted_secrets: Option<Vec<u8>>,
+        secrets_ref: Option<SecretsReference>,
         response_format: ResponseFormat,
         context: ExecutionContext,
         user_account_id: Option<String>,
@@ -761,7 +768,7 @@ impl ApiClient {
             resource_limits: ResourceLimits,
             input_data: String,
             #[serde(skip_serializing_if = "Option::is_none")]
-            encrypted_secrets: Option<Vec<u8>>,
+            secrets_ref: Option<SecretsReference>,
             response_format: ResponseFormat,
             context: ExecutionContext,
             #[serde(skip_serializing_if = "Option::is_none")]
@@ -792,7 +799,7 @@ impl ApiClient {
                 max_execution_seconds,
             },
             input_data,
-            encrypted_secrets,
+            secrets_ref,
             response_format,
             context,
             user_account_id,
@@ -875,6 +882,61 @@ impl ApiClient {
         }
 
         Ok(())
+    }
+
+    /// Resolve which branch contains a specific commit hash
+    ///
+    /// Calls coordinator's GitHub API integration with caching.
+    ///
+    /// # Arguments
+    /// * `repo` - Repository URL (e.g., "alice/project" or full URL)
+    /// * `commit` - Commit hash or branch name
+    ///
+    /// # Returns
+    /// * `Ok(Some(branch))` - Branch name found
+    /// * `Ok(None)` - Commit not found or branch could not be determined
+    /// * `Err(_)` - API error
+    pub async fn resolve_branch(&self, repo: &str, commit: &str) -> Result<Option<String>> {
+        let url = format!("{}/github/resolve-branch", self.base_url);
+
+        #[derive(Deserialize)]
+        struct ResolveBranchResponse {
+            branch: Option<String>,
+            #[allow(dead_code)]
+            repo_normalized: String,
+            #[allow(dead_code)]
+            cached: bool,
+        }
+
+        let response = self
+            .client
+            .get(&url)
+            .query(&[("repo", repo), ("commit", commit)])
+            .send() // Note: This endpoint is public (no auth token needed)
+            .await
+            .context("Failed to send resolve-branch request")?;
+
+        match response.status() {
+            StatusCode::OK => {
+                let data: ResolveBranchResponse = response
+                    .json()
+                    .await
+                    .context("Failed to parse resolve-branch response")?;
+                Ok(data.branch)
+            }
+            StatusCode::NOT_FOUND => Ok(None), // Commit not found
+            status => {
+                let error_text = response
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "Unknown error".to_string());
+                anyhow::bail!(
+                    "Resolve-branch failed with status {}: {}",
+                    status,
+                    error_text
+                )
+            }
+        }
     }
 }
 
