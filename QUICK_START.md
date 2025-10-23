@@ -14,20 +14,25 @@ cp dashboard/.env.example dashboard/.env.local
 # - .env (root) - external Docker ports (COORDINATOR_EXTERNAL_PORT=8080)
 # - dashboard/.env.local - dashboard port (PORT=3000)
 
-# 3. Start Docker services
-docker-compose up -d
-
-# 4. Initialize database (first time only)
+# 3. Initialize database (first time only)
 cd coordinator
 docker exec offchainvm-postgres psql -U postgres -c "DROP DATABASE IF EXISTS offchainvm;"
 docker exec offchainvm-postgres psql -U postgres -c "CREATE DATABASE offchainvm;"
 sqlx migrate run --database-url postgres://postgres:postgres@localhost/offchainvm
 DATABASE_URL=postgres://postgres:postgres@localhost/offchainvm cargo sqlx prepare
-docker-compose restart coordinator
+
+# 4. Start Docker services
+docker-compose up -d
 
 # 5. Start worker (separate terminal)
-cd worker
-cargo run
+cd coordinator 
+cargo run --release
+
+cd ..
+./scripts/run_worker.sh .env.worker1
+./scripts/run_worker.sh .env.worker2
+
+
 
 # 6. Start dashboard (separate terminal)
 cd dashboard

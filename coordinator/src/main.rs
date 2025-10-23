@@ -9,6 +9,7 @@ mod storage;
 use axum::{
     routing::{delete, get, post},
     Router,
+    http::{HeaderValue, Method},
 };
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -149,11 +150,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/secrets/pubkey", get(handlers::github::get_secrets_pubkey))
         .route("/health", get(|| async { "OK" }));
 
+    // Configure CORS with allowed origins from config
+    let cors = CorsLayer::new()
+        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
+        .allow_headers(tower_http::cors::Any)
+        .allow_origin(
+            config.cors_allowed_origins
+                .iter()
+                .filter_map(|origin| origin.parse::<HeaderValue>().ok())
+                .collect::<Vec<_>>()
+        );
+
     // Combine routers
     let app = Router::new()
         .merge(protected)
         .merge(public)
-        .layer(CorsLayer::permissive()) // Allow all CORS requests (dev mode)
+        .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 

@@ -33,6 +33,9 @@ pub struct Config {
     // Keystore integration
     pub keystore_base_url: Option<String>,
     pub keystore_auth_token: Option<String>,
+
+    // CORS
+    pub cors_allowed_origins: Vec<String>,
 }
 
 impl Config {
@@ -85,6 +88,13 @@ impl Config {
 
             keystore_base_url: std::env::var("KEYSTORE_BASE_URL").ok(),
             keystore_auth_token: std::env::var("KEYSTORE_AUTH_TOKEN").ok(),
+
+            cors_allowed_origins: std::env::var("CORS_ALLOWED_ORIGINS")
+                .unwrap_or_else(|_| "http://localhost:3000".to_string())
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
         })
     }
 }
