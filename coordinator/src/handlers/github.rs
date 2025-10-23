@@ -395,7 +395,10 @@ pub async fn get_secrets_pubkey(
 
     // Add Authorization header if token is configured
     if let Some(ref token) = state.config.keystore_auth_token {
+        tracing::debug!("Adding keystore auth token (length: {})", token.len());
         request_builder = request_builder.header("Authorization", format!("Bearer {}", token));
+    } else {
+        tracing::warn!("⚠️ KEYSTORE_AUTH_TOKEN not configured - keystore request will fail!");
     }
 
     let keystore_response = request_builder

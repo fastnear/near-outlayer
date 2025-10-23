@@ -114,13 +114,14 @@ pub struct HealthResponse {
 }
 
 /// Create the API router with all endpoints
+/// All endpoints require auth (keystore is internal service, accessed only by coordinator)
 pub fn create_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health_handler))
         .route("/pubkey", get(pubkey_handler))
         .route("/decrypt", post(decrypt_handler))
-        // Add auth middleware to decrypt endpoint only
-        .route_layer(middleware::from_fn_with_state(
+        // Auth middleware applies to all routes (keystore is internal)
+        .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
         ))
