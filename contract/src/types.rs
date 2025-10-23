@@ -1,4 +1,3 @@
-use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use near_sdk::{near, AccountId, NearToken};
 
 // V1 enums for backward compatibility

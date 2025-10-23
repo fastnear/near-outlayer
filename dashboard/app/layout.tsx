@@ -7,8 +7,8 @@ import Link from 'next/link';
 const inter = Inter({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
-  title: 'NEAR Offshore - Verifiable Off-Chain Computation',
-  description: 'Dashboard for NEAR Offshore off-chain execution platform',
+  title: 'NEAR OutLayer - Verifiable Off-Chain Computation',
+  description: 'Dashboard for NEAR OutLayer off-chain execution platform',
 };
 
 export default function RootLayout({
@@ -27,7 +27,7 @@ export default function RootLayout({
                 <div className="flex justify-between h-16">
                   <div className="flex items-center space-x-8">
                     <Link href="/" className="text-xl font-bold text-blue-600">
-                      NEAR Offshore
+                      NEAR OutLayer
                     </Link>
                     <div className="hidden sm:flex space-x-4">
                       <Link href="/workers" className="text-gray-700 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">
@@ -63,7 +63,7 @@ export default function RootLayout({
             <footer className="bg-white mt-12 border-t">
               <div className="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
                 <p className="text-center text-gray-500 text-sm">
-                  © 2025 NEAR Offshore. Verifiable off-chain computation for NEAR Protocol.
+                  © 2025 NEAR OutLayer. Verifiable off-chain computation for NEAR Protocol.
                 </p>
               </div>
             </footer>

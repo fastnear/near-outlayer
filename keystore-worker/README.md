@@ -1,6 +1,6 @@
-# Keystore Worker - TEE Secret Management for NEAR Offshore
+# Keystore Worker - TEE Secret Management for NEAR OutLayer
 
-The **Keystore Worker** is a secure service that runs in a Trusted Execution Environment (TEE) to manage encryption/decryption of user secrets for the NEAR Offshore platform.
+The **Keystore Worker** is a secure service that runs in a Trusted Execution Environment (TEE) to manage encryption/decryption of user secrets for the NEAR OutLayer platform.
 
 ## Overview
 
@@ -212,7 +212,7 @@ cargo run --release
 
 You should see:
 ```
-INFO  Starting NEAR Offshore Keystore Worker
+INFO  Starting NEAR OutLayer Keystore Worker
 INFO  Keystore initialized, public_key=a1b2c3d4...
 INFO  ✓ Public key verified - matches contract
 INFO  Keystore worker API server started, addr=0.0.0.0:8081

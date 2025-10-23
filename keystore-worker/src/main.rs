@@ -1,4 +1,4 @@
-//! Keystore Worker - TEE-based secret management for NEAR Offshore
+//! Keystore Worker - TEE-based secret management for NEAR OutLayer
 //!
 //! This worker runs in a Trusted Execution Environment (TEE) and provides
 //! secure decryption of user secrets for executor workers.
@@ -43,7 +43,7 @@ async fn main() -> Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    tracing::info!("Starting NEAR Offshore Keystore Worker");
+    tracing::info!("Starting NEAR OutLayer Keystore Worker");
 
     // Load configuration
     let config = Config::from_env().context("Failed to load configuration")?;

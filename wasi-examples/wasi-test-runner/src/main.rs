@@ -9,7 +9,7 @@ use wasmtime_wasi_http::{WasiHttpCtx, WasiHttpView};
 
 #[derive(Parser)]
 #[command(name = "wasi-test")]
-#[command(about = "Test runner for WASI modules for NEAR Offshore compatibility")]
+#[command(about = "Test runner for WASI modules for NEAR OutLayer compatibility")]
 struct Args {
     /// Path to WASM file
     #[arg(short, long)]
@@ -111,7 +111,7 @@ async fn main() -> Result<()> {
             // Validate output
             validate_output(&output)?;
 
-            println!("✅ All checks passed! Module is compatible with NEAR Offshore.");
+            println!("✅ All checks passed! Module is compatible with NEAR OutLayer.");
             Ok(())
         }
         Err(e) => {

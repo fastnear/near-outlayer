@@ -8,7 +8,7 @@ set -e
 
 # Configuration
 NUM_TASKS=${1:-5}  # Default: 5 parallel tasks
-CONTRACT_ID="${CONTRACT_ID:-c4.offchainvm.testnet}"
+CONTRACT_ID="${CONTRACT_ID:-c5.offchainvm.testnet}"
 USER_ACCOUNT="${USER_ACCOUNT:-zavodil.testnet}"
 GITHUB_REPO="https://github.com/zavodil/echo-ark"
 GITHUB_COMMIT="main"

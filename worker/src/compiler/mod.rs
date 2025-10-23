@@ -168,8 +168,9 @@ impl Compiler {
 
         // Upload to coordinator
         info!("Uploading compiled WASM to coordinator");
+        let build_target = code_source.build_target();
         self.api_client
-            .upload_wasm(checksum.clone(), code_source.repo().to_string(), code_source.commit().to_string(), wasm_bytes)
+            .upload_wasm(checksum.clone(), code_source.repo().to_string(), code_source.commit().to_string(), build_target.to_string(), wasm_bytes)
             .await?;
 
         info!("✅ WASM compilation and upload complete: {}", checksum);

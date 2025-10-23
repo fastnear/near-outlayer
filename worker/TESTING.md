@@ -1,6 +1,6 @@
 # Worker Testing Guide
 
-Complete guide for testing the NEAR Offshore Worker component.
+Complete guide for testing the NEAR OutLayer Worker component.
 
 ## Prerequisites
 

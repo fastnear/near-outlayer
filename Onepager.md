@@ -1,4 +1,4 @@
-# NEAR Offshore
+# NEAR OutLayer
 
 **Move your computation offshore. Keep your security on-chain.s**
 
@@ -20,7 +20,7 @@ Developers are forced to choose between:
 
 ---
 
-## The Solution: NEAR Offshore
+## The Solution: NEAR OutLayer
 
 Just as businesses move assets **offshore** for efficiency while keeping control and ownership, smart contracts can now move computation **offshore** while keeping funds and security on NEAR L1.
 
@@ -41,7 +41,7 @@ Just as businesses move assets **offshore** for efficiency while keeping control
 
 The metaphor is perfect:
 
-| Financial Offshore | NEAR Offshore |
+| Financial Offshore | NEAR OutLayer |
 |-------------------|---------------|
 | Lower taxes | Lower gas costs (100x) |
 | Efficient operations | Unlimited computation |
@@ -124,7 +124,7 @@ User → Smart Contract → Try to do everything on-chain
     Or impossible entirely 🚫
 ```
 
-**NEAR Offshore Approach:**
+**NEAR OutLayer Approach:**
 ```
 User → Smart Contract → Call Offshore → Get results
         ↓                    ↓              ↓
@@ -180,9 +180,9 @@ User → Smart Contract → Call Offshore → Get results
 
 ## The Vision
 
-**NEAR Offshore is foundational infrastructure that makes the impossible possible.**
+**NEAR OutLayer is foundational infrastructure that makes the impossible possible.**
 
-Just as financial offshore zones enabled global business optimization, NEAR Offshore enables computational optimization for the blockchain era.
+Just as financial offshore zones enabled global business optimization, NEAR OutLayer enables computational optimization for the blockchain era.
 
 ### Today:
 Smart contracts are constrained by gas, just like businesses are constrained by high taxes.
@@ -272,17 +272,17 @@ vs. On-chain:
 ### For Developers:
 Build applications that were impossible before. AI-powered DeFi. Real-time gaming. Generative NFTs. Zero-knowledge privacy.
 
-**NEAR Offshore makes it possible.**
+**NEAR OutLayer makes it possible.**
 
 ### For Protocols:
 Upgrade your smart contracts with unlimited computational power. No redeployment. No complexity. Just call `execute()`.
 
-**NEAR Offshore makes it simple.**
+**NEAR OutLayer makes it simple.**
 
 ### For Investors:
 This is foundational infrastructure for the next generation of blockchain applications. Not a Layer 2. Not an oracle. Something entirely new.
 
-**NEAR Offshore makes it inevitable.**
+**NEAR OutLayer makes it inevitable.**
 
 ---
 
@@ -297,4 +297,4 @@ This is foundational infrastructure for the next generation of blockchain applic
 
 ---
 
-*NEAR Offshore - The Cayman Islands for Smart Contract Computation*
+*NEAR OutLayer - The Cayman Islands for Smart Contract Computation*

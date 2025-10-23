@@ -10,7 +10,7 @@ import { UserSecret, FormData } from './components/types';
 const COORDINATOR_URL = 'http://localhost:8080';
 
 export default function SecretsPage() {
-  const { accountId, isConnected, connect, signAndSendTransaction, contractId, network } = useNearWallet();
+  const { accountId, isConnected, connect, signAndSendTransaction, contractId, viewMethod } = useNearWallet();
 
   // User's secrets list
   const [userSecrets, setUserSecrets] = useState<UserSecret[]>([]);
@@ -29,37 +29,13 @@ export default function SecretsPage() {
     setLoadingSecrets(true);
 
     try {
-      const viewResult = await fetch(`https://rpc.${network}.near.org`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 'dontcare',
-          method: 'query',
-          params: {
-            request_type: 'call_function',
-            finality: 'final',
-            account_id: contractId,
-            method_name: 'list_user_secrets',
-            args_base64: btoa(JSON.stringify({ account_id: accountId })),
-          },
-        }),
+      const secrets = await viewMethod({
+        contractId,
+        method: 'list_user_secrets',
+        args: { account_id: accountId },
       });
 
-      const viewData = await viewResult.json();
-
-      if (viewData.error) {
-        throw new Error(viewData.error.message || 'Failed to load secrets');
-      }
-
-      const resultBytes = viewData.result?.result;
-      if (resultBytes && resultBytes.length > 0) {
-        const resultStr = new TextDecoder().decode(new Uint8Array(resultBytes));
-        const secrets = JSON.parse(resultStr);
-        setUserSecrets(secrets);
-      } else {
-        setUserSecrets([]);
-      }
+      setUserSecrets(Array.isArray(secrets) ? secrets : []);
     } catch (err) {
       console.error('Failed to load user secrets:', err);
       setError(`Failed to load secrets: ${(err as Error).message}`);
@@ -67,7 +43,7 @@ export default function SecretsPage() {
     } finally {
       setLoadingSecrets(false);
     }
-  }, [accountId, network, contractId]);
+  }, [accountId, contractId, viewMethod]);
 
   // Load user secrets when connected
   useEffect(() => {
@@ -101,12 +77,35 @@ export default function SecretsPage() {
         access: formData.access,
       };
 
-      // Create function call action
+      // Estimate storage cost via viewMethod
+      const estimatedCost = await viewMethod({
+        contractId,
+        method: 'estimate_storage_cost',
+        args: {
+          repo: transactionArgs.repo,
+          branch: transactionArgs.branch,
+          profile: transactionArgs.profile,
+          owner: accountId,
+          encrypted_secrets_base64: transactionArgs.encrypted_secrets_base64,
+          access: transactionArgs.access,
+        },
+      });
+
+      console.log('Estimated cost result:', estimatedCost, typeof estimatedCost);
+
+      // estimatedCost is returned as U128 string "123456"
+      if (!estimatedCost) {
+        throw new Error('Failed to estimate storage cost - received null');
+      }
+
+      const costString = typeof estimatedCost === 'string' ? estimatedCost : String(estimatedCost);
+
+      // Create function call action with exact deposit
       const action = actionCreators.functionCall(
         'store_secrets',
         transactionArgs,
         BigInt('50000000000000'), // 50 TGas
-        BigInt('10000000000000000000000') // 0.01 NEAR for storage
+        BigInt(costString) // Exact storage cost
       );
 
       const response = await signAndSendTransaction({

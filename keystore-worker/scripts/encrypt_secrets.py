@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Script to encrypt secrets for NEAR Offshore repo-based secrets system.
+Script to encrypt secrets for NEAR OutLayer repo-based secrets system.
 
 Usage:
     ./encrypt_secrets.py --repo alice/project --owner alice.near --profile default '{"OPENAI_KEY":"sk-..."}'
@@ -93,7 +93,7 @@ def encrypt_for_keystore(pubkey_hex, plaintext):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Encrypt secrets for NEAR Offshore repo-based secrets",
+        description="Encrypt secrets for NEAR OutLayer repo-based secrets",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

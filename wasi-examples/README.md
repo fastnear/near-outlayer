@@ -1,6 +1,6 @@
-# WASI Examples for NEAR Offshore
+# WASI Examples for NEAR OutLayer
 
-Collection of examples and tools for developing WASM modules for NEAR Offshore platform.
+Collection of examples and tools for developing WASM modules for NEAR OutLayer platform.
 
 ## 📚 Documentation
 
@@ -111,7 +111,7 @@ cd wasi-test-runner
 ./target/release/wasi-test --wasm ../your-app.wasm --input '{"test":"data"}'
 ```
 
-### 4. Deploy to NEAR Offshore
+### 4. Deploy to NEAR OutLayer
 
 ```bash
 near call offchainvm.testnet request_execution '{
@@ -131,7 +131,7 @@ near call offchainvm.testnet request_execution '{
 
 ## ✅ Requirements Checklist
 
-Before deploying to NEAR Offshore, ensure:
+Before deploying to NEAR OutLayer, ensure:
 
 - ✅ Using `[[bin]]` format (not `[lib]`)
 - ✅ Have `fn main()` as entry point
@@ -190,7 +190,7 @@ wasm-tools component wit your-app.wasm
 
 ## 📖 Additional Resources
 
-- [NEAR Offshore Project](../) - Main project documentation
+- [NEAR OutLayer Project](../) - Main project documentation
 - [wasmtime Book](https://docs.wasmtime.dev/) - Runtime documentation
 - [WASI Specification](https://github.com/WebAssembly/WASI) - Official WASI docs
 - [Component Model](https://github.com/WebAssembly/component-model) - WASI P2 spec
@@ -239,9 +239,9 @@ To add your own example:
 
 ## 📝 License
 
-Same as NEAR Offshore project (see main LICENSE file)
+Same as NEAR OutLayer project (see main LICENSE file)
 
 ---
 
 **Last updated**: 2025-10-15
-**Compatible with**: wasmtime 28+, NEAR Offshore MVP
+**Compatible with**: wasmtime 28+, NEAR OutLayer MVP

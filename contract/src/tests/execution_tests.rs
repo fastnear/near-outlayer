@@ -100,7 +100,7 @@ mod tests {
             build_target: Some("wasm32-wasi".to_string()),
         };
 
-        let mut context = get_context(accounts(1), NearToken::from_near(1));
+        let context = get_context(accounts(1), NearToken::from_near(1));
         testing_env!(context.build());
 
         contract.request_execution(code_source.clone(), None, None, None, None);
@@ -119,7 +119,7 @@ mod tests {
             build_target: Some("wasm32-wasi".to_string()),
         };
 
-        let mut context = get_context(accounts(1), NearToken::from_near(1));
+        let context = get_context(accounts(1), NearToken::from_near(1));
         testing_env!(context.build());
 
         contract.request_execution(code_source.clone(), None, None, None, Some(ResponseFormat::Json));
@@ -138,7 +138,7 @@ mod tests {
             build_target: Some("wasm32-wasi".to_string()),
         };
 
-        let mut context = get_context(accounts(1), NearToken::from_near(1));
+        let context = get_context(accounts(1), NearToken::from_near(1));
         testing_env!(context.build());
 
         contract.request_execution(code_source.clone(), None, None, None, Some(ResponseFormat::Bytes));
@@ -192,7 +192,7 @@ mod tests {
     fn test_cancel_stale_execution_not_found() {
         let mut contract = setup_contract();
 
-        let mut context = get_context(accounts(3), NearToken::from_near(0));
+        let context = get_context(accounts(3), NearToken::from_near(0));
         testing_env!(context.build());
 
         // Try to cancel non-existent request
@@ -284,12 +284,12 @@ mod tests {
         let mut contract = setup_contract();
 
         // Owner pauses contract
-        let mut context = get_context(accounts(0), NearToken::from_near(0));
+        let context = get_context(accounts(0), NearToken::from_near(0));
         testing_env!(context.build());
         contract.set_paused(true);
 
         // User tries to request execution
-        let mut context = get_context(accounts(2), NearToken::from_millinear(100));
+        let context = get_context(accounts(2), NearToken::from_millinear(100));
         testing_env!(context.build());
 
         let code_source = CodeSource {
@@ -307,7 +307,7 @@ mod tests {
         let mut contract = setup_contract();
 
         // User tries with insufficient deposit
-        let mut context = get_context(accounts(2), NearToken::from_yoctonear(1000));
+        let context = get_context(accounts(2), NearToken::from_yoctonear(1000));
         testing_env!(context.build());
 
         let code_source = CodeSource {
@@ -347,7 +347,7 @@ mod tests {
         contract.pending_requests.insert(&0, &execution_request);
 
         // Operator submits large output
-        let mut context = get_context(operator.clone(), NearToken::from_near(0));
+        let context = get_context(operator.clone(), NearToken::from_near(0));
         testing_env!(context.build());
 
         let large_output = ExecutionOutput::Text("A".repeat(2000)); // > 1024 bytes
@@ -394,7 +394,7 @@ mod tests {
         contract.pending_requests.insert(&0, &execution_request);
 
         // Unauthorized user tries to submit output
-        let mut context = get_context(unauthorized, NearToken::from_near(0));
+        let context = get_context(unauthorized, NearToken::from_near(0));
         testing_env!(context.build());
 
         contract.submit_execution_output(0, ExecutionOutput::Text("test".to_string()));
@@ -429,7 +429,7 @@ mod tests {
         contract.pending_requests.insert(&0, &execution_request);
 
         // Operator tries to submit again
-        let mut context = get_context(operator, NearToken::from_near(0));
+        let context = get_context(operator, NearToken::from_near(0));
         testing_env!(context.build());
 
         contract.submit_execution_output(0, ExecutionOutput::Text("new".to_string()));
@@ -464,10 +464,10 @@ mod tests {
         contract.pending_requests.insert(&0, &execution_request);
 
         // Operator resolves with metadata only (no output in response)
-        let mut context = get_context(operator, NearToken::from_near(0));
+        let context = get_context(operator, NearToken::from_near(0));
         testing_env!(context.build());
 
-        let response = ExecutionResponse {
+        let _response = ExecutionResponse {
             success: true,
             output: None, // Output will be taken from pending_output
             error: None,

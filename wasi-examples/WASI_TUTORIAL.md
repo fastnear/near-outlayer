@@ -1,6 +1,6 @@
-# WASI Development Tutorial for NEAR Offshore
+# WASI Development Tutorial for NEAR OutLayer
 
-This guide explains how to create WASM modules that work with NEAR Offshore platform.
+This guide explains how to create WASM modules that work with NEAR OutLayer platform.
 
 ## Table of Contents
 
@@ -16,7 +16,7 @@ This guide explains how to create WASM modules that work with NEAR Offshore plat
 
 ## Overview
 
-NEAR Offshore executes WASM modules off-chain using wasmtime runtime. Your code runs in a sandboxed environment with:
+NEAR OutLayer executes WASM modules off-chain using wasmtime runtime. Your code runs in a sandboxed environment with:
 - **Stdin** for input data (JSON)
 - **Stdout** for output data (JSON)
 - **WASI** for system interfaces (random, time, etc.)
@@ -371,7 +371,7 @@ See [WASI_TEST_RUNNER.md](./WASI_TEST_RUNNER.md) for a comprehensive test tool t
 - ✅ Fuel metering
 - ✅ Input/output handling
 - ✅ Resource limits
-- ✅ Compatibility with NEAR Offshore
+- ✅ Compatibility with NEAR OutLayer
 
 ## Common Pitfalls
 
@@ -497,7 +497,7 @@ echo '{"value":21}' | wasmtime target/wasm32-wasip1/release/example.wasm
 # Output: {"result":42}
 ```
 
-## Deployment to NEAR Offshore
+## Deployment to NEAR OutLayer
 
 1. **Push code to GitHub**
 2. **Call contract**:
@@ -530,4 +530,4 @@ near call offchainvm.testnet request_execution '{
 ---
 
 **Last updated**: 2025-10-15
-**Compatible with**: wasmtime 28+, NEAR Offshore MVP
+**Compatible with**: wasmtime 28+, NEAR OutLayer MVP

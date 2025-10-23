@@ -100,6 +100,12 @@ impl CodeSource {
             CodeSource::GitHub { commit, .. } => commit,
         }
     }
+
+    pub fn build_target(&self) -> &str {
+        match self {
+            CodeSource::GitHub { build_target, .. } => build_target,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -559,12 +565,14 @@ impl ApiClient {
     /// * `checksum` - SHA256 checksum of the WASM file
     /// * `repo` - GitHub repository URL
     /// * `commit` - Git commit hash
+    /// * `build_target` - Build target (e.g., wasm32-wasip1, wasm32-wasip2)
     /// * `bytes` - WASM binary data
     pub async fn upload_wasm(
         &self,
         checksum: String,
         repo: String,
         commit: String,
+        build_target: String,
         bytes: Vec<u8>,
     ) -> Result<()> {
         let url = format!("{}/wasm/upload", self.base_url);
@@ -577,13 +585,14 @@ impl ApiClient {
 
         let form = reqwest::multipart::Form::new()
             .text("checksum", checksum.clone())
-            .text("repo_url", repo.clone())      // coordinator expects "repo_url"
-            .text("commit_hash", commit.clone()) // coordinator expects "commit_hash"
-            .part("wasm_file", file_part);       // coordinator expects "wasm_file"
+            .text("repo_url", repo.clone())         // coordinator expects "repo_url"
+            .text("commit_hash", commit.clone())    // coordinator expects "commit_hash"
+            .text("build_target", build_target.clone()) // coordinator expects "build_target"
+            .part("wasm_file", file_part);          // coordinator expects "wasm_file"
 
         tracing::info!(
-            "Uploading WASM: checksum={} size={} bytes repo={} commit={}",
-            checksum, bytes.len(), repo, commit
+            "Uploading WASM: checksum={} size={} bytes repo={} commit={} target={}",
+            checksum, bytes.len(), repo, commit, build_target
         );
 
         let response = self

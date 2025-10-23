@@ -1,6 +1,6 @@
-# NEAR Offshore Dashboard
+# NEAR OutLayer Dashboard
 
-Next.js dashboard for NEAR Offshore off-chain computation platform.
+Next.js dashboard for NEAR OutLayer off-chain computation platform.
 
 ## Setup Complete
 

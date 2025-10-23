@@ -1,28 +1,32 @@
 # Keystore Scripts
 
-Helper scripts for testing encryption/decryption with keystore-worker.
+Helper scripts for repo-based secrets encryption.
 
 ## Scripts
 
 ### `encrypt_secrets.py`
 
-Encrypts secrets for passing to smart contract.
+Encrypts secrets for storing in contract via `store_secrets` method.
 
 **Usage:**
 ```bash
-# Basic usage (keystore on localhost:8081)
-./encrypt_secrets.py "OPENAI_KEY=sk-...,FOO=bar"
+# Via coordinator (recommended - port 8080)
+./encrypt_secrets.py --repo alice/project --owner alice.near --profile default '{"OPENAI_KEY":"sk-..."}'
 
-# Custom keystore URL
-./encrypt_secrets.py "SECRET=test" --keystore http://keystore.example.com:8081
+# With branch
+./encrypt_secrets.py --repo alice/project --owner alice.near --branch main --profile prod '{"API_KEY":"secret"}'
+
+# Direct to keystore (for testing only - port 8081)
+./encrypt_secrets.py --repo alice/project --owner alice.near --profile default '{"KEY":"value"}' --keystore http://localhost:8081
 ```
 
 **Output:**
-```json
-[117, 56, 11, 198, 58, 167, ...]
+```
+🔑 Seed: github.com/alice/project:alice.near
+📦 Encrypted secrets (base64): aGVsbG8gd29ybGQ...
 ```
 
-Copy this array and use in contract call as `encrypted_secrets` parameter.
+Copy the base64 string and use in contract's `store_secrets` method.
 
 ### `test_encryption.py`
 
@@ -39,52 +43,78 @@ Tests that encryption/decryption works correctly with a known private key.
 ✅ SUCCESS! Encryption/decryption works correctly!
 ```
 
-## Example: Full Flow
+## Example: Full Flow with Repo-Based Secrets
 
-**1. Start keystore-worker:**
+**1. Start services:**
 ```bash
+# Coordinator (port 8080)
+cd coordinator
+cargo run
+
+# Keystore (port 8081)
 cd keystore-worker
-KEYSTORE_PRIVATE_KEY=ed25519:5gw3zzg... cargo run
+docker-compose up -d
 ```
 
 **2. Encrypt secrets:**
 ```bash
-cd scripts
-./encrypt_secrets.py "OPENAI_KEY=sk-test123"
+cd keystore-worker/scripts
+./encrypt_secrets.py --repo alice/myproject --owner alice.testnet --profile default '{"OPENAI_KEY":"sk-test123"}'
+
+# Output:
+# 🔑 Seed: github.com/alice/myproject:alice.testnet
+# 📦 Encrypted secrets (base64): YWJjZGVmZ2hpams...
 ```
 
-**3. Copy output and call contract:**
+**3. Store secrets in contract:**
+```bash
+near call offchainvm.testnet store_secrets \
+  '{
+    "repo": "github.com/alice/myproject",
+    "branch": null,
+    "profile": "default",
+    "encrypted_secrets_base64": "YWJjZGVmZ2hpams...",
+    "access": "AllowAll"
+  }' \
+  --accountId alice.testnet \
+  --deposit 0.01
+```
+
+**4. Request execution with secrets:**
 ```bash
 near call offchainvm.testnet request_execution \
   '{
     "code_source": {
-      "repo": "https://github.com/user/project",
-      "commit": "abc123",
-      "build_target": "wasm32-wasi"
+      "repo": "https://github.com/alice/myproject",
+      "commit": "main",
+      "build_target": "wasm32-wasip1"
+    },
+    "secrets_ref": {
+      "profile": "default",
+      "account_id": "alice.testnet"
     },
     "resource_limits": {
       "max_instructions": 1000000000,
       "max_memory_mb": 128,
       "max_execution_seconds": 60
     },
-    "input_data": "{}",
-    "encrypted_secrets": [117, 56, 11, ...]
+    "input_data": "{}"
   }' \
   --accountId user.testnet \
   --deposit 0.1
 ```
 
-**4. Worker will:**
-- Receive task with encrypted_secrets
-- Request decryption from keystore
-- Execute WASM with decrypted secrets
-- Submit result to contract
+**5. Worker will:**
+- Fetch encrypted secrets from contract (repo + branch + profile + owner)
+- Decrypt via keystore with access control validation
+- Inject secrets into WASM environment variables
+- Execute WASM with `std::env::var("OPENAI_KEY")`
 
 ## Requirements
 
 Python 3.6+ with:
 ```bash
-pip install requests base58
+pip install requests base64
 ```
 
 ## Security Notes
@@ -94,3 +124,8 @@ pip install requests base58
 For production, replace with:
 - X25519 ECDH for key agreement
 - ChaCha20-Poly1305 for authenticated encryption
+
+## See Also
+
+- Use Dashboard UI at http://localhost:3000/secrets for easier secret management
+- Dashboard provides graphical interface for creating/editing/deleting secrets

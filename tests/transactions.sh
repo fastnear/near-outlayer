@@ -232,7 +232,7 @@ TX2_OUTPUT=$(near contract call-function as-transaction \
       "max_memory_mb": 128,
       "max_execution_seconds": 60
     },
-    "input_data": "{\"prompt\":\"What could the NEAR offshore project do? Be short\",\"history\":[{\"role\":\"user\",\"content\":\"Tell me about NEAR\"},{\"role\":\"assistant\",\"content\":\"NEAR is a Layer 1 blockchain...\"}],\"model_name\":\"fireworks::accounts/fireworks/models/gpt-oss-120b\",\"openai_endpoint\":\"https://api.near.ai/v1/chat/completions\",\"max_tokens\":16384}",
+    "input_data": "{\"prompt\":\"What could the NEAR OutLayer project do? Be short\",\"history\":[{\"role\":\"user\",\"content\":\"Tell me about NEAR\"},{\"role\":\"assistant\",\"content\":\"NEAR is a Layer 1 blockchain...\"}],\"model_name\":\"fireworks::accounts/fireworks/models/gpt-oss-120b\",\"openai_endpoint\":\"https://api.near.ai/v1/chat/completions\",\"max_tokens\":16384}",
     "secrets_ref": {
         "profile": "default",
         "account_id": "zavodil2.testnet"

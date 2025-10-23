@@ -337,7 +337,8 @@ async fn worker_iteration(
     // Upload WASM to coordinator after all work is done (non-critical)
     if let Some((checksum, wasm_bytes, _compile_time_ms, _created_at)) = compiled_wasm {
         info!("📤 Uploading compiled WASM to coordinator (background)");
-        if let Err(e) = api_client.upload_wasm(checksum, code_source.repo().to_string(), code_source.commit().to_string(), wasm_bytes).await {
+        let build_target = code_source.build_target();
+        if let Err(e) = api_client.upload_wasm(checksum, code_source.repo().to_string(), code_source.commit().to_string(), build_target.to_string(), wasm_bytes).await {
             warn!("⚠️ Failed to upload WASM to coordinator: {}", e);
             // Not critical - execution already completed and submitted to NEAR
         }
@@ -645,7 +646,23 @@ async fn handle_execute_job(
                 let error_msg = format!("Failed to decrypt repo-based secrets: {}", e);
                 error!("❌ {}", error_msg);
 
-                // Fail the job
+                // Send error to NEAR contract
+                let error_result = ExecutionResult {
+                    success: false,
+                    output: None,
+                    error: Some(error_msg.clone()),
+                    execution_time_ms: 0,
+                    instructions: 0,
+                    compile_time_ms: None,
+                    compilation_note: None,
+                };
+
+                match near_client.submit_execution_result(request_id, &error_result).await {
+                    Ok(_) => info!("✅ Error reported to NEAR contract"),
+                    Err(e) => error!("❌ Failed to report error to NEAR: {}", e),
+                }
+
+                // Fail the job in coordinator
                 api_client
                     .complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None)
                     .await?;

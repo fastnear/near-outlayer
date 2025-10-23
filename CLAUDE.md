@@ -8,13 +8,13 @@ If you are not sure, just reply "I don't know how to do it". It's totally ok, hy
 **IMPORTANT**: Human will manage coordinator restarts, docker-compose, and contract deployment himself. DO NOT try to restart coordinator, deploy contract, or manage docker containers. Just write code and let human handle the deployment.
 </CRITICAL>
 
-# NEAR Offshore MVP Development - Context
+# NEAR OutLayer MVP Development - Context
 
 ## 📍 Project Overview
 
-**NEAR Offshore (OffchainVM)** is a verifiable off-chain computation platform for NEAR smart contracts. Smart contracts can execute arbitrary WASM code off-chain using NEAR Protocol's yield/resume mechanism.
+**NEAR OutLayer (OffchainVM)** is a verifiable off-chain computation platform for NEAR smart contracts. Smart contracts can execute arbitrary WASM code off-chain using NEAR Protocol's yield/resume mechanism.
 
-**Metaphor**: "Offshore jurisdiction for computation" - move heavy computation off-chain for efficiency while maintaining security and final settlement on NEAR L1.
+**Metaphor**: "OutLayer for computation" - move heavy computation off-chain for efficiency while maintaining security and final settlement on NEAR L1.
 
 ## 🎯 Main Goal
 
@@ -511,38 +511,6 @@ near call offchainvm.testnet delete_secrets \
   }' \
   --accountId alice.testnet \
   --depositYocto 1
-```
-
-### Using Inline Encrypted Secrets (Legacy - for backward compatibility)
-```bash
-# 1. Start keystore worker
-cd keystore-worker
-docker-compose up -d
-
-# 2. Encrypt your secrets as JSON
-./scripts/encrypt_secrets.py '{"OPENAI_KEY":"sk-...","API_TOKEN":"secret123"}'
-
-# Output example:
-# [123, 45, 67, 89, ...]  <- Use this in contract call
-
-# 3. Call contract with encrypted_secrets (inline)
-near call offchainvm.testnet request_execution \
-  '{
-    "code_source": {
-      "repo": "https://github.com/user/repo",
-      "commit": "abc123",
-      "build_target": "wasm32-wasip1"
-    },
-    "resource_limits": {
-      "max_instructions": 1000000000,
-      "max_memory_mb": 128,
-      "max_execution_seconds": 60
-    },
-    "input_data": "{}",
-    "encrypted_secrets": [123, 45, 67, 89, ...]
-  }' \
-  --accountId user.testnet \
-  --deposit 0.1
 ```
 
 ## 📚 Documentation

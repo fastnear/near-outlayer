@@ -123,6 +123,7 @@ pub async fn upload_wasm(
     let mut checksum = String::new();
     let mut repo_url = String::new();
     let mut commit_hash = String::new();
+    let mut build_target = String::from("wasm32-wasip1"); // Default for backward compatibility
     let mut wasm_bytes: Option<Vec<u8>> = None;
 
     // Parse multipart form data
@@ -137,6 +138,9 @@ pub async fn upload_wasm(
             }
             "commit_hash" => {
                 commit_hash = field.text().await.unwrap_or_default();
+            }
+            "build_target" => {
+                build_target = field.text().await.unwrap_or_default();
             }
             "wasm_file" => {
                 wasm_bytes = field.bytes().await.ok().map(|b| b.to_vec());
@@ -159,11 +163,12 @@ pub async fn upload_wasm(
     }
 
     info!(
-        "Uploading WASM: {} ({} bytes) from {}@{}",
+        "Uploading WASM: {} ({} bytes) from {}@{} target={}",
         checksum,
         wasm_bytes.len(),
         repo_url,
-        commit_hash
+        commit_hash,
+        build_target
     );
 
     // Save to filesystem
@@ -181,13 +186,14 @@ pub async fn upload_wasm(
     let file_size = wasm_bytes.len() as i64;
     let result = sqlx::query!(
         r#"
-        INSERT INTO wasm_cache (checksum, repo_url, commit_hash, file_size, created_at, last_accessed_at)
-        VALUES ($1, $2, $3, $4, NOW(), NOW())
+        INSERT INTO wasm_cache (checksum, repo_url, commit_hash, build_target, file_size, created_at, last_accessed_at)
+        VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
         ON CONFLICT (checksum) DO UPDATE SET last_accessed_at = NOW()
         "#,
         checksum,
         repo_url,
         commit_hash,
+        build_target,
         file_size
     )
     .execute(&state.db)

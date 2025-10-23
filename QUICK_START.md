@@ -1,4 +1,4 @@
-# NEAR Offshore - Quick Start
+# NEAR OutLayer - Quick Start
 
 ## TL;DR
 

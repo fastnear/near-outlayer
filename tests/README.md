@@ -1,6 +1,6 @@
-# NEAR Offshore Test Suite
+# NEAR OutLayer Test Suite
 
-Complete test suite for NEAR Offshore platform.
+Complete test suite for NEAR OutLayer platform.
 
 ## Test Structure
 
@@ -553,4 +553,4 @@ Worker 2:
 
 **Last updated**: 2025-10-17
 **Test coverage**: Unit + Integration + E2E + Job Workflow
-**Platform**: NEAR Offshore MVP (Job-based workflow)
+**Platform**: NEAR OutLayer MVP (Job-based workflow)

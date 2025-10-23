@@ -189,35 +189,25 @@ pub struct SecretsReference {
 #[derive(Clone, Debug)]
 #[near(serializers = [borsh])]
 pub struct SecretProfile {
-    pub encrypted_secrets: String,  // base64-encoded encrypted secrets
+    pub encrypted_secrets: String,      // base64-encoded encrypted secrets
     pub access: types::AccessCondition, // Access control rules
-    pub created_at: u64,            // Timestamp when created
-    pub updated_at: u64,            // Timestamp when last updated
-    pub storage_deposit: Balance,   // Storage staking amount (u128 for cheaper storage)
+    pub created_at: u64,                // Timestamp when created
+    pub updated_at: u64,                // Timestamp when last updated
+    pub storage_deposit: Balance,       // Storage staking amount (u128 for cheaper storage)
 }
 
 /// Secret profile for JSON view (returned from view methods)
 #[derive(Clone, Debug)]
 #[near(serializers = [json])]
 pub struct SecretProfileView {
-    pub encrypted_secrets: String,  // base64-encoded encrypted secrets
+    pub encrypted_secrets: String,      // base64-encoded encrypted secrets
     pub access: types::AccessCondition, // Access control rules
-    pub created_at: u64,            // Timestamp when created
-    pub updated_at: u64,            // Timestamp when last updated
-    pub storage_deposit: U128,      // Storage staking amount (U128 for JSON)
+    pub created_at: u64,                // Timestamp when created
+    pub updated_at: u64,                // Timestamp when last updated
+    pub storage_deposit: U128,          // Storage staking amount (U128 for JSON)
+    pub branch: Option<String>,         // Branch name (None = wildcard for all branches)
 }
 
-impl From<SecretProfile> for SecretProfileView {
-    fn from(profile: SecretProfile) -> Self {
-        Self {
-            encrypted_secrets: profile.encrypted_secrets,
-            access: profile.access,
-            created_at: profile.created_at,
-            updated_at: profile.updated_at,
-            storage_deposit: U128(profile.storage_deposit),
-        }
-    }
-}
 
 /// Composite key for secrets storage: (repo, branch, profile, owner)
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

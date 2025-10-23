@@ -2,7 +2,7 @@
 
 ## Overview
 
-Refactored the NEAR Offshore system to use a **job-based workflow** that properly tracks compilation and execution as separate units of work, preventing race conditions when multiple workers process the same task.
+Refactored the NEAR OutLayer system to use a **job-based workflow** that properly tracks compilation and execution as separate units of work, preventing race conditions when multiple workers process the same task.
 
 ## Problem Statement
 

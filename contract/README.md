@@ -32,8 +32,7 @@ near call offchainvm.testnet request_execution '{
     "max_memory_mb": 128,
     "max_execution_seconds": 60
   },
-  "input_data": "{\"key\": \"value\"}",
-  "encrypted_secrets": null
+  "input_data": "{\"key\": \"value\"}"  
 }' --accountId user.testnet --deposit 0.1
 ```
 
@@ -50,7 +49,10 @@ near call offchainvm.testnet request_execution '{
   "code_source": {...},
   "resource_limits": {...},
   "input_data": "{...}",
-  "encrypted_secrets": [1, 2, 3, ...]
+  "secrets_ref": {
+    "profile": "default",
+    "account_id": "dev.testnet"
+  }
 }' --accountId user.testnet --deposit 0.1
 ```
 
@@ -172,6 +174,90 @@ Get contract configuration.
 
 ```bash
 near view offchainvm.testnet get_config '{}'
+```
+
+### Secrets Management Functions
+
+#### `store_secrets`
+Store encrypted secrets for a repository.
+
+**Important:** Always estimate storage cost first using `estimate_storage_cost` to attach the correct deposit.
+
+```bash
+# 1. Estimate storage cost
+near view offchainvm.testnet estimate_storage_cost '{
+  "repo": "github.com/alice/project",
+  "branch": "main",
+  "profile": "default",
+  "owner": "alice.testnet",
+  "encrypted_secrets_base64": "YWJjZGVm...",
+  "access": "AllowAll"
+}'
+# Output: "1500000000000000000000" (0.0015 NEAR)
+
+# 2. Store secrets with exact deposit
+near call offchainvm.testnet store_secrets '{
+  "repo": "github.com/alice/project",
+  "branch": "main",
+  "profile": "default",
+  "encrypted_secrets_base64": "YWJjZGVm...",
+  "access": "AllowAll"
+}' --accountId alice.testnet --deposit 0.0015
+```
+
+#### `estimate_storage_cost`
+Estimate the storage cost before storing secrets. Returns exact cost in yoctoNEAR.
+
+```bash
+near view offchainvm.testnet estimate_storage_cost '{
+  "repo": "github.com/alice/project",
+  "branch": null,
+  "profile": "production",
+  "owner": "alice.testnet",
+  "encrypted_secrets_base64": "YWJjZGVm...",
+  "access": {"Whitelist": {"accounts": ["alice.testnet", "bob.testnet"]}}
+}'
+```
+
+**Pricing factors:**
+- Base overhead: 40 bytes (LookupMap entry)
+- Key size: repo + branch + profile + owner (with Borsh length prefixes)
+- Value size: encrypted_secrets + access condition + timestamps
+- Index overhead: 64 bytes (for new secrets)
+- Storage price: 0.00001 NEAR per byte
+
+**Note:** Complex access conditions (e.g., Whitelist with many accounts) cost more than simple ones (e.g., AllowAll).
+
+#### `get_secrets`
+Retrieve secrets for a repository (called by keystore worker).
+
+```bash
+near view offchainvm.testnet get_secrets '{
+  "repo": "github.com/alice/project",
+  "branch": "main",
+  "profile": "default",
+  "owner": "alice.testnet"
+}'
+```
+
+#### `delete_secrets`
+Delete secrets and get storage deposit refund.
+
+```bash
+near call offchainvm.testnet delete_secrets '{
+  "repo": "github.com/alice/project",
+  "branch": "main",
+  "profile": "default"
+}' --accountId alice.testnet
+```
+
+#### `list_user_secrets`
+List all secrets stored by an account.
+
+```bash
+near view offchainvm.testnet list_user_secrets '{
+  "account_id": "alice.testnet"
+}'
 ```
 
 ## Events

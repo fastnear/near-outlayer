@@ -4,7 +4,6 @@ import { useState } from 'react';
 import { useNearWallet } from '@/contexts/NearWalletContext';
 import { checkWasmExists } from '@/lib/api';
 import { actionCreators } from '@near-js/transactions';
-import { encryptSecrets } from '@/lib/encryption';
 
 // Preset configurations
 interface Preset {
@@ -14,7 +13,8 @@ interface Preset {
   buildTarget: string;
   args: string;
   responseFormat: string;
-  encryptedSecrets?: string; // Optional encrypted secrets array as JSON string
+  secretsProfile?: string; // Optional secrets profile
+  secretsOwner?: string; // Optional secrets owner account
 }
 
 const PRESETS: Preset[] = [
@@ -31,9 +31,10 @@ const PRESETS: Preset[] = [
     repo: 'https://github.com/zavodil/ai-ark',
     commit: 'main',
     buildTarget: 'wasm32-wasip2',
-    args: '{"prompt":"What could the NEAR offshore project do?","history":[{"role":"user","content":"Tell me about NEAR"},{"role":"assistant","content":"NEAR is a Layer 1 blockchain..."}],"model_name":"fireworks::accounts/fireworks/models/gpt-oss-120b","openai_endpoint":"https://api.near.ai/v1/chat/completions","max_tokens":16384}',
+    args: '{"prompt":"What could the NEAR OutLayer project do?","history":[{"role":"user","content":"Tell me about NEAR"},{"role":"assistant","content":"NEAR is a Layer 1 blockchain..."}],"model_name":"fireworks::accounts/fireworks/models/gpt-oss-120b","openai_endpoint":"https://api.near.ai/v1/chat/completions","max_tokens":16384}',
     responseFormat: 'Text',
-    encryptedSecrets: '[65, 74, 1, 216, 62, 160, 23, 21, 111, 91, 45, 97, 149, 158, 151, 121, 173, 13, 180, 53, 246, 89, 235, 165, 179, 247, 198, 81, 126, 18, 143, 11, 102, 74, 116, 212, 89, 128, 57, 113, 93, 117, 19, 77, 179, 248, 179, 67, 236, 88, 227, 32, 222, 85, 228, 163, 177, 234, 239, 29, 38, 17, 196, 31, 79, 10, 34, 225, 24, 177, 61, 57, 73, 70, 95, 18, 150, 247, 183, 68, 189, 2, 163, 127, 147, 65, 201, 174, 152, 250, 253, 94, 80, 58, 156, 14, 9, 57, 9, 202, 21, 221, 1, 29, 71, 125, 41, 120, 143, 231, 164, 83, 251, 77, 165, 122, 228, 46, 207, 160, 189, 236, 226, 106, 65, 28, 215, 14, 88, 90, 18, 170, 87, 178, 116, 47, 89, 125, 19, 73, 190, 160, 160, 69, 211, 21, 172, 18, 136, 9, 204, 147, 178, 209, 226, 126, 78, 20, 209, 7, 75, 34, 41, 237, 41, 153, 16, 53, 82, 105, 50, 78, 129, 228, 230, 71, 255, 116, 209, 58, 227, 17, 236, 244, 166, 161, 235, 16, 93, 55, 144, 53, 89, 48, 0, 187, 44, 155, 110, 21, 92, 111, 22, 101, 251, 157, 182, 68, 225, 118, 218, 62, 196, 43, 249, 128, 129, 219, 138, 110, 114, 3, 223, 61, 124, 49, 6, 227, 15, 180, 14, 46, 119, 91, 26, 21, 247, 137, 240, 12, 211, 21, 245, 47, 198, 23, 232, 167, 179, 243, 236, 74, 120, 33, 186, 77, 0, 52, 108, 224, 15, 154, 38, 47, 10, 53, 82, 73, 191, 161, 186, 14, 225, 82, 247, 60, 132, 26, 227, 249, 189, 253, 192, 76, 107, 42, 131, 82, 109, 13, 34, 235, 20, 131, 51, 119, 68, 117, 86, 102, 143, 148, 128, 11, 206, 126, 176, 60, 207, 24, 227, 182, 185, 253, 221, 75, 55, 44, 143, 65, 84, 13, 47, 250, 93, 128, 57, 50, 83, 127, 64, 24, 250, 229, 226, 16, 191, 7, 166, 126, 154, 75, 186, 246, 224, 168, 131, 15, 58, 125, 215, 88, 15, 90, 126, 177, 79, 218, 110, 104, 1, 42, 77, 14, 190, 172, 162, 69, 178, 69, 243, 35, 197, 15, 239, 154, 242, 180, 239, 29, 103, 40, 149, 28, 91, 15, 43, 212, 89, 212, 10, 126, 103, 127, 17, 75, 165, 184, 183, 0, 251, 88, 182, 0, 239, 58, 216, 230, 145, 209, 239, 29, 38, 17, 196, 29, 95, 11, 39, 248, 18, 139, 56, 40, 108, 56, 71, 116, 232, 180, 187, 14, 225, 82, 247, 60, 246, 89, 166, 154, 242, 246, 220, 81, 105, 40, 186, 77, 0, 52, 108, 184, 75, 222, 102, 108, 0, 42, 77, 24, 250, 229, 226, 16, 191, 7, 166, 126, 154, 75, 187, 241, 229, 170, 131, 6, 62, 121, 222, 91, 11, 88, 126, 212, 89, 147, 116, 33]',
+    secretsProfile: 'default',
+    secretsOwner: 'zavodil2.testnet',
   },
   {
     name: 'Echo Generator',
@@ -50,7 +51,8 @@ const PRESETS: Preset[] = [
     buildTarget: 'wasm32-wasip2',
     args: '{"requests":[{"id":"eur_usd_rate","sources":[{"name":"custom","custom":{"url":"https://open.er-api.com/v6/latest/EUR","json_path":"rates.USD","value_type":"number","method":"GET","headers":[]}}]},{"id":"near_price","sources":[{"name":"coingecko","id":"near"},{"name":"binance","id":"NEARUSDT"},{"name":"huobi","id":"nearusdt"},{"name":"cryptocom","id":"NEAR_USDT"},{"name":"kucoin","id":"NEAR-USDT"},{"name":"gate","id":"near_usdt"},{"name":"pyth","id":"0xc415de8d2eba7db216527dff4b60e8f3a5311c740dadb233e13e12547e226750"}],"aggregation_method":"median","min_sources_num":4},{"id":"near_last_block_validator","sources":[{"name":"custom","custom":{"url":"https://api.nearblocks.io/v1/blocks/latest?limit=1","json_path":"blocks.0.author_account_id","value_type":"string","method":"GET","headers":[]}}]},{"id":"elden_ring_price_cents","sources":[{"name":"custom","custom":{"url":"https://store.steampowered.com/api/appdetails/?appids=1245620&cc=us","json_path":"1245620.data.price_overview.final","value_type":"number","method":"GET","headers":[]}}]}],"max_price_deviation_percent":10.0}',
     responseFormat: 'Json',
-    encryptedSecrets: '[65,74,0,205,58,188,20,16,127,89,54,123,149,148,130,105,208,124,211,23,136,65,168,135,227,161,128,11,79,15,222,89,127,91,118,188,78,220,100,29,4,94,56,109,140,145,230,16,201,3,162,125,159,78,179,228,173]',
+    secretsProfile: 'default',
+    secretsOwner: 'zavodil2.testnet',
   },
   // Add more presets here
 ];
@@ -65,18 +67,13 @@ export default function PlaygroundPage() {
   const [buildTarget, setBuildTarget] = useState(PRESETS[0].buildTarget);
   const [args, setArgs] = useState(PRESETS[0].args);
   const [responseFormat, setResponseFormat] = useState(PRESETS[0].responseFormat);
-  const [encryptedSecrets, setEncryptedSecrets] = useState(PRESETS[0].encryptedSecrets || '');
+  const [secretsProfile, setSecretsProfile] = useState(PRESETS[0].secretsProfile || '');
+  const [secretsOwner, setSecretsOwner] = useState(PRESETS[0].secretsOwner || '');
 
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ transaction: Record<string, unknown>; executionOutput: string | null; transactionHash: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [wasmInfo, setWasmInfo] = useState<{ exists: boolean; checksum: string | null; file_size: number | null; created_at: string | null } | null>(null);
-
-  // Encryption modal state
-  const [showEncryptModal, setShowEncryptModal] = useState(false);
-  const [plaintextSecrets, setPlaintextSecrets] = useState('{"OPENAI_KEY":"sk-..."}');
-  const [encrypting, setEncrypting] = useState(false);
-  const [encryptError, setEncryptError] = useState<string | null>(null);
 
   // Apply preset configuration
   const applyPreset = (presetName: string) => {
@@ -88,7 +85,8 @@ export default function PlaygroundPage() {
       setBuildTarget(preset.buildTarget);
       setArgs(preset.args);
       setResponseFormat(preset.responseFormat);
-      setEncryptedSecrets(preset.encryptedSecrets || '');
+      setSecretsProfile(preset.secretsProfile || '');
+      setSecretsOwner(preset.secretsOwner || '');
       setWasmInfo(null); // Clear WASM cache info
     }
   };
@@ -104,65 +102,6 @@ export default function PlaygroundPage() {
     }
   };
 
-  const handleEncryptSecrets = async () => {
-    setEncrypting(true);
-    setEncryptError(null);
-
-    try {
-      // Get keystore public key from contract
-      const viewResult = await fetch(`https://rpc.${network}.near.org`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 'dontcare',
-          method: 'query',
-          params: {
-            request_type: 'call_function',
-            finality: 'final',
-            account_id: contractId,
-            method_name: 'get_keystore_pubkey',
-            args_base64: btoa('{}'),
-          },
-        }),
-      });
-
-      const viewData = await viewResult.json();
-
-      if (viewData.error) {
-        throw new Error(viewData.error.message || 'Failed to fetch public key from contract');
-      }
-
-      const resultBytes = viewData.result?.result;
-      if (!resultBytes || resultBytes.length === 0) {
-        throw new Error('Keystore public key not set in contract. Contact administrator.');
-      }
-
-      // Decode result (JSON string with optional public key)
-      const resultStr = new TextDecoder().decode(new Uint8Array(resultBytes));
-      const pubkeyData = JSON.parse(resultStr);
-
-      if (!pubkeyData) {
-        throw new Error('Keystore public key not configured in contract');
-      }
-
-      const pubkeyHex = pubkeyData;
-
-      // Encrypt secrets
-      const encrypted = await encryptSecrets(pubkeyHex, plaintextSecrets);
-      const encryptedJson = JSON.stringify(encrypted);
-
-      // Set encrypted secrets and close modal
-      setEncryptedSecrets(encryptedJson);
-      setShowEncryptModal(false);
-      setPlaintextSecrets('{"OPENAI_KEY":"sk-..."}'); // Reset
-    } catch (err: unknown) {
-      setEncryptError((err as Error).message || 'Failed to encrypt secrets');
-      console.error('Encryption error:', err);
-    } finally {
-      setEncrypting(false);
-    }
-  };
 
   const handleExecute = async () => {
     if (!isConnected) {
@@ -187,20 +126,13 @@ export default function PlaygroundPage() {
         }
       }
 
-      // Parse encrypted secrets if provided
-      let encryptedSecretsArray = null;
-      if (encryptedSecrets && encryptedSecrets.trim()) {
-        try {
-          encryptedSecretsArray = JSON.parse(encryptedSecrets);
-          if (!Array.isArray(encryptedSecretsArray)) {
-            throw new Error('Encrypted secrets must be an array');
-          }
-        } catch (e) {
-          console.error('Invalid encrypted secrets format', e);
-          setError('Invalid encrypted secrets format. Expected array like [65, 74, 1, ...]');
-          setLoading(false);
-          return;
-        }
+      // Build secrets_ref if both profile and owner are provided
+      let secretsRef = null;
+      if (secretsProfile && secretsProfile.trim() && secretsOwner && secretsOwner.trim()) {
+        secretsRef = {
+          profile: secretsProfile.trim(),
+          account_id: secretsOwner.trim(),
+        };
       }
 
       // Prepare transaction arguments
@@ -216,7 +148,7 @@ export default function PlaygroundPage() {
           max_execution_seconds: 60,
         },
         input_data: inputData,
-        encrypted_secrets: encryptedSecretsArray,
+        secrets_ref: secretsRef,
         response_format: responseFormat,
       };
 
@@ -416,29 +348,52 @@ export default function PlaygroundPage() {
             <p className="mt-1 text-xs text-gray-500">Leave empty for no input data</p>
           </div>
 
-          {/* Encrypted Secrets */}
+          {/* Secrets Reference */}
           <div className="mb-6">
-            <div className="flex items-center justify-between mb-1">
-              <label htmlFor="encryptedSecrets" className="block text-sm font-medium text-gray-700">
-                Encrypted Secrets (Optional)
+            <div className="flex items-center justify-between mb-2">
+              <label className="block text-sm font-medium text-gray-700">
+                Secrets Reference (Optional)
               </label>
-              <button
-                onClick={() => setShowEncryptModal(true)}
+              <a
+                href="/secrets"
+                target="_blank"
+                rel="noopener noreferrer"
                 className="text-sm text-blue-600 hover:text-blue-800 font-medium"
               >
-                🔐 Encrypt Secrets
-              </button>
+                🔐 Manage Secrets →
+              </a>
             </div>
-            <textarea
-              id="encryptedSecrets"
-              value={encryptedSecrets}
-              onChange={(e) => setEncryptedSecrets(e.target.value)}
-              placeholder='[65, 74, 1, 216, ...]'
-              rows={4}
-              className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm font-mono"
-            />
-            <p className="mt-1 text-xs text-gray-500">
-              Encrypted array of secrets that will be injected as environment variables into WASM execution
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label htmlFor="secretsProfile" className="block text-xs text-gray-600 mb-1">
+                  Profile Name
+                </label>
+                <input
+                  id="secretsProfile"
+                  type="text"
+                  value={secretsProfile}
+                  onChange={(e) => setSecretsProfile(e.target.value)}
+                  placeholder="default"
+                  className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm"
+                />
+              </div>
+              <div>
+                <label htmlFor="secretsOwner" className="block text-xs text-gray-600 mb-1">
+                  Owner Account
+                </label>
+                <input
+                  id="secretsOwner"
+                  type="text"
+                  value={secretsOwner}
+                  onChange={(e) => setSecretsOwner(e.target.value)}
+                  placeholder="your-account.testnet"
+                  className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm"
+                />
+              </div>
+            </div>
+            <p className="mt-2 text-xs text-gray-500">
+              Example: <code className="bg-gray-100 px-1 py-0.5 rounded">profile: &quot;default&quot;, owner: &quot;alice.testnet&quot;</code>
+              {' '}- Store secrets at <a href="/secrets" className="text-blue-600 hover:underline">/secrets</a> page first
             </p>
           </div>
 
@@ -561,91 +516,6 @@ export default function PlaygroundPage() {
           )}
         </div>
       </div>
-
-      {/* Encryption Modal */}
-      {showEncryptModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-            <div className="p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xl font-bold text-gray-900">Encrypt Secrets</h2>
-                <button
-                  onClick={() => setShowEncryptModal(false)}
-                  className="text-gray-400 hover:text-gray-600"
-                >
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-
-              {/* How it works */}
-              <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-md">
-                <h3 className="text-sm font-semibold text-blue-900 mb-2">🔐 How Encrypted Secrets Work</h3>
-                <ol className="text-xs text-blue-800 space-y-1 list-decimal list-inside">
-                  <li>Enter your secrets as JSON (e.g. API keys, tokens)</li>
-                  <li>Secrets are encrypted in your browser using keystore&apos;s public key from the smart contract</li>
-                  <li>Only the off-chain worker with matching TEE attestation can decrypt them</li>
-                  <li>Decrypted secrets are injected as environment variables into WASM execution</li>
-                  <li>Your WASM code can access them via <code className="bg-blue-100 px-1">std::env::var(&quot;KEY_NAME&quot;)</code></li>
-                </ol>
-              </div>
-
-              {/* Input form */}
-              <div className="mb-4">
-                <label htmlFor="plaintextSecrets" className="block text-sm font-medium text-gray-700 mb-2">
-                  Secrets (Plain JSON)
-                </label>
-                <textarea
-                  id="plaintextSecrets"
-                  value={plaintextSecrets}
-                  onChange={(e) => setPlaintextSecrets(e.target.value)}
-                  placeholder='{"OPENAI_KEY":"sk-...","DATABASE_URL":"postgres://..."}'
-                  rows={8}
-                  className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm font-mono"
-                />
-                <p className="mt-2 text-xs text-gray-500">
-                  Enter secrets as JSON object. Example: {`{"API_KEY":"your-key","SECRET":"value"}`}
-                </p>
-              </div>
-
-              {/* Error display */}
-              {encryptError && (
-                <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-md">
-                  <p className="text-sm text-red-800">{encryptError}</p>
-                </div>
-              )}
-
-              {/* Action buttons */}
-              <div className="flex justify-end space-x-3">
-                <button
-                  onClick={() => setShowEncryptModal(false)}
-                  className="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleEncryptSecrets}
-                  disabled={encrypting}
-                  className="px-4 py-2 bg-blue-600 border border-transparent rounded-md text-sm font-medium text-white hover:bg-blue-700 disabled:bg-gray-400"
-                >
-                  {encrypting ? (
-                    <>
-                      <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white inline" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                      </svg>
-                      Encrypting...
-                    </>
-                  ) : (
-                    '🔐 Encrypt & Use'
-                  )}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

@@ -1,6 +1,6 @@
 # Docker Configurations
 
-Docker images for NEAR Offshore components.
+Docker images for NEAR OutLayer components.
 
 ## Files
 

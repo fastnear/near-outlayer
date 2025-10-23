@@ -1,4 +1,4 @@
--- Initial database schema for NEAR Offshore Coordinator
+-- Initial database schema for NEAR OutLayer Coordinator
 
 -- Execution requests tracking
 CREATE TABLE execution_requests (

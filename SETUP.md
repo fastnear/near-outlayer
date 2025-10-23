@@ -1,6 +1,6 @@
-# NEAR Offshore MVP - Setup Guide
+# NEAR OutLayer MVP - Setup Guide
 
-Complete setup guide for running the NEAR Offshore platform.
+Complete setup guide for running the NEAR OutLayer platform.
 
 ## System Requirements
 

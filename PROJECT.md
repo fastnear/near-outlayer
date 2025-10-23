@@ -1,12 +1,12 @@
-# NEAR Offshore
+# NEAR OutLayer
 
-**"Offshore execution for on-chain contracts"**
+**"OutLayer execution for on-chain contracts"**
 
 ## Executive Summary
 
-**NEAR Offshore** is a verifiable off-chain computation platform that enables any NEAR smart contract to execute arbitrary untrusted code off-chain using NEAR Protocol's yield/resume mechanism.
+**NEAR OutLayer** is a verifiable off-chain computation platform that enables any NEAR smart contract to execute arbitrary untrusted code off-chain using NEAR Protocol's yield/resume mechanism.
 
-Just as offshore zones provide efficient environments for operations while maintaining regulatory compliance, **NEAR Offshore** provides an efficient execution environment for heavy computation while keeping security guarantees and final settlement on NEAR L1.
+Just as offshore zones provide efficient environments for operations while maintaining regulatory compliance, **NEAR OutLayer** provides an efficient execution environment for heavy computation while keeping security guarantees and final settlement on NEAR L1.
 
 This creates a secure, scalable infrastructure for smart contracts to break free from gas limitations while maintaining cryptographic security guarantees through TEE attestation.
 
@@ -14,32 +14,32 @@ This creates a secure, scalable infrastructure for smart contracts to break free
 
 **The Offshore Jurisdiction for Smart Contract Computation**
 
-**What NEAR Offshore is:**
-- **Computational Offshore Zone**: Move expensive operations off-chain, just like moving assets offshore
+**What NEAR OutLayer is:**
+- **Computational OutLayer Zone**: Move expensive operations off-chain, just like moving assets offshore
 - **Smart Contract Co-Processor**: Handles compute-heavy operations that are impractical on-chain
 - **Verifiable Execution Service**: TEE-attested execution provides cryptographic proof of correctness
 - **Developer Infrastructure**: Like AWS Lambda, but for smart contracts with blockchain guarantees
 
-**What NEAR Offshore is NOT:**
+**What NEAR OutLayer is NOT:**
 - **Not an L2**: No separate consensus, no new chain, no bridging complexity
 - **Not an Oracle**: Doesn't fetch external data, executes arbitrary user code
 - **Not a Sidechain**: Lives entirely off-chain, results return to L1
 - **Not Traditional Cloud**: Execution is trustless, verifiable, and crypto-economically secured
 
-**The Offshore Metaphor:**
+**The OutLayer Metaphor:**
 ```
 Financial Offshore → Move assets for efficiency, keep ownership
-Computational Offshore → Move computation for efficiency, keep security
+Computational OutLayer → Move computation for efficiency, keep security
 
-Traditional Offshore:          NEAR Offshore:
+Traditional Offshore:          NEAR OutLayer:
 ✅ Lower costs                  ✅ Lower gas costs (100x cheaper)
 ✅ Efficiency                   ✅ Unlimited computation power
-✅ Privacy                      ✅ Secret management (TEE)
+✅ Privacy                      ✅ Repo-based secrets with access control
 ✅ Optimization                 ✅ Optimize without compromise
 ✅ Still yours                  ✅ Results return to your contract
 ```
 
-**Mental Model**: Think of NEAR Offshore as **"Cayman Islands for computation"** - move heavy lifting offshore for efficiency, but funds and final settlement stay on NEAR L1.
+**Mental Model**: Think of NEAR OutLayer as **"Offshore jurisdiction for computation"** - move heavy lifting off-chain for efficiency, but funds and final settlement stay on NEAR L1.
 
 ---
 
@@ -48,12 +48,12 @@ Traditional Offshore:          NEAR Offshore:
 ### Core Flow
 
 ```
-User Contract → NEAR Offshore Contract (yield) → Worker Network → Resume with Results → User Contract
+User Contract → NEAR OutLayer Contract (yield) → Worker Network → Resume with Results → User Contract
 ```
 
 ### Components
 
-1. **NEAR Offshore Smart Contract** (`offshore.near`)
+1. **NEAR OutLayer Smart Contract** (`offchainvm.near`)
    - Entry point for all computation requests
    - Payment validation and escrow
    - Yield/resume orchestration
@@ -94,10 +94,13 @@ pub struct ExecutionRequest {
     },
 
     // Execution parameters
-    encrypted_secrets: Vec<(String, Vec<u8>)>,  // key → encrypted value
-    max_execution_seconds: u64,
-    max_memory_mb: u64,
-    max_cpu_cycles: u64,
+    secrets_ref: Option<SecretsReference>,  // Reference to repo-based secrets
+    input_data: Option<String>,
+    resource_limits: ResourceLimits {
+        max_instructions: u64,
+        max_memory_mb: u64,
+        max_execution_seconds: u64,
+    },
 
     // Economics
     payment: Balance,
@@ -176,32 +179,43 @@ tokio::select! {
    - Hardware security guarantees
 ```
 
-#### Secret Encryption (Client Side)
+#### Repo-Based Secrets (New System)
 ```
-Client smart contract:
-1. Reads public key from Offshore contract
-2. Encrypts secrets: encrypted = encrypt(secret, public_key)
-3. Passes encrypted_secrets in execute() call
-4. Secrets are visible on-chain but useless without private key
+Secret Storage (One-time setup):
+1. User stores secrets in contract: store_secrets(repo, branch, profile, encrypted_data, access_rules)
+2. Secrets encrypted client-side with keystore's repo-specific public key
+3. Stored on-chain with access conditions (AllowAll, Whitelist, NEAR balance, FT/NFT ownership, Logic)
+4. Indexed by user for O(1) lookups
+
+Execution (Automated):
+1. Contract stores secrets_ref: {profile: "default", account_id: "alice.near"}
+2. Worker fetches secrets from contract via get_secrets()
+3. Keystore validates access conditions (NEAR/FT/NFT balance checks via RPC)
+4. If authorized, keystore decrypts secrets using repo-specific keypair
+5. Secrets injected as WASI environment variables (std::env::var())
 ```
 
 #### Secret Decryption (Inside TEE)
 ```
 TEE Enclave:
-1. Receives encrypted secrets from event
-2. Decrypts with private key (inside enclave memory)
-3. Decrypted secrets exposed as env vars to WASM runtime
-4. WASM execution happens inside TEE
-5. After execution: enclave memory cleared (CPU-level encryption)
+1. Receives secrets_ref from execution request
+2. Fetches encrypted secrets from contract
+3. Validates access conditions (balance checks, whitelist, regex patterns)
+4. Decrypts with repo-specific keypair (derived via HMAC-SHA256)
+5. Decrypted secrets exposed as env vars to WASM runtime
+6. WASM execution happens inside TEE
+7. After execution: enclave memory cleared (CPU-level encryption)
 ```
 
 **Security Properties:**
-- ✅ Private key never leaves TEE (not even in encrypted form on disk)
+- ✅ Secrets stored once, used everywhere (no inline passing)
+- ✅ Access control enforced by keystore (NEAR/FT/NFT balance, whitelist, regex)
+- ✅ Master secret never leaves TEE (repo-specific keys derived via HMAC)
 - ✅ Decrypted secrets never touch host OS memory
 - ✅ Worker operator cannot extract secrets (hardware-enforced)
 - ✅ Remote attestation proves correct enclave code
-- ✅ Replay attacks prevented (nonce in attestation)
-- ✅ Side-channel resistant (TEE hardware protections)
+- ✅ Storage costs refunded on deletion
+- ✅ Per-branch secrets support (main, dev, staging profiles)
 
 **Attestation Verification Flow:**
 ```
@@ -349,7 +363,7 @@ if block_timestamp > request.timestamp + request.max_execution_seconds {
 - **Limited scope**: Only supports pre-defined operations
 - **Trust model**: Single operator with private keys
 
-### Proposed: NEAR Offshore Platform
+### Proposed: NEAR OutLayer Platform
 - **General purpose**: Any computation expressible in WASM
 - **Arbitrary code**: Users provide their own logic
 - **Extensible**: Supports unlimited use cases
@@ -610,7 +624,7 @@ fn validate_code_source(source: &CodeSource) -> Result<()> {
 
 ---
 
-## Use Cases Enabled by NEAR Offshore
+## Use Cases Enabled by NEAR OutLayer
 
 ### 1. DeFi Applications
 - **Complex trading strategies**: Multi-DEX arbitrage, portfolio rebalancing
@@ -677,7 +691,7 @@ fn validate_code_source(source: &CodeSource) -> Result<()> {
 **Goal**: Production-ready system with TEE security from day one
 
 **Smart Contract:**
-- [ ] NEAR Offshore smart contract with yield/resume pattern
+- [ ] NEAR OutLayer smart contract with yield/resume pattern
 - [ ] Payment validation and escrow
 - [ ] Timeout and cancellation handling
 - [ ] Event emission for workers
@@ -887,30 +901,52 @@ Contract → Returns Success { result, attestation }
 
 ```rust
 #[near_bindgen]
-impl OffshoreContract {
+impl Contract {
     /// Main entry point for execution requests
-    pub fn execute(
+    #[payable]
+    pub fn request_execution(
         &mut self,
         code_source: CodeSource,
-        encrypted_secrets: Vec<(String, Vec<u8>)>,
-        max_execution_seconds: u64,
-        callback_method: String,
-    ) -> Promise;
-
-    /// Worker calls this to resume execution
-    pub fn resolve_execution(
-        &mut self,
-        data_id: CryptoHash,
-        result: ExecutionResult,
+        resource_limits: Option<ResourceLimits>,
+        input_data: Option<String>,
+        secrets_ref: Option<SecretsReference>,  // Reference to repo-based secrets
+        response_format: Option<ResponseFormat>,
     );
 
-    /// Client can cancel stale requests
-    pub fn cancel_stale_request(&mut self, request_id: u64);
+    /// Worker calls this to submit execution result
+    pub fn resolve_execution(
+        &mut self,
+        request_id: u64,
+        success: bool,
+        output: Option<ExecutionOutput>,
+        error: Option<String>,
+        resources_used: ResourceMetrics,
+        compilation_note: Option<String>,
+    );
+
+    /// Client can cancel stale requests (10 min timeout)
+    pub fn cancel_stale_execution(&mut self, request_id: u64);
+
+    // Secrets management
+    #[payable]
+    pub fn store_secrets(
+        &mut self,
+        repo: String,
+        branch: Option<String>,
+        profile: String,
+        encrypted_secrets_base64: String,
+        access: AccessCondition,
+    );
+
+    pub fn delete_secrets(&mut self, repo: String, branch: Option<String>, profile: String);
+    pub fn get_secrets(&self, repo: String, branch: Option<String>, profile: String, owner: AccountId) -> Option<SecretProfileView>;
+    pub fn list_user_secrets(&self, account_id: AccountId) -> Vec<UserSecretInfo>;
 
     /// View functions
-    pub fn get_public_key(&self) -> PublicKey;
-    pub fn get_pricing(&self) -> PricingInfo;
-    pub fn get_request_status(&self, request_id: u64) -> RequestStatus;
+    pub fn get_request(&self, request_id: u64) -> Option<ExecutionRequest>;
+    pub fn get_pricing(&self) -> PricingConfig;
+    pub fn get_stats(&self) -> ContractStats;
+    pub fn estimate_execution_cost(&self, resource_limits: ResourceLimits) -> U128;
 }
 
 pub enum ExecutionResult {
@@ -978,20 +1014,22 @@ pub extern "C" fn execute() -> *const u8 {
     "data_id": "0x...",
     "sender_id": "client.near",
     "code_source": {
-      "type": "github",
+      "type": "GitHub",
       "repo": "https://github.com/user/project",
-      "commit": "abc123def456...",
-      "build_command": "cargo build --release --target wasm32-wasi"
+      "commit": "abc123def456",
+      "build_target": "wasm32-wasip1"
     },
-    "encrypted_secrets": [
-      ["API_KEY", "base64_encrypted_blob..."],
-      ["DATABASE_URL", "base64_encrypted_blob..."]
-    ],
+    "secrets_ref": {
+      "profile": "production",
+      "account_id": "alice.near"
+    },
+    "input_data": "{}",
     "resource_limits": {
-      "max_execution_seconds": 30,
-      "max_memory_mb": 512,
-      "max_cpu_cycles": 1000000000
+      "max_instructions": 1000000000,
+      "max_memory_mb": 128,
+      "max_execution_seconds": 60
     },
+    "response_format": "Text",
     "payment": "1000000000000000000000000",
     "timestamp": 1234567890
   }
@@ -1016,7 +1054,7 @@ pub extern "C" fn execute() -> *const u8 {
 
 ### Competitive Pricing
 - **AWS Lambda equivalent**: ~$0.0000166667 per GB-second
-- **NEAR Offshore target**: 50-70% of AWS pricing (cheaper due to no cloud markup)
+- **NEAR OutLayer target**: 50-70% of AWS pricing (cheaper due to no cloud markup)
 - **NEAR gas equivalent**: 100x cheaper than pure on-chain computation
 
 ---
@@ -1068,14 +1106,14 @@ pub extern "C" fn execute() -> *const u8 {
 ### Phase 3 (Decentralization)
 - 50+ independent worker operators
 - $1M+ monthly execution volume
-- 5+ major protocols using NEAR Offshore as core infrastructure
+- 5+ major protocols using NEAR OutLayer as core infrastructure
 - Profitable unit economics
 
 ---
 
 ## Conclusion
 
-**NEAR Offshore** represents a paradigm shift in smart contract capabilities, enabling developers to build applications that were previously impossible on blockchain. By leveraging NEAR's unique yield/resume mechanism and combining it with TEE-attested off-chain computation, we create a platform that:
+**NEAR OutLayer** represents a paradigm shift in smart contract capabilities, enabling developers to build applications that were previously impossible on blockchain. By leveraging NEAR's unique yield/resume mechanism and combining it with TEE-attested off-chain computation, we create a platform that:
 
 1. **Extends L1 capabilities** without protocol changes or new chains
 2. **Maintains security guarantees** through TEE attestation and sandboxing
@@ -1109,7 +1147,7 @@ Current blockchain limitations force developers to choose:
 - **Option B**: Move to L2/sidechain → Bridging complexity, fragmented liquidity
 - **Option C**: Build off-chain infrastructure → Trust assumptions, centralization
 
-**NEAR Offshore provides Option D**: Keep funds and logic on NEAR L1, but execute heavy computation offshore with TEE-guaranteed correctness. Best of both worlds—just like financial offshore structures.
+**NEAR OutLayer provides Option D**: Keep funds and logic on NEAR L1, but execute heavy computation offshore with TEE-guaranteed correctness. Best of both worlds—just like financial offshore structures.
 
 ### The Path Forward
 
@@ -1122,7 +1160,7 @@ The roadmap prioritizes **security and transparency from day one**:
 
 This is not just a service—**it's foundational infrastructure that unlocks a new category of blockchain applications**. Applications that were theoretically possible but practically infeasible due to gas limits can now be built on NEAR.
 
-**NEAR Offshore is to smart contracts what financial offshore zones are to businesses**: Optimize expensive operations in an efficient jurisdiction, but maintain control and final settlement on your home base (NEAR L1).
+**NEAR OutLayer is to smart contracts what financial offshore zones are to businesses**: Optimize expensive operations in an efficient jurisdiction, but maintain control and final settlement on your home base (NEAR L1).
 
 ---
 

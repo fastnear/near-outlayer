@@ -271,13 +271,13 @@ async fn decrypt_handler(
         format!("{}:{}", normalized_repo, req.owner)
     };
 
-    tracing::debug!(
+    tracing::info!(
         task_id = %task_id_str,
         repo_normalized = %normalized_repo,
         owner = %req.owner,
         secret_branch = ?secret_branch,
         seed = %seed,
-        "Derived seed for decryption"
+        "🔓 DECRYPTION SEED (keystore)"
     );
 
     // 5. Decrypt using derived keypair

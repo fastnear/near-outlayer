@@ -1,4 +1,4 @@
-/// Integration test for NEAR Offshore Worker
+/// Integration test for NEAR OutLayer Worker
 ///
 /// This test simulates the full flow:
 /// 1. Blockchain event triggers task creation
@@ -20,7 +20,7 @@ async fn test_full_execution_flow() {
     // 4. Call contract's request_execution
     // 5. Observe worker processing and resolving
 
-    println!("\n=== NEAR Offshore Integration Test ===\n");
+    println!("\n=== NEAR OutLayer Integration Test ===\n");
 
     // STEP 1: Simulate blockchain event
     println!("Step 1: Simulating ExecutionRequested event from contract");

@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# NEAR Offshore - Stop All Services
+# NEAR OutLayer - Stop All Services
 
-echo "🛑 Stopping NEAR Offshore services..."
+echo "🛑 Stopping NEAR OutLayer services..."
 echo ""
 
 # Stop Coordinator

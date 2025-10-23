@@ -32,6 +32,7 @@ pub struct Config {
 
     // Keystore integration
     pub keystore_base_url: Option<String>,
+    pub keystore_auth_token: Option<String>,
 }
 
 impl Config {
@@ -83,6 +84,7 @@ impl Config {
                 .unwrap_or_else(|_| "offchainvm.testnet".to_string()),
 
             keystore_base_url: std::env::var("KEYSTORE_BASE_URL").ok(),
+            keystore_auth_token: std::env::var("KEYSTORE_AUTH_TOKEN").ok(),
         })
     }
 }

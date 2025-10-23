@@ -1,6 +1,6 @@
 # WASI Test Runner
 
-Universal test tool to validate WASM modules for NEAR Offshore compatibility.
+Universal test tool to validate WASM modules for NEAR OutLayer compatibility.
 
 ## What It Tests
 
@@ -90,7 +90,7 @@ cargo build --release
 {"random_number":42}
 
 ✓ Output is valid JSON
-✅ All checks passed! Module is compatible with NEAR Offshore.
+✅ All checks passed! Module is compatible with NEAR OutLayer.
 ```
 
 ### Failed Test
@@ -138,7 +138,7 @@ Error: Failed to find _start function. Make sure you're using [[bin]] format wit
 
 ### 5. Compatibility
 - ✅ Works with wasmtime 28+
-- ✅ Same runtime as NEAR Offshore worker
+- ✅ Same runtime as NEAR OutLayer worker
 
 ## Testing Your Own Module
 
@@ -174,7 +174,7 @@ cargo run --release -- \
 
 ### Step 4: Check Results
 
-If all checks pass, your module is ready for NEAR Offshore! 🎉
+If all checks pass, your module is ready for NEAR OutLayer! 🎉
 
 ## Common Issues & Solutions
 
@@ -313,4 +313,4 @@ Options:
 ---
 
 **Last updated**: 2025-10-15
-**Compatible with**: wasmtime 28+, NEAR Offshore MVP
+**Compatible with**: wasmtime 28+, NEAR OutLayer MVP

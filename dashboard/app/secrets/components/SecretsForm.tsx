@@ -83,6 +83,16 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
       const pubkeyHex = pubkeyData.pubkey;
       const repoNormalized = pubkeyData.repo_normalized; // Get normalized repo from coordinator
 
+      // DEBUG: Log encryption parameters
+      console.log('🔐 ENCRYPTION DEBUG:', {
+        repo_input: repo.trim(),
+        repo_normalized: repoNormalized,
+        owner: accountId,
+        branch: branch.trim() || null,
+        pubkey_hex: pubkeyHex,
+        plaintext_length: plaintextSecrets.length
+      });
+
       // Encrypt secrets (simple XOR encryption - same as encrypt_secrets.py)
       const keyMaterial = hexToBytes(pubkeyHex);
       const encoder = new TextEncoder();
@@ -110,6 +120,12 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
         profile: profile.trim(),
         access: contractAccess,
       };
+
+      // DEBUG: Log what we're storing in contract
+      console.log('📝 STORING IN CONTRACT:', {
+        ...formData,
+        encrypted_array_length: encryptedArray.length
+      });
 
       await onSubmit(formData, encryptedArray);
 

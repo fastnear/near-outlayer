@@ -1,4 +1,4 @@
-# 🚀 NEAR Offshore - Deployment Guide
+# 🚀 NEAR OutLayer - Deployment Guide
 
 Complete guide to run the updated system with all new features.
 

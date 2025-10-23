@@ -379,11 +379,26 @@ pub async fn get_secrets_pubkey(
         format!("{}:{}", normalized_repo, query.owner)
     };
 
+    tracing::info!(
+        "🔐 ENCRYPTION SEED (coordinator): repo_normalized={}, owner={}, branch={:?}, seed={}",
+        normalized_repo,
+        query.owner,
+        query.branch,
+        seed
+    );
+
     // Call keystore to get pubkey
     let client = reqwest::Client::new();
-    let keystore_response = client
+    let mut request_builder = client
         .get(format!("{}/pubkey", keystore_url))
-        .query(&[("seed", &seed)])
+        .query(&[("seed", &seed)]);
+
+    // Add Authorization header if token is configured
+    if let Some(ref token) = state.config.keystore_auth_token {
+        request_builder = request_builder.header("Authorization", format!("Bearer {}", token));
+    }
+
+    let keystore_response = request_builder
         .send()
         .await
         .map_err(|e| {
@@ -408,7 +423,7 @@ pub async fn get_secrets_pubkey(
 
     #[derive(Deserialize)]
     struct KeystoreResponse {
-        public_key_hex: String,
+        pubkey: String,
     }
 
     let keystore_data: KeystoreResponse = keystore_response.json().await.map_err(|e| {
@@ -424,7 +439,7 @@ pub async fn get_secrets_pubkey(
             repo_normalized: normalized_repo,
             branch: query.branch,
             owner: query.owner,
-            pubkey: keystore_data.public_key_hex,
+            pubkey: keystore_data.pubkey,
         }),
     ))
 }

@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# NEAR Offshore - Quick Start Script
+# NEAR OutLayer - Quick Start Script
 # This script helps you restart all services with new features
 
 set -e
 
-echo "🚀 NEAR Offshore Quick Start"
+echo "🚀 NEAR OutLayer Quick Start"
 echo "=============================="
 echo ""
 

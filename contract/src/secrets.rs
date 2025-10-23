@@ -2,7 +2,7 @@ use crate::*;
 use near_sdk::env;
 
 /// Storage cost per byte in NEAR
-const STORAGE_PRICE_PER_BYTE: Balance = 10_000_000_000_000_000_000; // 0.00001 NEAR per byte
+pub const STORAGE_PRICE_PER_BYTE: Balance = 10_000_000_000_000_000_000; // 0.00001 NEAR per byte
 
 #[near_bindgen]
 impl Contract {
@@ -60,40 +60,45 @@ impl Contract {
         let required_deposit = storage_usage as u128 * STORAGE_PRICE_PER_BYTE;
         let attached_deposit = env::attached_deposit().as_yoctonear();
 
-        assert!(
-            attached_deposit >= required_deposit,
-            "Insufficient storage deposit. Required: {} yoctoNEAR, attached: {} yoctoNEAR",
-            required_deposit,
-            attached_deposit
-        );
-
         // Check if updating existing secrets
         let is_new = self.secrets_storage.get(&key).is_none();
 
         if let Some(existing) = self.secrets_storage.get(&key) {
-            // Refund old storage deposit to caller
-            log!(
-                "Updating existing secrets for {}/{:?}/{} - refunding {} yoctoNEAR",
-                repo,
-                branch,
-                profile,
-                existing.storage_deposit
+            // Updating existing: combine attached + old deposit, require only new cost
+            let total_available = attached_deposit + existing.storage_deposit;
+
+            assert!(
+                total_available >= required_deposit,
+                "Insufficient deposit for update. Required: {} yoctoNEAR, available (attached {} + old {}): {} yoctoNEAR",
+                required_deposit,
+                attached_deposit,
+                existing.storage_deposit,
+                total_available
             );
 
-            // Refund the difference if new secrets are smaller
-            if attached_deposit > required_deposit {
-                let refund = attached_deposit - required_deposit + existing.storage_deposit;
-                if refund > 0 {
-                    near_sdk::Promise::new(caller.clone()).transfer(NearToken::from_yoctonear(refund));
-                }
-            } else {
-                // Just refund old deposit
-                if existing.storage_deposit > 0 {
-                    near_sdk::Promise::new(caller.clone()).transfer(NearToken::from_yoctonear(existing.storage_deposit));
-                }
+            // Refund excess
+            let refund = total_available - required_deposit;
+            if refund > 0 {
+                near_sdk::Promise::new(caller.clone()).transfer(NearToken::from_yoctonear(refund));
+                log!(
+                    "Updating secrets: repo={}, branch={:?}, profile={}, old_deposit={}, attached={}, new_required={}, refund={}",
+                    repo, branch, profile,
+                    existing.storage_deposit,
+                    attached_deposit,
+                    required_deposit,
+                    refund
+                );
             }
         } else {
-            // New secrets - refund excess if any
+            // New secrets - just check attached deposit
+            assert!(
+                attached_deposit >= required_deposit,
+                "Insufficient storage deposit. Required: {} yoctoNEAR, attached: {} yoctoNEAR",
+                required_deposit,
+                attached_deposit
+            );
+
+            // Refund excess if any
             if attached_deposit > required_deposit {
                 let refund = attached_deposit - required_deposit;
                 near_sdk::Promise::new(caller.clone()).transfer(NearToken::from_yoctonear(refund));
@@ -221,34 +226,90 @@ impl Contract {
         encrypted_secrets: &str,
         access: &types::AccessCondition,
     ) -> u64 {
-        // Approximate storage calculation:
-        // - SecretKey: repo + branch + profile + owner
-        // - SecretProfile: encrypted_secrets + access + timestamps + deposit
-        // - User index entry: pointer in UnorderedSet (for new entries)
+        // Storage calculation:
+        // - SecretKey: repo + branch + profile + owner (Borsh serialized)
+        // - SecretProfile: encrypted_secrets + access + timestamps + deposit (Borsh serialized)
+        // - User index entry: UnorderedSet overhead (for new entries)
+        // - Base overhead: LookupMap entry overhead
 
-        let key_size = key.repo.len()
-            + key.branch.as_ref().map(|b| b.len()).unwrap_or(0)
-            + key.profile.len()
-            + key.owner.as_str().len();
+        const BASE_STORAGE_OVERHEAD: u64 = 40; // LookupMap entry overhead (key hash + pointer)
+        const INDEX_ENTRY_OVERHEAD: u64 = 64; // UnorderedSet entry overhead
 
-        let value_size = encrypted_secrets.len()
-            + 100 // Approximate size for access condition (varies)
-            + 8 + 8 + 16; // timestamps + deposit
+        // Key size (Borsh serialization adds length prefixes)
+        let key_size = (4 + key.repo.len() // String with u32 length prefix
+            + 1 + key.branch.as_ref().map(|b| 4 + b.len()).unwrap_or(0) // Option<String>
+            + 4 + key.profile.len() // String with u32 length prefix
+            + 4 + key.owner.as_str().len()) as u64; // AccountId (String with u32 length prefix)
 
-        // Add overhead for user index entry (only for new entries, but we charge upfront)
+        // Value size
+        let encrypted_size = (4 + encrypted_secrets.len()) as u64; // String with u32 length prefix
+
+        // AccessCondition size (serialize to estimate actual size)
+        let access_json = serde_json::to_string(access).unwrap_or_default();
+        let access_size = (access_json.len() + 10) as u64; // JSON + Borsh overhead
+
+        let timestamps_and_deposit_size = 8 + 8 + 16; // created_at + updated_at + storage_deposit
+
+        let value_size = encrypted_size + access_size + timestamps_and_deposit_size;
+
+        // Add overhead for user index entry (only for new entries)
         let index_overhead = if self.secrets_storage.get(key).is_none() {
-            64 // Approximate overhead for UnorderedSet entry
+            INDEX_ENTRY_OVERHEAD
         } else {
             0 // Updating existing entry, no new index entry
         };
 
-        (key_size + value_size + index_overhead) as u64
+        BASE_STORAGE_OVERHEAD + key_size + value_size + index_overhead
     }
 }
 
 // View methods
 #[near_bindgen]
 impl Contract {
+    /// Estimate storage cost for secrets (before storing)
+    ///
+    /// Returns cost in yoctoNEAR. Call this before `store_secrets` to know
+    /// the exact deposit amount required.
+    ///
+    /// # Arguments
+    /// * `repo` - Repository identifier (e.g., "github.com/owner/repo")
+    /// * `branch` - Optional branch name
+    /// * `profile` - Profile name (e.g., "default", "production")
+    /// * `owner` - Account that will own the secrets
+    /// * `encrypted_secrets_base64` - Base64-encoded encrypted secrets
+    /// * `access` - Access control rules
+    ///
+    /// # Example
+    /// ```bash
+    /// near view offchainvm.testnet estimate_storage_cost '{
+    ///   "repo": "github.com/alice/project",
+    ///   "branch": null,
+    ///   "profile": "production",
+    ///   "owner": "alice.testnet",
+    ///   "encrypted_secrets_base64": "YWJjZGVm...",
+    ///   "access": "AllowAll"
+    /// }'
+    /// ```
+    pub fn estimate_storage_cost(
+        &self,
+        repo: String,
+        branch: Option<String>,
+        profile: String,
+        owner: AccountId,
+        encrypted_secrets_base64: String,
+        access: types::AccessCondition,
+    ) -> U128 {
+        let key = SecretKey {
+            repo,
+            branch,
+            profile,
+            owner,
+        };
+
+        let storage_bytes = self.calculate_secret_storage_size(&key, &encrypted_secrets_base64, &access);
+        U128((storage_bytes as u128) * STORAGE_PRICE_PER_BYTE)
+    }
+
     /// Get secrets for a repository (for keystore worker to read)
     ///
     /// If querying with a specific branch returns None, automatically tries
@@ -268,33 +329,49 @@ impl Contract {
         };
 
         // Try with specified branch first
-        let result = self.secrets_storage.get(&key);
+        if let Some(profile) = self.secrets_storage.get(&key) {
+            return Some(SecretProfileView {
+                encrypted_secrets: profile.encrypted_secrets,
+                access: profile.access,
+                created_at: profile.created_at,
+                updated_at: profile.updated_at,
+                storage_deposit: U128(profile.storage_deposit),
+                branch: key.branch, // Return actual branch from key
+            });
+        }
 
         // If not found and branch was specified, try with branch=null (wildcard)
-        if result.is_none() && branch.is_some() {
+        if branch.is_some() {
             let wildcard_key = SecretKey {
                 repo,
                 branch: None,
                 profile,
                 owner,
             };
-            return self.secrets_storage.get(&wildcard_key).map(Into::into);
+            if let Some(profile) = self.secrets_storage.get(&wildcard_key) {
+                return Some(SecretProfileView {
+                    encrypted_secrets: profile.encrypted_secrets,
+                    access: profile.access,
+                    created_at: profile.created_at,
+                    updated_at: profile.updated_at,
+                    storage_deposit: U128(profile.storage_deposit),
+                    branch: wildcard_key.branch, // Return None (wildcard)
+                });
+            }
         }
 
-        result.map(Into::into)
+        None
     }
 
     /// List all profile names for a repository owned by caller
     pub fn list_profiles(
         &self,
-        repo: String,
-        branch: Option<String>,
-    ) -> Vec<String> {
-        let caller = env::predecessor_account_id();
-
+        _repo: String,
+        _branch: Option<String>,
+    ) -> Vec<String> {        
         // Note: This is inefficient and should be optimized with indexing in production
         // For MVP, we accept O(n) iteration
-        let mut profiles = Vec::new();
+        let profiles = Vec::new();
 
         // We can't iterate LookupMap directly, so this would require maintaining
         // a separate index. For now, return empty vector with a note.

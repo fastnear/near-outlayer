@@ -18,6 +18,7 @@ interface NearWalletContextType {
   disconnect: () => void;
   switchNetwork: (network: NetworkType) => void;
   signAndSendTransaction: (params: any) => Promise<any>;
+  viewMethod: (params: { contractId: string; method: string; args?: Record<string, unknown> }) => Promise<unknown>;
 }
 
 const NearWalletContext = createContext<NearWalletContextType | undefined>(undefined);
@@ -92,6 +93,42 @@ export function NearWalletProvider({ children }: { children: ReactNode }) {
     return await wallet.signAndSendTransaction(params);
   };
 
+  const viewMethod = async (params: { contractId: string; method: string; args?: Record<string, unknown> }) => {
+    if (!selector) throw new Error('Wallet not initialized');
+
+    // Use selector's network to make view call via RPC
+    const response = await fetch(config.rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'dontcare',
+        method: 'query',
+        params: {
+          request_type: 'call_function',
+          finality: 'final',
+          account_id: params.contractId,
+          method_name: params.method,
+          args_base64: btoa(JSON.stringify(params.args || {})),
+        },
+      }),
+    });
+
+    const data = await response.json();
+
+    if (data.error) {
+      throw new Error(data.error.message || 'View method call failed');
+    }
+
+    const resultBytes = data.result?.result;
+    if (!resultBytes || resultBytes.length === 0) {
+      return null;
+    }
+
+    const resultStr = new TextDecoder().decode(new Uint8Array(resultBytes));
+    return JSON.parse(resultStr);
+  };
+
   return (
     <NearWalletContext.Provider
       value={{
@@ -104,6 +141,7 @@ export function NearWalletProvider({ children }: { children: ReactNode }) {
         disconnect,
         switchNetwork,
         signAndSendTransaction,
+        viewMethod,
       }}
     >
       {children}

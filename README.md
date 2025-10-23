@@ -1,6 +1,6 @@
-# NEAR Offshore (OffchainVM)
+# NEAR OutLayer (OffchainVM)
 
-**Offshore execution for on-chain contracts**
+**OutLayer execution for on-chain contracts**
 
 Verifiable off-chain computation platform for NEAR smart contracts using yield/resume mechanism.
 
