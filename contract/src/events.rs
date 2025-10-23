@@ -1,7 +1,7 @@
 use crate::*;
 use near_sdk::serde_json::json;
 
-const EVENT_STANDARD: &str = "near-offshore";
+const EVENT_STANDARD: &str = "near-outlayer";
 const EVENT_STANDARD_VERSION: &str = "1.0.0";
 
 pub mod emit {

@@ -405,7 +405,7 @@ impl EventMonitor {
         let event: Value = serde_json::from_str(event_json_str).ok()?;
 
         // Check if this is our execution_requested event
-        if event.get("standard")?.as_str()? != "near-offshore" {
+        if event.get("standard")?.as_str()? != "near-outlayer" {
             return None;
         }
 

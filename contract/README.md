@@ -267,7 +267,7 @@ Emitted when user requests execution.
 
 ```json
 {
-  "standard": "near-offshore",
+  "standard": "near-outlayer",
   "version": "1.0.0",
   "event": "execution_requested",
   "data": [{
@@ -283,7 +283,7 @@ Emitted when execution is completed.
 
 ```json
 {
-  "standard": "near-offshore",
+  "standard": "near-outlayer",
   "version": "1.0.0",
   "event": "execution_completed",
   "data": [{

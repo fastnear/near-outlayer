@@ -178,20 +178,20 @@ mod tests {
     #[test]
     fn test_parse_fastnear_example() {
         assert_eq!(
-            parse_github_repo("https://github.com/fastnear/near-offshore.git").unwrap(),
-            "github.com/fastnear/near-offshore"
+            parse_github_repo("https://github.com/fastnear/near-outlayer.git").unwrap(),
+            "github.com/fastnear/near-outlayer"
         );
         assert_eq!(
-            parse_github_repo("git@github.com:fastnear/near-offshore.git").unwrap(),
-            "github.com/fastnear/near-offshore"
+            parse_github_repo("git@github.com:fastnear/near-outlayer.git").unwrap(),
+            "github.com/fastnear/near-outlayer"
         );
         assert_eq!(
-            parse_github_repo("github.com/fastnear/near-offshore").unwrap(),
-            "github.com/fastnear/near-offshore"
+            parse_github_repo("github.com/fastnear/near-outlayer").unwrap(),
+            "github.com/fastnear/near-outlayer"
         );
         assert_eq!(
-            parse_github_repo("fastnear/near-offshore").unwrap(),
-            "github.com/fastnear/near-offshore"
+            parse_github_repo("fastnear/near-outlayer").unwrap(),
+            "github.com/fastnear/near-outlayer"
         );
     }
 }

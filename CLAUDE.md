@@ -56,7 +56,7 @@ Build a production-ready MVP without TEE (Trusted Execution Environment), with a
   - `ResourceMetrics` now contains: `instructions` (fuel consumed), `time_ms` (precise timing)
   - Removed fake `memory_bytes` field
   - All logs show actual resources used
-- ✅ **Events**: execution_requested, execution_completed (standard: "near-offshore")
+- ✅ **Events**: execution_requested, execution_completed (standard: "near-outlayer")
 - ✅ **18 unit tests** - ALL PASSING (basic, admin, execution, cost calculation)
 - ✅ **Builds**: cargo near build - ~207KB WASM
 - ✅ **Configuration**: rust-toolchain.toml (1.85.0), build.sh, Cargo.toml (near-sdk 5.9.0)

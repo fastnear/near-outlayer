@@ -56,8 +56,8 @@ fn main() {
         ("git@github.com:alice/project", "github.com/alice/project"),
         ("github.com/alice/project", "github.com/alice/project"),
         ("alice/project", "github.com/alice/project"),
-        ("https://github.com/fastnear/near-offshore.git", "github.com/fastnear/near-offshore"),
-        ("fastnear/near-offshore", "github.com/fastnear/near-offshore"),
+        ("https://github.com/fastnear/near-outlayer.git", "github.com/fastnear/near-outlayer"),
+        ("fastnear/near-outlayer", "github.com/fastnear/near-outlayer"),
         ("https://gitlab.com/alice/project.git", "gitlab.com/alice/project"),
     ];
 

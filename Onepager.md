@@ -288,10 +288,11 @@ This is foundational infrastructure for the next generation of blockchain applic
 
 ## Contact
 
-**Website:** offchainvm.near
-**Docs:** docs.offchainvm.near
-**GitHub:** github.com/near-offshore
-**Twitter:** @NEAROffshore
+**Contact:** outlayer.near / outlayer.testnet
+**Website:** outlayer.fastnear.com
+**Docs:** docs.outlayer.fastnear.com
+**GitHub:** github.com/fastnear/near-outlayer
+**Twitter:** @out_layer
 
 **Let's move computation offshore, together.**
 

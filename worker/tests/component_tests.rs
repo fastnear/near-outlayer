@@ -82,7 +82,7 @@ fn test_event_json_parsing() {
     use regex::Regex;
     use serde_json::Value;
 
-    let log = r#"EVENT_JSON:{"standard":"near-offshore","version":"1.0.0","event":"execution_requested","data":[{"request_data":"{}","data_id":[1,2,3],"timestamp":123}]}"#;
+    let log = r#"EVENT_JSON:{"standard":"near-outlayer","version":"1.0.0","event":"execution_requested","data":[{"request_data":"{}","data_id":[1,2,3],"timestamp":123}]}"#;
 
     let regex = Regex::new(r"EVENT_JSON:(.*?)$").unwrap();
     let captures = regex.captures(log).unwrap();
@@ -90,7 +90,7 @@ fn test_event_json_parsing() {
 
     let event: Value = serde_json::from_str(event_json).unwrap();
 
-    assert_eq!(event["standard"], "near-offshore");
+    assert_eq!(event["standard"], "near-outlayer");
     assert_eq!(event["event"], "execution_requested");
     assert!(event["data"].is_array());
 }

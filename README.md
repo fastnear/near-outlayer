@@ -7,7 +7,7 @@ Verifiable off-chain computation platform for NEAR smart contracts using yield/r
 ## Project Structure
 
 ```
-near-offshore/
+near-outlayer/
 ├── contract/          # NEAR smart contract (offchainvm.near)
 ├── coordinator/       # Coordinator API server (Rust + Axum)
 ├── worker/           # Worker nodes (Rust + Tokio)

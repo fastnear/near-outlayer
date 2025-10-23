@@ -86,7 +86,7 @@ CREATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST $COORDINATOR_URL/tasks/cre
     "data_id": "0000000000000000000000000000000000000000000000000000000000000001",
     "code_source": {
       "type": "GitHub",
-      "repo": "https://github.com/near-offshore/get-random",
+      "repo": "https://github.com/zavodil/random-ark",
       "commit": "test",
       "build_target": "wasm32-wasip1"
     },
