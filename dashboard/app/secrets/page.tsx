@@ -7,7 +7,7 @@ import { SecretsForm } from './components/SecretsForm';
 import { SecretsList } from './components/SecretsList';
 import { UserSecret, FormData } from './components/types';
 
-const COORDINATOR_URL = 'http://localhost:8080';
+const COORDINATOR_URL = process.env.NEXT_PUBLIC_COORDINATOR_API_URL || 'http://localhost:8080';
 
 export default function SecretsPage() {
   const { accountId, isConnected, connect, signAndSendTransaction, contractId, viewMethod } = useNearWallet();
