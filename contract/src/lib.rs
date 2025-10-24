@@ -30,9 +30,6 @@ pub const MAX_INSTRUCTIONS: u64 = 100_000_000_000; // 100 billion instructions
 pub const MAX_EXECUTION_SECONDS: u64 = 60; // 60 seconds
 pub const MAX_COMPILATION_SECONDS: u64 = 300; // 5 minutes max compilation time
 
-// Extra fee for submitting large output data separately (covers storage + extra transaction)
-pub const SEPARATE_DATA_SUBMISSION_FEE: Balance = 10_000_000_000_000_000_000_000; // 0.01 NEAR
-
 #[derive(BorshSerialize, BorshStorageKey)]
 #[borsh(crate = "near_sdk::borsh")]
 enum StorageKey {

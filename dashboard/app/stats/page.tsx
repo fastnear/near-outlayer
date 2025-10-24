@@ -39,7 +39,7 @@ export default function StatsPage() {
     const near = parseFloat(yocto) / 1e24;
     // Use adaptive precision for very small values
     if (near === 0) return '0 NEAR';
-    if (near < 0.000001) return near.toExponential(2) + ' NEAR';
+    if (near < 0.000001) return near.toFixed(12) + ' NEAR';
     if (near < 0.001) return near.toFixed(9) + ' NEAR';
     return near.toFixed(6) + ' NEAR';
   };
