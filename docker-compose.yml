@@ -45,11 +45,11 @@ services:
       - "${COORDINATOR_EXTERNAL_PORT:-8080}:8080"
     volumes:
       - wasm_cache:/var/offchainvm/wasm
-    # Cross-platform host access:
-    # - Linux: requires extra_hosts mapping
-    # - macOS/Windows: host.docker.internal works natively, but extra_hosts is harmless
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    # Note: For keystore access from coordinator container:
+    # - macOS/Windows: Use KEYSTORE_BASE_URL=http://host.docker.internal:8081
+    # - Linux: Use KEYSTORE_BASE_URL=http://172.17.0.1:8081
+    #   Linux also requires UFW firewall rule:
+    #   sudo ufw allow from 172.16.0.0/12 to any port 8081 && sudo ufw reload
 
 volumes:
   postgres_data:
