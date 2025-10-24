@@ -34,7 +34,6 @@ services:
       context: ./coordinator
       dockerfile: ../docker/Dockerfile.coordinator
     container_name: offchainvm-coordinator
-    network_mode: host
     depends_on:
       postgres:
         condition: service_healthy
@@ -42,8 +41,15 @@ services:
         condition: service_healthy
     env_file:
       - ./coordinator/.env
+    ports:
+      - "${COORDINATOR_EXTERNAL_PORT:-8080}:8080"
     volumes:
       - wasm_cache:/var/offchainvm/wasm
+    # Cross-platform host access:
+    # - Linux: requires extra_hosts mapping
+    # - macOS/Windows: host.docker.internal works natively, but extra_hosts is harmless
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 volumes:
   postgres_data:
