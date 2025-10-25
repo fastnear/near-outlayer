@@ -1,6 +1,6 @@
 # NEAR OutLayer
 
-**Move your computation offshore. Keep your security on-chain.s**
+**Compute beyond the blockchain. Keep your security on-chain.**
 
 ---
 
@@ -22,33 +22,33 @@ Developers are forced to choose between:
 
 ## The Solution: NEAR OutLayer
 
-Just as businesses move assets **offshore** for efficiency while keeping control and ownership, smart contracts can now move computation **offshore** while keeping funds and security on NEAR L1.
+Smart contracts can now move computation **out of the blockchain layer** while keeping funds and security on NEAR L1.
 
 ### How It Works
 
 ```
 1. Your smart contract calls execute() → Pauses execution (yield)
-2. Computation runs offshore → Fast, cheap, unlimited power
+2. Computation runs off-chain → Fast, cheap, unlimited power
 3. Results return with proof → Contract resumes with verified results
 4. Funds never leave NEAR → Security and settlement on L1
 ```
 
-**It's like opening a Cayman Islands account for your computation** - optimize costs and efficiency offshore, but ownership and control stay with you.
+**Break out of on-chain limitations** - unlimited computation power outside the blockchain, while security stays on NEAR L1.
 
 ---
 
-## Why "Offshore"?
+## Why "OutLayer"?
 
-The metaphor is perfect:
+The name explains the concept:
 
-| Financial Offshore | NEAR OutLayer |
-|-------------------|---------------|
-| Lower taxes | Lower gas costs (100x) |
-| Efficient operations | Unlimited computation |
-| Privacy & confidentiality | Secret management (TEE) |
-| Regulatory optimization | No blockchain limits |
-| Assets still yours | Results return to your contract |
-| Ownership on home jurisdiction | Settlement on NEAR L1 |
+| On-Chain (In-Layer) | OutLayer (Out of Layer) |
+|---------------------|-------------------------|
+| High gas costs | 100x cheaper |
+| Limited computation | Unlimited power |
+| Consensus constraints | No blockchain limits |
+| Expensive operations | Run anything (ML, simulations) |
+| Everything on L1 | Results return to your contract |
+| Settlement on NEAR | Settlement on NEAR L1 |
 
 ---
 
@@ -70,7 +70,7 @@ The metaphor is perfect:
 - First call: compiles your code (3-5 min)
 - Subsequent calls: instant execution (cached)
 - Pay only for what you use
-- **"Tax haven" pricing for computation**
+- **100x cheaper than on-chain computation**
 
 ### 🌍 **No L2 Complexity**
 - No new chain to secure
@@ -114,7 +114,7 @@ The metaphor is perfect:
 
 ---
 
-## The Offshore Advantage
+## The OutLayer Advantage
 
 **Traditional Approach:**
 ```
@@ -126,7 +126,7 @@ User → Smart Contract → Try to do everything on-chain
 
 **NEAR OutLayer Approach:**
 ```
-User → Smart Contract → Call Offshore → Get results
+User → Smart Contract → Call OutLayer → Get results
         ↓                    ↓              ↓
     Stays cheap       Runs heavy      Returns verified
     Stays secure      computation     Continues execution
@@ -182,13 +182,13 @@ User → Smart Contract → Call Offshore → Get results
 
 **NEAR OutLayer is foundational infrastructure that makes the impossible possible.**
 
-Just as financial offshore zones enabled global business optimization, NEAR OutLayer enables computational optimization for the blockchain era.
+Breaking free from blockchain layer constraints enables a new generation of powerful on-chain applications.
 
 ### Today:
-Smart contracts are constrained by gas, just like businesses are constrained by high taxes.
+Smart contracts are constrained by gas and blockchain consensus limits.
 
 ### Tomorrow:
-Smart contracts move heavy computation offshore, just like businesses move assets offshore—optimizing for efficiency while maintaining control.
+Smart contracts leverage unlimited computation outside the blockchain layer while maintaining security on-chain.
 
 ### The Result:
 **A new category of blockchain applications that were theoretically possible but practically infeasible.**
@@ -263,7 +263,7 @@ vs. On-chain:
 
 ## The Tagline
 
-**"Move your computation offshore. Keep your security on-chain."**
+**"Keep your security on-chain. Scale computation off-chain — out of the blockchain layer."**
 
 ---
 
@@ -294,8 +294,8 @@ This is foundational infrastructure for the next generation of blockchain applic
 **GitHub:** github.com/fastnear/near-outlayer
 **Twitter:** @out_layer
 
-**Let's move computation offshore, together.**
+**Let's compute beyond the blockchain, together.**
 
 ---
 
-*NEAR OutLayer - The Cayman Islands for Smart Contract Computation*
+*NEAR OutLayer - Unlimited Computation for Smart Contracts*

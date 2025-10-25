@@ -217,7 +217,7 @@ export default function PlaygroundPage() {
                 onClick={() => switchNetwork('testnet')}
                 className={`px-4 py-2 rounded-md ${
                   network === 'testnet'
-                    ? 'bg-blue-600 text-white'
+                    ? 'bg-gradient-to-r from-[#c17817] to-[#d4a017] text-white'
                     : 'bg-gray-200 text-gray-700'
                 }`}
               >
@@ -227,7 +227,7 @@ export default function PlaygroundPage() {
                 onClick={() => switchNetwork('mainnet')}
                 className={`px-4 py-2 rounded-md ${
                   network === 'mainnet'
-                    ? 'bg-blue-600 text-white'
+                    ? 'bg-gradient-to-r from-[#c17817] to-[#d4a017] text-white'
                     : 'bg-gray-200 text-gray-700'
                 }`}
               >
@@ -251,7 +251,7 @@ export default function PlaygroundPage() {
                   onClick={() => applyPreset(preset.name)}
                   className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
                     selectedPreset === preset.name
-                      ? 'bg-blue-600 text-white'
+                      ? 'bg-gradient-to-r from-[#c17817] to-[#d4a017] text-white'
                       : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                   }`}
                 >
@@ -425,7 +425,7 @@ export default function PlaygroundPage() {
             <button
               onClick={handleExecute}
               disabled={loading}
-              className="w-full inline-flex justify-center items-center px-6 py-3 border border-transparent text-base font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400"
+              className="btn-primary w-full inline-flex justify-center items-center px-6 py-3 text-base font-medium rounded-md text-black disabled:bg-gray-400 disabled:text-white"
             >
               {loading ? (
                 <>
