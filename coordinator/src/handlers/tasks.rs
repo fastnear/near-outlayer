@@ -74,11 +74,14 @@ pub async fn create_task(
 
     let request_id = payload.request_id;
 
+    // Normalize repo URL to full https:// format for git clone
+    let code_source = payload.code_source.normalize();
+
     // Push to Redis queue
     let task = Task::Compile {
         request_id,
         data_id: payload.data_id.clone(),
-        code_source: payload.code_source,
+        code_source,
         resource_limits: payload.resource_limits,
         input_data: payload.input_data,
         secrets_ref: payload.secrets_ref, // Reference to contract-stored secrets

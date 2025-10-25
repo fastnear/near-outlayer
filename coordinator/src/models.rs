@@ -85,8 +85,120 @@ pub enum CodeSource {
     },
 }
 
+impl CodeSource {
+    /// Normalize repo URL to full https:// format for git clone
+    /// Examples:
+    /// - "github.com/user/repo" -> "https://github.com/user/repo"
+    /// - "https://github.com/user/repo" -> "https://github.com/user/repo" (unchanged)
+    /// - "user/repo" -> "https://github.com/user/repo"
+    pub fn normalize(mut self) -> Self {
+        match &mut self {
+            CodeSource::GitHub { repo, .. } => {
+                // Skip if already has protocol
+                if repo.starts_with("https://") || repo.starts_with("http://") {
+                    return self;
+                }
+
+                // Add https:// prefix
+                if repo.starts_with("github.com/") {
+                    *repo = format!("https://{}", repo);
+                } else if !repo.contains('/') {
+                    // Invalid format - leave as is, will fail later with better error
+                    return self;
+                } else {
+                    // Assume it's "user/repo" format
+                    *repo = format!("https://github.com/{}", repo);
+                }
+
+                self
+            }
+        }
+    }
+}
+
 fn default_build_target() -> String {
     "wasm32-wasip1".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_repo_url_with_https() {
+        let source = CodeSource::GitHub {
+            repo: "https://github.com/alice/project".to_string(),
+            commit: "main".to_string(),
+            build_target: "wasm32-wasip1".to_string(),
+        };
+        let normalized = source.normalize();
+        if let CodeSource::GitHub { repo, .. } = normalized {
+            assert_eq!(repo, "https://github.com/alice/project");
+        } else {
+            panic!("Expected GitHub variant");
+        }
+    }
+
+    #[test]
+    fn test_normalize_repo_url_with_http() {
+        let source = CodeSource::GitHub {
+            repo: "http://github.com/alice/project".to_string(),
+            commit: "main".to_string(),
+            build_target: "wasm32-wasip1".to_string(),
+        };
+        let normalized = source.normalize();
+        if let CodeSource::GitHub { repo, .. } = normalized {
+            assert_eq!(repo, "http://github.com/alice/project");
+        } else {
+            panic!("Expected GitHub variant");
+        }
+    }
+
+    #[test]
+    fn test_normalize_repo_url_github_com_prefix() {
+        let source = CodeSource::GitHub {
+            repo: "github.com/alice/project".to_string(),
+            commit: "main".to_string(),
+            build_target: "wasm32-wasip1".to_string(),
+        };
+        let normalized = source.normalize();
+        if let CodeSource::GitHub { repo, .. } = normalized {
+            assert_eq!(repo, "https://github.com/alice/project");
+        } else {
+            panic!("Expected GitHub variant");
+        }
+    }
+
+    #[test]
+    fn test_normalize_repo_url_short_format() {
+        let source = CodeSource::GitHub {
+            repo: "alice/project".to_string(),
+            commit: "main".to_string(),
+            build_target: "wasm32-wasip1".to_string(),
+        };
+        let normalized = source.normalize();
+        if let CodeSource::GitHub { repo, .. } = normalized {
+            assert_eq!(repo, "https://github.com/alice/project");
+        } else {
+            panic!("Expected GitHub variant");
+        }
+    }
+
+    #[test]
+    fn test_normalize_repo_url_invalid_format() {
+        let source = CodeSource::GitHub {
+            repo: "invalid".to_string(),
+            commit: "main".to_string(),
+            build_target: "wasm32-wasip1".to_string(),
+        };
+        let normalized = source.normalize();
+        if let CodeSource::GitHub { repo, .. } = normalized {
+            // Invalid format should remain unchanged
+            assert_eq!(repo, "invalid");
+        } else {
+            panic!("Expected GitHub variant");
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
