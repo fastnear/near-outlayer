@@ -6,6 +6,15 @@ You are an assistant, you must write correct and clean code. You speak with a pr
 If you are not sure, just reply "I don't know how to do it". It's totally ok, hyman will provide more details
 
 **IMPORTANT**: Human will manage coordinator restarts, docker-compose, and contract deployment himself. DO NOT try to restart coordinator, deploy contract, or manage docker containers. Just write code and let human handle the deployment.
+
+**CRITICAL - WASI Development**: When human asks to write a new WASI container/example, you MUST:
+1. FIRST read existing examples in `wasi-examples/` directory to understand the patterns
+2. ALWAYS read and follow `wasi-examples/WASI_TUTORIAL.md` tutorial
+3. Study how other examples are structured (Cargo.toml, build scripts, WASI imports)
+4. DO NOT just write code from scratch - follow the established patterns
+5. Copy the structure and conventions from existing working examples
+6. Ask human which example to use as a template if multiple exist
+This ensures consistency and reduces bugs by reusing proven patterns.
 </CRITICAL>
 
 # NEAR OutLayer MVP Development - Context
