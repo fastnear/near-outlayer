@@ -637,7 +637,9 @@ async fn handle_execute_job(
         };
 
         // Call keystore to decrypt secrets from contract
-        match keystore.decrypt_secrets_from_contract(repo, branch.as_deref(), &secrets_ref.profile, &secrets_ref.account_id, Some(data_id)).await {
+        // user_account_id is the account that requested execution (used for access control)
+        let caller = user_account_id.map(|s| s.as_str()).unwrap_or(&secrets_ref.account_id);
+        match keystore.decrypt_secrets_from_contract(repo, branch.as_deref(), &secrets_ref.profile, &secrets_ref.account_id, caller, Some(data_id)).await {
             Ok(secrets) => {
                 info!("✅ Secrets decrypted successfully: {} environment variables", secrets.len());
                 Some(secrets)
@@ -937,7 +939,9 @@ async fn handle_compile_task(
                 }
             };
 
-            match keystore.decrypt_secrets_from_contract(repo, branch.as_deref(), &secrets_ref.profile, &secrets_ref.account_id, Some(&request_id.to_string())).await {
+            // user_account_id is the account that requested execution (used for access control)
+            let caller = user_account_id.as_ref().map(|s| s.as_str()).unwrap_or(&secrets_ref.account_id);
+            match keystore.decrypt_secrets_from_contract(repo, branch.as_deref(), &secrets_ref.profile, &secrets_ref.account_id, caller, Some(&request_id.to_string())).await {
                 Ok(secrets) => {
                     info!("✅ Secrets decrypted successfully! {} environment variables", secrets.len());
                     Some(secrets)

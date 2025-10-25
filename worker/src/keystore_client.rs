@@ -150,9 +150,9 @@ impl KeystoreClient {
     /// Decrypt secrets from contract (new repo-based system)
     ///
     /// This method:
-    /// 1. Calls keystore with repo, branch, profile, owner
+    /// 1. Calls keystore with repo, branch, profile, owner, user_account_id
     /// 2. Keystore reads secrets from NEAR contract
-    /// 3. Keystore validates access conditions
+    /// 3. Keystore validates access conditions (using user_account_id as caller)
     /// 4. Keystore decrypts using derived key for seed (repo:owner[:branch])
     /// 5. Returns HashMap of environment variables
     ///
@@ -163,6 +163,7 @@ impl KeystoreClient {
         branch: Option<&str>,
         profile: &str,
         owner: &str,
+        user_account_id: &str,
         task_id: Option<&str>,
     ) -> Result<std::collections::HashMap<String, String>> {
         tracing::info!(
@@ -181,6 +182,7 @@ impl KeystoreClient {
             branch: Option<String>,
             profile: String,
             owner: String,
+            user_account_id: String,
             attestation: Attestation,
             task_id: Option<String>,
         }
@@ -190,6 +192,7 @@ impl KeystoreClient {
             branch: branch.map(|s| s.to_string()),
             profile: profile.to_string(),
             owner: owner.to_string(),
+            user_account_id: user_account_id.to_string(),
             attestation,
             task_id: task_id.map(|s| s.to_string()),
         };

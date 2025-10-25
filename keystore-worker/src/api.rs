@@ -74,8 +74,12 @@ pub struct DecryptRequest {
     /// Profile name (e.g., "default", "production")
     pub profile: String,
 
-    /// Owner account ID
+    /// Owner account ID (who owns the secrets)
     pub owner: String,
+
+    /// User account ID (who is requesting execution)
+    /// This is used for access control validation
+    pub user_account_id: String,
 
     /// TEE attestation proving worker identity
     pub attestation: Attestation,
@@ -208,9 +212,8 @@ async fn decrypt_handler(
             ApiError::InternalError(format!("Failed to parse access condition: {}", e))
         })?;
 
-    // TODO: Get actual caller account from attestation or request context
-    // For now, use owner as caller (self-access always allowed)
-    let caller = &req.owner;
+    // Use user_account_id (who requested execution) as caller for access control
+    let caller = &req.user_account_id;
 
     let access_granted = access_condition.validate(caller, state.near_client.as_ref().map(|c| c.as_ref())).await
         .map_err(|e| {
@@ -355,5 +358,127 @@ mod base64 {
 
     pub fn decode<T: AsRef<[u8]>>(input: T) -> Result<Vec<u8>, ::base64::DecodeError> {
         STANDARD.decode(input)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{AccessCondition, LogicOperator};
+
+    /// Test that DecryptRequest correctly includes user_account_id field
+    #[test]
+    fn test_decrypt_request_serialization() {
+        let json = r#"{
+            "repo": "github.com/user/repo",
+            "branch": "main",
+            "profile": "production",
+            "owner": "owner.testnet",
+            "user_account_id": "caller.testnet",
+            "attestation": {
+                "tee_type": "simulated",
+                "quote": "",
+                "measurements": {},
+                "timestamp": 1704067200
+            },
+            "task_id": "task123"
+        }"#;
+
+        let req: DecryptRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.repo, "github.com/user/repo");
+        assert_eq!(req.owner, "owner.testnet");
+        assert_eq!(req.user_account_id, "caller.testnet");
+    }
+
+    /// Test access control: owner != user_account_id
+    /// This simulates the scenario where:
+    /// - owner.testnet owns secrets with Whitelist access
+    /// - caller.testnet requests execution
+    /// - Access should be checked against caller.testnet, not owner.testnet
+    #[tokio::test]
+    async fn test_access_control_with_different_user() {
+        // Test Whitelist: owner not in list, but user_account_id is
+        let whitelist = AccessCondition::Whitelist {
+            accounts: vec![
+                "caller.testnet".to_string(),
+                "other.testnet".to_string(),
+            ],
+        };
+
+        // Should grant access to caller (even though owner is different)
+        assert!(whitelist.validate("caller.testnet", None).await.unwrap());
+
+        // Should deny access to owner (not in whitelist)
+        assert!(!whitelist.validate("owner.testnet", None).await.unwrap());
+    }
+
+    /// Test that Whitelist correctly allows multiple accounts
+    #[tokio::test]
+    async fn test_whitelist_multiple_accounts() {
+        let whitelist = AccessCondition::Whitelist {
+            accounts: vec![
+                "alice.testnet".to_string(),
+                "bob.testnet".to_string(),
+                "charlie.testnet".to_string(),
+            ],
+        };
+
+        assert!(whitelist.validate("alice.testnet", None).await.unwrap());
+        assert!(whitelist.validate("bob.testnet", None).await.unwrap());
+        assert!(whitelist.validate("charlie.testnet", None).await.unwrap());
+        assert!(!whitelist.validate("eve.testnet", None).await.unwrap());
+    }
+
+    /// Test AccountPattern with testnet suffix
+    #[tokio::test]
+    async fn test_account_pattern_testnet() {
+        let pattern = AccessCondition::AccountPattern {
+            pattern: r".*\.testnet$".to_string(),
+        };
+
+        assert!(pattern.validate("alice.testnet", None).await.unwrap());
+        assert!(pattern.validate("project.testnet", None).await.unwrap());
+        assert!(!pattern.validate("alice.near", None).await.unwrap());
+    }
+
+    /// Test complex Logic condition (AND + Whitelist + Pattern)
+    #[tokio::test]
+    async fn test_complex_logic_condition() {
+        let condition = AccessCondition::Logic {
+            operator: LogicOperator::And,
+            conditions: vec![
+                AccessCondition::AccountPattern {
+                    pattern: r".*\.testnet$".to_string(),
+                },
+                AccessCondition::Whitelist {
+                    accounts: vec![
+                        "alice.testnet".to_string(),
+                        "bob.testnet".to_string(),
+                    ],
+                },
+            ],
+        };
+
+        // alice.testnet: matches pattern AND in whitelist
+        assert!(condition.validate("alice.testnet", None).await.unwrap());
+
+        // bob.testnet: matches pattern AND in whitelist
+        assert!(condition.validate("bob.testnet", None).await.unwrap());
+
+        // charlie.testnet: matches pattern but NOT in whitelist
+        assert!(!condition.validate("charlie.testnet", None).await.unwrap());
+
+        // alice.near: in "whitelist" but doesn't match pattern
+        assert!(!condition.validate("alice.near", None).await.unwrap());
+    }
+
+    /// Test that AllowAll always grants access
+    #[tokio::test]
+    async fn test_allow_all() {
+        let condition = AccessCondition::AllowAll;
+
+        assert!(condition.validate("anyone.testnet", None).await.unwrap());
+        assert!(condition.validate("another.near", None).await.unwrap());
+        assert!(condition.validate("random.account", None).await.unwrap());
     }
 }
