@@ -56,8 +56,11 @@ pub enum AccessConditionV1 {
         value: NearToken,
     },
     /// Require NFT ownership
+    /// token_id: None = any token from this contract
+    /// token_id: Some("123") = specific token ID
     NftOwned {
         contract: AccountId,
+        token_id: Option<String>,
     },
 }
 

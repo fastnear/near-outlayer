@@ -62,8 +62,11 @@ pub enum AccessCondition {
         value: String, // u128 as string
     },
     /// Require NFT ownership
+    /// token_id: None = any token from this contract
+    /// token_id: Some("123") = specific token ID
     NftOwned {
         contract: String,
+        token_id: Option<String>,
     },
 }
 
@@ -220,7 +223,7 @@ impl AccessCondition {
                 Ok(granted)
             }
 
-            AccessCondition::NftOwned { contract } => {
+            AccessCondition::NftOwned { contract, token_id } => {
                 let near_client = match near_client {
                     Some(client) => client,
                     None => {
@@ -229,13 +232,14 @@ impl AccessCondition {
                     }
                 };
 
-                // Check NFT ownership
-                let granted = near_client.check_nft_ownership(contract, caller).await?;
+                // Check NFT ownership (specific token or any token)
+                let granted = near_client.check_nft_ownership(contract, caller, token_id.as_deref()).await?;
 
                 tracing::debug!(
                     condition = "NftOwned",
                     contract = %contract,
                     caller = %caller,
+                    token_id = ?token_id,
                     granted = %granted,
                     "Validated NFT ownership"
                 );

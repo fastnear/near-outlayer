@@ -177,43 +177,88 @@ impl NearClient {
             .context("Failed to parse balance as u128")
     }
 
-    /// Check if account owns any NFTs from given contract
+    /// Check if account owns NFT(s) from given contract
     ///
-    /// Calls: nft_contract.nft_tokens_for_owner({"account_id": account_id, "limit": 1})
-    /// Returns: true if account owns at least one NFT
-    pub async fn check_nft_ownership(&self, nft_contract: &str, account_id: &str) -> Result<bool> {
+    /// If token_id is Some("123"), checks ownership of that specific token
+    /// If token_id is None, checks if account owns any token from this contract
+    ///
+    /// Calls:
+    /// - token_id = Some: nft_contract.nft_token({"token_id": "123"})
+    /// - token_id = None: nft_contract.nft_tokens_for_owner({"account_id": account_id, "limit": 1})
+    pub async fn check_nft_ownership(&self, nft_contract: &str, account_id: &str, token_id: Option<&str>) -> Result<bool> {
         let nft_contract_id = AccountId::from_str(nft_contract)
             .context("Invalid NFT contract ID")?;
 
-        let args = json!({
-            "account_id": account_id,
-            "limit": 1,  // We only need to check if at least one NFT exists
-        });
+        if let Some(specific_token_id) = token_id {
+            // Check specific token ownership
+            let args = json!({
+                "token_id": specific_token_id,
+            });
 
-        let query = methods::query::RpcQueryRequest {
-            block_reference: BlockReference::latest(),
-            request: near_primitives::views::QueryRequest::CallFunction {
-                account_id: nft_contract_id,
-                method_name: "nft_tokens_for_owner".to_string(),
-                args: args.to_string().into_bytes().into(),
-            },
-        };
+            let query = methods::query::RpcQueryRequest {
+                block_reference: BlockReference::latest(),
+                request: near_primitives::views::QueryRequest::CallFunction {
+                    account_id: nft_contract_id,
+                    method_name: "nft_token".to_string(),
+                    args: args.to_string().into_bytes().into(),
+                },
+            };
 
-        let response = self
-            .rpc_client
-            .call(query)
-            .await
-            .context("Failed to query NFT ownership")?;
+            let response = self
+                .rpc_client
+                .call(query)
+                .await
+                .context("Failed to query specific NFT token")?;
 
-        let result = match response.kind {
-            QueryResponseKind::CallResult(result) => result.result,
-            _ => anyhow::bail!("Unexpected query response"),
-        };
+            let result = match response.kind {
+                QueryResponseKind::CallResult(result) => result.result,
+                _ => anyhow::bail!("Unexpected query response"),
+            };
 
-        // NFT standard returns array of tokens: [{token_id, owner_id, ...}, ...]
-        let tokens: Vec<serde_json::Value> = serde_json::from_slice(&result)
-            .context("Failed to parse NFT tokens response")?;
+            // NFT standard returns: {token_id, owner_id, ...} or null if not found
+            let token: Option<serde_json::Value> = serde_json::from_slice(&result)
+                .context("Failed to parse NFT token response")?;
 
-        Ok(!tokens.is_empty())
+            if let Some(token_data) = token {
+                // Check if owner_id matches account_id
+                if let Some(owner_id) = token_data.get("owner_id").and_then(|v| v.as_str()) {
+                    return Ok(owner_id == account_id);
+                }
+            }
+
+            Ok(false)
+        } else {
+            // Check if owns any token from this contract
+            let args = json!({
+                "account_id": account_id,
+                "limit": 1,  // We only need to check if at least one NFT exists
+            });
+
+            let query = methods::query::RpcQueryRequest {
+                block_reference: BlockReference::latest(),
+                request: near_primitives::views::QueryRequest::CallFunction {
+                    account_id: nft_contract_id,
+                    method_name: "nft_tokens_for_owner".to_string(),
+                    args: args.to_string().into_bytes().into(),
+                },
+            };
+
+            let response = self
+                .rpc_client
+                .call(query)
+                .await
+                .context("Failed to query NFT ownership")?;
+
+            let result = match response.kind {
+                QueryResponseKind::CallResult(result) => result.result,
+                _ => anyhow::bail!("Unexpected query response"),
+            };
+
+            // NFT standard returns array of tokens: [{token_id, owner_id, ...}, ...]
+            let tokens: Vec<serde_json::Value> = serde_json::from_slice(&result)
+                .context("Failed to parse NFT tokens response")?;
+
+            Ok(!tokens.is_empty())
+        }
     }
 }
