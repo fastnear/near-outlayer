@@ -37,10 +37,14 @@ sqlx migrate run --database-url postgres://postgres:postgres_password@localhost:
 DATABASE_URL=postgres://postgres:postgres_password@localhost:5432/offchainvm cargo sqlx prepare
 
 
+env SQLX_OFFLINE=true cargo build --release
+docker compose build coordinator
+
 # TESTNET
 ./scripts/run_coordinator.sh testnet
 ./scripts/run_keystore.sh testnet
-./scripts/run_worker.sh testnet
+./scripts/run_worker.sh .env.testnet.worker1
+./scripts/run_worker.sh .env.testnet.worker2
 
 # MAINNET
 ./scripts/run_coordinator.sh mainnet

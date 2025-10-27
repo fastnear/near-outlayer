@@ -202,16 +202,18 @@ pub async fn get_stats(State(state): State<AppState>) -> Result<Json<ExecutionSt
     }
 
     // Get execution stats
+    // Note: "failed" means infrastructure errors (status='failed'), not user errors
     let exec_stats: StatsRow = sqlx::query_as(
         r#"
         SELECT
             COUNT(*)::BIGINT as total,
-            COUNT(*) FILTER (WHERE success = true)::BIGINT as successful,
-            COUNT(*) FILTER (WHERE success = false)::BIGINT as failed,
-            COALESCE(SUM(instructions_used), 0)::BIGINT as total_instructions,
-            COALESCE(AVG(execution_time_ms), 0)::BIGINT as avg_time_ms,
-            COUNT(DISTINCT user_account_id)::BIGINT as unique_users
-        FROM execution_history
+            COUNT(*) FILTER (WHERE eh.success = true)::BIGINT as successful,
+            COUNT(*) FILTER (WHERE j.status = 'failed')::BIGINT as failed,
+            COALESCE(SUM(eh.instructions_used), 0)::BIGINT as total_instructions,
+            COALESCE(AVG(eh.execution_time_ms), 0)::BIGINT as avg_time_ms,
+            COUNT(DISTINCT eh.user_account_id)::BIGINT as unique_users
+        FROM execution_history eh
+        LEFT JOIN jobs j ON eh.job_id = j.job_id
         "#
     )
     .fetch_one(&state.db)
@@ -417,13 +419,14 @@ pub async fn get_popular_repos(
     let repos: Vec<PopularRepoRow> = sqlx::query_as(
         r#"
         SELECT
-            github_repo,
+            eh.github_repo,
             COUNT(*)::BIGINT as total_executions,
-            COUNT(*) FILTER (WHERE success = true)::BIGINT as successful_executions,
-            (ARRAY_AGG(github_commit ORDER BY created_at DESC))[1] as last_commit
-        FROM execution_history
-        WHERE github_repo IS NOT NULL
-        GROUP BY github_repo
+            COUNT(*) FILTER (WHERE eh.success = true)::BIGINT as successful_executions,
+            (ARRAY_AGG(eh.github_commit ORDER BY eh.created_at DESC))[1] as last_commit
+        FROM execution_history eh
+        LEFT JOIN jobs j ON eh.job_id = j.job_id
+        WHERE eh.github_repo IS NOT NULL
+        GROUP BY eh.github_repo
         ORDER BY total_executions DESC
         LIMIT 10
         "#
