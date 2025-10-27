@@ -17,8 +17,15 @@ if [ ! -f "$COMPOSE_FILE" ]; then
     exit 1
 fi
 
+# Detect docker-compose command (old vs new)
+if command -v docker-compose &> /dev/null; then
+    DOCKER_COMPOSE="docker-compose"
+else
+    DOCKER_COMPOSE="docker compose"
+fi
+
 echo "Starting coordinator for $NETWORK..."
-docker-compose -f "$COMPOSE_FILE" up -d
+$DOCKER_COMPOSE -f "$COMPOSE_FILE" up -d
 
 echo ""
 echo "Coordinator started!"
@@ -33,5 +40,5 @@ else
     echo "Coordinator API: http://localhost:8180"
 fi
 echo ""
-echo "Check logs: docker-compose -f $COMPOSE_FILE logs -f"
-echo "Stop: docker-compose -f $COMPOSE_FILE down"
+echo "Check logs: $DOCKER_COMPOSE -f $COMPOSE_FILE logs -f"
+echo "Stop: $DOCKER_COMPOSE -f $COMPOSE_FILE down"
