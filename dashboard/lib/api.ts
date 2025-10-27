@@ -44,7 +44,12 @@ export interface JobHistoryEntry {
 export interface ExecutionStats {
   total_executions: number;
   successful_executions: number;
-  failed_executions: number;
+  failed_executions: number; // Infrastructure errors only
+  access_denied_executions: number;
+  compilation_failed_executions: number;
+  execution_failed_executions: number;
+  insufficient_payment_executions: number;
+  custom_executions: number;
   total_instructions_used: number;
   average_execution_time_ms: number;
   total_near_paid_yocto: string;
@@ -73,6 +78,11 @@ export interface PopularRepo {
   total_executions: number;
   successful_executions: number;
   failed_executions: number; // Infrastructure errors only
+  access_denied_executions: number;
+  compilation_failed_executions: number;
+  execution_failed_executions: number;
+  insufficient_payment_executions: number;
+  custom_executions: number;
   last_commit: string | null;
 }
 

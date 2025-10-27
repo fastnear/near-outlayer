@@ -182,7 +182,12 @@ pub async fn list_jobs(
 pub struct ExecutionStats {
     pub total_executions: i64,
     pub successful_executions: i64,
-    pub failed_executions: i64,
+    pub failed_executions: i64, // Infrastructure errors only
+    pub access_denied_executions: i64,
+    pub compilation_failed_executions: i64,
+    pub execution_failed_executions: i64,
+    pub insufficient_payment_executions: i64,
+    pub custom_executions: i64,
     pub total_instructions_used: i64,
     pub average_execution_time_ms: i64,
     pub total_near_paid_yocto: String,
@@ -196,19 +201,28 @@ pub async fn get_stats(State(state): State<AppState>) -> Result<Json<ExecutionSt
         total: i64,
         successful: i64,
         failed: i64,
+        access_denied: i64,
+        compilation_failed: i64,
+        execution_failed: i64,
+        insufficient_payment: i64,
+        custom: i64,
         total_instructions: i64,
         avg_time_ms: i64,
         unique_users: i64,
     }
 
-    // Get execution stats
-    // Note: "failed" means infrastructure errors (status='failed'), not user errors
+    // Get execution stats with breakdown by error category
     let exec_stats: StatsRow = sqlx::query_as(
         r#"
         SELECT
             COUNT(*)::BIGINT as total,
             COUNT(*) FILTER (WHERE eh.success = true)::BIGINT as successful,
             COUNT(*) FILTER (WHERE j.status = 'failed')::BIGINT as failed,
+            COUNT(*) FILTER (WHERE j.status = 'access_denied')::BIGINT as access_denied,
+            COUNT(*) FILTER (WHERE j.status = 'compilation_failed')::BIGINT as compilation_failed,
+            COUNT(*) FILTER (WHERE j.status = 'execution_failed')::BIGINT as execution_failed,
+            COUNT(*) FILTER (WHERE j.status = 'insufficient_payment')::BIGINT as insufficient_payment,
+            COUNT(*) FILTER (WHERE j.status = 'custom')::BIGINT as custom,
             COALESCE(SUM(eh.instructions_used), 0)::BIGINT as total_instructions,
             COALESCE(AVG(eh.execution_time_ms), 0)::BIGINT as avg_time_ms,
             COUNT(DISTINCT eh.user_account_id)::BIGINT as unique_users
@@ -269,6 +283,11 @@ pub async fn get_stats(State(state): State<AppState>) -> Result<Json<ExecutionSt
         total_executions: exec_stats.total,
         successful_executions: exec_stats.successful,
         failed_executions: exec_stats.failed,
+        access_denied_executions: exec_stats.access_denied,
+        compilation_failed_executions: exec_stats.compilation_failed,
+        execution_failed_executions: exec_stats.execution_failed,
+        insufficient_payment_executions: exec_stats.insufficient_payment,
+        custom_executions: exec_stats.custom,
         total_instructions_used: exec_stats.total_instructions,
         average_execution_time_ms: exec_stats.avg_time_ms,
         total_near_paid_yocto: total_near.total,
@@ -403,6 +422,11 @@ pub struct PopularRepo {
     pub total_executions: i64,
     pub successful_executions: i64,
     pub failed_executions: i64, // Infrastructure errors only
+    pub access_denied_executions: i64,
+    pub compilation_failed_executions: i64,
+    pub execution_failed_executions: i64,
+    pub insufficient_payment_executions: i64,
+    pub custom_executions: i64,
     pub last_commit: Option<String>,
 }
 
@@ -412,6 +436,11 @@ struct PopularRepoRow {
     total_executions: i64,
     successful_executions: i64,
     failed_executions: i64,
+    access_denied_executions: i64,
+    compilation_failed_executions: i64,
+    execution_failed_executions: i64,
+    insufficient_payment_executions: i64,
+    custom_executions: i64,
     last_commit: Option<String>,
 }
 
@@ -425,6 +454,11 @@ pub async fn get_popular_repos(
             COUNT(*)::BIGINT as total_executions,
             COUNT(*) FILTER (WHERE eh.success = true)::BIGINT as successful_executions,
             COUNT(*) FILTER (WHERE j.status = 'failed')::BIGINT as failed_executions,
+            COUNT(*) FILTER (WHERE j.status = 'access_denied')::BIGINT as access_denied_executions,
+            COUNT(*) FILTER (WHERE j.status = 'compilation_failed')::BIGINT as compilation_failed_executions,
+            COUNT(*) FILTER (WHERE j.status = 'execution_failed')::BIGINT as execution_failed_executions,
+            COUNT(*) FILTER (WHERE j.status = 'insufficient_payment')::BIGINT as insufficient_payment_executions,
+            COUNT(*) FILTER (WHERE j.status = 'custom')::BIGINT as custom_executions,
             (ARRAY_AGG(eh.github_commit ORDER BY eh.created_at DESC))[1] as last_commit
         FROM execution_history eh
         LEFT JOIN jobs j ON eh.job_id = j.job_id
@@ -448,6 +482,11 @@ pub async fn get_popular_repos(
             total_executions: r.total_executions,
             successful_executions: r.successful_executions,
             failed_executions: r.failed_executions,
+            access_denied_executions: r.access_denied_executions,
+            compilation_failed_executions: r.compilation_failed_executions,
+            execution_failed_executions: r.execution_failed_executions,
+            insufficient_payment_executions: r.insufficient_payment_executions,
+            custom_executions: r.custom_executions,
             last_commit: r.last_commit,
         })
         .collect();
