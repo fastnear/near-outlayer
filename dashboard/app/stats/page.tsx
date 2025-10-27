@@ -81,7 +81,7 @@ export default function StatsPage() {
         <div className="sm:flex-auto">
           <h1 className="text-3xl font-bold text-gray-900">System Statistics</h1>
           <p className="mt-2 text-sm text-gray-700">
-            Real-time metrics from the OffchainVM platform
+            Real-time metrics from the OutLayer platform
           </p>
         </div>
       </div>
