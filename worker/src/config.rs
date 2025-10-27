@@ -41,6 +41,11 @@ pub struct Config {
     pub keystore_base_url: Option<String>,
     pub keystore_auth_token: Option<String>,
     pub tee_mode: String,
+
+    // Debug logging (admin only - stores raw stderr/stdout in system_hidden_logs table)
+    // WARNING: These logs should NEVER be exposed via public API for security reasons
+    // Set to false in production to disable raw log storage
+    pub save_system_hidden_logs_to_debug: bool,
 }
 
 impl Config {
@@ -181,6 +186,14 @@ impl Config {
             anyhow::bail!("Invalid TEE_MODE: must be one of: sgx, sev, simulated, none");
         }
 
+        // Debug logging flag (default: true = enabled)
+        // WARNING: Stores raw stderr/stdout in system_hidden_logs table
+        // Set SAVE_SYSTEM_HIDDEN_LOGS_TO_DEBUG=false in production to disable
+        let save_system_hidden_logs_to_debug = env::var("SAVE_SYSTEM_HIDDEN_LOGS_TO_DEBUG")
+            .unwrap_or_else(|_| "true".to_string())
+            .parse::<bool>()
+            .unwrap_or(true);
+
         Ok(Self {
             api_base_url,
             api_auth_token,
@@ -205,6 +218,7 @@ impl Config {
             keystore_base_url,
             keystore_auth_token,
             tee_mode,
+            save_system_hidden_logs_to_debug,
         })
     }
 
@@ -291,6 +305,7 @@ mod tests {
             keystore_base_url: None,
             keystore_auth_token: None,
             tee_mode: "none".to_string(),
+            save_system_hidden_logs_to_debug: true, // Default: enabled for debugging
         }
     }
 }

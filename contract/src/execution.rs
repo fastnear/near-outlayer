@@ -324,6 +324,9 @@ impl Contract {
 
                         self.total_fees_collected += self.base_fee;
 
+                        // Log payment charged in easy-to-parse format for worker (only base fee charged on failure)
+                        log!("[[yNEAR charged: \"{}\"]]", self.base_fee);
+
                         // Get error message for event and panic
                         let error_msg = exec_response.error.unwrap_or("Unknown error".to_string());
 

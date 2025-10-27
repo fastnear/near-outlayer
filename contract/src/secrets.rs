@@ -90,7 +90,7 @@ impl Contract {
                 );
             }
         } else {
-            // New secrets - just check attached deposit
+            // Check attached deposit
             assert!(
                 attached_deposit >= required_deposit,
                 "Insufficient storage deposit. Required: {} yoctoNEAR, attached: {} yoctoNEAR",

@@ -150,6 +150,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/secrets/pubkey", get(handlers::github::get_secrets_pubkey))
         .route("/health", get(|| async { "OK" }));
 
+    // Build internal routes (no auth - for worker communication only)
+    // These endpoints are NOT exposed externally, workers use internal network
+    let internal = Router::new()
+        .route("/internal/system-logs", post(handlers::internal::store_system_log))
+        .with_state(state.db.clone());
+
+    // Build admin routes (server-side only - NOT exposed via public API)
+    // Access these via ssh/localhost only, not through public endpoint
+    let admin = Router::new()
+        .route("/admin/system-logs/:request_id", get(handlers::internal::get_system_logs))
+        .with_state(state.db.clone());
+
     // Configure CORS with allowed origins from config
     let cors = CorsLayer::new()
         .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
@@ -165,6 +177,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         .merge(protected)
         .merge(public)
+        .merge(internal)
+        .merge(admin)
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);

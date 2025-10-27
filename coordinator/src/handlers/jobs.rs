@@ -218,28 +218,42 @@ pub async fn complete_job(
     Json(payload): Json<CompleteJobRequest>,
 ) -> StatusCode {
     debug!(
-        "Completing job {}: success={} time_ms={}",
-        payload.job_id, payload.success, payload.time_ms
+        "Completing job {}: success={} time_ms={} error_category={:?}",
+        payload.job_id, payload.success, payload.time_ms, payload.error_category
     );
 
+    // Determine status based on success flag and error category
     let status = if payload.success {
         "completed"
     } else {
-        "failed"
+        // Use error_category if provided, otherwise default to "failed"
+        payload.error_category
+            .as_ref()
+            .map(|c| c.as_str())
+            .unwrap_or("failed")
     };
 
-    // Update job status
+    // Error details (if failure)
+    let error_details = if !payload.success {
+        payload.error.as_deref()
+    } else {
+        None
+    };
+
+    // Update job status with error details
     let update_result = sqlx::query!(
         r#"
         UPDATE jobs
         SET status = $1,
             wasm_checksum = $2,
+            error_details = $3,
             completed_at = NOW(),
             updated_at = NOW()
-        WHERE job_id = $3
+        WHERE job_id = $4
         "#,
         status,
         payload.wasm_checksum,
+        error_details,
         payload.job_id
     )
     .execute(&state.db)

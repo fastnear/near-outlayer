@@ -24,6 +24,8 @@ export interface JobHistoryEntry {
   data_id: string | null;
   worker_id: string;
   success: boolean;
+  status: string | null; // job status (completed, failed, access_denied, etc.)
+  error_details: string | null; // detailed error message
   job_type: string | null;
   execution_time_ms: number | null;
   compile_time_ms: number | null;

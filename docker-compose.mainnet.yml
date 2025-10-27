@@ -1,0 +1,58 @@
+services:
+  postgres:
+    image: postgres:14-alpine
+    container_name: offchainvm-postgres-mainnet
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: offchainvm
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - postgres_data_mainnet:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: offchainvm-redis-mainnet
+    command: redis-server --requirepass ${REDIS_PASSWORD:-redis123}
+    ports:
+      - "127.0.0.1:6380:6379"
+    volumes:
+      - redis_data_mainnet:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--pass", "${REDIS_PASSWORD:-redis123}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  coordinator:
+    build:
+      context: ./coordinator
+      dockerfile: ../docker/Dockerfile.coordinator
+    container_name: offchainvm-coordinator-mainnet
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - ./coordinator/.env
+    ports:
+      - "8180:8080"
+    volumes:
+      - wasm_cache_mainnet:/var/offchainvm/wasm
+    # Note: For keystore access from coordinator container:
+    # - macOS/Windows: Use KEYSTORE_BASE_URL=http://host.docker.internal:8181
+    # - Linux: Use KEYSTORE_BASE_URL=http://172.17.0.1:8181
+    #   Linux also requires UFW firewall rule:
+    #   sudo ufw allow from 172.16.0.0/12 to any port 8181 && sudo ufw reload
+
+volumes:
+  postgres_data_mainnet:
+  redis_data_mainnet:
+  wasm_cache_mainnet:

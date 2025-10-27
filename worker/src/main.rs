@@ -275,6 +275,8 @@ async fn worker_iteration(
                     &code_source,
                     pricing,
                     near_payment_yocto.as_ref(),
+                    request_id,
+                    config,
                 )
                 .await {
                     Ok((checksum, wasm_bytes, compile_time_ms, created_at)) => {
@@ -285,7 +287,8 @@ async fn worker_iteration(
                         // Compilation failed - notify contract
                         error!("❌ Compilation failed, notifying contract: {}", e);
 
-                        let error_message = format!("Compilation failed: {}", e);
+                        // e.to_string() already includes "Compilation failed: " prefix from CompilationError::Display
+                        let error_message = e.to_string();
                         let execution_result = ExecutionResult {
                             success: false,
                             output: None,
@@ -391,8 +394,10 @@ async fn handle_compile_job(
     code_source: &CodeSource,
     pricing: &api_client::PricingConfig,
     user_payment: Option<&String>,
+    request_id: u64,
+    config: &Config,
 ) -> Result<(String, Vec<u8>, u64, Option<String>)> {
-    info!("🔨 Starting compilation job_id={}", job.job_id);
+    info!("🔨 Starting compilation job_id={} request_id={}", job.job_id, request_id);
 
     // Validate compilation budget
     if let Some(payment_str) = user_payment {
@@ -428,7 +433,7 @@ async fn handle_compile_job(
 
             // Report budget error to coordinator
             if let Err(e) = api_client
-                .complete_job(job.job_id, false, None, Some(error_msg.clone()), 0, 0, None, None, None)
+                .complete_job(job.job_id, false, None, Some(error_msg.clone()), 0, 0, None, None, None, Some(api_client::JobStatus::InsufficientPayment))
                 .await
             {
                 warn!("⚠️ Failed to report budget error: {}", e);
@@ -492,6 +497,7 @@ async fn handle_compile_job(
                     Some(checksum.clone()),
                     None, // No actual_cost for compile jobs
                     Some(compile_cost_yocto.to_string()), // Send compile cost
+                    None, // No error category for success
                 )
                 .await
             {
@@ -502,10 +508,33 @@ async fn handle_compile_job(
             Ok((checksum, wasm_bytes, compile_time_ms, created_at))
         }
         Err(e) => {
-            let error_msg = format!("Compilation failed: {}", e);
-            warn!("❌ {}", error_msg);
+            let error_msg = e.to_string();
+            warn!("❌ Compilation failed: {}", error_msg);
 
-            // Report failure to coordinator
+            // Check if this is a CompilationError with raw logs
+            if let Some(comp_err) = e.downcast_ref::<compiler::CompilationError>() {
+                // Store raw logs for admin debugging ONLY if enabled
+                // WARNING: system_hidden_logs table should NEVER be exposed via public API
+                if config.save_system_hidden_logs_to_debug {
+                    if let Err(log_err) = api_client
+                        .store_system_log(
+                            request_id,
+                            Some(job.job_id),
+                            "compilation",
+                            Some(comp_err.stderr.clone()),
+                            Some(comp_err.stdout.clone()),
+                            comp_err.exit_code,
+                            None,
+                        )
+                        .await
+                    {
+                        warn!("⚠️ Failed to store compilation logs: {}", log_err);
+                    }
+                }
+            }
+
+            // Report failure to coordinator with detailed user-facing error message
+            // The error_msg already contains safe, user-facing description from classify_compilation_error()
             if let Err(report_err) = api_client
                 .complete_job(
                     job.job_id,
@@ -517,6 +546,7 @@ async fn handle_compile_job(
                     None,
                     None,
                     None,
+                    Some(api_client::JobStatus::CompilationFailed),
                 )
                 .await
             {
@@ -566,7 +596,7 @@ async fn handle_execute_job(
                 Err(e) => {
                     let error_msg = format!("Failed to check WASM existence: {}", e);
                     error!("❌ {}", error_msg);
-                    api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None).await?;
+                    api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed)).await?;
                     return Ok(());
                 }
             };
@@ -576,7 +606,7 @@ async fn handle_execute_job(
                 Err(e) => {
                     let error_msg = format!("Failed to download WASM: {}", e);
                     error!("❌ {}", error_msg);
-                    api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None).await?;
+                    api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed)).await?;
                     return Ok(());
                 }
             };
@@ -591,7 +621,7 @@ async fn handle_execute_job(
             Err(e) => {
                 let error_msg = format!("Failed to check WASM existence: {}", e);
                 error!("❌ {}", error_msg);
-                api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None).await?;
+                api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed)).await?;
                 return Ok(());
             }
         };
@@ -601,7 +631,7 @@ async fn handle_execute_job(
             Err(e) => {
                 let error_msg = format!("Failed to download WASM: {}", e);
                 error!("❌ {}", error_msg);
-                api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None).await?;
+                api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed)).await?;
                 return Ok(());
             }
         };
@@ -645,8 +675,18 @@ async fn handle_execute_job(
                 Some(secrets)
             }
             Err(e) => {
-                let error_msg = format!("Failed to decrypt repo-based secrets: {}", e);
-                error!("❌ {}", error_msg);
+                // Error message already user-friendly from keystore_client
+                let error_msg = e.to_string();
+                error!("❌ Secrets decryption failed: {}", error_msg);
+
+                // Determine error category based on error message
+                let error_category = if error_msg.contains("Access") && error_msg.contains("denied") {
+                    api_client::JobStatus::AccessDenied
+                } else if error_msg.contains("not found") || error_msg.contains("Invalid secrets format") {
+                    api_client::JobStatus::Custom // Secrets not found or invalid format - user configuration issue
+                } else {
+                    api_client::JobStatus::Failed // Generic secret error - infrastructure issue
+                };
 
                 // Send error to NEAR contract
                 let error_result = ExecutionResult {
@@ -659,14 +699,37 @@ async fn handle_execute_job(
                     compilation_note: None,
                 };
 
-                match near_client.submit_execution_result(request_id, &error_result).await {
-                    Ok(_) => info!("✅ Error reported to NEAR contract"),
-                    Err(e) => error!("❌ Failed to report error to NEAR: {}", e),
-                }
+                // Extract actual cost from contract logs (base_fee on failure)
+                let actual_cost = match near_client.submit_execution_result(request_id, &error_result).await {
+                    Ok((tx_hash, outcome)) => {
+                        info!("✅ Failure reported to NEAR contract (contract panicked as expected): tx_hash={}", tx_hash);
+                        let cost = NearClient::extract_payment_from_logs(&outcome);
+                        if cost > 0 {
+                            info!("💰 Extracted cost from contract: {} yoctoNEAR ({:.6} NEAR)",
+                                cost, cost as f64 / 1e24);
+                        }
+                        cost
+                    }
+                    Err(e) => {
+                        error!("❌ Failed to report failure to NEAR: {}", e);
+                        0
+                    }
+                };
 
-                // Fail the job in coordinator
+                // Fail the job in coordinator with actual cost
                 api_client
-                    .complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None)
+                    .complete_job(
+                        job.job_id,
+                        false,
+                        None,
+                        Some(error_msg),
+                        0,
+                        0,
+                        None,
+                        if actual_cost > 0 { Some(actual_cost.to_string()) } else { None },
+                        None,
+                        Some(error_category)
+                    )
                     .await?;
                 return Ok(());
             }
@@ -729,7 +792,13 @@ async fn handle_execute_job(
             // Report to coordinator (can wait, non-critical)
             match near_result {
                 Ok((tx_hash, outcome)) => {
-                    info!("✅ Result submitted to NEAR: tx_hash={}", tx_hash);
+                    // Check if contract panicked (shouldn't happen for success=true!)
+                    if matches!(outcome.status, near_primitives::views::FinalExecutionStatus::Failure(_)) {
+                        error!("⚠️  WARNING: Contract panicked unexpectedly on successful execution! tx_hash={}", tx_hash);
+                        error!("    This should NOT happen - contract should only panic on failures!");
+                    } else {
+                        info!("✅ Result submitted to NEAR successfully: tx_hash={}", tx_hash);
+                    }
 
                     // Extract actual cost from contract logs
                     let actual_cost = NearClient::extract_payment_from_logs(&outcome);
@@ -750,6 +819,7 @@ async fn handle_execute_job(
                             None,
                             if actual_cost > 0 { Some(actual_cost.to_string()) } else { None },
                             None, // No compile_cost for execute jobs
+                            None, // No error category for success
                         )
                         .await
                     {
@@ -773,6 +843,7 @@ async fn handle_execute_job(
                             None,
                             None,
                             None,
+                            Some(api_client::JobStatus::Failed), // Infrastructure error - can't reach NEAR
                         )
                         .await
                     {
@@ -797,10 +868,24 @@ async fn handle_execute_job(
                 compilation_note: None,
             };
 
-            // Submit error to NEAR contract (critical path)
-            let near_result = near_client.submit_execution_result(request_id, &result).await;
+            // Submit error to NEAR contract (critical path) and extract actual cost
+            let actual_cost = match near_client.submit_execution_result(request_id, &result).await {
+                Ok((tx_hash, outcome)) => {
+                    info!("✅ Failure reported to NEAR contract (contract panicked as expected): tx_hash={}", tx_hash);
+                    let cost = NearClient::extract_payment_from_logs(&outcome);
+                    if cost > 0 {
+                        info!("💰 Extracted cost from contract: {} yoctoNEAR ({:.6} NEAR)",
+                            cost, cost as f64 / 1e24);
+                    }
+                    cost
+                }
+                Err(submit_err) => {
+                    error!("❌ Failed to report failure to NEAR: {}", submit_err);
+                    0
+                }
+            };
 
-            // Report to coordinator (non-critical)
+            // Report to coordinator with actual cost (non-critical)
             if let Err(report_err) = api_client
                 .complete_job(
                     job.job_id,
@@ -810,22 +895,13 @@ async fn handle_execute_job(
                     0,
                     0,
                     None,
+                    if actual_cost > 0 { Some(actual_cost.to_string()) } else { None },
                     None,
-                    None,
+                    Some(api_client::JobStatus::ExecutionFailed), // WASM execution error (panic, trap, timeout)
                 )
                 .await
             {
                 warn!("⚠️ Failed to report execute job failure: {}", report_err);
-            }
-
-            // Check if NEAR submission succeeded
-            match near_result {
-                Ok((tx_hash, _outcome)) => {
-                    info!("✅ Error submitted to NEAR: tx_hash={}", tx_hash);
-                }
-                Err(submit_err) => {
-                    error!("❌ Failed to submit error to NEAR: {}", submit_err);
-                }
             }
 
             return Err(e);
@@ -865,7 +941,8 @@ async fn handle_compile_task(
             checksum
         }
         Err(e) => {
-            let error_msg = format!("Compilation failed: {}", e);
+            // e.to_string() already includes "Compilation failed: " prefix from CompilationError::Display
+            let error_msg = e.to_string();
             warn!("❌ {}", error_msg);
 
             // Create error result to submit to NEAR
@@ -947,8 +1024,9 @@ async fn handle_compile_task(
                     Some(secrets)
                 }
                 Err(e) => {
-                    let error_msg = format!("Failed to decrypt repo-based secrets: {}", e);
-                    warn!("❌ {}", error_msg);
+                    // Error message already user-friendly from keystore_client
+                    let error_msg = e.to_string();
+                    warn!("❌ Secrets decryption failed: {}", error_msg);
                     api_client.fail_task(request_id, error_msg).await?;
                     return Ok(());
                 }

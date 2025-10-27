@@ -221,11 +221,38 @@ impl KeystoreClient {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "Keystore decrypt request failed: {} - {}",
-                status,
-                error_text
-            );
+
+            // Parse user-friendly error message
+            let user_message = if status == 400 {
+                // Bad request - usually "Secrets not found"
+                if error_text.contains("not found") {
+                    "Secrets not found. Please check that secrets exist for this repository, branch, and profile.".to_string()
+                } else {
+                    "Invalid secrets request. Please check your secrets configuration.".to_string()
+                }
+            } else if status == 401 {
+                // Access denied - parse error details
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&error_text) {
+                    if let Some(error) = json.get("error").and_then(|e| e.as_str()) {
+                        if error.contains("Access denied") {
+                            "Access to secrets denied. You do not have permission to use these secrets. Check the access conditions configured by the secret owner.".to_string()
+                        } else {
+                            format!("Secret access error: {}", error)
+                        }
+                    } else {
+                        "Access to secrets denied. Check access conditions.".to_string()
+                    }
+                } else {
+                    "Access to secrets denied. Check access conditions.".to_string()
+                }
+            } else if status == 404 {
+                "Secrets not found. The specified secrets do not exist or have been deleted.".to_string()
+            } else {
+                // Generic error - don't expose technical details
+                "Failed to decrypt secrets. Please check your secrets configuration.".to_string()
+            };
+
+            anyhow::bail!("{}", user_message);
         }
 
         let decrypt_response: DecryptResponse = response
@@ -246,10 +273,10 @@ impl KeystoreClient {
 
         // Parse JSON to HashMap
         let plaintext_str = String::from_utf8(plaintext)
-            .context("Decrypted secrets are not valid UTF-8")?;
+            .context("Invalid secrets format: not valid UTF-8 text")?;
 
         let env_vars: std::collections::HashMap<String, String> = serde_json::from_str(&plaintext_str)
-            .context("Failed to parse decrypted secrets as JSON object")?;
+            .context("Invalid secrets format: must be a JSON object with string key-value pairs")?;
 
         tracing::debug!(
             repo = %repo,

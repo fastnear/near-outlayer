@@ -12,6 +12,37 @@ pub struct PricingConfig {
     pub max_execution_seconds: u64,      // Hard cap on execution time
 }
 
+/// Job status enumeration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum JobStatus {
+    Pending,              // Waiting to be picked up by worker
+    InProgress,           // Currently being processed
+    Completed,            // Successfully completed
+    Failed,               // Technical/infrastructure error
+    CompilationFailed,    // Compilation error (repo doesn't exist, syntax error, build failed)
+    ExecutionFailed,      // WASM execution error (panic, trap, timeout)
+    AccessDenied,         // Access denied to secrets
+    InsufficientPayment,  // Not enough payment for requested resources
+    Custom,               // Custom error (see error_details)
+}
+
+impl JobStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            JobStatus::Pending => "pending",
+            JobStatus::InProgress => "in_progress",
+            JobStatus::Completed => "completed",
+            JobStatus::Failed => "failed",
+            JobStatus::CompilationFailed => "compilation_failed",
+            JobStatus::ExecutionFailed => "execution_failed",
+            JobStatus::AccessDenied => "access_denied",
+            JobStatus::InsufficientPayment => "insufficient_payment",
+            JobStatus::Custom => "custom",
+        }
+    }
+}
+
 /// Response format for execution output
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub enum ResponseFormat {
@@ -252,6 +283,9 @@ pub struct CompleteJobRequest {
     pub actual_cost_yocto: Option<String>,
     #[serde(default)]
     pub compile_cost_yocto: Option<String>,
+    /// Error category for better failure classification (optional, only when success=false)
+    #[serde(default)]
+    pub error_category: Option<JobStatus>,
 }
 
 /// Legacy: Complete task request
@@ -343,4 +377,34 @@ pub struct CreateTaskRequest {
 pub struct CreateTaskResponse {
     pub request_id: i64,
     pub created: bool,
+}
+
+/// System hidden log entry (for admin debugging only - raw stderr/stdout/errors)
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SystemHiddenLog {
+    pub id: i64,
+    pub request_id: i64,
+    pub job_id: Option<i64>,
+    pub log_type: String, // 'compilation' or 'execution'
+    pub stderr: Option<String>,
+    pub stdout: Option<String>,
+    pub exit_code: Option<i32>,
+    pub execution_error: Option<String>,
+    pub created_at: String,
+}
+
+/// Request to store system hidden logs (from worker)
+#[derive(Debug, Deserialize)]
+pub struct StoreSystemLogRequest {
+    pub request_id: i64,
+    pub job_id: Option<i64>,
+    pub log_type: String, // 'compilation' or 'execution'
+    #[serde(default)]
+    pub stderr: Option<String>,
+    #[serde(default)]
+    pub stdout: Option<String>,
+    #[serde(default)]
+    pub exit_code: Option<i32>,
+    #[serde(default)]
+    pub execution_error: Option<String>,
 }

@@ -60,6 +60,8 @@ pub struct JobHistoryEntry {
     pub data_id: Option<String>,
     pub worker_id: String,
     pub success: bool,
+    pub status: Option<String>, // actual job status from jobs table
+    pub error_details: Option<String>, // detailed error message
     pub job_type: Option<String>,
     pub execution_time_ms: Option<i64>,
     pub compile_time_ms: Option<i64>,
@@ -98,28 +100,31 @@ pub async fn list_jobs(
         sqlx::query_as(
             r#"
             SELECT
-                id,
-                job_id,
-                request_id,
-                data_id,
-                worker_id,
-                success,
-                job_type,
-                execution_time_ms,
-                compile_time_ms,
-                instructions_used,
-                resolve_tx_id,
-                user_account_id,
-                near_payment_yocto,
-                actual_cost_yocto,
-                compile_cost_yocto,
-                github_repo,
-                github_commit,
-                transaction_hash,
-                to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as created_at
-            FROM execution_history
-            WHERE user_account_id = $1
-            ORDER BY created_at DESC
+                eh.id,
+                eh.job_id,
+                eh.request_id,
+                eh.data_id,
+                eh.worker_id,
+                eh.success,
+                j.status,
+                j.error_details,
+                eh.job_type,
+                eh.execution_time_ms,
+                eh.compile_time_ms,
+                eh.instructions_used,
+                eh.resolve_tx_id,
+                eh.user_account_id,
+                eh.near_payment_yocto,
+                eh.actual_cost_yocto,
+                eh.compile_cost_yocto,
+                eh.github_repo,
+                eh.github_commit,
+                eh.transaction_hash,
+                to_char(eh.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as created_at
+            FROM execution_history eh
+            LEFT JOIN jobs j ON eh.job_id = j.job_id
+            WHERE eh.user_account_id = $1
+            ORDER BY eh.created_at DESC
             LIMIT $2 OFFSET $3
             "#
         )
@@ -132,27 +137,30 @@ pub async fn list_jobs(
         sqlx::query_as(
             r#"
             SELECT
-                id,
-                job_id,
-                request_id,
-                data_id,
-                worker_id,
-                success,
-                job_type,
-                execution_time_ms,
-                compile_time_ms,
-                instructions_used,
-                resolve_tx_id,
-                user_account_id,
-                near_payment_yocto,
-                actual_cost_yocto,
-                compile_cost_yocto,
-                github_repo,
-                github_commit,
-                transaction_hash,
-                to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as created_at
-            FROM execution_history
-            ORDER BY created_at DESC
+                eh.id,
+                eh.job_id,
+                eh.request_id,
+                eh.data_id,
+                eh.worker_id,
+                eh.success,
+                j.status,
+                j.error_details,
+                eh.job_type,
+                eh.execution_time_ms,
+                eh.compile_time_ms,
+                eh.instructions_used,
+                eh.resolve_tx_id,
+                eh.user_account_id,
+                eh.near_payment_yocto,
+                eh.actual_cost_yocto,
+                eh.compile_cost_yocto,
+                eh.github_repo,
+                eh.github_commit,
+                eh.transaction_hash,
+                to_char(eh.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as created_at
+            FROM execution_history eh
+            LEFT JOIN jobs j ON eh.job_id = j.job_id
+            ORDER BY eh.created_at DESC
             LIMIT $1 OFFSET $2
             "#
         )

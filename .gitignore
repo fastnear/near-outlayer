@@ -40,3 +40,6 @@ logs/
 
 # SQLx
 .sqlx/
+
+# testnet config
+.env.testnet*

@@ -42,6 +42,8 @@ mod docker;
 mod wasm32_wasip1;
 mod wasm32_wasip2;
 
+pub use docker::CompilationError;
+
 /// Lock TTL for compilation in seconds (5 minutes)
 /// This prevents stale locks from blocking compilation forever
 const COMPILATION_LOCK_TTL_SECONDS: u64 = 300;

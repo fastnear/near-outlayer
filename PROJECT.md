@@ -1189,3 +1189,202 @@ This is not just a service—**it's foundational infrastructure that unlocks a n
 5. Organize hackathon to bootstrap adoption
 
 **Timeline**: 4-5 months to production-ready MVP with TEE security from day one.
+
+---
+
+## System Hidden Logs - Admin Debugging Guide
+
+### ⚠️ CRITICAL SECURITY WARNING
+
+The `system_hidden_logs` table contains **RAW stderr/stdout** from compilation and execution containers. This data **MUST NEVER** be exposed via public API endpoints.
+
+#### Security Risk
+
+Malicious users can craft code that outputs system file contents:
+
+```rust
+// In build.rs or main.rs
+fn main() {
+    // This will be captured in stderr/stdout
+    std::process::Command::new("cat")
+        .arg("/etc/passwd")
+        .output()
+        .unwrap();
+}
+```
+
+If these logs are exposed publicly, attackers can:
+- Read server configuration files
+- Leak environment variables
+- Discover internal paths and secrets
+- Enumerate installed packages
+
+### Access Control
+
+#### ✅ Safe Access Methods
+
+1. **SSH/Localhost Only**
+   ```bash
+   # Connect to server via SSH
+   ssh admin@coordinator-server
+
+   # Query logs (localhost only)
+   curl http://localhost:8080/admin/system-logs/186
+   ```
+
+2. **Direct Database Access**
+   ```sql
+   -- Connect to PostgreSQL
+   psql postgres://postgres:password@localhost/offchainvm
+
+   -- Query logs by request_id
+   SELECT * FROM system_hidden_logs WHERE request_id = 186;
+   ```
+
+#### ❌ NEVER Do This
+
+- ❌ Expose `/admin/system-logs/:request_id` via public URL
+- ❌ Add this data to `/public/*` endpoints
+- ❌ Return raw logs in API responses to users
+- ❌ Include in dashboard frontend (even for logged-in users)
+
+### Configuration
+
+#### Disable Log Storage (Production)
+
+Set environment variable in worker:
+
+```bash
+# worker/.env
+SAVE_SYSTEM_HIDDEN_LOGS_TO_DEBUG=false
+```
+
+This prevents workers from storing raw logs. Users will still see **safe, classified error messages** like:
+- "Repository not found. Please check that the repository URL is correct..."
+- "Rust compilation failed. Your code contains syntax errors..."
+
+#### Enable Log Storage (Development)
+
+```bash
+# worker/.env
+SAVE_SYSTEM_HIDDEN_LOGS_TO_DEBUG=true  # Default
+```
+
+Useful for debugging new error classifications.
+
+### API Endpoints
+
+#### POST /internal/system-logs
+**Internal only** - Used by workers to store logs. No authentication required (workers are trusted).
+
+#### GET /admin/system-logs/:request_id
+**Admin only** - Returns raw logs for debugging.
+
+**Example:**
+```bash
+curl http://localhost:8080/admin/system-logs/186
+```
+
+**Response:**
+```json
+[
+  {
+    "id": 1,
+    "request_id": 186,
+    "job_id": 16,
+    "log_type": "compilation",
+    "stderr": "fatal: could not read Username for 'https://github.com': No such device or address\n...",
+    "stdout": "",
+    "exit_code": 128,
+    "execution_error": null,
+    "created_at": "2025-10-27T12:00:00Z"
+  }
+]
+```
+
+### Use Cases
+
+#### 1. Debug Error Classifications
+
+When users report confusing error messages:
+
+1. Get request_id from dashboard
+2. SSH to coordinator server
+3. Query logs: `curl http://localhost:8080/admin/system-logs/{request_id}`
+4. Analyze raw stderr to understand error
+5. Add new error classification to `worker/src/compiler/docker.rs`
+
+#### 2. Investigate Compilation Failures
+
+```bash
+# Get logs
+curl http://localhost:8080/admin/system-logs/186 | jq '.[0].stderr'
+
+# Look for patterns
+# - "fatal: repository ... not found" → repository_not_found
+# - "error[E0425]" → rust_compilation_error
+# - "connection timed out" → network_error
+```
+
+#### 3. Monitor for Exploit Attempts
+
+```sql
+-- Check for suspicious patterns in logs
+SELECT request_id, stderr
+FROM system_hidden_logs
+WHERE stderr LIKE '%/etc/%'
+   OR stderr LIKE '%password%'
+   OR stderr LIKE '%secret%'
+LIMIT 20;
+```
+
+### Best Practices
+
+1. **Production**: Set `SAVE_SYSTEM_HIDDEN_LOGS_TO_DEBUG=false` unless actively debugging
+2. **Access**: Only allow `/admin/*` routes from localhost/private network
+3. **Firewall**: Block external access to port 8080 `/admin/*` endpoints
+4. **Monitoring**: Alert on unusual log patterns (system file paths, etc.)
+5. **Retention**: Consider periodic cleanup of old logs (>30 days)
+
+### Database Schema
+
+```sql
+CREATE TABLE system_hidden_logs (
+    id BIGSERIAL PRIMARY KEY,
+    request_id BIGINT NOT NULL,
+    job_id BIGINT,
+    log_type VARCHAR(50) NOT NULL, -- 'compilation' or 'execution'
+    stderr TEXT,                     -- ⚠️ May contain leaked data
+    stdout TEXT,                     -- ⚠️ May contain leaked data
+    exit_code INTEGER,
+    execution_error TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+```
+
+### Related Files
+
+- `coordinator/migrations/20251027000001_add_compilation_logs.sql` - Table definition with security warnings
+- `coordinator/src/handlers/internal.rs` - Admin endpoints implementation
+- `coordinator/src/models.rs` - SystemHiddenLog struct
+- `worker/src/compiler/docker.rs` - Error extraction and classification logic
+- `worker/src/config.rs` - SAVE_SYSTEM_HIDDEN_LOGS_TO_DEBUG flag
+- `worker/.env.example` - Configuration template with security notes
+
+### Error Classification System
+
+The worker classifies errors into safe, user-facing descriptions:
+
+- `repository_not_found` - "Repository not found. Please check that the repository URL is correct..."
+- `repository_access_denied` - "Cannot access repository. The repository may be private..."
+- `invalid_repository_url` - "Invalid repository URL format. The URL should not contain spaces..."
+- `git_error` - "Git operation failed. Please verify the repository URL..."
+- `network_error` - "Network connection error. The repository server may be unreachable..."
+- `rust_compilation_error` - "Rust compilation failed. Your code contains syntax errors..."
+- `dependency_not_found` - "Dependency resolution failed. One or more dependencies could not be found..."
+- `build_script_error` - "Build script execution failed..."
+- `git_fatal_error` - "Git fatal error occurred..."
+- `git_usage_error` - "Git command error. The repository URL or parameters are invalid..."
+- `compilation_error` - Generic fallback
+
+Users see only these safe descriptions. Admins can access raw stderr/stdout via `system_hidden_logs` table for debugging.

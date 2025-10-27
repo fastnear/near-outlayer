@@ -3,6 +3,21 @@ use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+/// Job status for error classification
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum JobStatus {
+    Pending,
+    InProgress,
+    Completed,
+    Failed,
+    CompilationFailed,
+    ExecutionFailed,
+    AccessDenied,
+    InsufficientPayment,
+    Custom,
+}
+
 /// Response format for execution output
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub enum ResponseFormat {
@@ -466,6 +481,7 @@ impl ApiClient {
         wasm_checksum: Option<String>,
         actual_cost_yocto: Option<String>,
         compile_cost_yocto: Option<String>,
+        error_category: Option<JobStatus>,
     ) -> Result<()> {
         let url = format!("{}/jobs/complete", self.base_url);
 
@@ -480,6 +496,8 @@ impl ApiClient {
             wasm_checksum: Option<String>,
             actual_cost_yocto: Option<String>,
             compile_cost_yocto: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            error_category: Option<JobStatus>,
         }
 
         let request = CompleteJobRequest {
@@ -492,6 +510,7 @@ impl ApiClient {
             wasm_checksum,
             actual_cost_yocto,
             compile_cost_yocto,
+            error_category,
         };
 
         tracing::debug!(
@@ -520,6 +539,61 @@ impl ApiClient {
         }
 
         tracing::info!("✅ Job {} completed successfully", job_id);
+        Ok(())
+    }
+
+    /// Store system logs (compilation/execution) for admin debugging
+    /// This endpoint does NOT require authentication (internal endpoint)
+    ///
+    /// # Arguments
+    /// * `request_id` - Execution request ID
+    /// * `job_id` - Job ID (optional)
+    /// * `log_type` - "compilation" or "execution"
+    /// * `stderr` - Raw stderr output
+    /// * `stdout` - Raw stdout output
+    /// * `exit_code` - Exit code from process
+    /// * `execution_error` - WASM execution error (optional)
+    pub async fn store_system_log(
+        &self,
+        request_id: u64,
+        job_id: Option<i64>,
+        log_type: &str,
+        stderr: Option<String>,
+        stdout: Option<String>,
+        exit_code: Option<i32>,
+        execution_error: Option<String>,
+    ) -> Result<()> {
+        let url = format!("{}/internal/system-logs", self.base_url);
+
+        let payload = serde_json::json!({
+            "request_id": request_id,
+            "job_id": job_id,
+            "log_type": log_type,
+            "stderr": stderr,
+            "stdout": stdout,
+            "exit_code": exit_code,
+            "execution_error": execution_error,
+        });
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&payload)
+            .send()
+            .await
+            .context("Failed to store system log")?;
+
+        if !response.status().is_success() {
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            tracing::warn!("⚠️ Failed to store system log: {}", error_text);
+            // Don't fail the job if logging fails - just warn
+            return Ok(());
+        }
+
+        tracing::debug!("📝 Stored system log ({}) for request_id={}", log_type, request_id);
         Ok(())
     }
 

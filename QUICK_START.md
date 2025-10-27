@@ -1,6 +1,21 @@
 # NEAR OutLayer - Quick Start
 
-## TL;DR
+## Replace old instance? 
+
+Remove old PostgreSQL
+docker volume rm near-offshore_postgres_data
+
+
+
+Item	    Testnet	Mainnet
+PostgreSQL	5432	5433
+Redis	    6379	6380
+Coordinator	8080	8180
+Keystore	8081	8181
+Dashboard	3000	3000
+
+
+## Create new instance
 
 ```bash
 # 1. Copy .env files
@@ -18,8 +33,24 @@ cp dashboard/.env.example dashboard/.env.local
 cd coordinator
 docker exec offchainvm-postgres psql -U postgres -c "DROP DATABASE IF EXISTS offchainvm;"
 docker exec offchainvm-postgres psql -U postgres -c "CREATE DATABASE offchainvm;"
-sqlx migrate run --database-url postgres://postgres:postgres@localhost/offchainvm
-DATABASE_URL=postgres://postgres:postgres@localhost/offchainvm cargo sqlx prepare
+sqlx migrate run --database-url postgres://postgres:postgres_password@localhost:5432/offchainvm
+DATABASE_URL=postgres://postgres:postgres_password@localhost:5432/offchainvm cargo sqlx prepare
+
+
+# TESTNET
+./scripts/run_coordinator.sh testnet
+./scripts/run_keystore.sh testnet
+./scripts/run_worker.sh testnet
+
+# MAINNET
+./scripts/run_coordinator.sh mainnet
+./scripts/run_keystore.sh mainnet
+./scripts/run_worker.sh mainnet
+
+# Dashboard 
+cd dashboard
+npm run build & npm run start
+
 
 # 4. Start Docker services
 docker-compose up -d
