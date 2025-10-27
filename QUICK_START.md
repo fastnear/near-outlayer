@@ -51,7 +51,6 @@ DATABASE_URL=postgres://postgres:postgres_password@localhost:5432/offchainvm car
 cd dashboard
 npm run build & npm run start
 
-
 # 4. Start Docker services
 docker-compose up -d
 
