@@ -29,7 +29,10 @@ export function formatAccessCondition(access: unknown): string {
       return `🪙 FT ${ftBalance.contract}: balance ${ftBalance.operator} ${ftBalance.value}`;
     }
     if (obj.NftOwned && typeof obj.NftOwned === 'object' && obj.NftOwned !== null) {
-      const nftOwned = obj.NftOwned as { contract: string };
+      const nftOwned = obj.NftOwned as { contract: string; token_id?: string | null };
+      if (nftOwned.token_id) {
+        return `🖼️ Owns NFT ${nftOwned.contract}#${nftOwned.token_id}`;
+      }
       return `🖼️ Owns NFT from ${nftOwned.contract}`;
     }
     if (obj.Logic && typeof obj.Logic === 'object' && obj.Logic !== null) {
@@ -37,7 +40,7 @@ export function formatAccessCondition(access: unknown): string {
       return `🔗 ${logic.operator}: ${logic.conditions.length} conditions`;
     }
     if (obj.Not) {
-      return `❌ NOT: (nested condition)`;
+      return `🚫 NOT: (nested condition)`;
     }
   }
 
@@ -58,7 +61,16 @@ export function convertAccessToContractFormat(access: AccessCondition): unknown 
     case 'FtBalance':
       return { FtBalance: { contract: access.contract, operator: access.operator, value: access.value } };
     case 'NftOwned':
-      return { NftOwned: { contract: access.contract } };
+      return { NftOwned: { contract: access.contract, token_id: access.token_id } };
+    case 'Logic':
+      return {
+        Logic: {
+          operator: access.operator,
+          conditions: access.conditions.map(cond => convertAccessToContractFormat(cond))
+        }
+      };
+    case 'Not':
+      return { Not: { condition: convertAccessToContractFormat(access.condition) } };
     default:
       return 'AllowAll';
   }

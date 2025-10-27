@@ -8,7 +8,7 @@ export type AccessCondition =
   | { type: 'AccountPattern'; pattern: string }
   | { type: 'NearBalance'; operator: ComparisonOperator; value: string }
   | { type: 'FtBalance'; contract: string; operator: ComparisonOperator; value: string }
-  | { type: 'NftOwned'; contract: string }
+  | { type: 'NftOwned'; contract: string; token_id: string | null }
   | { type: 'Logic'; operator: LogicOperator; conditions: AccessCondition[] }
   | { type: 'Not'; condition: AccessCondition };
 

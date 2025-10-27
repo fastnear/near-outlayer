@@ -232,7 +232,7 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
           <label className="block text-sm font-medium text-gray-700 mb-2">
             Access Control *
           </label>
-          <AccessConditionBuilder onChange={setAccessCondition} />
+          <AccessConditionBuilder condition={accessCondition} onChange={setAccessCondition} />
         </div>
 
         {/* Submit Button */}
