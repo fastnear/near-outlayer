@@ -14,23 +14,32 @@ pub async fn claim_job(
         payload.worker_id, payload.request_id, payload.data_id
     );
 
-    // Check if this task was already claimed by another worker
+    // Check if this task was already claimed/completed by another worker
+    // We need to check both compile and execute jobs to see if work is done or in progress
     let existing = sqlx::query!(
-        "SELECT COUNT(*) as count FROM jobs WHERE request_id = $1 AND data_id = $2",
+        r#"
+        SELECT
+            job_type,
+            status
+        FROM jobs
+        WHERE request_id = $1 AND data_id = $2
+        "#,
         payload.request_id as i64,
         payload.data_id
     )
-    .fetch_one(&state.db)
+    .fetch_all(&state.db)
     .await
     .map_err(|e| {
         error!("Failed to check existing jobs: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    if existing.count.unwrap_or(0) > 0 {
+    // If any jobs exist for this request_id+data_id, another worker already claimed it
+    // This prevents race conditions when multiple workers pull the same task from Redis
+    if !existing.is_empty() {
         debug!(
-            "❌ Task already claimed by another worker: request_id={} data_id={}",
-            payload.request_id, payload.data_id
+            "❌ Task already claimed by another worker: request_id={} data_id={} (found {} existing jobs)",
+            payload.request_id, payload.data_id, existing.len()
         );
         let pricing = state.pricing.read().await.clone();
         return Ok(Json(ClaimJobResponse { jobs: vec![], pricing }));

@@ -74,6 +74,27 @@ pub async fn create_task(
 
     let request_id = payload.request_id;
 
+    // Check if task already exists in database (to prevent duplicates)
+    let existing_count: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM jobs WHERE request_id = $1 AND data_id = $2 AND job_type = 'execute'"
+    )
+    .bind(request_id as i64)
+    .bind(&payload.data_id)
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| {
+        error!("Failed to check existing task: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    if existing_count.0 > 0 {
+        debug!("Task already exists for request_id={} data_id={}, skipping", request_id, payload.data_id);
+        return Ok((StatusCode::OK, Json(CreateTaskResponse {
+            request_id: request_id as i64,
+            created: false, // Already exists
+        })));
+    }
+
     // Normalize repo URL to full https:// format for git clone
     let code_source = payload.code_source.normalize();
 
