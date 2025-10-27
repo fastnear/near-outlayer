@@ -68,8 +68,11 @@ export default function StatsPage() {
     );
   }
 
-  const successRate = stats.total_executions > 0
-    ? ((stats.successful_executions / stats.total_executions) * 100).toFixed(1)
+  // Calculate success rate excluding infrastructure errors
+  // Only count valid attempts (total - infrastructure failures)
+  const validExecutions = stats.total_executions - stats.failed_executions;
+  const successRate = validExecutions > 0
+    ? ((stats.successful_executions / validExecutions) * 100).toFixed(1)
     : '0';
 
   return (
@@ -142,7 +145,7 @@ export default function StatsPage() {
                   <dd className="flex items-baseline">
                     <div className="text-2xl font-semibold text-gray-900">{successRate}%</div>
                     <div className="ml-2 text-sm text-gray-500">
-                      {stats.successful_executions}/{stats.total_executions}
+                      {stats.successful_executions}/{validExecutions}
                     </div>
                   </dd>
                 </dl>
@@ -299,8 +302,10 @@ export default function StatsPage() {
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {repos.map((repo, idx) => {
-                  const successRate = repo.total_executions > 0
-                    ? ((repo.successful_executions / repo.total_executions) * 100).toFixed(1)
+                  // Calculate success rate excluding infrastructure errors
+                  const validExecutions = repo.total_executions - repo.failed_executions;
+                  const successRate = validExecutions > 0
+                    ? ((repo.successful_executions / validExecutions) * 100).toFixed(1)
                     : '0';
                   return (
                     <tr key={idx}>

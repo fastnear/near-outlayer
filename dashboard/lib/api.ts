@@ -72,6 +72,7 @@ export interface PopularRepo {
   github_repo: string;
   total_executions: number;
   successful_executions: number;
+  failed_executions: number; // Infrastructure errors only
   last_commit: string | null;
 }
 

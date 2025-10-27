@@ -402,6 +402,7 @@ pub struct PopularRepo {
     pub github_repo: String,
     pub total_executions: i64,
     pub successful_executions: i64,
+    pub failed_executions: i64, // Infrastructure errors only
     pub last_commit: Option<String>,
 }
 
@@ -410,6 +411,7 @@ struct PopularRepoRow {
     github_repo: String,
     total_executions: i64,
     successful_executions: i64,
+    failed_executions: i64,
     last_commit: Option<String>,
 }
 
@@ -422,6 +424,7 @@ pub async fn get_popular_repos(
             eh.github_repo,
             COUNT(*)::BIGINT as total_executions,
             COUNT(*) FILTER (WHERE eh.success = true)::BIGINT as successful_executions,
+            COUNT(*) FILTER (WHERE j.status = 'failed')::BIGINT as failed_executions,
             (ARRAY_AGG(eh.github_commit ORDER BY eh.created_at DESC))[1] as last_commit
         FROM execution_history eh
         LEFT JOIN jobs j ON eh.job_id = j.job_id
@@ -444,6 +447,7 @@ pub async fn get_popular_repos(
             github_repo: r.github_repo,
             total_executions: r.total_executions,
             successful_executions: r.successful_executions,
+            failed_executions: r.failed_executions,
             last_commit: r.last_commit,
         })
         .collect();
