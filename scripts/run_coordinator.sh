@@ -33,9 +33,44 @@ else
     DOCKER_COMPOSE="docker compose"
 fi
 
-# Step 1: Build Rust binary
+# Determine script directory and load environment
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# For testnet use .env.testnet, for mainnet use .env
+if [ "$NETWORK" = "testnet" ]; then
+    ENV_FILE="$PROJECT_ROOT/coordinator/.env.testnet"
+else
+    ENV_FILE="$PROJECT_ROOT/coordinator/.env"
+fi
+
+if [ ! -f "$ENV_FILE" ]; then
+    echo "Error: Environment file not found: $ENV_FILE"
+    exit 1
+fi
+
+# Extract PostgreSQL password from .env file
+POSTGRES_PASSWORD=$(grep "^POSTGRES_PASSWORD=" "$ENV_FILE" | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+
+# Step 1: Update SQLx cache (if SQL queries changed)
 echo "═══════════════════════════════════════════════════════════"
-echo "Step 1: Building Rust binary (release mode)..."
+echo "Step 1: Updating SQLx query cache..."
+echo "═══════════════════════════════════════════════════════════"
+cd coordinator
+if ! DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@localhost:5432/offchainvm" cargo sqlx prepare; then
+    echo ""
+    echo "⚠️  Warning: SQLx prepare failed (database might be offline)"
+    echo "Continuing with offline mode..."
+fi
+cd ..
+echo ""
+echo "✅ SQLx cache updated"
+echo ""
+
+# Step 2: Build Rust binary
+echo "═══════════════════════════════════════════════════════════"
+echo "Step 2: Building Rust binary (release mode)..."
 echo "═══════════════════════════════════════════════════════════"
 cd coordinator
 if ! env SQLX_OFFLINE=true cargo build --release --bin offchainvm-coordinator; then
@@ -48,9 +83,9 @@ echo ""
 echo "✅ Rust binary built successfully"
 echo ""
 
-# Step 2: Build Docker image
+# Step 3: Build Docker image
 echo "═══════════════════════════════════════════════════════════"
-echo "Step 2: Building Docker image for $NETWORK..."
+echo "Step 3: Building Docker image for $NETWORK..."
 echo "═══════════════════════════════════════════════════════════"
 if [ -n "$NO_CACHE" ]; then
     echo "(Using --no-cache flag)"
@@ -64,9 +99,9 @@ echo ""
 echo "✅ Docker image built successfully"
 echo ""
 
-# Step 3: Start/restart coordinator
+# Step 4: Start/restart coordinator
 echo "═══════════════════════════════════════════════════════════"
-echo "Step 3: Starting coordinator for $NETWORK..."
+echo "Step 4: Starting coordinator for $NETWORK..."
 echo "═══════════════════════════════════════════════════════════"
 $DOCKER_COMPOSE -f "$COMPOSE_FILE" up -d
 
