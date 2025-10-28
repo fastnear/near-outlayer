@@ -36,15 +36,18 @@ docker exec offchainvm-postgres psql -U postgres -c "CREATE DATABASE offchainvm;
 sqlx migrate run --database-url postgres://postgres:postgres_password@localhost:5432/offchainvm
 DATABASE_URL=postgres://postgres:postgres_password@localhost:5432/offchainvm cargo sqlx prepare
 
-
-env SQLX_OFFLINE=true cargo build --release
+docker-compose -f docker-compose.testnet.yml up -d
+cd coordinator && env SQLX_OFFLINE=true cargo build --release --bin offchainvm-coordinator
 docker compose build coordinator
 
 # TESTNET
-./scripts/run_coordinator.sh testnet
+./scripts/run_coordinator.sh testnet --no-cache
 ./scripts/run_keystore.sh testnet
 ./scripts/run_worker.sh .env.testnet.worker1
 ./scripts/run_worker.sh .env.testnet.worker2
+
+# clear redis queue
+./scripts/clear_redis_queue.sh testnet
 
 # MAINNET
 ./scripts/run_coordinator.sh mainnet
