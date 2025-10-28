@@ -351,7 +351,7 @@ export default function StatsPage() {
       </div>
 
       {/* Popular Repositories */}
-      {repos.length > 0 && (
+      {repos.filter(repo => repo.successful_executions > 0).length > 0 && (
         <div className="mt-8">
           <h2 className="text-2xl font-bold text-gray-900 mb-4">Popular Repositories</h2>
           <div className="bg-white shadow overflow-hidden sm:rounded-lg">
@@ -373,40 +373,44 @@ export default function StatsPage() {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {repos.map((repo, idx) => {
-                  // Platform success rate = requests handled without infrastructure errors
-                  const platformSuccesses = repo.total_executions - repo.failed_executions;
-                  const successRate = repo.total_executions > 0
-                    ? ((platformSuccesses / repo.total_executions) * 100).toFixed(1)
-                    : '0';
-                  return (
-                    <tr key={idx}>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <a
-                          href={repo.github_repo}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-blue-600 hover:text-blue-800 hover:underline"
-                        >
-                          {repo.github_repo.replace(/^https?:\/\/(www\.)?github\.com\//, '')}
-                        </a>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                        {repo.total_executions}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <span className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${
-                          parseFloat(successRate) > 90 ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
-                        }`}>
-                          {successRate}%
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 font-mono">
-                        {repo.last_commit ? repo.last_commit.substring(0, 8) : 'N/A'}
-                      </td>
-                    </tr>
-                  );
-                })}
+                {repos
+                  .filter(repo => repo.successful_executions > 0)
+                  .map((repo, idx) => {
+                    // Actual executions = total - compilation failures (compilation failures don't count as executions for repo stats)
+                    const actualExecutions = repo.total_executions - repo.compilation_failed_executions;
+                    // Platform success rate = requests handled without infrastructure errors
+                    const platformSuccesses = actualExecutions - repo.failed_executions;
+                    const successRate = actualExecutions > 0
+                      ? ((platformSuccesses / actualExecutions) * 100).toFixed(1)
+                      : '0';
+                    return (
+                      <tr key={idx}>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <a
+                            href={repo.github_repo}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-600 hover:text-blue-800 hover:underline"
+                          >
+                            {repo.github_repo.replace(/^https?:\/\/(www\.)?github\.com\//, '')}
+                          </a>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                          {actualExecutions}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${
+                            parseFloat(successRate) > 90 ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
+                          }`}>
+                            {successRate}%
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 font-mono">
+                          {repo.last_commit ? repo.last_commit.substring(0, 8) : 'N/A'}
+                        </td>
+                      </tr>
+                    );
+                  })}
               </tbody>
             </table>
           </div>
