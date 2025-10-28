@@ -58,10 +58,10 @@ mod basic_tests {
         let contract = setup_contract();
         let (base, per_inst, per_ms, per_compile_ms) = contract.get_pricing();
 
-        assert_eq!(base.0, 10_000_000_000_000_000_000_000); // 0.01 NEAR
-        assert_eq!(per_inst.0, 1_000_000_000_000_000); // 0.000001 NEAR per million instructions
-        assert_eq!(per_ms.0, 1_000_000_000_000_000_000); // 0.001 NEAR per second (execution)
-        assert_eq!(per_compile_ms.0, 1_000_000_000_000_000_000); // 0.001 NEAR per second (compilation)
+        assert_eq!(base.0, 1_000_000_000_000_000_000_000); // 0.001 NEAR
+        assert_eq!(per_inst.0, 100_000_000_000_000); // 0.0000001 NEAR per million instructions
+        assert_eq!(per_ms.0, 100_000_000_000_000_000); // 0.0001 NEAR per second (execution)
+        assert_eq!(per_compile_ms.0, 100_000_000_000_000_000); // 0.0001 NEAR per second (compilation)
     }
 
     #[test]

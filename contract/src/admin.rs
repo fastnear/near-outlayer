@@ -70,20 +70,20 @@ impl Contract {
         }
     }
 
-    /// Emergency function to cancel pending execution and refund user (only owner can call)
+    /// Emergency function to cancel pending execution and refund payer (only owner can call)
     pub fn emergency_cancel_execution(&mut self, request_id: u64) {
         self.assert_owner();
 
         if let Some(request) = self.pending_requests.remove(&request_id) {
-            // Refund payment to user
-            near_sdk::Promise::new(request.sender_id.clone())
+            // Refund payment to payer
+            near_sdk::Promise::new(request.payer_account_id.clone())
                 .transfer(NearToken::from_yoctonear(request.payment));
 
             log!(
                 "Emergency cancelled execution {} and refunded {} yoctoNEAR to {}",
                 request_id,
                 request.payment,
-                request.sender_id
+                request.payer_account_id
             );
         } else {
             env::panic_str("Execution request not found");
@@ -110,15 +110,15 @@ impl Contract {
             }
 
             if let Some(request) = self.pending_requests.remove(&request_id) {
-                // Refund payment to user
-                near_sdk::Promise::new(request.sender_id.clone())
+                // Refund payment to payer
+                near_sdk::Promise::new(request.payer_account_id.clone())
                     .transfer(NearToken::from_yoctonear(request.payment));
 
                 log!(
                     "Cleared request {} and refunded {} yoctoNEAR to {}",
                     request_id,
                     request.payment,
-                    request.sender_id
+                    request.payer_account_id
                 );
 
                 cleared += 1;

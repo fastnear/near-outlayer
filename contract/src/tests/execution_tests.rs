@@ -28,6 +28,7 @@ mod tests {
             secrets_ref: None,
             input_data: None,
             response_format: ResponseFormat::default(),
+            payer_account_id: sender.clone(),
             pending_output: None,
             output_submitted: false,
         };
@@ -75,6 +76,7 @@ mod tests {
             secrets_ref: None,
             input_data: None,
             response_format: ResponseFormat::default(),
+            payer_account_id: sender.clone(),
             pending_output: None,
             output_submitted: false,
         };
@@ -103,7 +105,7 @@ mod tests {
         let context = get_context(accounts(1), NearToken::from_near(1));
         testing_env!(context.build());
 
-        contract.request_execution(code_source.clone(), None, None, None, None);
+        contract.request_execution(code_source.clone(), None, None, None, None, None);
 
         // Check that response_format defaults to Text
         let request = contract.get_request(0).expect("Request should exist");
@@ -122,7 +124,7 @@ mod tests {
         let context = get_context(accounts(1), NearToken::from_near(1));
         testing_env!(context.build());
 
-        contract.request_execution(code_source.clone(), None, None, None, Some(ResponseFormat::Json));
+        contract.request_execution(code_source.clone(), None, None, None, Some(ResponseFormat::Json), None);
 
         // Check that response_format is Json
         let request = contract.get_request(0).expect("Request should exist");
@@ -141,7 +143,7 @@ mod tests {
         let context = get_context(accounts(1), NearToken::from_near(1));
         testing_env!(context.build());
 
-        contract.request_execution(code_source.clone(), None, None, None, Some(ResponseFormat::Bytes));
+        contract.request_execution(code_source.clone(), None, None, None, Some(ResponseFormat::Bytes), None);
 
         // Check that response_format is Bytes
         let request = contract.get_request(0).expect("Request should exist");
@@ -171,6 +173,7 @@ mod tests {
             secrets_ref: None,
             input_data: None,
             response_format: ResponseFormat::default(),
+            payer_account_id: sender.clone(),
             pending_output: None,
             output_submitted: false,
         };
@@ -215,9 +218,9 @@ mod tests {
         // base_fee: 10_000_000_000_000_000_000_000
         // instruction_cost: 10 * 1_000_000_000_000_000 = 10_000_000_000_000_000
         // time_cost: 5000 * 1_000_000_000_000_000_000 = 5_000_000_000_000_000_000_000
-        // Total: 15_000_010_000_000_000_000_000
+        // Total: 1_500_010_000_000_000_000_000
 
-        assert_eq!(cost, 15_000_010_000_000_000_000_000);
+        assert_eq!(cost, 1_500_001_000_000_000_000_000);
     }
 
     #[test]
@@ -232,14 +235,7 @@ mod tests {
 
         let cost = contract.calculate_cost(&metrics);
 
-        // Expected:
-        // base_fee: 10_000_000_000_000_000_000_000
-        // instruction_cost: 10 * 1_000_000_000_000_000 = 10_000_000_000_000_000
-        // execution_time_cost: 5000 * 1_000_000_000_000_000_000 = 5_000_000_000_000_000_000_000
-        // compilation_time_cost: 3000 * 1_000_000_000_000_000_000 = 3_000_000_000_000_000_000_000
-        // Total: 18_000_010_000_000_000_000_000
-
-        assert_eq!(cost, 18_000_010_000_000_000_000_000);
+        assert_eq!(cost, 1_800_001_000_000_000_000_000);
     }
 
     #[test]
@@ -255,7 +251,7 @@ mod tests {
         let cost = contract.calculate_cost(&metrics);
 
         // Should only charge base_fee
-        assert_eq!(cost, 10_000_000_000_000_000_000_000); // 0.01 NEAR
+        assert_eq!(cost, 1_000_000_000_000_000_000_000); // 0.001 NEAR
     }
 
     #[test]
@@ -270,12 +266,7 @@ mod tests {
 
         let cost = contract.calculate_cost(&metrics);
 
-        // Expected:
-        // base_fee: 10_000_000_000_000_000_000_000
-        // compilation_time_cost: 10000 * 1_000_000_000_000_000_000 = 10_000_000_000_000_000_000_000
-        // Total: 20_000_000_000_000_000_000_000
-
-        assert_eq!(cost, 20_000_000_000_000_000_000_000); // 0.02 NEAR
+        assert_eq!(cost, 2000_000_000_000_000_000_000); // 0.0002 NEAR
     }
 
     #[test]
@@ -298,7 +289,7 @@ mod tests {
             build_target: Some("wasm32-wasi".to_string()),
         };
 
-        contract.request_execution(code_source, None, None, None, None);
+        contract.request_execution(code_source, None, None, None, None, None);
     }
 
     #[test]
@@ -316,7 +307,7 @@ mod tests {
             build_target: Some("wasm32-wasi".to_string()),
         };
 
-        contract.request_execution(code_source, None, None, None, None);
+        contract.request_execution(code_source, None, None, None, None, None);
     }
 
     #[test]
@@ -341,6 +332,7 @@ mod tests {
             secrets_ref: None,
             input_data: None,
             response_format: ResponseFormat::Text,
+            payer_account_id: sender.clone(),
             pending_output: None,
             output_submitted: false,
         };
@@ -388,6 +380,7 @@ mod tests {
             secrets_ref: None,
             input_data: None,
             response_format: ResponseFormat::Text,
+            payer_account_id: sender.clone(),
             pending_output: None,
             output_submitted: false,
         };
@@ -423,6 +416,7 @@ mod tests {
             secrets_ref: None,
             input_data: None,
             response_format: ResponseFormat::Text,
+            payer_account_id: sender.clone(),
             pending_output: Some(StoredOutput::Text("old".as_bytes().to_vec())),
             output_submitted: true,
         };
@@ -458,6 +452,7 @@ mod tests {
             secrets_ref: None,
             input_data: None,
             response_format: ResponseFormat::Text,
+            payer_account_id: sender.clone(),
             pending_output: Some(StoredOutput::Text(large_text.as_bytes().to_vec())),
             output_submitted: true,
         };
@@ -547,6 +542,7 @@ mod tests {
             secrets_ref: None,
             input_data: None,
             response_format: ResponseFormat::Text,
+            payer_account_id: sender.clone(),
             pending_output: None,
             output_submitted: false,
         };
@@ -597,6 +593,7 @@ mod tests {
             secrets_ref: None,
             input_data: None,
             response_format: ResponseFormat::Text,
+            payer_account_id: sender.clone(),
             pending_output: None,
             output_submitted: false,
         };

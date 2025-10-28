@@ -25,6 +25,7 @@ impl Contract {
         input_data: Option<String>,
         secrets_ref: Option<SecretsReference>,
         response_format: Option<ResponseFormat>,
+        payer_account_id: Option<AccountId>,
     ) {
         self.assert_not_paused();
 
@@ -64,6 +65,8 @@ impl Contract {
         self.next_request_id += 1;
 
         let sender_id = env::predecessor_account_id();
+        // Payer: explicitly provided account or fallback to sender (predecessor)
+        let payer_account_id = payer_account_id.unwrap_or_else(|| sender_id.clone());
         let format = response_format.unwrap_or_default();
 
         // Create execution request data for yield
@@ -106,6 +109,7 @@ impl Contract {
             secrets_ref,
             response_format: format.clone(),
             input_data,
+            payer_account_id,
             pending_output: None,
             output_submitted: false,
         };
@@ -226,8 +230,8 @@ impl Contract {
                         // Refund excess payment
                         let refund = payment.0.saturating_sub(cost);
                         if refund > 0 {
-                            // Transfer refund back to sender
-                            near_sdk::Promise::new(sender_id.clone())
+                            // Transfer refund to payer account
+                            near_sdk::Promise::new(request.payer_account_id.clone())
                                 .transfer(NearToken::from_yoctonear(refund));
                         }
 
@@ -318,7 +322,8 @@ impl Contract {
                         // Execution failed - refund everything except base fee
                         let refund = payment.0.saturating_sub(self.base_fee);
                         if refund > 0 {
-                            near_sdk::Promise::new(sender_id.clone())
+                            // Transfer refund to payer account
+                            near_sdk::Promise::new(request.payer_account_id.clone())
                                 .transfer(NearToken::from_yoctonear(refund));
                         }
 
@@ -327,7 +332,7 @@ impl Contract {
                         // Log payment charged in easy-to-parse format for worker (only base fee charged on failure)
                         log!("[[yNEAR charged: \"{}\"]]", self.base_fee);
 
-                        // Get error message for event and panic
+                        // Get error message for event
                         let error_msg = exec_response.error.unwrap_or("Unknown error".to_string());
 
                         // Emit failure event with error details
@@ -342,20 +347,25 @@ impl Contract {
                             exec_response.compilation_note.as_deref(),
                         );
 
-                        env::panic_str(&format!(
+                        // Log the failure (don't panic - state changes must persist!)
+                        log!(
                             "Execution failed: {}. Resources: {{ instructions: {}, time_ms: {} }}. Refunded {} yoctoNEAR",
                             error_msg,
                             exec_response.resources_used.instructions,
                             exec_response.resources_used.time_ms,
                             refund
-                        ));
+                        );
+
+                        // Return None to indicate failure to calling contract
+                        None
                     }
                 }
                 Err(promise_error) => {
                     // Promise failed - refund everything except base fee
                     let refund = payment.0.saturating_sub(self.base_fee);
                     if refund > 0 {
-                        near_sdk::Promise::new(sender_id.clone())
+                        // Transfer refund to payer account
+                        near_sdk::Promise::new(request.payer_account_id.clone())
                             .transfer(NearToken::from_yoctonear(refund));
                     }
 
@@ -364,10 +374,14 @@ impl Contract {
                     // Log payment charged in easy-to-parse format for worker (only base fee charged on promise failure)
                     log!("[[yNEAR charged: \"{}\"]]", self.base_fee);
 
-                    env::panic_str(&format!(
+                    // Log the promise failure (don't panic - state changes must persist!)
+                    log!(
                         "Execution promise failed: {:?}. Refunded {} yoctoNEAR",
                         promise_error, refund
-                    ));
+                    );
+
+                    // Return None to indicate failure to calling contract
+                    None
                 }
             }
         } else {
@@ -398,15 +412,15 @@ impl Contract {
         let is_stale = env::block_timestamp() > request.timestamp + EXECUTION_TIMEOUT;
         assert!(is_stale, "Execution is not yet stale, please wait");
 
-        // Remove the request and refund the user
+        // Remove the request and refund the payer
         if let Some(stale_request) = self.pending_requests.remove(&request_id) {
-            near_sdk::Promise::new(stale_request.sender_id.clone())
+            near_sdk::Promise::new(stale_request.payer_account_id.clone())
                 .transfer(NearToken::from_yoctonear(stale_request.payment));
 
             log!(
-                "Cancelled stale execution {} and refunded user {}",
+                "Cancelled stale execution {} and refunded payer {}",
                 request_id,
-                stale_request.sender_id
+                stale_request.payer_account_id
             );
         }
     }

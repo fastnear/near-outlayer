@@ -99,6 +99,7 @@ pub struct ExecutionRequest {
     pub secrets_ref: Option<SecretsReference>, // Reference to repo-based secrets
     pub response_format: ResponseFormat,
     pub input_data: Option<String>, // Optional input data for execution
+    pub payer_account_id: AccountId, // Account to receive refunds (explicit or defaults to sender)
 
     // Large output handling (2-call flow)
     pub pending_output: Option<StoredOutput>, // Temporary storage for large output data
