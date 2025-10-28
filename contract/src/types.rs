@@ -134,9 +134,7 @@ impl From<AccessConditionV1> for VersionedAccessCondition {
     }
 }
 
-// Current type aliases (point to latest versions)
-pub type LogicOperator = LogicOperatorV1;
-pub type ComparisonOperator = ComparisonOperatorV1;
+// Current type alias (points to latest version)
 pub type AccessCondition = AccessConditionV1;
 
 #[cfg(test)]
@@ -171,13 +169,13 @@ mod tests {
     #[test]
     fn test_logic_and_condition() {
         let condition = AccessCondition::Logic {
-            operator: LogicOperator::And,
+            operator: LogicOperatorV1::And,
             conditions: vec![
                 AccessCondition::AccountPattern {
                     pattern: String::from(".*\\.near"),
                 },
                 AccessCondition::NearBalance {
-                    operator: ComparisonOperator::Gte,
+                    operator: ComparisonOperatorV1::Gte,
                     value: NearToken::from_near(10),
                 },
             ],
