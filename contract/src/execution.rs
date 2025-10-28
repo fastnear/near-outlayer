@@ -12,7 +12,7 @@ impl Contract {
     /// * `secrets_ref` - Optional reference to repo-based secrets (profile + account_id)
     /// * `response_format` - Optional output format: Bytes, Text, or Json (default: Text)
     ///
-    /// # Repo-Based Secrets (New Approach)
+    /// # Repo-Based Secrets
     /// Secrets are now stored in contract per repository and accessed via references:
     /// 1. Store secrets once: `store_secrets(repo, branch, profile, encrypted_data, access_rules)`
     /// 2. Reference them in execution: `secrets_ref: { profile: "default", account_id: "alice.near" }`

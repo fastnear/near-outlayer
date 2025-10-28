@@ -9,6 +9,7 @@ export type AccessCondition =
   | { type: 'NearBalance'; operator: ComparisonOperator; value: string }
   | { type: 'FtBalance'; contract: string; operator: ComparisonOperator; value: string }
   | { type: 'NftOwned'; contract: string; token_id: string | null }
+  | { type: 'DaoMember'; dao_contract: string; role: string }
   | { type: 'Logic'; operator: LogicOperator; conditions: AccessCondition[] }
   | { type: 'Not'; condition: AccessCondition };
 

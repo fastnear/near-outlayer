@@ -62,6 +62,13 @@ pub enum AccessConditionV1 {
         contract: AccountId,
         token_id: Option<String>,
     },
+    /// Require DAO membership (Sputnik v2 compatible)
+    /// Checks if caller is member of specified role in DAO
+    /// role: "council", "members", etc.
+    DaoMember {
+        dao_contract: AccountId,
+        role: String,
+    },
 }
 
 // Versioned enums for future upgrades

@@ -26,6 +26,7 @@ export function AccessConditionBuilder({ condition, onChange }: AccessConditionB
     { value: 'NearBalance', label: '💰 NEAR Balance Check', description: 'Require minimum NEAR balance' },
     { value: 'FtBalance', label: '🪙 FT Balance Check', description: 'Require specific token balance' },
     { value: 'NftOwned', label: '🖼️ NFT Ownership Check', description: 'Require NFT ownership' },
+    { value: 'DaoMember', label: '🏛️ DAO Membership', description: 'Require membership in DAO role' },
     { value: 'Whitelist', label: '👥 Whitelist', description: 'Only specific accounts allowed' },
     { value: 'AccountPattern', label: '🔍 Account Pattern', description: 'Match account name with regex' },
   ];
@@ -66,6 +67,9 @@ export function AccessConditionBuilder({ condition, onChange }: AccessConditionB
         break;
       case 'NftOwned':
         newCondition = { type: 'NftOwned', contract: '', token_id: null };
+        break;
+      case 'DaoMember':
+        newCondition = { type: 'DaoMember', dao_contract: '', role: '' };
         break;
       case 'Whitelist':
         newCondition = { type: 'Whitelist', accounts: [] };
@@ -381,6 +385,44 @@ export function AccessConditionBuilder({ condition, onChange }: AccessConditionB
               {currentCondition.token_id
                 ? '🎯 Requester must own this specific NFT'
                 : '🖼️ Requester must own at least one NFT from this collection'}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* DAO Member */}
+      {currentCondition.type === 'DaoMember' && (
+        <div className="mb-4 p-4 bg-gray-50 rounded-md space-y-3">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              DAO Contract
+            </label>
+            <input
+              type="text"
+              value={currentCondition.dao_contract}
+              onChange={(e) => updateCondition({ dao_contract: e.target.value })}
+              placeholder="my-dao.sputnik-dao.near"
+              className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm"
+            />
+            <p className="mt-1 text-xs text-gray-500">
+              Example: <code className="bg-white px-1 py-0.5 rounded">my-dao.sputnik-dao.near</code>
+            </p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              DAO Role
+            </label>
+            <input
+              type="text"
+              value={currentCondition.role}
+              onChange={(e) => updateCondition({ role: e.target.value })}
+              placeholder="council"
+              className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm"
+            />
+            <p className="mt-2 text-xs text-gray-500">
+              💡 Common roles: <code className="bg-white px-1 py-0.5 rounded">council</code>, <code className="bg-white px-1 py-0.5 rounded">members</code>
+              <br />
+              🏛️ Only accounts that are members of this role in the DAO can access these secrets
             </p>
           </div>
         </div>

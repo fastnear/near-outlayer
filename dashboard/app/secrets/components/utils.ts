@@ -35,6 +35,10 @@ export function formatAccessCondition(access: unknown): string {
       }
       return `🖼️ Owns NFT from ${nftOwned.contract}`;
     }
+    if (obj.DaoMember && typeof obj.DaoMember === 'object' && obj.DaoMember !== null) {
+      const daoMember = obj.DaoMember as { dao_contract: string; role: string };
+      return `🏛️ DAO member: ${daoMember.dao_contract} (${daoMember.role})`;
+    }
     if (obj.Logic && typeof obj.Logic === 'object' && obj.Logic !== null) {
       const logic = obj.Logic as { operator: string; conditions: unknown[] };
       return `🔗 ${logic.operator}: ${logic.conditions.length} conditions`;
@@ -62,6 +66,8 @@ export function convertAccessToContractFormat(access: AccessCondition): unknown 
       return { FtBalance: { contract: access.contract, operator: access.operator, value: access.value } };
     case 'NftOwned':
       return { NftOwned: { contract: access.contract, token_id: access.token_id } };
+    case 'DaoMember':
+      return { DaoMember: { dao_contract: access.dao_contract, role: access.role } };
     case 'Logic':
       return {
         Logic: {

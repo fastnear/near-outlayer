@@ -68,6 +68,13 @@ pub enum AccessCondition {
         contract: String,
         token_id: Option<String>,
     },
+    /// Require DAO membership (Sputnik v2 compatible)
+    /// Checks if caller is member of specified role in DAO
+    /// role: "council", "members", etc.
+    DaoMember {
+        dao_contract: String,
+        role: String,
+    },
 }
 
 impl AccessCondition {
@@ -242,6 +249,30 @@ impl AccessCondition {
                     token_id = ?token_id,
                     granted = %granted,
                     "Validated NFT ownership"
+                );
+
+                Ok(granted)
+            }
+
+            AccessCondition::DaoMember { dao_contract, role } => {
+                let near_client = match near_client {
+                    Some(client) => client,
+                    None => {
+                        tracing::warn!("DaoMember check requires NEAR client, but none provided");
+                        return Ok(false);
+                    }
+                };
+
+                // Check DAO membership for specified role
+                let granted = near_client.check_dao_membership(dao_contract, caller, role).await?;
+
+                tracing::debug!(
+                    condition = "DaoMember",
+                    dao_contract = %dao_contract,
+                    role = %role,
+                    caller = %caller,
+                    granted = %granted,
+                    "Validated DAO membership"
                 );
 
                 Ok(granted)

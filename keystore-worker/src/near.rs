@@ -261,4 +261,130 @@ impl NearClient {
             Ok(!tokens.is_empty())
         }
     }
+
+    /// Check if account is member of DAO role (Sputnik v2 compatible)
+    ///
+    /// Calls: dao_contract.get_policy()
+    /// Returns: Policy { roles: [...], ... }
+    ///
+    /// Role kinds:
+    /// - "Everyone" - all users
+    /// - "Group" - explicit list of accounts { "kind": { "Group": ["alice.near", ...] } }
+    /// - "Member" - token holders with balance >= threshold { "kind": { "Member": "1000000" } }
+    pub async fn check_dao_membership(&self, dao_contract: &str, account_id: &str, role_name: &str) -> Result<bool> {
+        let dao_contract_id = AccountId::from_str(dao_contract)
+            .context("Invalid DAO contract ID")?;
+
+        tracing::debug!(
+            dao_contract = %dao_contract,
+            account_id = %account_id,
+            role_name = %role_name,
+            "Checking DAO membership"
+        );
+
+        // Call get_policy()
+        let query = methods::query::RpcQueryRequest {
+            block_reference: BlockReference::latest(),
+            request: near_primitives::views::QueryRequest::CallFunction {
+                account_id: dao_contract_id,
+                method_name: "get_policy".to_string(),
+                args: vec![].into(), // no arguments
+            },
+        };
+
+        let response = self
+            .rpc_client
+            .call(query)
+            .await
+            .context("Failed to query DAO policy")?;
+
+        let result = match response.kind {
+            QueryResponseKind::CallResult(result) => result.result,
+            _ => anyhow::bail!("Unexpected query response"),
+        };
+
+        // Parse policy response
+        let policy: serde_json::Value = serde_json::from_slice(&result)
+            .context("Failed to parse DAO policy response")?;
+
+        tracing::debug!(
+            policy_json = %serde_json::to_string_pretty(&policy).unwrap_or_default(),
+            "Received DAO policy"
+        );
+
+        // Find role by name in policy.roles array
+        let roles = policy
+            .get("roles")
+            .and_then(|v| v.as_array())
+            .context("Policy missing 'roles' array")?;
+
+        for role in roles {
+            let name = role.get("name").and_then(|v| v.as_str());
+            if name != Some(role_name) {
+                continue; // Not the role we're looking for
+            }
+
+            tracing::debug!(
+                role_name = %role_name,
+                role_data = %serde_json::to_string(role).unwrap_or_default(),
+                "Found matching role"
+            );
+
+            // Check role kind
+            let kind = role.get("kind").context("Role missing 'kind' field")?;
+
+            // Check if it's "Everyone" (unit variant as string)
+            if kind.is_string() && kind.as_str() == Some("Everyone") {
+                tracing::debug!("Role kind is Everyone - access granted");
+                return Ok(true);
+            }
+
+            // Check if it's "Group" variant { "Group": ["alice.near", ...] }
+            if let Some(group_accounts) = kind.get("Group").and_then(|v| v.as_array()) {
+                let is_member = group_accounts.iter().any(|acc| {
+                    acc.as_str() == Some(account_id)
+                });
+
+                tracing::debug!(
+                    kind = "Group",
+                    accounts_count = group_accounts.len(),
+                    is_member = %is_member,
+                    "Checked Group membership"
+                );
+
+                return Ok(is_member);
+            }
+
+            // Check if it's "Member" variant { "Member": "1000000" }
+            if let Some(threshold_value) = kind.get("Member") {
+                // Member variant requires checking DAO token balance
+                // This would require calling dao_contract.delegation_total_supply() or similar
+                // For MVP, we'll deny access and log a warning
+                tracing::warn!(
+                    role_kind = "Member",
+                    threshold = %threshold_value,
+                    "Member role kind requires token balance check - not implemented yet, denying access"
+                );
+                return Ok(false);
+            }
+
+            // Unknown role kind
+            tracing::warn!(
+                role_kind = %serde_json::to_string(kind).unwrap_or_default(),
+                "Unknown role kind in DAO policy"
+            );
+            return Ok(false);
+        }
+
+        // Role not found in policy
+        tracing::debug!(
+            role_name = %role_name,
+            available_roles = ?roles.iter()
+                .filter_map(|r| r.get("name").and_then(|v| v.as_str()))
+                .collect::<Vec<_>>(),
+            "Role not found in DAO policy"
+        );
+
+        Ok(false)
+    }
 }
