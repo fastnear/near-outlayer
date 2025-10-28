@@ -254,10 +254,10 @@ impl Contract {
             owner_id: owner_id.clone(),
             operator_id: operator_id.unwrap_or(owner_id),
             paused: false,
-            base_fee: 10_000_000_000_000_000_000_000, // 0.01 NEAR
-            per_instruction_fee: 1_000_000_000_000_000, // 0.000001 NEAR per million instructions
-            per_ms_fee: 1_000_000_000_000_000_000, // 0.001 NEAR per second (execution)
-            per_compile_ms_fee: 1_000_000_000_000_000_000, // 0.001 NEAR per second (compilation)
+            base_fee: 1_000_000_000_000_000_000_000, // 0.001 NEAR
+            per_instruction_fee: 100_000_000_000_000, // 0.0000001 NEAR per million instructions
+            per_ms_fee: 100_000_000_000_000_000, // 0.0001 NEAR per second (execution)
+            per_compile_ms_fee: 100_000_000_000_000_000, // 0.0001 NEAR per second (compilation)
             next_request_id: 0,
             pending_requests: LookupMap::new(StorageKey::PendingRequests),
             total_executions: 0,
