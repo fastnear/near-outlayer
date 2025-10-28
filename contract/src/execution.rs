@@ -361,6 +361,9 @@ impl Contract {
 
                     self.total_fees_collected += self.base_fee;
 
+                    // Log payment charged in easy-to-parse format for worker (only base fee charged on promise failure)
+                    log!("[[yNEAR charged: \"{}\"]]", self.base_fee);
+
                     env::panic_str(&format!(
                         "Execution promise failed: {:?}. Refunded {} yoctoNEAR",
                         promise_error, refund
