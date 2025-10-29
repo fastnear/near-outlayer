@@ -51,8 +51,20 @@ pub async fn fetch_pricing_from_contract(
     )
     .context("Failed to decode pricing result")?;
 
-    let pricing: (String, String, String, String) = serde_json::from_str(&pricing_str)
+    // Parse as array of strings (NEAR serializes tuples as arrays)
+    let pricing_array: Vec<String> = serde_json::from_str(&pricing_str)
         .context("Failed to parse pricing JSON")?;
+
+    if pricing_array.len() != 4 {
+        anyhow::bail!("Expected 4 pricing values, got {}", pricing_array.len());
+    }
+
+    let pricing = (
+        pricing_array[0].clone(),
+        pricing_array[1].clone(),
+        pricing_array[2].clone(),
+        pricing_array[3].clone(),
+    );
 
     // Call get_max_limits view method
     let limits_response = client
