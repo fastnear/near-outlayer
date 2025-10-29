@@ -43,3 +43,4 @@ logs/
 
 # testnet config
 .env.testnet*
+prod_configs

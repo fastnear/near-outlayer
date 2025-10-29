@@ -1,6 +1,9 @@
-# OffchainVM Smart Contract
+# OutLayer Smart Contract
 
 NEAR smart contract for off-chain WASM execution using yield/resume mechanism.
+
+- Testnet: `outlayer.testnet`
+- Mainnet: `outlayer.near`
 
 ## Features
 
@@ -21,7 +24,7 @@ Request off-chain execution of WASM code.
 
 **Basic execution (no secrets):**
 ```bash
-near call offchainvm.testnet request_execution '{
+near call outlayer.testnet request_execution '{
   "code_source": {
     "repo": "https://github.com/user/project",
     "commit": "abc123",
@@ -33,19 +36,19 @@ near call offchainvm.testnet request_execution '{
     "max_execution_seconds": 60
   },
   "input_data": "{\"key\": \"value\"}"  
-}' --accountId user.testnet --deposit 0.1
+}' --accountId user.testnet --deposit 0.01
 ```
 
 **With encrypted secrets (e.g., API keys):**
 ```bash
 # 1. Get keystore public key
-near view offchainvm.testnet get_keystore_pubkey
+near view outlayer.testnet get_keystore_pubkey
 
 # 2. Encrypt your secrets with the public key (use keystore encryption library)
 # encrypted_data = encrypt_for_keystore(pubkey, "OPENAI_API_KEY=sk-...")
 
 # 3. Call with encrypted secrets
-near call offchainvm.testnet request_execution '{
+near call outlayer.testnet request_execution '{
   "code_source": {...},
   "resource_limits": {...},
   "input_data": "{...}",
@@ -60,7 +63,7 @@ near call offchainvm.testnet request_execution '{
 Cancel execution request after timeout (10 minutes).
 
 ```bash
-near call offchainvm.testnet cancel_stale_execution '{
+near call outlayer.testnet cancel_stale_execution '{
   "request_id": 123
 }' --accountId user.testnet
 ```
@@ -72,7 +75,7 @@ Resolve execution with results (called by worker).
 
 **Small output (<1024 bytes):**
 ```bash
-near call offchainvm.testnet resolve_execution '{
+near call outlayer.testnet resolve_execution '{
   "request_id": 0,
   "response": {
     "success": true,
@@ -86,31 +89,25 @@ near call offchainvm.testnet resolve_execution '{
 }' --accountId operator.testnet
 ```
 
-**Large output (>1024 bytes) - 2-call flow:**
+#### `submit_execution_output_and_resolve`
+Optimized single-transaction method for large outputs (>1024 bytes). Used automatically by worker.
 
-1. First, submit the large output:
 ```bash
-near call offchainvm.testnet submit_execution_output '{
+near call outlayer.testnet submit_execution_output_and_resolve '{
   "request_id": 0,
-  "output": {"Text": "Very long output..."}
+  "output": {"Text": "Very long output..."},
+  "success": true,
+  "error": null,
+  "resources_used": {
+    "instructions": 1000000,
+    "time_ms": 100,
+    "compile_time_ms": null
+  },
+  "compilation_note": null
 }' --accountId operator.testnet
 ```
 
-2. Then, resolve with metadata only:
-```bash
-near call offchainvm.testnet resolve_execution '{
-  "request_id": 0,
-  "response": {
-    "success": true,
-    "output": null,
-    "error": null,
-    "resources_used": {
-      "instructions": 1000000,
-      "time_ms": 100
-    }
-  }
-}' --accountId operator.testnet
-```
+**Note**: Worker automatically chooses between `resolve_execution` (small output) and `submit_execution_output_and_resolve` (large output) based on payload size.
 
 ### Admin Functions
 
@@ -118,7 +115,7 @@ near call offchainvm.testnet resolve_execution '{
 Change operator account.
 
 ```bash
-near call offchainvm.testnet set_operator '{
+near call outlayer.testnet set_operator '{
   "new_operator_id": "new-operator.testnet"
 }' --accountId owner.testnet
 ```
@@ -127,7 +124,7 @@ near call offchainvm.testnet set_operator '{
 Update pricing parameters.
 
 ```bash
-near call offchainvm.testnet set_pricing '{
+near call outlayer.testnet set_pricing '{
   "base_fee": "10000000000000000000000",
   "per_instruction_fee": "1000000000000000",
   "per_mb_fee": "100000000000000000000",
@@ -139,7 +136,7 @@ near call offchainvm.testnet set_pricing '{
 Pause/unpause contract.
 
 ```bash
-near call offchainvm.testnet set_paused '{
+near call outlayer.testnet set_paused '{
   "paused": true
 }' --accountId owner.testnet
 ```
@@ -150,7 +147,7 @@ near call offchainvm.testnet set_paused '{
 Get execution request by ID.
 
 ```bash
-near view offchainvm.testnet get_request '{
+near view outlayer.testnet get_request '{
   "request_id": 123
 }'
 ```
@@ -159,21 +156,21 @@ near view offchainvm.testnet get_request '{
 Get contract statistics.
 
 ```bash
-near view offchainvm.testnet get_stats '{}'
+near view outlayer.testnet get_stats '{}'
 ```
 
 #### `get_pricing`
 Get current pricing.
 
 ```bash
-near view offchainvm.testnet get_pricing '{}'
+near view outlayer.testnet get_pricing '{}'
 ```
 
 #### `get_config`
 Get contract configuration.
 
 ```bash
-near view offchainvm.testnet get_config '{}'
+near view outlayer.testnet get_config '{}'
 ```
 
 ### Secrets Management Functions
@@ -185,7 +182,7 @@ Store encrypted secrets for a repository.
 
 ```bash
 # 1. Estimate storage cost
-near view offchainvm.testnet estimate_storage_cost '{
+near view outlayer.testnet estimate_storage_cost '{
   "repo": "github.com/alice/project",
   "branch": "main",
   "profile": "default",
@@ -196,7 +193,7 @@ near view offchainvm.testnet estimate_storage_cost '{
 # Output: "1500000000000000000000" (0.0015 NEAR)
 
 # 2. Store secrets with exact deposit
-near call offchainvm.testnet store_secrets '{
+near call outlayer.testnet store_secrets '{
   "repo": "github.com/alice/project",
   "branch": "main",
   "profile": "default",
@@ -209,7 +206,7 @@ near call offchainvm.testnet store_secrets '{
 Estimate the storage cost before storing secrets. Returns exact cost in yoctoNEAR.
 
 ```bash
-near view offchainvm.testnet estimate_storage_cost '{
+near view outlayer.testnet estimate_storage_cost '{
   "repo": "github.com/alice/project",
   "branch": null,
   "profile": "production",
@@ -232,7 +229,7 @@ near view offchainvm.testnet estimate_storage_cost '{
 Retrieve secrets for a repository (called by keystore worker).
 
 ```bash
-near view offchainvm.testnet get_secrets '{
+near view outlayer.testnet get_secrets '{
   "repo": "github.com/alice/project",
   "branch": "main",
   "profile": "default",
@@ -244,7 +241,7 @@ near view offchainvm.testnet get_secrets '{
 Delete secrets and get storage deposit refund.
 
 ```bash
-near call offchainvm.testnet delete_secrets '{
+near call outlayer.testnet delete_secrets '{
   "repo": "github.com/alice/project",
   "branch": "main",
   "profile": "default"
@@ -255,7 +252,7 @@ near call offchainvm.testnet delete_secrets '{
 List all secrets stored by an account.
 
 ```bash
-near view offchainvm.testnet list_user_secrets '{
+near view outlayer.testnet list_user_secrets '{
   "account_id": "alice.testnet"
 }'
 ```
@@ -301,22 +298,19 @@ Emitted when execution is completed.
 ### Build
 
 ```bash
-cargo build --release --target wasm32-unknown-unknown
+./build.sh
 ```
 
-Or with cargo-near:
+### Deploy with init
 
 ```bash
-cargo near build --release
+near contract deploy outlayer.testnet use-file res/local/outlayer_contract.wasm with-init-call new json-args '{"owner_id":"owner.outlayer.testnet","operator_id":"worker.outlayer.testnet"}' prepaid-gas '100.0 Tgas' attached-deposit '0 NEAR' network-config testnet sign-with-keychain send
 ```
 
-### Deploy
+### Deploy without init
 
 ```bash
-near deploy offchainvm.testnet \
-  --wasmFile target/wasm32-unknown-unknown/release/offchainvm_contract.wasm \
-  --initFunction new \
-  --initArgs '{"owner_id": "owner.testnet", "operator_id": "operator.testnet"}'
+near contract deploy outlayer.testnet use-file res/local/outlayer.wasm without-init-call network-config testnet sign-with-keychain send
 ```
 
 ### Test
@@ -324,48 +318,6 @@ near deploy offchainvm.testnet \
 ```bash
 cargo test
 ```
-
-Integration tests:
-
-```bash
-cargo test --test integration_tests
-```
-
-## Pricing
-
-Default pricing (can be updated by owner):
-
-- **Base fee**: 0.01 NEAR per request
-- **Per instruction**: 0.000001 NEAR per 1M instructions
-- **Per MB memory**: 0.0001 NEAR per MB
-- **Per second**: 0.001 NEAR per second
-
-**Example cost calculation:**
-- 10M instructions + 64MB memory + 5 seconds = 0.01 + 0.00001 + 0.0064 + 0.005 = **0.02141 NEAR**
-
-## Development
-
-### Project Structure
-
-```
-contract/
-├── src/
-│   ├── lib.rs           # Main contract structure
-│   ├── execution.rs     # Execution logic with yield/resume
-│   ├── events.rs        # Event emissions
-│   ├── views.rs         # Read-only functions
-│   └── admin.rs         # Admin functions
-├── tests/
-│   └── integration_tests.rs
-└── Cargo.toml
-```
-
-### Key Components
-
-- **promise_yield_create**: Pauses contract execution
-- **promise_yield_resume**: Resumes with worker's result
-- **DATA_ID_REGISTER**: Register 37 for data_id
-- **MIN_RESPONSE_GAS**: 50 Tgas for callback
 
 ## License
 

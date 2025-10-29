@@ -7,7 +7,7 @@
 set -e
 
 # Configuration
-CONTRACT_ID="${CONTRACT_ID:-c5.offchainvm.testnet}"
+CONTRACT_ID="${CONTRACT_ID:-outlayer.testnet}"
 USER_ACCOUNT="${USER_ACCOUNT:-zavodil.testnet}"
 
 # Use the slow-compile test repo

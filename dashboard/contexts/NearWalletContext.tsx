@@ -25,8 +25,8 @@ const NearWalletContext = createContext<NearWalletContextType | undefined>(undef
 
 const getNetworkConfig = (network: NetworkType) => ({
   contractId: network === 'testnet'
-    ? process.env.NEXT_PUBLIC_TESTNET_CONTRACT_ID || 'c5.offchainvm.testnet'
-    : process.env.NEXT_PUBLIC_MAINNET_CONTRACT_ID || 'offchainvm.near',
+    ? process.env.NEXT_PUBLIC_TESTNET_CONTRACT_ID || 'outlayer.testnet'
+    : process.env.NEXT_PUBLIC_MAINNET_CONTRACT_ID || 'outlayer.near',
   rpcUrl: network === 'testnet'
     ? process.env.NEXT_PUBLIC_TESTNET_RPC_URL || 'https://rpc.testnet.near.org'
     : process.env.NEXT_PUBLIC_MAINNET_RPC_URL || 'https://rpc.mainnet.near.org',

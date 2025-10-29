@@ -8,7 +8,7 @@ set -e
 
 # Configuration
 NUM_TASKS=${1:-3}  # Default: 3 parallel tasks (AI is expensive)
-CONTRACT_ID="${CONTRACT_ID:-c5.offchainvm.testnet}"
+CONTRACT_ID="${CONTRACT_ID:-outlayer.testnet}"
 USER_ACCOUNT="${USER_ACCOUNT:-zavodil.testnet}"
 
 # GitHub repo that uses NEAR.ai API (free, no API key needed)

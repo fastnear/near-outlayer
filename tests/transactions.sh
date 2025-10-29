@@ -22,8 +22,8 @@ echo "================================="
 echo ""
 
 # Configuration
-CONTRACT_ID="${CONTRACT_ID:-c5.offchainvm.testnet}"
-CALLER_ACCOUNT="${CALLER_ACCOUNT:-offchainvm.testnet}"
+CONTRACT_ID="${CONTRACT_ID:-outlayer.testnet}"
+CALLER_ACCOUNT="${CALLER_ACCOUNT:-outlayer.testnet}"
 SIGN_METHOD="${SIGN_METHOD:-sign-with-legacy-keychain}"  # or sign-with-plaintext-private-key
 
 echo "📝 Configuration:"
