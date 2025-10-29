@@ -3,8 +3,10 @@
 import { useEffect, useState } from 'react';
 import { fetchJobs, JobHistoryEntry } from '@/lib/api';
 import { getTransactionUrl } from '@/lib/explorer';
+import { useNearWallet } from '@/contexts/NearWalletContext';
 
 export default function JobsPage() {
+  const { network } = useNearWallet();
   const [jobs, setJobs] = useState<JobHistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -241,7 +243,7 @@ export default function JobsPage() {
                         <td className="whitespace-nowrap px-3 py-4 text-sm">
                           {job.transaction_hash ? (
                             <a
-                              href={getTransactionUrl(job.transaction_hash)}
+                              href={getTransactionUrl(job.transaction_hash, network)}
                               target="_blank"
                               rel="noopener noreferrer"
                               className="text-blue-600 hover:text-blue-800 hover:underline"
