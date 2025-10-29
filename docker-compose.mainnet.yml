@@ -7,7 +7,7 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD_MAINNET:-postgres}
-      POSTGRES_DB: outlayer
+      POSTGRES_DB: ${POSTGRES_DB_MAINNET:-outlayer}
     ports:
       - "127.0.0.1:${POSTGRES_EXTERNAL_PORT_MAINNET:-5433}:5432"
     volumes:

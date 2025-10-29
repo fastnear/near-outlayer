@@ -37,7 +37,19 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# For testnet use .env.testnet, for mainnet use .env
+# Load root .env file for Docker variables
+ROOT_ENV="$PROJECT_ROOT/.env"
+if [ ! -f "$ROOT_ENV" ]; then
+    echo "Error: Root environment file not found: $ROOT_ENV"
+    exit 1
+fi
+
+# Source the root .env file
+set -a
+source "$ROOT_ENV"
+set +a
+
+# Check coordinator .env file exists (for docker-compose to use)
 if [ "$NETWORK" = "testnet" ]; then
     ENV_FILE="$PROJECT_ROOT/coordinator/.env.testnet"
 else
@@ -49,16 +61,23 @@ if [ ! -f "$ENV_FILE" ]; then
     exit 1
 fi
 
-# Extract PostgreSQL password from .env file
-POSTGRES_PASSWORD=$(grep "^POSTGRES_PASSWORD=" "$ENV_FILE" | cut -d'=' -f2- | tr -d '"' | tr -d "'")
-POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+# Set network-specific variables from root .env
+if [ "$NETWORK" = "testnet" ]; then
+    POSTGRES_PORT=${POSTGRES_EXTERNAL_PORT_TESTNET:-5432}
+    POSTGRES_PASSWORD=${POSTGRES_PASSWORD_TESTNET:-postgres}
+    POSTGRES_DB=${POSTGRES_DB_TESTNET:-offchainvm}
+else
+    POSTGRES_PORT=${POSTGRES_EXTERNAL_PORT_MAINNET:-5433}
+    POSTGRES_PASSWORD=${POSTGRES_PASSWORD_MAINNET:-postgres}
+    POSTGRES_DB=${POSTGRES_DB_MAINNET:-outlayer}
+fi
 
 # Step 1: Update SQLx cache (if SQL queries changed)
 echo "═══════════════════════════════════════════════════════════"
 echo "Step 1: Updating SQLx query cache..."
 echo "═══════════════════════════════════════════════════════════"
 cd coordinator
-if ! DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@localhost:5432/offchainvm" cargo sqlx prepare; then
+if ! DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@localhost:${POSTGRES_PORT}/${POSTGRES_DB}" cargo sqlx prepare; then
     echo ""
     echo "⚠️  Warning: SQLx prepare failed (database might be offline)"
     echo "Continuing with offline mode..."
@@ -110,13 +129,13 @@ echo "✅ Coordinator started successfully!"
 echo ""
 echo "Network: $NETWORK"
 if [ "$NETWORK" = "testnet" ]; then
-    echo "PostgreSQL: localhost:5432"
-    echo "Redis: localhost:6379"
-    echo "Coordinator API: http://localhost:8080"
+    echo "PostgreSQL: localhost:${POSTGRES_EXTERNAL_PORT_TESTNET:-5432} (DB: ${POSTGRES_DB_TESTNET:-offchainvm})"
+    echo "Redis: localhost:${REDIS_EXTERNAL_PORT_TESTNET:-6379}"
+    echo "Coordinator API: http://localhost:${COORDINATOR_EXTERNAL_PORT_TESTNET:-8080}"
 else
-    echo "PostgreSQL: localhost:5433"
-    echo "Redis: localhost:6380"
-    echo "Coordinator API: http://localhost:8180"
+    echo "PostgreSQL: localhost:${POSTGRES_EXTERNAL_PORT_MAINNET:-5433} (DB: ${POSTGRES_DB_MAINNET:-outlayer})"
+    echo "Redis: localhost:${REDIS_EXTERNAL_PORT_MAINNET:-6380}"
+    echo "Coordinator API: http://localhost:${COORDINATOR_EXTERNAL_PORT_MAINNET:-8180}"
 fi
 echo ""
 echo "Check logs: $DOCKER_COMPOSE -f $COMPOSE_FILE logs -f"
