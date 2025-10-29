@@ -45,7 +45,7 @@ services:
     ports:
       - "${COORDINATOR_EXTERNAL_PORT_MAINNET:-8180}:8080"
     volumes:
-      - wasm_cache_mainnet:/var/offchainvm/wasm
+      - wasm_cache_mainnet:/var/outlayer/wasm
     # Note: For keystore access from coordinator container:
     # - macOS/Windows: Use KEYSTORE_BASE_URL=http://host.docker.internal:8181
     # - Linux: Use KEYSTORE_BASE_URL=http://172.17.0.1:8181
