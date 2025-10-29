@@ -14,9 +14,12 @@ export type NetworkType = 'testnet' | 'mainnet';
 interface NearWalletContextType {
   accountId: string | null;
   isConnected: boolean;
+  isWalletReady: boolean;
   network: NetworkType;
   contractId: string;
   rpcUrl: string;
+  shouldReopenModal: boolean;
+  clearReopenModal: () => void;
   connect: () => void;
   disconnect: () => void;
   switchNetwork: (network: NetworkType) => void;
@@ -36,15 +39,49 @@ const getNetworkConfig = (network: NetworkType) => ({
 });
 
 export function NearWalletProvider({ children }: { children: ReactNode }) {
-  const defaultNetwork = (process.env.NEXT_PUBLIC_DEFAULT_NETWORK || 'testnet') as NetworkType;
-  const [network, setNetwork] = useState<NetworkType>(defaultNetwork);
+  // Read network from localStorage or use default
+  const getInitialNetwork = (): NetworkType => {
+    if (typeof window !== 'undefined') {
+      const stored = localStorage.getItem('near-wallet-selector:selectedNetworkId');
+      if (stored === 'testnet' || stored === 'mainnet') {
+        return stored;
+      }
+    }
+    return (process.env.NEXT_PUBLIC_DEFAULT_NETWORK || 'testnet') as NetworkType;
+  };
+
+  const [network] = useState<NetworkType>(getInitialNetwork);
   const [accountId, setAccountId] = useState<string | null>(null);
   const [selector, setSelector] = useState<any>(null);
   const [modal, setModal] = useState<any>(null);
+  const [isWalletReady, setIsWalletReady] = useState(false);
+  const [shouldReopenModal, setShouldReopenModal] = useState(false);
 
   const config = getNetworkConfig(network);
 
+  // Check if we should reopen modal after page reload
   useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const reopenFlag = localStorage.getItem('near-wallet-selector:reopenModal');
+      if (reopenFlag === 'true') {
+        setShouldReopenModal(true);
+      }
+    }
+  }, []);
+
+  const clearReopenModal = () => {
+    setShouldReopenModal(false);
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('near-wallet-selector:reopenModal');
+    }
+  };
+
+  useEffect(() => {
+    // Mark as not ready when starting to setup
+    setIsWalletReady(false);
+    setSelector(null);
+    setModal(null);
+
     setupWalletSelector({
       network,
       modules: [
@@ -54,12 +91,21 @@ export function NearWalletProvider({ children }: { children: ReactNode }) {
         setupIntearWallet(),
       ],
     }).then(async (_selector) => {
-      setSelector(_selector);
-
+      // Setup modal WITHOUT contractId to avoid function call access key creation
       const _modal = setupModal(_selector, {
-        contractId: config.contractId,
+        contractId: '', // Empty string means no contract-specific access key
       });
-      setModal(_modal);
+
+      // Subscribe to account changes to auto-update UI
+      const subscription = _selector.store.observable
+        .subscribe((state: { accounts: Array<{ accountId: string }> }) => {
+          const accounts = state.accounts;
+          if (accounts.length > 0) {
+            setAccountId(accounts[0].accountId);
+          } else {
+            setAccountId(null);
+          }
+        });
 
       // Check if wallet is already connected
       if (_selector.isSignedIn()) {
@@ -68,6 +114,18 @@ export function NearWalletProvider({ children }: { children: ReactNode }) {
           setAccountId(accounts[0].accountId);
         }
       }
+
+      // Set selector and modal AFTER everything is configured
+      setSelector(_selector);
+      setModal(_modal);
+
+      // Small delay to ensure modal is fully ready before allowing connections
+      setTimeout(() => {
+        setIsWalletReady(true);
+      }, 100);
+
+      // Cleanup subscription on unmount
+      return () => subscription.unsubscribe();
     });
   }, [network]);
 
@@ -86,13 +144,20 @@ export function NearWalletProvider({ children }: { children: ReactNode }) {
   };
 
   const switchNetwork = async (newNetwork: NetworkType) => {
+    // Store selected network in localStorage
+    localStorage.setItem('near-wallet-selector:selectedNetworkId', newNetwork);
+    // Set flag to reopen modal after reload
+    localStorage.setItem('near-wallet-selector:reopenModal', 'true');
+
     // Disconnect current wallet before switching
-    if (selector) {
+    if (selector && accountId) {
       const wallet = await selector.wallet();
       await wallet.signOut();
       setAccountId(null);
     }
-    setNetwork(newNetwork);
+
+    // Reload page to reinitialize wallet selector with new network
+    window.location.reload();
   };
 
   const signAndSendTransaction = async (params: any) => {
@@ -142,9 +207,12 @@ export function NearWalletProvider({ children }: { children: ReactNode }) {
       value={{
         accountId,
         isConnected: !!accountId,
+        isWalletReady,
         network,
         contractId: config.contractId,
         rpcUrl: config.rpcUrl,
+        shouldReopenModal,
+        clearReopenModal,
         connect,
         disconnect,
         switchNetwork,

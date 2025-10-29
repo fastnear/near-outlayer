@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNearWallet } from '@/contexts/NearWalletContext';
 import { actionCreators } from '@near-js/transactions';
+import WalletConnectionModal from '@/components/WalletConnectionModal';
 import { SecretsForm } from './components/SecretsForm';
 import { SecretsList } from './components/SecretsList';
 import { UserSecret, FormData } from './components/types';
@@ -10,11 +11,12 @@ import { UserSecret, FormData } from './components/types';
 const COORDINATOR_URL = process.env.NEXT_PUBLIC_COORDINATOR_API_URL || 'http://localhost:8080';
 
 export default function SecretsPage() {
-  const { accountId, isConnected, connect, signAndSendTransaction, contractId, viewMethod } = useNearWallet();
+  const { accountId, isConnected, signAndSendTransaction, contractId, viewMethod, shouldReopenModal, clearReopenModal } = useNearWallet();
 
   // User's secrets list
   const [userSecrets, setUserSecrets] = useState<UserSecret[]>([]);
   const [loadingSecrets, setLoadingSecrets] = useState(false);
+  const [showWalletModal, setShowWalletModal] = useState(false);
 
   // UI state
   const [error, setError] = useState<string | null>(null);
@@ -44,6 +46,14 @@ export default function SecretsPage() {
       setLoadingSecrets(false);
     }
   }, [accountId, contractId, viewMethod]);
+
+  // Auto-open modal if we switched networks
+  useEffect(() => {
+    if (shouldReopenModal && !isConnected) {
+      setShowWalletModal(true);
+      clearReopenModal();
+    }
+  }, [shouldReopenModal, isConnected, clearReopenModal]);
 
   // Load user secrets when connected
   useEffect(() => {
@@ -175,17 +185,25 @@ export default function SecretsPage() {
             Create and manage encrypted secrets for your repositories
           </p>
         </div>
-        {!isConnected && (
-          <div className="mt-4 sm:mt-0">
-            <button
-              onClick={connect}
-              className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700"
-            >
-              Connect Wallet
-            </button>
-          </div>
-        )}
       </div>
+
+      {/* Connect Wallet Button - Only if not connected */}
+      {!isConnected && (
+        <div className="mt-4 flex justify-center">
+          <button
+            onClick={() => setShowWalletModal(true)}
+            className="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-md text-white bg-gradient-to-r from-[#cc6600] to-[#d4a017] hover:from-[#b35900] hover:to-[#c49016] shadow-sm hover:shadow-md transition-all"
+          >
+            Connect Wallet
+          </button>
+        </div>
+      )}
+
+      {/* Wallet Connection Modal */}
+      <WalletConnectionModal
+        isOpen={showWalletModal}
+        onClose={() => setShowWalletModal(false)}
+      />
 
       {/* Error Display */}
       {error && (

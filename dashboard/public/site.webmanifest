@@ -1,0 +1,21 @@
+{
+  "name": "NEAR OutLayer",
+  "short_name": "OutLayer",
+  "description": "Verifiable off-chain computation for NEAR Blockchain",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#cc6600",
+  "theme_color": "#cc6600",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

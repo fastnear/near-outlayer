@@ -3,12 +3,23 @@
 import { useEffect, useState } from 'react';
 import { useNearWallet } from '@/contexts/NearWalletContext';
 import { fetchUserEarnings, UserEarnings } from '@/lib/api';
+import NetworkSwitcher from '@/components/NetworkSwitcher';
+import WalletConnectionModal from '@/components/WalletConnectionModal';
 
 export default function SettingsPage() {
-  const { accountId, isConnected, connect, disconnect } = useNearWallet();
+  const { accountId, isConnected, disconnect, shouldReopenModal, clearReopenModal } = useNearWallet();
   const [earnings, setEarnings] = useState<UserEarnings | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showWalletModal, setShowWalletModal] = useState(false);
+
+  // Auto-open modal if we switched networks
+  useEffect(() => {
+    if (shouldReopenModal && !isConnected) {
+      setShowWalletModal(true);
+      clearReopenModal();
+    }
+  }, [shouldReopenModal, isConnected, clearReopenModal]);
 
   useEffect(() => {
     if (isConnected && accountId) {
@@ -68,13 +79,19 @@ export default function SettingsPage() {
           </p>
           <div className="mt-6">
             <button
-              onClick={connect}
-              className="inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700"
+              onClick={() => setShowWalletModal(true)}
+              className="inline-flex items-center px-6 py-3 border border-transparent shadow-sm text-base font-medium rounded-md text-white bg-gradient-to-r from-[#cc6600] to-[#d4a017] hover:from-[#b35900] hover:to-[#c49016] transition-all"
             >
               Connect Wallet
             </button>
           </div>
         </div>
+
+        {/* Wallet Connection Modal */}
+        <WalletConnectionModal
+          isOpen={showWalletModal}
+          onClose={() => setShowWalletModal(false)}
+        />
       </div>
     );
   }
@@ -113,7 +130,7 @@ export default function SettingsPage() {
             <div className="py-4 sm:py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
               <dt className="text-sm font-medium text-gray-500">Network</dt>
               <dd className="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">
-                {process.env.NEXT_PUBLIC_NEAR_NETWORK || 'testnet'}
+                <NetworkSwitcher />
               </dd>
             </div>
           </dl>

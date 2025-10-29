@@ -1,9 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNearWallet } from '@/contexts/NearWalletContext';
 import { checkWasmExists } from '@/lib/api';
 import { actionCreators } from '@near-js/transactions';
+import WalletConnectionModal from '@/components/WalletConnectionModal';
 
 // Preset configurations
 interface Preset {
@@ -58,7 +59,7 @@ const PRESETS: Preset[] = [
 ];
 
 export default function PlaygroundPage() {
-  const { accountId, isConnected, connect, signAndSendTransaction, network, contractId, switchNetwork } = useNearWallet();
+  const { accountId, isConnected, connect, signAndSendTransaction, network, contractId, shouldReopenModal, clearReopenModal } = useNearWallet();
 
   // Initialize with first preset
   const [selectedPreset, setSelectedPreset] = useState<string>(PRESETS[0].name);
@@ -74,6 +75,15 @@ export default function PlaygroundPage() {
   const [result, setResult] = useState<{ transaction: Record<string, unknown>; executionOutput: string | null; transactionHash: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [wasmInfo, setWasmInfo] = useState<{ exists: boolean; checksum: string | null; file_size: number | null; created_at: string | null } | null>(null);
+  const [showWalletModal, setShowWalletModal] = useState(false);
+
+  // Auto-open modal if we switched networks
+  useEffect(() => {
+    if (shouldReopenModal && !isConnected) {
+      setShowWalletModal(true);
+      clearReopenModal();
+    }
+  }, [shouldReopenModal, isConnected, clearReopenModal]);
 
   // Apply preset configuration
   const applyPreset = (presetName: string) => {
@@ -209,33 +219,12 @@ export default function PlaygroundPage() {
 
       <div className="mt-8 bg-white shadow sm:rounded-lg">
         <div className="px-4 py-5 sm:p-6">
-          {/* Network Selector */}
-          <div className="mb-6">
-            <label className="text-sm font-medium text-gray-700">Network</label>
-            <div className="mt-2 flex space-x-4">
-              <button
-                onClick={() => switchNetwork('testnet')}
-                className={`px-4 py-2 rounded-md ${
-                  network === 'testnet'
-                    ? 'bg-gradient-to-r from-[#c17817] to-[#d4a017] text-white'
-                    : 'bg-gray-200 text-gray-700'
-                }`}
-              >
-                Testnet
-              </button>
-              <button
-                onClick={() => switchNetwork('mainnet')}
-                className={`px-4 py-2 rounded-md ${
-                  network === 'mainnet'
-                    ? 'bg-gradient-to-r from-[#c17817] to-[#d4a017] text-white'
-                    : 'bg-gray-200 text-gray-700'
-                }`}
-              >
-                Mainnet
-              </button>
-            </div>
-            <div className="mt-2 text-sm text-gray-600">
-              Contract: <span className="font-mono">{contractId}</span>
+          {/* Current Network & Contract Info */}
+          <div className="mb-6 p-3 bg-gray-50 rounded-md">
+            <div className="text-sm text-gray-600">
+              <span className="font-medium">Network:</span> {network === 'testnet' ? 'Testnet' : 'Mainnet'}
+              {' '} | {' '}
+              <span className="font-medium">Contract:</span> <span className="font-mono">{contractId}</span>
             </div>
           </div>
 
@@ -423,7 +412,13 @@ export default function PlaygroundPage() {
           {/* Execute Button */}
           <div className="mt-6">
             <button
-              onClick={handleExecute}
+              onClick={() => {
+                if (!isConnected) {
+                  setShowWalletModal(true);
+                } else {
+                  handleExecute();
+                }
+              }}
               disabled={loading}
               className="btn-primary w-full inline-flex justify-center items-center px-6 py-3 text-base font-medium rounded-md text-black disabled:bg-gray-400 disabled:text-white"
             >
@@ -457,6 +452,12 @@ export default function PlaygroundPage() {
               )}
             </button>
           </div>
+
+          {/* Wallet Connection Modal */}
+          <WalletConnectionModal
+            isOpen={showWalletModal}
+            onClose={() => setShowWalletModal(false)}
+          />
 
           {/* Connected Account */}
           {isConnected && (

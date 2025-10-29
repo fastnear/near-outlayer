@@ -4,10 +4,10 @@ services:
     container_name: offchainvm-postgres-mainnet
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      POSTGRES_DB: offchainvm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD_MAINNET:-postgres}
+      POSTGRES_DB: outlayer
     ports:
-      - "127.0.0.1:5433:5432"
+      - "127.0.0.1:${POSTGRES_EXTERNAL_PORT_MAINNET:-5433}:5432"
     volumes:
       - postgres_data_mainnet:/var/lib/postgresql/data
     healthcheck:
@@ -19,13 +19,13 @@ services:
   redis:
     image: redis:7-alpine
     container_name: offchainvm-redis-mainnet
-    command: redis-server --requirepass ${REDIS_PASSWORD:-redis123}
+    command: redis-server --requirepass ${REDIS_PASSWORD_MAINNET:-redis123}
     ports:
-      - "127.0.0.1:6380:6379"
+      - "127.0.0.1:${REDIS_EXTERNAL_PORT_MAINNET:-6380}:6379"
     volumes:
       - redis_data_mainnet:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "--pass", "${REDIS_PASSWORD:-redis123}", "ping"]
+      test: ["CMD", "redis-cli", "--pass", "${REDIS_PASSWORD_MAINNET:-redis123}", "ping"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -43,7 +43,7 @@ services:
     env_file:
       - ./coordinator/.env
     ports:
-      - "8180:8080"
+      - "${COORDINATOR_EXTERNAL_PORT_MAINNET:-8180}:8080"
     volumes:
       - wasm_cache_mainnet:/var/offchainvm/wasm
     # Note: For keystore access from coordinator container:
