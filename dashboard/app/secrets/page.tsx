@@ -7,11 +7,11 @@ import WalletConnectionModal from '@/components/WalletConnectionModal';
 import { SecretsForm } from './components/SecretsForm';
 import { SecretsList } from './components/SecretsList';
 import { UserSecret, FormData } from './components/types';
-
-const COORDINATOR_URL = process.env.NEXT_PUBLIC_COORDINATOR_API_URL || 'http://localhost:8080';
+import { getCoordinatorApiUrl } from '@/lib/api';
 
 export default function SecretsPage() {
-  const { accountId, isConnected, signAndSendTransaction, contractId, viewMethod, shouldReopenModal, clearReopenModal } = useNearWallet();
+  const { accountId, isConnected, signAndSendTransaction, contractId, viewMethod, network, shouldReopenModal, clearReopenModal } = useNearWallet();
+  const coordinatorUrl = getCoordinatorApiUrl(network);
 
   // User's secrets list
   const [userSecrets, setUserSecrets] = useState<UserSecret[]>([]);
@@ -225,7 +225,7 @@ export default function SecretsPage() {
           isConnected={isConnected}
           accountId={accountId}
           onSubmit={handleSubmitSecrets}
-          coordinatorUrl={COORDINATOR_URL}
+          coordinatorUrl={coordinatorUrl}
           initialData={
             editingSecret
               ? {

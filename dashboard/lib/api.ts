@@ -4,7 +4,34 @@
 
 import axios from 'axios';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_COORDINATOR_API_URL || 'http://localhost:8080';
+export type NetworkType = 'testnet' | 'mainnet';
+
+/**
+ * Get Coordinator API base URL for the given network
+ */
+export function getCoordinatorApiUrl(network?: NetworkType): string {
+  // Try to get network from localStorage if not provided
+  let currentNetwork = network;
+  if (!currentNetwork && typeof window !== 'undefined') {
+    const stored = localStorage.getItem('near-wallet-selector:selectedNetworkId');
+    if (stored === 'testnet' || stored === 'mainnet') {
+      currentNetwork = stored;
+    }
+  }
+
+  // Fallback to default network from env
+  if (!currentNetwork) {
+    currentNetwork = (process.env.NEXT_PUBLIC_DEFAULT_NETWORK || 'testnet') as NetworkType;
+  }
+
+  if (currentNetwork === 'mainnet') {
+    return process.env.NEXT_PUBLIC_MAINNET_COORDINATOR_API_URL || 'https://api.outlayer.near.org';
+  }
+
+  return process.env.NEXT_PUBLIC_TESTNET_COORDINATOR_API_URL || 'http://localhost:8080';
+}
+
+const API_BASE_URL = getCoordinatorApiUrl();
 
 export interface WorkerInfo {
   worker_id: string;
