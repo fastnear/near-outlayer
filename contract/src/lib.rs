@@ -228,7 +228,7 @@ pub struct Contract {
 
     // Pricing
     base_fee: Balance,
-    per_instruction_fee: Balance,
+    per_million_instructions_fee: Balance,
     per_ms_fee: Balance,                 // Execution time cost
     per_compile_ms_fee: Balance,         // Compilation time cost
 
@@ -256,7 +256,7 @@ impl Contract {
             operator_id: operator_id.unwrap_or(owner_id),
             paused: false,
             base_fee: 1_000_000_000_000_000_000_000, // 0.001 NEAR
-            per_instruction_fee: 100_000_000_000_000, // 0.0000001 NEAR per million instructions
+            per_million_instructions_fee: 100_000_000_000_000, // 0.0000001 NEAR per million instructions
             per_ms_fee: 100_000_000_000_000_000, // 0.0001 NEAR per second (execution)
             per_compile_ms_fee: 100_000_000_000_000_000, // 0.0001 NEAR per second (compilation)
             next_request_id: 0,
@@ -284,7 +284,7 @@ impl Contract {
 
     fn calculate_cost(&self, metrics: &ResourceMetrics) -> Balance {
         let instruction_cost =
-            (metrics.instructions / 1_000_000) as u128 * self.per_instruction_fee;
+            (metrics.instructions / 1_000_000) as u128 * self.per_million_instructions_fee;
         let time_cost = metrics.time_ms as u128 * self.per_ms_fee;
 
         // Add compilation cost if compilation occurred (uses separate, higher rate)
@@ -303,7 +303,7 @@ impl Contract {
         let max_time_ms = max_execution_seconds * 1000;
 
         // Calculate worst-case cost
-        let instruction_cost = (max_instructions / 1_000_000) as u128 * self.per_instruction_fee;
+        let instruction_cost = (max_instructions / 1_000_000) as u128 * self.per_million_instructions_fee;
         let time_cost = max_time_ms as u128 * self.per_ms_fee;
 
         self.base_fee + instruction_cost + time_cost

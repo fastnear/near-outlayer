@@ -46,7 +46,7 @@ impl Contract {
     pub fn set_pricing(
         &mut self,
         base_fee: Option<U128>,
-        per_instruction_fee: Option<U128>,
+        per_million_instructions_fee: Option<U128>,
         per_ms_fee: Option<U128>,
         per_compile_ms_fee: Option<U128>,
     ) {
@@ -56,9 +56,9 @@ impl Contract {
             self.base_fee = fee.0;
             log!("Base fee updated to {}", fee.0);
         }
-        if let Some(fee) = per_instruction_fee {
-            self.per_instruction_fee = fee.0;
-            log!("Per instruction fee updated to {}", fee.0);
+        if let Some(fee) = per_million_instructions_fee {
+            self.per_million_instructions_fee = fee.0;
+            log!("Per million instructions fee updated to {}", fee.0);
         }
         if let Some(fee) = per_ms_fee {
             self.per_ms_fee = fee.0;

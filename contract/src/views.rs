@@ -13,11 +13,11 @@ impl Contract {
     }
 
     /// Get current pricing
-    /// Returns: (base_fee, per_instruction_fee, per_ms_fee, per_compile_ms_fee)
+    /// Returns: (base_fee, per_million_instructions_fee, per_ms_fee, per_compile_ms_fee)
     pub fn get_pricing(&self) -> (U128, U128, U128, U128) {
         (
             U128(self.base_fee),
-            U128(self.per_instruction_fee),
+            U128(self.per_million_instructions_fee),
             U128(self.per_ms_fee),
             U128(self.per_compile_ms_fee),
         )
