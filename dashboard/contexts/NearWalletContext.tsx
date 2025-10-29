@@ -3,6 +3,9 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { setupWalletSelector } from '@near-wallet-selector/core';
 import { setupMyNearWallet } from '@near-wallet-selector/my-near-wallet';
+import { setupMeteorWallet } from '@near-wallet-selector/meteor-wallet';
+import { setupHereWallet } from '@near-wallet-selector/here-wallet';
+import { setupIntearWallet } from '@near-wallet-selector/intear-wallet';
 import { setupModal } from '@near-wallet-selector/modal-ui';
 import '@near-wallet-selector/modal-ui/styles.css';
 
@@ -44,7 +47,12 @@ export function NearWalletProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     setupWalletSelector({
       network,
-      modules: [setupMyNearWallet()],
+      modules: [
+        setupMyNearWallet(),
+        setupMeteorWallet(),
+        setupHereWallet(),
+        setupIntearWallet(),
+      ],
     }).then(async (_selector) => {
       setSelector(_selector);
 

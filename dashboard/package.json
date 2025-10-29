@@ -11,6 +11,9 @@
   "dependencies": {
     "@near-js/transactions": "^2.3.3",
     "@near-wallet-selector/core": "^10.0.0",
+    "@near-wallet-selector/here-wallet": "^10.1.0",
+    "@near-wallet-selector/intear-wallet": "^10.1.0",
+    "@near-wallet-selector/meteor-wallet": "^10.1.0",
     "@near-wallet-selector/modal-ui": "^10.0.0",
     "@near-wallet-selector/my-near-wallet": "^10.0.0",
     "axios": "^1.12.2",
