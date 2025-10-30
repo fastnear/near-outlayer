@@ -36,22 +36,25 @@ export default function RootLayout({
                     </Link>
                     {/* Desktop menu */}
                     <div className="hidden md:flex space-x-4">
-                      <Link href="/workers" className="text-gray-700 hover:text-[#cc6600] px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                      <Link href="/docs" className="text-gray-700 hover:text-[#cc6600] px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                        Docs
+                      </Link>
+                      <Link href="/workers" className="text-gray-700 hover:text-[#5a8f3a] px-3 py-2 rounded-md text-sm font-medium transition-colors">
                         Workers
                       </Link>
-                      <Link href="/executions" className="text-gray-700 hover:text-[#5a8f3a] px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                      <Link href="/executions" className="text-gray-700 hover:text-[#cc6600] px-3 py-2 rounded-md text-sm font-medium transition-colors">
                         Executions
                       </Link>
-                      <Link href="/secrets" className="text-gray-700 hover:text-[#cc6600] px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                      <Link href="/secrets" className="text-gray-700 hover:text-[#5a8f3a] px-3 py-2 rounded-md text-sm font-medium transition-colors">
                         Secrets
                       </Link>
-                      <Link href="/stats" className="text-gray-700 hover:text-[#5a8f3a] px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                      <Link href="/stats" className="text-gray-700 hover:text-[#cc6600] px-3 py-2 rounded-md text-sm font-medium transition-colors">
                         Stats
                       </Link>
-                      <Link href="/playground" className="text-gray-700 hover:text-[#cc6600] px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                      <Link href="/playground" className="text-gray-700 hover:text-[#5a8f3a] px-3 py-2 rounded-md text-sm font-medium transition-colors">
                         Playground
                       </Link>
-                      <Link href="/settings" className="text-gray-700 hover:text-[#5a8f3a] px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                      <Link href="/settings" className="text-gray-700 hover:text-[#cc6600] px-3 py-2 rounded-md text-sm font-medium transition-colors">
                         Settings
                       </Link>
                     </div>
@@ -79,44 +82,51 @@ export default function RootLayout({
                   <div className="md:hidden pb-4">
                     <div className="flex flex-col space-y-2">
                       <Link
-                        href="/workers"
+                        href="/docs"
                         onClick={() => setMobileMenuOpen(false)}
                         className="text-gray-700 hover:text-[#cc6600] px-3 py-2 rounded-md text-sm font-medium transition-colors"
+                      >
+                        Docs
+                      </Link>
+                      <Link
+                        href="/workers"
+                        onClick={() => setMobileMenuOpen(false)}
+                        className="text-gray-700 hover:text-[#5a8f3a] px-3 py-2 rounded-md text-sm font-medium transition-colors"
                       >
                         Workers
                       </Link>
                       <Link
                         href="/executions"
                         onClick={() => setMobileMenuOpen(false)}
-                        className="text-gray-700 hover:text-[#5a8f3a] px-3 py-2 rounded-md text-sm font-medium transition-colors"
+                        className="text-gray-700 hover:text-[#cc6600] px-3 py-2 rounded-md text-sm font-medium transition-colors"
                       >
                         Executions
                       </Link>
                       <Link
                         href="/secrets"
                         onClick={() => setMobileMenuOpen(false)}
-                        className="text-gray-700 hover:text-[#cc6600] px-3 py-2 rounded-md text-sm font-medium transition-colors"
+                        className="text-gray-700 hover:text-[#5a8f3a] px-3 py-2 rounded-md text-sm font-medium transition-colors"
                       >
                         Secrets
                       </Link>
                       <Link
                         href="/stats"
                         onClick={() => setMobileMenuOpen(false)}
-                        className="text-gray-700 hover:text-[#5a8f3a] px-3 py-2 rounded-md text-sm font-medium transition-colors"
+                        className="text-gray-700 hover:text-[#cc6600] px-3 py-2 rounded-md text-sm font-medium transition-colors"
                       >
                         Stats
                       </Link>
                       <Link
                         href="/playground"
                         onClick={() => setMobileMenuOpen(false)}
-                        className="text-gray-700 hover:text-[#cc6600] px-3 py-2 rounded-md text-sm font-medium transition-colors"
+                        className="text-gray-700 hover:text-[#5a8f3a] px-3 py-2 rounded-md text-sm font-medium transition-colors"
                       >
                         Playground
                       </Link>
                       <Link
                         href="/settings"
                         onClick={() => setMobileMenuOpen(false)}
-                        className="text-gray-700 hover:text-[#5a8f3a] px-3 py-2 rounded-md text-sm font-medium transition-colors"
+                        className="text-gray-700 hover:text-[#cc6600] px-3 py-2 rounded-md text-sm font-medium transition-colors"
                       >
                         Settings
                       </Link>

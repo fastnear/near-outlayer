@@ -295,27 +295,6 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Stats Section */}
-        <div className="mt-24 text-center">
-          <h3 className="text-3xl font-bold mb-12 text-transparent bg-clip-text bg-gradient-to-r from-[var(--primary-green)] to-[var(--neon-green)]">
-            Platform Statistics
-          </h3>
-          <div className="grid grid-cols-1 gap-8 sm:grid-cols-3 max-w-4xl mx-auto">
-            <div className="feature-card rounded-lg px-6 py-8">
-              <div className="text-4xl font-bold text-[var(--primary-orange)] mb-2">100B+</div>
-              <div className="text-gray-600">Max Instructions</div>
-            </div>
-            <div className="feature-card rounded-lg px-6 py-8">
-              <div className="text-4xl font-bold text-[var(--primary-green)] mb-2">60s</div>
-              <div className="text-gray-600">Max Execution Time</div>
-            </div>
-            <div className="feature-card rounded-lg px-6 py-8">
-              <div className="text-4xl font-bold text-[var(--neon-orange)] mb-2">∞</div>
-              <div className="text-gray-600">Possibilities</div>
-            </div>
-          </div>
-        </div>
-
         {/* Quick Links */}
         <div className="mt-24 text-center">
           <h3 className="text-3xl font-bold mb-12 text-transparent bg-clip-text bg-gradient-to-r from-[var(--primary-orange)] to-[var(--primary-yellow)]">
