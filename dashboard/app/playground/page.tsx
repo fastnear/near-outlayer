@@ -15,7 +15,8 @@ interface Preset {
   args: string;
   responseFormat: string;
   secretsProfile?: string; // Optional secrets profile
-  secretsOwner?: string; // Optional secrets owner account
+  secretsOwnerTestnet?: string; // Optional secrets owner for testnet
+  secretsOwnerMainnet?: string; // Optional secrets owner for mainnet
 }
 
 const PRESETS: Preset[] = [
@@ -35,7 +36,8 @@ const PRESETS: Preset[] = [
     args: '{"prompt":"What could the NEAR OutLayer project do?","history":[{"role":"user","content":"Tell me about NEAR"},{"role":"assistant","content":"NEAR is a Layer 1 blockchain..."}],"model_name":"fireworks::accounts/fireworks/models/gpt-oss-120b","openai_endpoint":"https://api.near.ai/v1/chat/completions","max_tokens":16384}',
     responseFormat: 'Text',
     secretsProfile: 'default',
-    secretsOwner: 'zavodil2.testnet',
+    secretsOwnerTestnet: 'zavodil2.testnet',
+    secretsOwnerMainnet: 'zavodil.near',
   },
   {
     name: 'Echo Generator',
@@ -53,7 +55,8 @@ const PRESETS: Preset[] = [
     args: '{"requests":[{"id":"eur_usd_rate","sources":[{"name":"custom","custom":{"url":"https://open.er-api.com/v6/latest/EUR","json_path":"rates.USD","value_type":"number","method":"GET","headers":[]}}]},{"id":"near_price","sources":[{"name":"coingecko","id":"near"},{"name":"binance","id":"NEARUSDT"},{"name":"huobi","id":"nearusdt"},{"name":"cryptocom","id":"NEAR_USDT"},{"name":"kucoin","id":"NEAR-USDT"},{"name":"gate","id":"near_usdt"},{"name":"pyth","id":"0xc415de8d2eba7db216527dff4b60e8f3a5311c740dadb233e13e12547e226750"}],"aggregation_method":"median","min_sources_num":4},{"id":"near_last_block_validator","sources":[{"name":"custom","custom":{"url":"https://api.nearblocks.io/v1/blocks/latest?limit=1","json_path":"blocks.0.author_account_id","value_type":"string","method":"GET","headers":[]}}]},{"id":"elden_ring_price_cents","sources":[{"name":"custom","custom":{"url":"https://store.steampowered.com/api/appdetails/?appids=1245620&cc=us","json_path":"1245620.data.price_overview.final","value_type":"number","method":"GET","headers":[]}}]}],"max_price_deviation_percent":10.0}',
     responseFormat: 'Json',
     secretsProfile: 'default',
-    secretsOwner: 'zavodil2.testnet',
+    secretsOwnerTestnet: 'zavodil2.testnet',
+    secretsOwnerMainnet: 'zavodil.near',
   },
   // Add more presets here
 ];
@@ -69,7 +72,7 @@ export default function PlaygroundPage() {
   const [args, setArgs] = useState(PRESETS[0].args);
   const [responseFormat, setResponseFormat] = useState(PRESETS[0].responseFormat);
   const [secretsProfile, setSecretsProfile] = useState(PRESETS[0].secretsProfile || '');
-  const [secretsOwner, setSecretsOwner] = useState(PRESETS[0].secretsOwner || '');
+  const [secretsOwner, setSecretsOwner] = useState('');
 
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ transaction: Record<string, unknown>; executionOutput: string | null; transactionHash: string } | null>(null);
@@ -85,6 +88,17 @@ export default function PlaygroundPage() {
     }
   }, [shouldReopenModal, isConnected, clearReopenModal]);
 
+  // Update secrets owner when network changes
+  useEffect(() => {
+    const preset = PRESETS.find(p => p.name === selectedPreset);
+    if (preset) {
+      const owner = network === 'testnet'
+        ? (preset.secretsOwnerTestnet || '')
+        : (preset.secretsOwnerMainnet || '');
+      setSecretsOwner(owner);
+    }
+  }, [network, selectedPreset]);
+
   // Apply preset configuration
   const applyPreset = (presetName: string) => {
     const preset = PRESETS.find(p => p.name === presetName);
@@ -96,7 +110,13 @@ export default function PlaygroundPage() {
       setArgs(preset.args);
       setResponseFormat(preset.responseFormat);
       setSecretsProfile(preset.secretsProfile || '');
-      setSecretsOwner(preset.secretsOwner || '');
+
+      // Select secrets owner based on current network
+      const owner = network === 'testnet'
+        ? (preset.secretsOwnerTestnet || '')
+        : (preset.secretsOwnerMainnet || '');
+      setSecretsOwner(owner);
+
       setWasmInfo(null); // Clear WASM cache info
     }
   };
