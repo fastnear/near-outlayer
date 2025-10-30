@@ -32,7 +32,7 @@ We propose an **alternative approach** to the RFP: instead of funding a dedicate
 - ✅ **Battle-tested foundation**: OutLayer contract deployed and operational on mainnet
 - ✅ **Immediate availability**: oracle-ark WASM module functional today (proven in production)
 - ✅ **TEE-native design**: Phala/Dstack integration planned from day one
-- ✅ **Flexible architecture**: Supports any asset with 5+ price APIs, unlimited asset coverage
+- ✅ **Flexible architecture**: Supports **any asset** with public APIs - crypto, stocks (AAPL, TSLA), commodities (gold, oil), forex (EUR/USD), even game prices (Steam, Epic Games) - unlimited coverage
 - ✅ **Optional caching layer**: For protocols needing instant prices (90%+ cache hit rate)
 
 ---
@@ -789,27 +789,87 @@ Workers automatically:
 | Category | Sources | Example Assets |
 |----------|---------|----------------|
 | **Cryptocurrencies** | CoinGecko, Binance, Huobi, Crypto.com, KuCoin, Gate.io, Pyth | BTC, ETH, NEAR, SOL, AVAX, BNB, ... |
-| **Forex** | ExchangeRate-API | EUR/USD, GBP/JPY, ... |
-| **Commodities** | TwelveData | Gold (XAU/USD), Oil (BRENT/USD), ... |
+| **Stocks** | Alpha Vantage, Yahoo Finance, TwelveData | AAPL, TSLA, GOOGL, NVDA, ... |
+| **Forex** | ExchangeRate-API, Fixer.io | EUR/USD, GBP/JPY, ... |
+| **Commodities** | TwelveData, Metals-API | Gold (XAU/USD), Oil (BRENT/USD), Silver (XAG/USD), ... |
+| **Game Prices** | Steam API, Epic Games, Humble Bundle | Steam game prices, DLC prices, regional pricing |
 | **Custom APIs** | User-defined | Any data source with JSON API |
+
+**Why This Matters:**
+- 🎮 **Gaming NFTs**: Price game items from Steam/Epic in NEAR tokens for in-game marketplaces
+- 📈 **Synthetic Assets**: Create on-chain derivatives for real-world stocks (AAPL/ETH, TSLA/NEAR)
+- 🏅 **Commodity-Backed Tokens**: Gold/silver-backed stablecoins with verifiable pricing
+- 💱 **Cross-Chain Forex**: Enable forex trading pairs on NEAR DeFi protocols
 
 **Easy to Add New Assets:**
 
 Adding support for new assets requires **zero code changes** - just specify different sources in the request:
 
+**Example 1: Apple Stock Price (AAPL)**
 ```json
 {
   "requests": [{
-    "id": "new_token_price",
+    "id": "aapl_stock",
     "sources": [
-      {"name": "coingecko", "id": "new-token"},
-      {"name": "binance", "id": "NEWTOKENUSDT"},
+      {"name": "alphavantage", "id": "AAPL"},
+      {"name": "yahoofinance", "id": "AAPL"},
+      {"name": "twelvedata", "id": "AAPL"},
       {"name": "custom", "custom": {
-        "url": "https://api.example.com/price/new-token",
-        "json_path": "data.price",
+        "url": "https://api.example.com/stock/AAPL",
+        "json_path": "price",
         "value_type": "number"
       }}
     ],
+    "aggregation_method": "median",
+    "min_sources_num": 3
+  }]
+}
+```
+
+**Example 2: Steam Game Price (Cyberpunk 2077)**
+```json
+{
+  "requests": [{
+    "id": "cyberpunk_usd",
+    "sources": [
+      {"name": "custom", "custom": {
+        "url": "https://store.steampowered.com/api/appdetails?appids=1091500",
+        "json_path": "data.1091500.price_overview.final",
+        "value_type": "number",
+        "transform": "divide_by_100"
+      }},
+      {"name": "custom", "custom": {
+        "url": "https://api.isthereanydeal.com/v1/game/price?key=XXX&id=1091500",
+        "json_path": "price.current",
+        "value_type": "number"
+      }},
+      {"name": "custom", "custom": {
+        "url": "https://api.cheapshark.com/stores",
+        "json_path": "stores[0].price",
+        "value_type": "number"
+      }}
+    ],
+    "aggregation_method": "median",
+    "min_sources_num": 2
+  }]
+}
+```
+
+**Example 3: Gold Price (XAU/USD)**
+```json
+{
+  "requests": [{
+    "id": "gold_usd",
+    "sources": [
+      {"name": "twelvedata", "id": "XAU/USD"},
+      {"name": "metals-api", "id": "GOLD"},
+      {"name": "custom", "custom": {
+        "url": "https://api.gold-api.com/price/XAU",
+        "json_path": "price",
+        "value_type": "number"
+      }}
+    ],
+    "aggregation_method": "median",
     "min_sources_num": 3
   }]
 }
@@ -1809,59 +1869,7 @@ impl PythWrapper {
 
 ---
 
-## Appendix C: Cost Analysis
-
-### Scenario 1: Low-Volume DeFi Protocol
-
-**Usage:**
-- 100 price queries/day
-- 30 days/month
-- Total: 3,000 queries/month
-
-**Costs:**
-- Per query: 0.004 NEAR
-- Monthly: 30 NEAR ($64 at $2.13/NEAR)
-
-**Comparison to Pyth:**
-- Pyth: 1-5 NEAR per query
-- OutLayer: 0.004 NEAR per query (actual mainnet cost)
-- **Savings: 90-98%**
-
-### Scenario 2: High-Volume Trading Platform
-
-**Usage:**
-- 10,000 price queries/day
-- 30 days/month
-- Total: 300,000 queries/month
-
-**Costs:**
-- Per query: 0.004 NEAR
-- Monthly: 3,000 NEAR ($6,390)
-
-**Comparison to Traditional Oracle:**
-- Traditional: Need dedicated oracle node ($2,500/month infra + $735/month gas = $3,235/month)
-- OutLayer: Users pay gas directly ($6,390/month split among all users)
-- **Platform cost: $0 (users pay per query)**
-
-### Scenario 3: NFT Marketplace
-
-**Usage:**
-- 500 price queries/day (only when user views NFT)
-- 30 days/month
-- Total: 15,000 queries/month
-
-**Costs:**
-- Per query: 0.004 NEAR
-- Monthly: 150 NEAR ($319)
-
-**Benefit:**
-- **No idle costs** when NFTs not being viewed
-- **Scales to zero** during low activity
-- **Users pay** (can be included in transaction fee)
-
----
-
-## Appendix D: Technical FAQs
+## Appendix C: Technical FAQs
 
 ### Q: How do you ensure price feed freshness?
 
