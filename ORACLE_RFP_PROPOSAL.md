@@ -1563,16 +1563,15 @@ OutLayer integrates with Shade Agent Framework and Dstack, supporting NEAR's AI 
 ## Contact
 
 **Team:** FastNEAR
-**Lead:** Eugene (eugene@fastnear.com)
+**Developer:** Vadim (vadimfastnear.com)
 **Website:** https://fastnear.com
-**Oracle Dashboard:** https://outlayer.fastnear.com
+**Ourlayer Dashboard:** https://outlayer.fastnear.com
 **GitHub:**
 - OutLayer Platform: https://github.com/fastnear/near-outlayer
 - Oracle WASM Module: https://github.com/zavodil/oracle-ark
 
 **For Questions:**
-- Technical: Telegram @eugene_near
-- Business: Email eugene@fastnear.com
+- Technical, business: Email vadim@fastnear.com
 
 ---
 
