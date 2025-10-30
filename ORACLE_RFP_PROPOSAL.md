@@ -1,10 +1,10 @@
 # TEE-Secured Price Oracle Proposal for NEAR Protocol
 ## Alternative Approach: On-Demand Oracle with Sustainable Economics
 
-**Submitted by:** FastNEAR Team
-**Date:** October 30, 2025
-**Project:** TEE-Secured Price Oracle (On-Demand Model via OutLayer Platform)
-**Grant Request:** $92,500 (first year) - **50% TEE hosting allocation + development on shared infrastructure**
+- **Submitted by:** FastNEAR Team
+- **Date:** October 30, 2025
+- **Project:** TEE-Secured Price Oracle (On-Demand Model via OutLayer Platform)
+- **Grant Request:** $92,500 (first year) - **50% TEE hosting allocation + development on shared infrastructure**
 
 ---
 
@@ -1966,4 +1966,4 @@ FastNEAR Team
 October 30, 2025
 
 **GitHub:** https://github.com/fastnear/near-outlayer
-**Contact:** eugene@fastnear.com | https://fastnear.com
+**Contact:** vadim@fastnear.com | https://fastnear.com
