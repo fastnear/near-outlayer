@@ -108,10 +108,10 @@ export default function Home() {
 
           <div className="mt-6 max-w-3xl mx-auto space-y-4">
             <p className="text-base text-gray-700 sm:text-lg md:text-xl">
-              You can stop your smart contract execution at any point and attach your GitHub repository as an argument.
+              Pause your smart contract execution at any point and attach your GitHub repository as an argument.
             </p>
             <p className="text-base text-gray-700 sm:text-lg md:text-xl">
-              We&apos;ll compile this code, run, and finalize your original transaction on-chain — allowing you to execute AI, fetch real-world data, generate randomness, or run any code beyond smart contract limits.
+              We compile your code, execute it off-chain in TEE, and finalize your transaction on-chain — enabling AI inference, real-world data oracles, secure randomness, or any computation beyond smart contract limits.
             </p>
           </div>
 
@@ -174,7 +174,7 @@ export default function Home() {
               </div>
               <h4 className="text-xl font-bold text-[var(--primary-orange)] mb-3">Any WASM Code</h4>
               <p className="text-gray-600">
-                Execute arbitrary WebAssembly from GitHub. Write in Rust, C++, Go, or any language that compiles to WASM.
+                Execute AI inference, fetch price oracles, generate randomness, or run any computation. Write in Rust, C++, Go, or any language that compiles to WASM.
               </p>
             </div>
 
@@ -253,6 +253,32 @@ export default function Home() {
               <h4 className="text-xl font-bold text-[var(--primary-orange)] mb-3">WASI Environment</h4>
               <p className="text-gray-600">
                 Full WASI support with environment variables. Access secrets via std::env::var(). Random numbers, file I/O ready.
+              </p>
+            </div>
+
+            {/* Real-World Data */}
+            <div className="feature-card rounded-lg px-6 py-8 transform transition-all">
+              <div className="feature-icon inline-flex items-center justify-center p-4 rounded-lg mb-6">
+                <svg className="h-8 w-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+              <h4 className="text-xl font-bold text-[var(--primary-green)] mb-3">Real-World Data</h4>
+              <p className="text-gray-600">
+                Fetch any API data: asset prices, weather forecasts, sports results, Dota match outcomes, historical on-chain data from indexers, flight status, and more.
+              </p>
+            </div>
+
+            {/* Immutable Storage */}
+            <div className="feature-card rounded-lg px-6 py-8 transform transition-all">
+              <div className="feature-icon inline-flex items-center justify-center p-4 rounded-lg mb-6">
+                <svg className="h-8 w-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
+                </svg>
+              </div>
+              <h4 className="text-xl font-bold text-[var(--primary-orange)] mb-3">Immutable WASM Storage</h4>
+              <p className="text-gray-600">
+                Store compiled WASM on-chain for instant 1-second execution. DAO-governed updates. No GitHub dependency or compilation delays.
               </p>
             </div>
 
