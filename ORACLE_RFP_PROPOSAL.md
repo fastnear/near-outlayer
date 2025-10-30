@@ -1105,17 +1105,21 @@ Our on-demand model shifts costs from ecosystem to users, but **total ecosystem 
 ### Timeline
 
 ```
-Month 1: Phase 1 + Phase 2 (Integration, Docs & TEE)
-├─ Week 1: Pyth wrapper + Caching contract + Documentation (parallel)
-├─ Week 2: Dashboard + Examples + Phala TEE integration (parallel)
-├─ Week 3: Attestation verification + Deploy 5+ TEE nodes
-├─ Week 4: End-to-end testing + Node operator docs
+Weeks 1-3: Phase 1 (Integration & Documentation)
+├─ Week 1: Simple wrapper + Pyth wrapper + Caching contract (parallel)
+├─ Week 2: Documentation + Examples + Dashboard enhancements (parallel)
+├─ Week 3: NEAR docs contribution + API playground
 
-Month 2: Phase 3 + Audit + Launch
-├─ Week 5: DAO deployment + Timelock + Operator onboarding (parallel)
-├─ Week 6: Pre-audit code review
-├─ Week 7: Post-audit fixes
-├─ Week 8: Mainnet launch + monitoring + 7-day burn-in
+Weeks 4-6: Phase 2 (TEE Integration)
+├─ Week 4: Phala/Dstack TEE integration + Attestation verification
+├─ Week 5: Deploy 5+ TEE nodes (distributed regions)
+├─ Week 6: Immutable WASM storage + End-to-end testing + Node operator docs
+
+Week 7: Phase 3 (Governance & Decentralization)
+├─ DAO deployment + Timelock integration + Operator onboarding (parallel)
+
+Week 8: Phase 4 (Security & Launch)
+├─ Pre-audit code review + Post-audit fixes + Mainnet launch
 
 Total: 8 weeks (2 months)
 ```
@@ -1258,7 +1262,7 @@ Total: 8 weeks (2 months)
 
 ## Deliverables
 
-### Phase 1: Integration & Documentation (Month 1-2)
+### Phase 1: Integration & Documentation (Weeks 1-3)
 
 ✅ **Smart Contract Deliverables:**
 - **Simple wrapper contract** (`oracle-wrapper.near`) - **Recommended for most protocols**
@@ -1306,7 +1310,7 @@ Total: 8 weeks (2 months)
 - Historical price charts (optional)
 - API playground (test requests)
 
-### Phase 2: TEE Integration (Month 3-4)
+### Phase 2: TEE Integration (Weeks 4-6)
 
 ✅ **TEE Worker Deployment:**
 - 5+ worker nodes running in Phala Cloud enclaves
@@ -1337,7 +1341,7 @@ Total: 8 weeks (2 months)
 - Troubleshooting runbook
 - Security best practices
 
-### Phase 3: Governance & Decentralization (Month 5)
+### Phase 3: Governance & Decentralization (Week 7)
 
 ✅ **Sputnik DAO Deployment:**
 - `oracle-dao.sputnik-dao.near` - governed by worker operators
@@ -1357,7 +1361,7 @@ Total: 8 weeks (2 months)
 - Provide training on Phala deployment
 - Assist with initial setup
 
-### Phase 4: Security & Launch (Month 6)
+### Phase 4: Security & Launch (Week 8)
 
 ✅ **Audit Support:**
 - Collaborate with auditor selected by Infrastructure Committee
@@ -1463,7 +1467,7 @@ While other oracles add TEE as an afterthought, OutLayer was architected for TEE
 
 ### 4. **Evolution Path: On-Demand → Push (When Economically Viable)**
 
-**Phase 1 (Day 1-6 months): On-Demand Only**
+**Phase 1 (First 6 months of operations): On-Demand Only**
 - New oracle, zero clients
 - Users pay 0.004 NEAR per query (actual mainnet cost)
 - No wasted gas, no idle infrastructure
@@ -1517,9 +1521,11 @@ OutLayer integrates with Shade Agent Framework and Dstack, supporting NEAR's AI 
 
 ---
 
-## Long-Term Vision
+## Long-Term Vision & Growth Strategy
 
-### Phase 1 (Months 1-6): On-Demand Oracle Bootstrap
+**Note:** This section describes the **operational evolution** after the 8-week development phase completes.
+
+### Phase 1 (First 6 months of operations): On-Demand Oracle Bootstrap
 
 - Deploy TEE-secured on-demand oracle
 - Support top 40 crypto assets + forex/commodities
@@ -1527,7 +1533,7 @@ OutLayer integrates with Shade Agent Framework and Dstack, supporting NEAR's AI 
 - Users pay 0.004 NEAR per query (actual mainnet cost)
 - **Operators accumulate revenue from user fees**
 
-### Phase 2 (Months 6-12): Add Push Workers (Self-Funded)
+### Phase 2 (Months 6-12 of operations): Add Push Workers (Self-Funded)
 
 **When oracle generates consistent revenue:**
 - Operators deploy **dedicated push workers funded by accumulated user fees** (no new grants)
