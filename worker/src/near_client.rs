@@ -393,6 +393,10 @@ impl NearClient {
         let args_json = serde_json::to_string(&args).context("Failed to serialize args")?;
         info!("📤 resolve_execution args (1-call flow, with output): size={} bytes", args_json.len());
 
+        // Debug: print first 500 chars of args
+        let preview = if args_json.len() > 500 { &args_json[..500] } else { &args_json };
+        info!("   Args preview (first 500 chars): {}", preview);
+
         // Send transaction
         info!("🔗 Sending resolve_execution transaction:");
         info!("   Contract: {}", self.contract_id);
