@@ -32,7 +32,7 @@
 use anyhow::Result;
 use std::collections::HashMap;
 use std::time::Instant;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::api_client::{ExecutionOutput, ExecutionResult, ResourceLimits, ResponseFormat};
 
@@ -86,6 +86,11 @@ impl Executor {
                     "WASM execution succeeded in {} ms, consumed {} instructions",
                     execution_time_ms, instructions
                 );
+                info!("📦 Raw output size: {} bytes", output_bytes.len());
+
+                if output_bytes.is_empty() {
+                    warn!("⚠️ WASM produced empty output (stdout was empty)");
+                }
 
                 // Convert output based on requested format
                 let output = match response_format {
