@@ -189,11 +189,12 @@ async fn execute_wasi_p2(
     let stdin_pipe = wasmtime_wasi::pipe::MemoryInputPipe::new(input_data.as_bytes().to_vec());
     let stdout_pipe =
         wasmtime_wasi::pipe::MemoryOutputPipe::new((args.max_memory_mb as usize) * 1024 * 1024);
+    let stderr_pipe = wasmtime_wasi::pipe::MemoryOutputPipe::new(1024 * 1024);
 
     let mut wasi_builder = WasiCtxBuilder::new();
     wasi_builder.stdin(stdin_pipe);
     wasi_builder.stdout(stdout_pipe.clone());
-    wasi_builder.stderr(wasmtime_wasi::pipe::MemoryOutputPipe::new(1024 * 1024));
+    wasi_builder.stderr(stderr_pipe.clone());
     wasi_builder.preopened_dir(
         "/tmp",
         ".",
@@ -234,6 +235,15 @@ async fn execute_wasi_p2(
     let fuel_consumed = args.max_instructions - store.get_fuel().unwrap_or(0);
     let output = stdout_pipe.contents().to_vec();
 
+    // Print stderr if verbose
+    if args.verbose {
+        let stderr_contents = stderr_pipe.contents();
+        if !stderr_contents.is_empty() {
+            println!("\n📋 STDERR output:");
+            println!("{}", String::from_utf8_lossy(&stderr_contents));
+        }
+    }
+
     Ok((output, fuel_consumed))
 }
 
@@ -249,11 +259,12 @@ async fn execute_wasi_p1(
     let stdin_pipe = wasmtime_wasi::pipe::MemoryInputPipe::new(input_data.as_bytes().to_vec());
     let stdout_pipe =
         wasmtime_wasi::pipe::MemoryOutputPipe::new((args.max_memory_mb as usize) * 1024 * 1024);
+    let stderr_pipe = wasmtime_wasi::pipe::MemoryOutputPipe::new(1024 * 1024);
 
     let mut wasi_builder = WasiCtxBuilder::new();
     wasi_builder.stdin(stdin_pipe);
     wasi_builder.stdout(stdout_pipe.clone());
-    wasi_builder.stderr(wasmtime_wasi::pipe::MemoryOutputPipe::new(1024 * 1024));
+    wasi_builder.stderr(stderr_pipe.clone());
 
     // Add environment variables
     for env_var in &args.env {
@@ -283,6 +294,15 @@ async fn execute_wasi_p1(
 
     let fuel_consumed = args.max_instructions - store.get_fuel().unwrap_or(0);
     let output = stdout_pipe.contents().to_vec();
+
+    // Print stderr if verbose
+    if args.verbose {
+        let stderr_contents = stderr_pipe.contents();
+        if !stderr_contents.is_empty() {
+            println!("\n📋 STDERR output:");
+            println!("{}", String::from_utf8_lossy(&stderr_contents));
+        }
+    }
 
     Ok((output, fuel_consumed))
 }
