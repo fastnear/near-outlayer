@@ -43,13 +43,16 @@ mod wasi_p2;
 pub struct Executor {
     /// Maximum instructions allowed per execution (default)
     _default_max_instructions: u64,
+    /// Print WASM stderr to worker logs
+    print_wasm_stderr: bool,
 }
 
 impl Executor {
     /// Create a new executor
-    pub fn new(default_max_instructions: u64) -> Self {
+    pub fn new(default_max_instructions: u64, print_wasm_stderr: bool) -> Self {
         Self {
             _default_max_instructions: default_max_instructions,
+            print_wasm_stderr,
         }
     }
 
@@ -73,7 +76,7 @@ impl Executor {
         let start = Instant::now();
 
         // Try to execute with different WASI versions
-        let result = Self::execute_async(wasm_bytes, input_data, limits, env_vars, build_target).await;
+        let result = Self::execute_async(wasm_bytes, input_data, limits, env_vars, build_target, self.print_wasm_stderr).await;
 
         let execution_time_ms = start.elapsed().as_millis() as u64;
 
@@ -160,6 +163,7 @@ impl Executor {
         limits: &ResourceLimits,
         env_vars: Option<HashMap<String, String>>,
         build_target: Option<&str>,
+        print_wasm_stderr: bool,
     ) -> Result<(Vec<u8>, u64)> {
         // Optimize: if we know build_target, try appropriate executor first
         if let Some(target) = build_target {
@@ -168,12 +172,12 @@ impl Executor {
                 "wasm32-wasip2" => {
                     tracing::debug!("🔹 Trying WASI P2 executor (target: wasm32-wasip2)");
                     // When target is known, return error directly (don't fallback to other formats)
-                    return wasi_p2::execute(wasm_bytes, input_data, limits, env_vars).await;
+                    return wasi_p2::execute(wasm_bytes, input_data, limits, env_vars, print_wasm_stderr).await;
                 }
                 "wasm32-wasip1" | "wasm32-wasi" => {
                     tracing::debug!("🔹 Trying WASI P1 executor (target: {})", target);
                     // When target is known, return error directly (don't fallback to other formats)
-                    return wasi_p1::execute(wasm_bytes, input_data, limits, env_vars).await;
+                    return wasi_p1::execute(wasm_bytes, input_data, limits, env_vars, print_wasm_stderr).await;
                 }
                 _ => {
                     tracing::debug!("⚠️ Unknown target '{}', fallback to auto-detection", target);
@@ -186,13 +190,13 @@ impl Executor {
 
         // Fallback: auto-detect format (for unknown targets or if specific executor failed)
         // Try WASI P2 component first
-        if let Ok(result) = wasi_p2::execute(wasm_bytes, input_data, limits, env_vars.clone()).await
+        if let Ok(result) = wasi_p2::execute(wasm_bytes, input_data, limits, env_vars.clone(), print_wasm_stderr).await
         {
             return Ok(result);
         }
 
         // Try WASI P1 module
-        if let Ok(result) = wasi_p1::execute(wasm_bytes, input_data, limits, env_vars.clone()).await
+        if let Ok(result) = wasi_p1::execute(wasm_bytes, input_data, limits, env_vars.clone(), print_wasm_stderr).await
         {
             return Ok(result);
         }
@@ -217,7 +221,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_executor_creation() {
-        let executor = Executor::new(10_000_000_000);
+        let executor = Executor::new(10_000_000_000, false);
         assert_eq!(executor._default_max_instructions, 10_000_000_000);
+        assert_eq!(executor.print_wasm_stderr, false);
     }
 }

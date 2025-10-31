@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
         .context("Failed to create compiler")?;
 
     // Initialize executor
-    let executor = Executor::new(config.default_max_instructions);
+    let executor = Executor::new(config.default_max_instructions, config.print_wasm_stderr);
 
     // Initialize keystore client (optional)
     let keystore_client = if let (Some(keystore_url), Some(keystore_token)) = (

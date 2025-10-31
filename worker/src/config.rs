@@ -46,6 +46,10 @@ pub struct Config {
     // WARNING: These logs should NEVER be exposed via public API for security reasons
     // Set to false in production to disable raw log storage
     pub save_system_hidden_logs_to_debug: bool,
+
+    // Print WASM stderr to worker logs (for debugging WASM execution)
+    // Set to false in production to reduce log noise
+    pub print_wasm_stderr: bool,
 }
 
 impl Config {
@@ -194,6 +198,12 @@ impl Config {
             .parse::<bool>()
             .unwrap_or(true);
 
+        // Set PRINT_WASM_STDERR=true to see WASM stderr in worker logs
+        let print_wasm_stderr = env::var("PRINT_WASM_STDERR")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+
         Ok(Self {
             api_base_url,
             api_auth_token,
@@ -219,6 +229,7 @@ impl Config {
             keystore_auth_token,
             tee_mode,
             save_system_hidden_logs_to_debug,
+            print_wasm_stderr,
         })
     }
 
@@ -306,6 +317,7 @@ mod tests {
             keystore_auth_token: None,
             tee_mode: "none".to_string(),
             save_system_hidden_logs_to_debug: true, // Default: enabled for debugging
+            print_wasm_stderr: false,
         }
     }
 }

@@ -28,6 +28,7 @@ use crate::api_client::ResourceLimits;
 /// * `input_data` - JSON input via stdin
 /// * `limits` - Resource limits (memory, instructions, time)
 /// * `env_vars` - Environment variables (from encrypted secrets)
+/// * `print_stderr` - Print WASM stderr to worker logs
 ///
 /// # Returns
 /// * `Ok((output, fuel_consumed))` - Execution succeeded
@@ -37,6 +38,7 @@ pub async fn execute(
     input_data: &[u8],
     limits: &ResourceLimits,
     env_vars: Option<HashMap<String, String>>,
+    print_stderr: bool,
 ) -> Result<(Vec<u8>, u64)> {
     // Configure wasmtime engine for WASI Preview 1
     let mut config = Config::new();
@@ -141,6 +143,13 @@ pub async fn execute(
     // Get results
     let fuel_consumed = limits.max_instructions - store.get_fuel().unwrap_or(0);
     debug!("WASM execution consumed {} instructions", fuel_consumed);
+
+    // Print stderr if flag is enabled (even on success)
+    let stderr_contents = stderr_pipe.contents();
+    if print_stderr && !stderr_contents.is_empty() {
+        let stderr_str = String::from_utf8_lossy(&stderr_contents);
+        tracing::info!("📝 WASM stderr output:\n{}", stderr_str);
+    }
 
     let output = stdout_pipe.contents().to_vec();
 

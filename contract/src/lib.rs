@@ -26,8 +26,8 @@ pub const DATA_ID_REGISTER: u64 = 37;
 pub const EXECUTION_TIMEOUT: u64 = 600 * 1_000_000_000;
 
 // Maximum resource limits (hard caps)
-pub const MAX_INSTRUCTIONS: u64 = 100_000_000_000; // 100 billion instructions
-pub const MAX_EXECUTION_SECONDS: u64 = 60; // 60 seconds
+pub const MAX_INSTRUCTIONS: u64 = 500_000_000_000; // 500 billion instructions
+pub const MAX_EXECUTION_SECONDS: u64 = 180; // 180 seconds
 pub const MAX_COMPILATION_SECONDS: u64 = 300; // 5 minutes max compilation time
 
 #[derive(BorshSerialize, BorshStorageKey)]
