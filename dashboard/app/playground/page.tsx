@@ -656,7 +656,7 @@ export default function PlaygroundPage() {
                     {depositDisplay}
                   </div>
                   <p className="mt-2 text-xs text-gray-500">
-                    💡 Deposit covers maximum possible costs for execution and compilation. Unused resources will be refunded at the end of the transaction.
+                    💡 Deposit covers possible costs for execution and compilation. Unused resources will be refunded at the end of the transaction.
                   </p>
                 </div>
 
@@ -762,7 +762,7 @@ export default function PlaygroundPage() {
               const currentPreset = PRESETS.find(p => p.name === selectedPreset);
               return currentPreset?.type === 'direct' ? (
                 <p className="mb-3 text-xs text-gray-500">
-                  💡 The attached deposit (0.1 NEAR) covers maximum possible costs for execution and compilation. Unused resources will be refunded at the end of the transaction.
+                  💡 The attached deposit covers possible costs for execution and compilation. Unused resources will be refunded at the end of the transaction.
                 </p>
               ) : null;
             })()}
