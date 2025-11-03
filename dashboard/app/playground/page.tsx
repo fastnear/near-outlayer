@@ -36,6 +36,11 @@ interface ProxyPreset extends BasePreset {
   proxyDeposit: string;
   proxyGas: string;
   args: string; // Arguments for proxy method
+  // WASM cache check fields (for contracts that call OutLayer)
+  wasmRepo?: string;
+  wasmCommit?: string;
+  wasmBuildTarget?: string;
+  increaseDepositIfNoCache?: boolean; // If true, add 0.1 NEAR to deposit when WASM not cached
 }
 
 type Preset = DirectPreset | ProxyPreset;
@@ -103,10 +108,15 @@ const PROXY_PRESETS: ProxyPreset[] = [
     description: '🎲 Play a coin flip game! Choose Heads or Tails. The proxy contract calls OutLayer for random number generation.\n\n🔗 Contract: https://github.com/zavodil/random-ark/tree/main/random-contract',
     networks: ['testnet', 'mainnet'],
     proxyContractIdTestnet: 'coin-toss.testnet',
-    proxyContractIdMainnet: 'coin-toss.near', 
+    proxyContractIdMainnet: 'coin-toss.near',
     proxyMethod: 'flip_coin',
     proxyDeposit: '10000000000000000000000', // 0.01 NEAR
     proxyGas: '300000000000000', // 300 TGas
+    // WASM cache check
+    wasmRepo: 'https://github.com/zavodil/random-ark',
+    wasmCommit: 'main',
+    wasmBuildTarget: 'wasm32-wasip1',
+    increaseDepositIfNoCache: true, // Add 0.1 NEAR if WASM not cached
   },
   {
     type: 'proxy',
@@ -118,6 +128,11 @@ const PROXY_PRESETS: ProxyPreset[] = [
     proxyMethod: 'ft_transfer_call',
     proxyDeposit: '1', // 1 yoctoNEAR
     proxyGas: '300000000000000', // 300 TGas
+    // WASM cache check
+    wasmRepo: 'https://github.com/zavodil/intents-ark',
+    wasmCommit: 'main',
+    wasmBuildTarget: 'wasm32-wasip2',
+    increaseDepositIfNoCache: false, // ft_transfer_call accepts only 1 yoctoNEAR
   },
 ];
 
@@ -234,7 +249,28 @@ export default function PlaygroundPage() {
   const handleCheckWasm = async () => {
     try {
       setError(null);
-      const info = await checkWasmExists(repo, commit, buildTarget);
+      const currentPreset = PRESETS.find(p => p.name === selectedPreset);
+
+      let checkRepo: string;
+      let checkCommit: string;
+      let checkBuildTarget: string;
+
+      if (currentPreset?.type === 'direct') {
+        // Direct preset - use form values
+        checkRepo = repo;
+        checkCommit = commit;
+        checkBuildTarget = buildTarget;
+      } else if (currentPreset?.type === 'proxy' && currentPreset.wasmRepo) {
+        // Proxy preset - use preset's WASM config
+        checkRepo = currentPreset.wasmRepo;
+        checkCommit = currentPreset.wasmCommit || 'main';
+        checkBuildTarget = currentPreset.wasmBuildTarget || 'wasm32-wasip1';
+      } else {
+        setError('No WASM configuration for this preset');
+        return;
+      }
+
+      const info = await checkWasmExists(checkRepo, checkCommit, checkBuildTarget);
       setWasmInfo(info);
     } catch (err) {
       setError('Failed to check WASM cache');
@@ -279,11 +315,18 @@ export default function PlaygroundPage() {
           throw new Error(`Proxy contract not available for ${network}`);
         }
 
+        // Calculate deposit (add 0.1 NEAR if WASM not cached and flag is set)
+        let finalDeposit = BigInt(currentPreset.proxyDeposit);
+        if (currentPreset.increaseDepositIfNoCache && wasmInfo && !wasmInfo.exists) {
+          // Add 0.1 NEAR (100000000000000000000000 yoctoNEAR)
+          finalDeposit += BigInt('100000000000000000000000');
+        }
+
         action = actionCreators.functionCall(
           currentPreset.proxyMethod,
           proxyArgs,
           BigInt(currentPreset.proxyGas),
-          BigInt(currentPreset.proxyDeposit)
+          finalDeposit
         );
 
         receiverId = proxyContractId;
@@ -634,11 +677,20 @@ export default function PlaygroundPage() {
             if (currentPreset?.type !== 'proxy') return null;
 
             // Convert yoctoNEAR to NEAR for display
-            const depositYocto = BigInt(currentPreset.proxyDeposit);
+            let depositYocto = BigInt(currentPreset.proxyDeposit);
+
+            // Add 0.1 NEAR if WASM not cached and flag is set
+            const shouldIncreaseDeposit = currentPreset.increaseDepositIfNoCache &&
+                                          wasmInfo &&
+                                          !wasmInfo.exists;
+            if (shouldIncreaseDeposit) {
+              depositYocto += BigInt('100000000000000000000000');
+            }
+
             const depositNear = Number(depositYocto) / 1e24;
             const depositDisplay = depositYocto === BigInt(1)
               ? '1 yoctoNEAR'
-              : `${depositNear} NEAR`;
+              : `${depositNear} NEAR${shouldIncreaseDeposit ? ' (includes +0.1 NEAR for compilation)' : ''}`;
 
             // Format gas for display
             const gasAmount = currentPreset.proxyGas;
@@ -727,10 +779,12 @@ export default function PlaygroundPage() {
             ) : null;
           })()}
 
-          {/* Check WASM Button - only for direct execution */}
+          {/* Check WASM Button - for direct execution and proxy with wasmRepo */}
           {(() => {
             const currentPreset = PRESETS.find(p => p.name === selectedPreset);
-            return currentPreset?.type === 'direct' ? (
+            const shouldShowButton = currentPreset?.type === 'direct' ||
+                                     (currentPreset?.type === 'proxy' && currentPreset.wasmRepo);
+            return shouldShowButton ? (
               <div className="mb-6">
                 <button
                   onClick={handleCheckWasm}
@@ -746,7 +800,7 @@ export default function PlaygroundPage() {
                       </span>
                     ) : (
                       <span className="text-yellow-600">
-                        ⚠ WASM not cached - will be compiled on first execution
+                        ⚠ WASM not cached - will be compiled on first execution{currentPreset?.type === 'proxy' && currentPreset.increaseDepositIfNoCache ? ' (+0.1 NEAR added to deposit)' : ''}
                       </span>
                     )}
                   </div>
