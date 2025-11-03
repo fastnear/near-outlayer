@@ -120,7 +120,7 @@ const PROXY_PRESETS: ProxyPreset[] = [
   },
   {
     type: 'proxy',
-    name: 'USDC → wNEAR Swap',
+    name: 'NEAR Intents Swap',
     args: '{"receiver_id":"publishintent.near","amount":"20000","msg":"{\\"Swap\\":{\\"token_out\\":\\"wrap.near\\",\\"min_amount_out\\":\\"1000000000000000000\\"}}"}',
     description: '⚠️ Swaps USDC to wNEAR via NEAR Intents protocol.\n\n📋 Before using:\n1. Ensure you have storage_deposit for wNEAR (wrap.near)\n2. Only use whitelisted tokens\n3. Adjust token_out and min_amount_out as needed\n4. This calls ft_transfer_call on USDC token contract\n\n🔗 Contract: https://github.com/zavodil/intents-ark/tree/main/intents-contract',
     networks: ['mainnet'],
