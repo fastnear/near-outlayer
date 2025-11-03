@@ -194,8 +194,8 @@ export default function Home() {
             {/* Dynamic Pricing */}
             <div className="feature-card rounded-lg px-6 py-8 transform transition-all">
               <div className="feature-icon inline-flex items-center justify-center p-4 rounded-lg mb-6">
-                <svg className="h-8 w-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1" />
+                <svg className="h-8 w-8 text-white" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1.41 16.09V20h-2.67v-1.93c-1.71-.36-3.16-1.46-3.27-3.4h1.96c.1 1.05.82 1.87 2.65 1.87 1.96 0 2.4-.98 2.4-1.59 0-.83-.44-1.61-2.67-2.14-2.48-.6-4.18-1.62-4.18-3.67 0-1.72 1.39-2.84 3.11-3.21V4h2.67v1.95c1.86.45 2.79 1.86 2.85 3.39H14.3c-.05-1.11-.64-1.87-2.22-1.87-1.5 0-2.4.68-2.4 1.64 0 .84.65 1.39 2.67 1.91s4.18 1.39 4.18 3.91c-.01 1.83-1.38 2.83-3.12 3.16z"/>
                 </svg>
               </div>
               <h4 className="text-xl font-bold text-[var(--primary-orange)] mb-3">Flexible Payment</h4>
@@ -226,7 +226,7 @@ export default function Home() {
               </div>
               <h4 className="text-xl font-bold text-[var(--primary-orange)] mb-3">GitHub Integration</h4>
               <p className="text-gray-600">
-                Compile directly from public GitHub repos. Reference by branch (always latest) or commit hash (immutable). WASM cache with distributed locking. GitLab support coming soon.
+                Compile directly from public GitHub repos. Reference by branch or commit hash (immutable). WASM cache with distributed locking. GitLab support coming soon.
               </p>
             </div>
 
@@ -239,7 +239,7 @@ export default function Home() {
               </div>
               <h4 className="text-xl font-bold text-[var(--primary-green)] mb-3">Access Control</h4>
               <p className="text-gray-600">
-                Flexible secret access: whitelist, NEAR/FT/NFT balance checks, account patterns, and complex logic conditions.
+                Flexible secret access: whitelist, NEAR/FT/NFT balance checks, DAO memebership, account patterns, and complex logic conditions (AND/OR/NOT).
               </p>
             </div>
 
@@ -279,6 +279,19 @@ export default function Home() {
               <h4 className="text-xl font-bold text-[var(--primary-orange)] mb-3">Immutable WASM Storage</h4>
               <p className="text-gray-600">
                 Store compiled WASM on-chain for instant 1-second execution. DAO-governed updates. No GitHub dependency or compilation delays.
+              </p>
+            </div>
+
+            {/* Unlimited Possibilities */}
+            <div className="feature-card rounded-lg px-6 py-8 transform transition-all">
+              <div className="feature-icon inline-flex items-center justify-center p-4 rounded-lg mb-6">
+                <svg className="h-8 w-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                </svg>
+              </div>
+              <h4 className="text-xl font-bold text-[var(--primary-green)] mb-3">Unlimited Possibilities</h4>
+              <p className="text-gray-600">
+                Break free from blockchain constraints. Invent entirely new concepts and use cases previously impossible in decentralized applications. The only limit is your imagination.
               </p>
             </div>
 
