@@ -148,7 +148,7 @@ export default function Home() {
               </div>
               <h4 className="text-xl font-bold text-[var(--primary-orange)] mb-3">Fast Execution</h4>
               <p className="text-gray-600">
-                Off-chain execution with on-chain verification. Get results 100x faster while maintaining security and finality.
+                Off-chain execution 100x faster with Layer 1 settlement. Run code impossible in smart contracts while final results settle securely on NEAR blockchain.
               </p>
             </div>
 
@@ -187,7 +187,7 @@ export default function Home() {
               </div>
               <h4 className="text-xl font-bold text-[var(--primary-green)] mb-3">Encrypted Secrets</h4>
               <p className="text-gray-600">
-                Store API keys and secrets encrypted on-chain with per-repo/branch access control. Injected as WASI environment variables.
+                Store API keys encrypted on-chain with sophisticated access control (whitelists, token balance, complex logic). Automatically injected as WASI environment variables.
               </p>
             </div>
 
@@ -198,9 +198,9 @@ export default function Home() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1" />
                 </svg>
               </div>
-              <h4 className="text-xl font-bold text-[var(--primary-orange)] mb-3">Dynamic Pricing</h4>
+              <h4 className="text-xl font-bold text-[var(--primary-orange)] mb-3">Flexible Payment</h4>
               <p className="text-gray-600">
-                Pay only for resources used. Estimated costs shown upfront. Excess payment automatically refunded after execution.
+                Pay only for actual resources consumed. Choose who pays: let users cover their requests or sponsor execution from contract balance. Unused funds automatically refunded.
               </p>
             </div>
 
@@ -226,7 +226,7 @@ export default function Home() {
               </div>
               <h4 className="text-xl font-bold text-[var(--primary-orange)] mb-3">GitHub Integration</h4>
               <p className="text-gray-600">
-                Compile directly from GitHub repos. Automatic branch resolution. WASM cache with distributed locking.
+                Compile directly from public GitHub repos. Reference by branch (always latest) or commit hash (immutable). WASM cache with distributed locking. GitLab support coming soon.
               </p>
             </div>
 
@@ -252,7 +252,7 @@ export default function Home() {
               </div>
               <h4 className="text-xl font-bold text-[var(--primary-orange)] mb-3">WASI Environment</h4>
               <p className="text-gray-600">
-                Full WASI support with environment variables. Access secrets via std::env::var(). Random numbers, file I/O ready.
+                Full WASI support with environment variables and blockchain context. Access secrets via std::env::var(). Pass block height, account ID, timestamp as input parameters.
               </p>
             </div>
 

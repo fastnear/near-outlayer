@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { useNearWallet } from '@/contexts/NearWalletContext';
 import { checkWasmExists } from '@/lib/api';
 import { getTransactionUrl } from '@/lib/explorer';
@@ -139,23 +140,29 @@ const PROXY_PRESETS: ProxyPreset[] = [
 // Combine all presets
 const PRESETS: Preset[] = [...DIRECT_PRESETS, ...PROXY_PRESETS];
 
-export default function PlaygroundPage() {
+function PlaygroundContent() {
   const { accountId, isConnected, connect, signAndSendTransaction, network, contractId, shouldReopenModal, clearReopenModal } = useNearWallet();
+  const searchParams = useSearchParams();
 
   // Filter presets by current network
   const availablePresets = PRESETS.filter(preset =>
     preset.networks && preset.networks.includes(network)
   );
 
-  // Initialize with first preset
-  const firstPreset = availablePresets[0];
-  const [selectedPreset, setSelectedPreset] = useState<string>(firstPreset?.name || '');
-  const [repo, setRepo] = useState(firstPreset?.type === 'direct' ? firstPreset.repo : '');
-  const [commit, setCommit] = useState(firstPreset?.type === 'direct' ? firstPreset.commit : '');
-  const [buildTarget, setBuildTarget] = useState(firstPreset?.type === 'direct' ? firstPreset.buildTarget : 'wasm32-wasip1');
-  const [args, setArgs] = useState(firstPreset?.args || '');
-  const [responseFormat, setResponseFormat] = useState(firstPreset?.type === 'direct' ? firstPreset.responseFormat : 'Json');
-  const [secretsProfile, setSecretsProfile] = useState(firstPreset?.type === 'direct' ? firstPreset.secretsProfile || '' : '');
+  // Check for preset in URL params
+  const presetFromUrl = searchParams.get('preset');
+  const initialPreset = presetFromUrl
+    ? availablePresets.find(p => p.name === presetFromUrl) || availablePresets[0]
+    : availablePresets[0];
+
+  // Initialize with preset from URL or first preset
+  const [selectedPreset, setSelectedPreset] = useState<string>(initialPreset?.name || '');
+  const [repo, setRepo] = useState(initialPreset?.type === 'direct' ? initialPreset.repo : '');
+  const [commit, setCommit] = useState(initialPreset?.type === 'direct' ? initialPreset.commit : '');
+  const [buildTarget, setBuildTarget] = useState(initialPreset?.type === 'direct' ? initialPreset.buildTarget : 'wasm32-wasip1');
+  const [args, setArgs] = useState(initialPreset?.args || '');
+  const [responseFormat, setResponseFormat] = useState(initialPreset?.type === 'direct' ? initialPreset.responseFormat : 'Json');
+  const [secretsProfile, setSecretsProfile] = useState(initialPreset?.type === 'direct' ? initialPreset.secretsProfile || '' : '');
   const [secretsOwner, setSecretsOwner] = useState('');
 
   const [loading, setLoading] = useState(false);
@@ -171,6 +178,22 @@ export default function PlaygroundPage() {
       clearReopenModal();
     }
   }, [shouldReopenModal, isConnected, clearReopenModal]);
+
+  // Load preset from URL on mount
+  useEffect(() => {
+    if (presetFromUrl && initialPreset) {
+      setSelectedPreset(initialPreset.name);
+      setArgs(initialPreset.args);
+      if (initialPreset.type === 'direct') {
+        setRepo(initialPreset.repo);
+        setCommit(initialPreset.commit);
+        setBuildTarget(initialPreset.buildTarget);
+        setResponseFormat(initialPreset.responseFormat);
+        setSecretsProfile(initialPreset.secretsProfile || '');
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Update form when network changes - load first available preset
   useEffect(() => {
@@ -930,5 +953,13 @@ export default function PlaygroundPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function PlaygroundPage() {
+  return (
+    <Suspense fallback={<div className="max-w-7xl mx-auto">Loading...</div>}>
+      <PlaygroundContent />
+    </Suspense>
   );
 }
