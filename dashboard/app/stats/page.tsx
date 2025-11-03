@@ -154,8 +154,11 @@ export default function StatsPage() {
           </div>
         </div>
 
-        {/* Active Workers */}
-        <div className="bg-white overflow-hidden shadow rounded-lg">
+        {/* Active Workers - Clickable Link */}
+        <a
+          href="/workers"
+          className="bg-white overflow-hidden shadow rounded-lg hover:shadow-md transition-shadow cursor-pointer"
+        >
           <div className="p-5">
             <div className="flex items-center">
               <div className="flex-shrink-0">
@@ -177,15 +180,20 @@ export default function StatsPage() {
                 <dl>
                   <dt className="text-sm font-medium text-gray-500 truncate">Active Workers</dt>
                   <dd className="flex items-baseline">
-                    <div className="text-2xl font-semibold text-gray-900">
+                    <div className="text-2xl font-semibold text-blue-600 hover:text-blue-800">
                       {stats.active_workers}
                     </div>
                   </dd>
                 </dl>
               </div>
+              <div className="ml-2">
+                <svg className="h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+              </div>
             </div>
           </div>
-        </div>
+        </a>
 
         {/* Unique Users */}
         <div className="bg-white overflow-hidden shadow rounded-lg">
