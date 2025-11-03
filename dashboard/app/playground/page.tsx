@@ -103,7 +103,7 @@ const PROXY_PRESETS: ProxyPreset[] = [
     description: '🎲 Play a coin flip game! Choose Heads or Tails. The proxy contract calls OutLayer for random number generation.\n\n🔗 Contract: https://github.com/zavodil/random-ark/tree/main/random-contract',
     networks: ['testnet', 'mainnet'],
     proxyContractIdTestnet: 'coin-toss.testnet',
-    proxyContractIdMainnet: 'coin-flip.near', 
+    proxyContractIdMainnet: 'coin-toss.near', 
     proxyMethod: 'flip_coin',
     proxyDeposit: '10000000000000000000000', // 0.01 NEAR
     proxyGas: '300000000000000', // 300 TGas
