@@ -13,3 +13,6 @@
 [submodule "wasi-examples/captcha-ark"]
 	path = wasi-examples/captcha-ark
 	url = git@github.com:zavodil/captcha-ark.git
+[submodule "wasi-examples/weather-ark"]
+	path = wasi-examples/weather-ark
+	url = git@github.com:zavodil/weather-ark.git
