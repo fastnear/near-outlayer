@@ -127,7 +127,7 @@ SERVER_PORT=8081
 # NEAR Configuration
 NEAR_NETWORK=testnet
 NEAR_RPC_URL=https://rpc.testnet.fastnear.com?apiKey=FASTNEARDEVSUoeFIcg7PpuKnAcwlz4FGPMM2K7GTgWP
-OFFCHAINVM_CONTRACT_ID=offchainvm.testnet
+OFFCHAINVM_CONTRACT_ID=outlayer.testnet
 
 # Keystore account (must be authorized in contract)
 KEYSTORE_ACCOUNT_ID=keystore.testnet
@@ -135,7 +135,7 @@ KEYSTORE_PRIVATE_KEY=ed25519:...
 
 # NEAR RPC Client (for reading secrets from contract)
 # Both are REQUIRED for repo-based secrets to work:
-NEAR_CONTRACT_ID=offchainvm.testnet
+NEAR_CONTRACT_ID=outlayer.testnet
 
 # Master Secret for Key Derivation
 # Generate: openssl rand -hex 32
@@ -192,7 +192,7 @@ The keystore worker will verify that its public key matches the contract's store
 ```bash
 # Get the public key from keystore worker startup logs or /pubkey endpoint
 # Then call contract method:
-near contract call-function as-transaction offchainvm.testnet set_keystore_pubkey json-args '{"pubkey_hex":"a1b2c3d4..."}' prepaid-gas '30.0 Tgas' attached-deposit '0 NEAR' sign-as keystore.testnet network-config testnet sign-with-keychain send
+near contract call-function as-transaction outlayer.testnet set_keystore_pubkey json-args '{"pubkey_hex":"a1b2c3d4..."}' prepaid-gas '30.0 Tgas' attached-deposit '0 NEAR' sign-as keystore.testnet network-config testnet sign-with-keychain send
 ```
 
 ### 4. Run Keystore Worker
@@ -255,7 +255,7 @@ cd scripts
 ./encrypt_secrets.py "OPENAI_KEY=sk-test"
 
 # 3. Call contract with encrypted secrets (terminal 2)
-near call offchainvm.testnet request_execution \
+near call outlayer.testnet request_execution \
   '{"code_source": {...}, "encrypted_secrets": [117, 56, ...]}' \
   --accountId user.testnet --deposit 0.1
 

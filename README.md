@@ -8,7 +8,7 @@ Verifiable off-chain computation platform for NEAR smart contracts using yield/r
 
 ```
 near-outlayer/
-├── contract/          # NEAR smart contract (offchainvm.near)
+├── contract/          # NEAR smart contract (outlayer.near)
 ├── coordinator/       # Coordinator API server (Rust + Axum)
 ├── worker/           # Worker nodes (Rust + Tokio)
 ├── wasi-examples/    # WASI example projects (random-ark, ai-ark, etc.)
@@ -32,7 +32,7 @@ near-outlayer/
 ```bash
 cd contract
 cargo near build --release
-near contract deploy offchainvm.testnet use-file res/local/offchainvm_contract.wasm with-init-call new json-args '{"owner_id":"offchainvm.testnet","operator_id":"worker.offchainvm.testnet"}' prepaid-gas '100.0 Tgas' attached-deposit '0 NEAR' network-config testnet sign-with-keychain send
+near contract deploy outlayer.testnet use-file res/local/outlayer_contract.wasm with-init-call new json-args '{"owner_id":"outlayer.testnet","operator_id":"worker.outlayer.testnet"}' prepaid-gas '100.0 Tgas' attached-deposit '0 NEAR' network-config testnet sign-with-keychain send
 ```
 
 ### 2. Setup Infrastructure
@@ -91,7 +91,7 @@ cargo run --release
 
 ### Core Components
 
-1. **Smart Contract** (`offchainvm.near`)
+1. **Smart Contract** (`outlayer.near`)
    - Manages execution requests
    - Handles payments and refunds
    - Yield/resume mechanism integration

@@ -591,7 +591,7 @@ mod tests {
         let client = NearClient::new(
             "https://rpc.testnet.near.org".to_string(),
             signer,
-            "offchainvm.testnet".parse().unwrap(),
+            "outlayer.testnet".parse().unwrap(),
         );
 
         assert!(client.is_ok());

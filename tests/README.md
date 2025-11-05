@@ -198,7 +198,7 @@ cd tests
 - ✅ Result submission to contract
 
 **Prerequisites**:
-- Contract deployed on testnet (`offchainvm.testnet`)
+- Contract deployed on testnet (`outlayer.testnet`)
 - NEAR CLI installed
 - Coordinator running
 - Worker running with valid operator keys

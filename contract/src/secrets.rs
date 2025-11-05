@@ -281,7 +281,7 @@ impl Contract {
     ///
     /// # Example
     /// ```bash
-    /// near view offchainvm.testnet estimate_storage_cost '{
+    /// near view outlayer.testnet estimate_storage_cost '{
     ///   "repo": "github.com/alice/project",
     ///   "branch": null,
     ///   "profile": "production",

@@ -27,7 +27,7 @@ echo ""
 # Configuration
 COORDINATOR_URL="${COORDINATOR_URL:-http://localhost:8080}"
 CONTRACT_ID="${CONTRACT_ID:-outlayer.testnet}"
-CALLER_ACCOUNT="${CALLER_ACCOUNT:-offchainvm.testnet}"
+CALLER_ACCOUNT="${CALLER_ACCOUNT:-outlayer.testnet}"
 SIGN_METHOD="${SIGN_METHOD:-sign-with-legacy-keychain}"
 
 echo "📝 Configuration:"

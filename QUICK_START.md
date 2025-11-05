@@ -152,11 +152,11 @@ Dashboard supports switching between testnet and mainnet.
 Configure contracts in `dashboard/.env.local`:
 ```env
 # Testnet
-NEXT_PUBLIC_TESTNET_CONTRACT_ID=c2.offchainvm.testnet
+NEXT_PUBLIC_TESTNET_CONTRACT_ID=outlayer.testnet
 NEXT_PUBLIC_TESTNET_RPC_URL=https://rpc.testnet.fastnear.com?apiKey=YOUR_API_KEY
 
 # Mainnet
-NEXT_PUBLIC_MAINNET_CONTRACT_ID=offchainvm.near
+NEXT_PUBLIC_MAINNET_CONTRACT_ID=outlayer.near
 NEXT_PUBLIC_MAINNET_RPC_URL=https://rpc.mainnet.near.org
 
 # Default network

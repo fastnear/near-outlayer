@@ -68,7 +68,7 @@ cd keystore-worker/scripts
 
 **3. Store secrets in contract:**
 ```bash
-near call offchainvm.testnet store_secrets \
+near call outlayer.testnet store_secrets \
   '{
     "repo": "github.com/alice/myproject",
     "branch": null,
@@ -82,7 +82,7 @@ near call offchainvm.testnet store_secrets \
 
 **4. Request execution with secrets:**
 ```bash
-near call offchainvm.testnet request_execution \
+near call outlayer.testnet request_execution \
   '{
     "code_source": {
       "repo": "https://github.com/alice/myproject",

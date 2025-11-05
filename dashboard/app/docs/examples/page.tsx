@@ -71,7 +71,7 @@ echo '{"min":1,"max":100}' | wasmtime target/wasm32-wasip1/release/random-ark.wa
 git push origin main
 
 # 4. Request execution on NEAR
-near call offchainvm.testnet request_execution '{
+near call outlayer.testnet request_execution '{
   "code_source": {
     "repo": "https://github.com/YOUR_USERNAME/random-ark",
     "commit": "main",
@@ -135,7 +135,7 @@ cd echo-ark
 cargo build --target wasm32-wasip1 --release
 
 # 2. Request execution (OutLayer will inject NEAR env vars)
-near call offchainvm.testnet request_execution '{
+near call outlayer.testnet request_execution '{
   "code_source": {
     "repo": "https://github.com/YOUR_USERNAME/echo-ark",
     "commit": "main",
@@ -153,7 +153,7 @@ near call offchainvm.testnet request_execution '{
 # - NEAR_SENDER_ID=alice.testnet
 # - NEAR_BLOCK_HEIGHT=123456789
 # - NEAR_BLOCK_TIMESTAMP=...
-# - NEAR_CONTRACT_ID=offchainvm.testnet
+# - NEAR_CONTRACT_ID=outlayer.testnet
 # - NEAR_REQUEST_ID=unique-id`}
           </SyntaxHighlighter>
         </div>
@@ -204,7 +204,7 @@ cd ai-ark
 cargo build --target wasm32-wasip2 --release
 
 # 4. Request execution with secrets
-near call offchainvm.testnet request_execution '{
+near call outlayer.testnet request_execution '{
   "code_source": {
     "repo": "https://github.com/YOUR_USERNAME/ai-ark",
     "commit": "main",
@@ -227,6 +227,139 @@ near call offchainvm.testnet request_execution '{
 # - Execute WASM with your prompt
 # - Return AI response`}
           </SyntaxHighlighter>
+        </div>
+
+        {/* weather-ark */}
+        <div className="border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow">
+          <h3 className="text-2xl font-semibold mb-3">
+            <a href="https://github.com/zavodil/weather-ark" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+              weather-ark
+            </a>
+            <span className="ml-3 text-sm bg-purple-100 text-purple-800 px-3 py-1 rounded">WASI P2</span>
+            <span className="ml-2 text-sm bg-yellow-100 text-yellow-800 px-3 py-1 rounded">Intermediate</span>
+          </h3>
+          <p className="text-gray-700 mb-4">
+            Real-time weather data oracle via OpenWeather API. Specialized oracle example showing how to fetch and format data from a specific API. Ready to test on testnet with pre-configured secrets!
+          </p>
+
+          <h4 className="font-semibold mt-4 mb-2">Key Features:</h4>
+          <ul className="list-disc list-inside text-gray-700 space-y-1 mb-4">
+            <li>Real-time weather data for any city worldwide</li>
+            <li>Support for metric (Celsius) and imperial (Fahrenheit) units</li>
+            <li>Pre-configured secrets on testnet for instant testing</li>
+            <li>HTTPS client via <code className="bg-gray-100 px-2 py-1 rounded">wasi-http-client</code></li>
+            <li>OpenWeather API integration (free tier: 60 calls/min)</li>
+            <li>Clean JSON input/output format</li>
+          </ul>
+
+          <h4 className="font-semibold mt-4 mb-2">Input Example:</h4>
+          <SyntaxHighlighter language="json" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
+{`{
+  "city": "London",
+  "units": "metric"
+}`}
+          </SyntaxHighlighter>
+
+          <h4 className="font-semibold mt-4 mb-2">Output Example:</h4>
+          <SyntaxHighlighter language="json" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
+{`{
+  "city": "London",
+  "country": "GB",
+  "temperature": 15.5,
+  "temperature_unit": "C",
+  "description": "overcast clouds",
+  "humidity": 72,
+  "wind_speed": 3.6
+}`}
+          </SyntaxHighlighter>
+
+          <h4 className="font-semibold mt-4 mb-2">Quick Start (Testnet - No Setup Needed!):</h4>
+          <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
+{`# Test immediately with pre-configured secrets
+near contract call-function as-transaction outlayer.testnet request_execution \\
+  json-args '{
+    "code_source": {
+      "repo": "https://github.com/zavodil/weather-ark",
+      "commit": "main",
+      "build_target": "wasm32-wasip2"
+    },
+    "secrets_ref": {
+      "repo": "github.com/zavodil/weather-ark",
+      "profile": "default",
+      "account_id": "zavodil2.testnet"
+    },
+    "resource_limits": {
+      "max_instructions": 50000000000,
+      "max_memory_mb": 128,
+      "max_execution_seconds": 30
+    },
+    "response_format": "Json",
+    "input_data": "{\\"city\\":\\"London\\",\\"units\\":\\"metric\\"}"
+  }' \\
+  prepaid-gas '100.0 Tgas' \\
+  attached-deposit '0.1 NEAR' \\
+  sign-as your-account.testnet \\
+  network-config testnet \\
+  sign-with-keychain \\
+  send
+
+# Try different cities:
+# Tokyo: --input_data '{"city":"Tokyo","units":"metric"}'
+# New York (Fahrenheit): --input_data '{"city":"New York","units":"imperial"}'
+# Paris: --input_data '{"city":"Paris"}'`}
+          </SyntaxHighlighter>
+
+          <div className="mt-4 p-3 bg-blue-50 border-l-4 border-blue-400">
+            <p className="text-sm text-gray-700 mb-2">
+              <strong>Ready to Test!</strong> Pre-configured secrets are available on testnet:
+            </p>
+            <ul className="text-sm text-gray-700 space-y-1 ml-4">
+              <li>Repo: <code className="bg-white px-2 py-1 rounded">github.com/zavodil/weather-ark</code></li>
+              <li>Profile: <code className="bg-white px-2 py-1 rounded">default</code></li>
+              <li>Owner: <code className="bg-white px-2 py-1 rounded">zavodil2.testnet</code></li>
+            </ul>
+          </div>
+
+          <h4 className="font-semibold mt-4 mb-2">Production Deployment (Your Own Secrets):</h4>
+          <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
+{`# 1. Get OpenWeather API key from https://openweathermap.org/api
+#    Free tier: 60 calls/min, 1M calls/month, no credit card
+
+# 2. Store API key as encrypted secret
+# Open https://outlayer.fastnear.com/secrets:
+# - Repo: github.com/YOUR_USERNAME/your-repo
+# - Profile: weather-production
+# - Secrets JSON: {"OPENWEATHER_API_KEY":"your_key_here"}
+
+# 3. Clone and build
+git clone https://github.com/zavodil/weather-ark.git
+cd weather-ark
+cargo build --target wasm32-wasip2 --release
+
+# 4. Request with your own secrets
+near call outlayer.testnet request_execution '{
+  "code_source": {
+    "repo": "https://github.com/YOUR_USERNAME/your-repo",
+    "commit": "main",
+    "build_target": "wasm32-wasip2",
+    "build_path": "wasi-examples/weather-ark"
+  },
+  "secrets_ref": {
+    "repo": "github.com/YOUR_USERNAME/your-repo",
+    "profile": "weather-production",
+    "account_id": "your.testnet"
+  },
+  "input_data": "{\\"city\\":\\"Paris\\"}"
+}' --accountId your.testnet --deposit 0.1`}
+          </SyntaxHighlighter>
+
+          <h4 className="font-semibold mt-4 mb-2">Use Cases:</h4>
+          <ul className="list-disc list-inside text-gray-700 space-y-1 mb-4 ml-4">
+            <li><strong>Weather Bot:</strong> On-chain smart contract providing weather data to users</li>
+            <li><strong>Conditional Payments:</strong> Release funds based on weather conditions</li>
+            <li><strong>Agricultural Contracts:</strong> Trigger actions based on local weather</li>
+            <li><strong>Travel Planning:</strong> Check weather before booking</li>
+          </ul>
         </div>
 
         {/* oracle-ark */}
@@ -311,7 +444,7 @@ cd oracle-ark
 cargo build --target wasm32-wasip2 --release
 
 # 4. Request price data
-near call offchainvm.testnet request_execution '{
+near call outlayer.testnet request_execution '{
   "code_source": {
     "repo": "https://github.com/YOUR_USERNAME/oracle-ark",
     "commit": "main",
@@ -527,6 +660,7 @@ near deploy tokensale.testnet \\
           <li>Read the <a href="https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/WASI_TUTORIAL.md" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">complete WASI tutorial</a></li>
           <li>Clone examples: <code className="bg-gray-100 px-2 py-1 rounded">git clone https://github.com/zavodil/near-offshore.git</code></li>
           <li>Start with <strong>random-ark</strong> or <strong>echo-ark</strong> for simple use cases</li>
+          <li>Try <strong>weather-ark</strong> for instant testing (pre-configured secrets on testnet!)</li>
           <li>Use <strong>ai-ark</strong> or <strong>oracle-ark</strong> for HTTPS-based applications</li>
           <li>Study <strong>captcha-ark</strong> for full-stack deployment</li>
           <li>Explore <strong>intents-ark</strong> for advanced DeFi integration</li>

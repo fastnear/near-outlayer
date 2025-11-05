@@ -296,7 +296,7 @@ mod tests {
             neardata_api_url: "https://testnet.neardata.xyz/v0/block".to_string(),
             fastnear_api_url: "https://test.api.fastnear.com/status".to_string(),
             start_block_height: 0,
-            offchainvm_contract_id: "offchainvm.testnet".parse().unwrap(),
+            offchainvm_contract_id: "outlayer.testnet".parse().unwrap(),
             operator_account_id: "worker.testnet".parse().unwrap(),
             operator_signer: InMemorySigner::from_secret_key(
                 "worker.testnet".parse().unwrap(),

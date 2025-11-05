@@ -84,7 +84,7 @@ impl Config {
             near_rpc_url: std::env::var("NEAR_RPC_URL")
                 .unwrap_or_else(|_| "https://rpc.testnet.near.org".to_string()),
             contract_id: std::env::var("OFFCHAINVM_CONTRACT_ID")
-                .unwrap_or_else(|_| "offchainvm.testnet".to_string()),
+                .unwrap_or_else(|_| "outlayer.testnet".to_string()),
 
             keystore_base_url: std::env::var("KEYSTORE_BASE_URL").ok(),
             keystore_auth_token: std::env::var("KEYSTORE_AUTH_TOKEN").ok(),

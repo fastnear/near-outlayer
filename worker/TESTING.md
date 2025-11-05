@@ -204,7 +204,7 @@ See [wasi-examples/wasi-test-runner/README.md](../wasi-examples/wasi-test-runner
 ## Test 5: End-to-End Contract Flow
 
 ### Prerequisites
-- Contract deployed to testnet: `offchainvm.testnet`
+- Contract deployed to testnet: `outlayer.testnet`
 - Operator account: `worker.testnet`
 - Worker configured with operator keys
 - Coordinator and Worker running
@@ -223,7 +223,7 @@ RUST_LOG=info cargo run
 ### Run Test
 ```bash
 # Request execution via contract
-near call offchainvm.testnet request_execution '{
+near call outlayer.testnet request_execution '{
   "code_source": {
     "type": "GitHub",
     "repo": "https://github.com/zavodil/random-ark",
@@ -279,7 +279,7 @@ cd ../keystore-worker
 
 ### Test with Contract
 ```bash
-near call offchainvm.testnet request_execution '{
+near call outlayer.testnet request_execution '{
   "code_source": {
     "type": "GitHub",
     "repo": "https://github.com/user/ai-ark",

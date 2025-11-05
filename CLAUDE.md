@@ -34,7 +34,7 @@ Build a production-ready MVP without TEE (Trusted Execution Environment), with a
 ### ✅ Already Implemented:
 
 #### 1. **Smart Contract** (`/contract`) - 100% ✅ COMPLETE + ENHANCED
-- ✅ Contract `offchainvm.near` **FULLY READY** with proper techniques from working contract
+- ✅ Contract `outlayer.near` **FULLY READY** with proper techniques from working contract
 - ✅ **promise_yield_create / promise_yield_resume** - correct yield/resume implementation
 - ✅ **DATA_ID_REGISTER** (register 37) for data_id
 - ✅ **Modular structure**: lib.rs, execution.rs, events.rs, views.rs, admin.rs, tests/
@@ -311,8 +311,8 @@ Build a production-ready MVP without TEE (Trusted Execution Environment), with a
          │ 1. request_execution(github_repo, commit, input_data, limits)
          ↓
 ┌─────────────────────────────┐
-│   OffchainVM Contract       │
-│   (offchainvm.near)         │
+│   OutLayer Contract         │
+│   (outlayer.near)           │
 │   - Validate resource limits│
 │   - Calculate estimated cost│
 │   - Store pending requests  │
@@ -410,10 +410,10 @@ cd contract
 cargo near build
 
 # Deploy with initialization
-near contract deploy offchainvm.testnet \
+near contract deploy outlayer.testnet \
   use-file res/local/offchainvm_contract.wasm \
   with-init-call new \
-  json-args '{"owner_id":"offchainvm.testnet","operator_id":"worker.testnet"}' \
+  json-args '{"owner_id":"outlayer.testnet","operator_id":"worker.testnet"}' \
   prepaid-gas '100.0 Tgas' \
   attached-deposit '0 NEAR' \
   network-config testnet \
@@ -452,7 +452,7 @@ cp .env.example .env
 # - API_BASE_URL=http://localhost:8080
 # - API_AUTH_TOKEN=test-worker-token-123
 # - NEAR_RPC_URL=https://rpc.testnet.near.org (or with API key)
-# - OFFCHAINVM_CONTRACT_ID=offchainvm.testnet
+# - OFFCHAINVM_CONTRACT_ID=outlayer.testnet
 # - OPERATOR_ACCOUNT_ID=worker.testnet
 # - OPERATOR_PRIVATE_KEY=ed25519:...
 # - KEYSTORE_BASE_URL=http://localhost:8081 (optional, for encrypted secrets)
@@ -479,7 +479,7 @@ npm run dev
 #    - Secrets are encrypted client-side and stored on contract
 
 # 3. Request execution with secrets_ref
-near call offchainvm.testnet request_execution \
+near call outlayer.testnet request_execution \
   '{
     "code_source": {
       "repo": "https://github.com/alice/myproject",
@@ -509,10 +509,10 @@ near call offchainvm.testnet request_execution \
 #    - Your WASM code can use: std::env::var("OPENAI_KEY")
 
 # View all your secrets:
-near view offchainvm.testnet list_user_secrets '{"account_id":"alice.testnet"}'
+near view outlayer.testnet list_user_secrets '{"account_id":"alice.testnet"}'
 
 # Delete secrets (with storage refund):
-near call offchainvm.testnet delete_secrets \
+near call outlayer.testnet delete_secrets \
   '{
     "repo": "github.com/alice/myproject",
     "branch": "main",

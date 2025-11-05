@@ -503,7 +503,7 @@ echo '{"value":21}' | wasmtime target/wasm32-wasip1/release/example.wasm
 2. **Call contract**:
 
 ```bash
-near call offchainvm.testnet request_execution '{
+near call outlayer.testnet request_execution '{
   "code_source": {
     "repo": "https://github.com/username/repo",
     "commit": "main",

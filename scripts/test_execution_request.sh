@@ -3,8 +3,8 @@
 # Test script to call request_execution on offchainvm.testnet contract
 # This will trigger the full execution flow
 
-CONTRACT_ID="c3.offchainvm.testnet"
-CALLER_ACCOUNT="offchainvm.testnet"  # Using owner account for testing
+CONTRACT_ID="outlayer.testnet"
+CALLER_ACCOUNT="outlayer.testnet"  # Using owner account for testing
 PAYMENT="0.1"  # 0.1 NEAR deposit
 
 echo "Calling request_execution on $CONTRACT_ID..."

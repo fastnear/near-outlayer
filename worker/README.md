@@ -143,7 +143,7 @@ API_AUTH_TOKEN=your_secret_token_here
 
 # NEAR Configuration
 NEAR_RPC_URL=https://rpc.testnet.near.org
-OFFCHAINVM_CONTRACT_ID=offchainvm.testnet
+OFFCHAINVM_CONTRACT_ID=outlayer.testnet
 OPERATOR_ACCOUNT_ID=worker1.testnet
 OPERATOR_PRIVATE_KEY=ed25519:YOUR_PRIVATE_KEY_HERE
 ```
@@ -291,7 +291,7 @@ This test:
 API_BASE_URL=http://localhost:8080 \
 API_AUTH_TOKEN=test-token \
 NEAR_RPC_URL=https://rpc.testnet.near.org \
-OFFCHAINVM_CONTRACT_ID=offchainvm.testnet \
+OFFCHAINVM_CONTRACT_ID=outlayer.testnet \
 OPERATOR_ACCOUNT_ID=test.testnet \
 OPERATOR_PRIVATE_KEY=ed25519:... \
 cargo run

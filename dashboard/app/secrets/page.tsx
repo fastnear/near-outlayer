@@ -277,7 +277,7 @@ export default function SecretsPage() {
         <div className="mt-4 p-3 bg-white rounded border border-blue-200">
           <h4 className="text-xs font-semibold text-blue-900 mb-2">Example: Request Execution with Secrets</h4>
           <pre className="text-xs text-blue-800 overflow-x-auto">
-{`near call offchainvm.testnet request_execution '{
+{`near call outlayer.testnet request_execution '{
   "code_source": {
     "repo": "https://github.com/alice/myproject",
     "commit": "main",

@@ -152,7 +152,7 @@ See [worker/.env.example](worker/.env.example) for full list.
 API_BASE_URL=http://localhost:8080
 API_AUTH_TOKEN=my-secret-token
 NEAR_RPC_URL=https://rpc.testnet.near.org
-OFFCHAINVM_CONTRACT_ID=offchainvm.testnet
+OFFCHAINVM_CONTRACT_ID=outlayer.testnet
 OPERATOR_ACCOUNT_ID=worker.testnet
 OPERATOR_PRIVATE_KEY=ed25519:...
 ```

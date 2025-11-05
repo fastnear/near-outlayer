@@ -222,7 +222,7 @@ export function WasiSection() {
         <section id="working-examples">
           <h3 className="text-xl font-semibold mb-3">Working Examples</h3>
           <p className="text-gray-700 mb-4">
-            We provide 6 complete, open-source examples demonstrating different WASI patterns:
+            We provide 7 complete, open-source examples demonstrating different WASI patterns:
           </p>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
@@ -254,6 +254,16 @@ export function WasiSection() {
                 <span className="ml-2 text-xs bg-purple-100 text-purple-800 px-2 py-1 rounded">P2</span>
               </h4>
               <p className="text-sm text-gray-600">OpenAI API integration (HTTPS requests)</p>
+            </div>
+
+            <div className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
+              <h4 className="font-semibold mb-1">
+                <a href="https://github.com/zavodil/weather-ark" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+                  weather-ark
+                </a>
+                <span className="ml-2 text-xs bg-purple-100 text-purple-800 px-2 py-1 rounded">P2</span>
+              </h4>
+              <p className="text-sm text-gray-600">OpenWeather API oracle (specialized price oracle)</p>
             </div>
 
             <div className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">

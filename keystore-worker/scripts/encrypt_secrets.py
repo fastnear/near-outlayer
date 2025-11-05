@@ -163,7 +163,7 @@ Examples:
 
     branch_arg = f', "branch": "{args.branch}"' if args.branch else ''
 
-    print(f'near call offchainvm.testnet store_secrets \\')
+    print(f'near call outlayer.testnet store_secrets \\')
     print(f'  \'{{"repo": "{repo_display}", {branch_arg[2:] if branch_arg else ""} \\')
     print(f'    "profile": "{args.profile}", \\')
     print(f'    "encrypted_secrets_base64": "{encrypted_base64}", \\')
@@ -172,7 +172,7 @@ Examples:
     print(f'  --deposit 0.01')
     print()
     print("🔍 Verify storage:")
-    print(f'near view offchainvm.testnet get_secrets \'{{"repo": "{repo_display}", {branch_arg[2:] if branch_arg else ""} "profile": "{args.profile}", "owner": "{args.owner}"}}\'')
+    print(f'near view outlayer.testnet get_secrets \'{{"repo": "{repo_display}", {branch_arg[2:] if branch_arg else ""} "profile": "{args.profile}", "owner": "{args.owner}"}}\'')
 
 if __name__ == "__main__":
     main()

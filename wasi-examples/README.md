@@ -114,7 +114,7 @@ cd wasi-test-runner
 ### 4. Deploy to NEAR OutLayer
 
 ```bash
-near call offchainvm.testnet request_execution '{
+near call outlayer.testnet request_execution '{
   "code_source": {
     "repo": "https://github.com/user/repo",
     "commit": "main",

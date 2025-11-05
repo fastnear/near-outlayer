@@ -53,7 +53,7 @@ User Contract → NEAR OutLayer Contract (yield) → Worker Network → Resume w
 
 ### Components
 
-1. **NEAR OutLayer Smart Contract** (`offchainvm.near`)
+1. **NEAR OutLayer Smart Contract** (`outlayer.near`)
    - Entry point for all computation requests
    - Payment validation and escrow
    - Yield/resume orchestration
