@@ -24,7 +24,7 @@ export default function DeveloperGuideSection() {
 
       <div className="space-y-8">
         {/* Problem */}
-        <section>
+        <section id="problem">
           <h3 className="text-xl font-semibold mb-3">🎯 The Problem</h3>
           <p className="text-gray-700 mb-3">
             Smart contracts need randomness for gaming, lotteries, and fair selection. However, on-chain randomness is fundamentally <strong>deterministic</strong> and <strong>controllable by validators</strong>.
@@ -40,7 +40,7 @@ export default function DeveloperGuideSection() {
         </section>
 
         {/* Step 1: Write WASI Code */}
-        <section>
+        <section id="step-1">
           <h3 className="text-xl font-semibold mb-3">📝 Step 1: Write WASI Code</h3>
           <p className="text-gray-700 mb-3">
             You need a project that compiles to WebAssembly. OutLayer currently supports <strong>wasm32-wasip1</strong> and <strong>wasm32-wasip2</strong> targets.
@@ -107,7 +107,7 @@ path = "src/main.rs"`}
         </section>
 
         {/* Step 2: Push to GitHub */}
-        <section>
+        <section id="step-2">
           <h3 className="text-xl font-semibold mb-3">📤 Step 2: Make Code Publicly Available</h3>
           <p className="text-gray-700 mb-3">
             Your code must be accessible in a <strong>public GitHub repository</strong>. OutLayer workers will compile it on-demand from the source.
@@ -128,7 +128,7 @@ path = "src/main.rs"`}
         </section>
 
         {/* Step 3: Call from CLI */}
-        <section>
+        <section id="step-3">
           <h3 className="text-xl font-semibold mb-3">🚀 Step 3: Call OutLayer Contract</h3>
           <p className="text-gray-700 mb-3">
             Now you can run your code by calling a smart contract. This will <strong>pause the blockchain transaction</strong>,
@@ -169,7 +169,7 @@ path = "src/main.rs"`}
         </section>
 
         {/* Step 4: Result */}
-        <section>
+        <section id="step-4">
           <h3 className="text-xl font-semibold mb-3">✅ Step 4: Get Result</h3>
           <p className="text-gray-700 mb-3">
             Check execution result on the <Link href="/executions" className="text-[var(--primary-orange)] hover:underline">Executions</Link> page.
