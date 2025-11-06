@@ -179,8 +179,9 @@ async fn pubkey_handler(
             "Rejected secrets with reserved keywords"
         );
         return Err(ApiError::BadRequest(format!(
-            "❌ Вы не можете создать секрет с именем '{}' - это служебное поле OutLayer worker. \
-            Пожалуйста, используйте другое имя для вашего секрета.",
+            "Cannot use reserved system keywords as secret keys: {}. \
+            These environment variables are automatically set by OutLayer worker. \
+            Please use different key names.",
             reserved_found.join(", ")
         )));
     }
