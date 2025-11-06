@@ -1,0 +1,13 @@
+# Git export configuration for OutLayer
+# Controls what gets included in source archives (e.g., GitHub releases, npm pack)
+
+# Research directories (Phase 2+ exploration, not core OutLayer)
+research/ export-ignore
+research/** export-ignore
+
+# Internal documentation (Claude collaboration chapters)
+md-claude-chapters/ export-ignore
+
+# Temporary/archive files
+*.zip export-ignore
+create-archive.sh export-ignore

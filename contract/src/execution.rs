@@ -117,8 +117,15 @@ impl Contract {
         self.pending_requests
             .insert(&request_id, &execution_request);
 
-        // Emit event for workers to catch
-        events::emit::execution_requested(&request_data.to_string(), data_id);
+        // Phase 1: Enhanced NEP-297 event with full observability
+        events::emit::execution_requested(
+            request_id,
+            &payer_account_id,
+            &code_source,
+            &limits,
+            &request_data.to_string(),
+            data_id,
+        );
 
         // Return the promise to pause execution
         env::promise_return(promise_idx)
@@ -241,11 +248,15 @@ impl Contract {
                         // Log payment charged in easy-to-parse format for worker
                         log!("[[yNEAR charged: \"{}\"]]", cost);
 
-                        // Emit success event
+                        // Phase 1: Enhanced NEP-297 event with limits vs actuals
                         events::emit::execution_completed(
+                            request_id,
+                            &request.payer_account_id,
                             &sender_id,
                             &code_source,
-                            &exec_response.resources_used,
+                            &request.resource_limits,           // Phase 1: Requested limits
+                            &exec_response.resources_used,      // Phase 1: Actual usage
+                            None,                                // TODO: Add wasm_checksum to ExecutionResponse
                             true,
                             None,
                             U128(cost),    // payment_charged
@@ -335,11 +346,15 @@ impl Contract {
                         // Get error message for event
                         let error_msg = exec_response.error.unwrap_or("Unknown error".to_string());
 
-                        // Emit failure event with error details
+                        // Phase 1: Enhanced NEP-297 event with limits vs actuals
                         events::emit::execution_completed(
+                            request_id,
+                            &request.payer_account_id,
                             &sender_id,
                             &code_source,
-                            &exec_response.resources_used,
+                            &request.resource_limits,           // Phase 1: Requested limits
+                            &exec_response.resources_used,      // Phase 1: Actual usage
+                            None,                                // TODO: Add wasm_checksum to ExecutionResponse
                             false,
                             Some(&error_msg),
                             U128(self.base_fee),  // payment_charged (only base fee)

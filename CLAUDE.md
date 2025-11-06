@@ -1,589 +1,1153 @@
 # CLAUDE.md
 
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 <CRITICAL>
-You are an assistant, you must write correct and clean code. You speak with a programmer human, you can always ask human's point of view. Do not introduce tasks that were not mentioned by user, he is technical and he knows the potencial scope. Thus said, be sure human's knowledge is limited so you can alsways suggest a better way to solve the problem, but didn't write code if you have something to dicsuss first.
+You are an assistant working on a **capability-based execution system**. Every component implements security boundaries. When modifying code:
 
-If you are not sure, just reply "I don't know how to do it". It's totally ok, hyman will provide more details
+1. **Understand the security model first** - Read the architecture section before making changes
+2. **Ask before breaking boundaries** - If unsure about trust boundaries, ask the human
+3. **Follow established patterns** - Especially for WASI development (see WASI section)
+4. **Do NOT manage deployment** - Human handles coordinator restarts, docker-compose, contract deployment
 
-**IMPORTANT**: Human will manage coordinator restarts, docker-compose, and contract deployment himself. DO NOT try to restart coordinator, deploy contract, or manage docker containers. Just write code and let human handle the deployment.
-
-**CRITICAL - WASI Development**: When human asks to write a new WASI container/example, you MUST:
-1. FIRST read existing examples in `wasi-examples/` directory to understand the patterns
-2. ALWAYS read and follow `wasi-examples/WASI_TUTORIAL.md` tutorial
-3. Study how other examples are structured (Cargo.toml, build scripts, WASI imports)
-4. DO NOT just write code from scratch - follow the established patterns
-5. Copy the structure and conventions from existing working examples
-6. Ask human which example to use as a template if multiple exist
-This ensures consistency and reduces bugs by reusing proven patterns.
+If you are not sure how to implement something while preserving security properties, reply "I don't know how to do it" and ask for clarification.
 </CRITICAL>
-
-# NEAR OutLayer MVP Development - Context
-
-## 📍 Project Overview
-
-**NEAR OutLayer (OffchainVM)** is a verifiable off-chain computation platform for NEAR smart contracts. Smart contracts can execute arbitrary WASM code off-chain using NEAR Protocol's yield/resume mechanism.
-
-**Metaphor**: "OutLayer for computation" - move heavy computation off-chain for efficiency while maintaining security and final settlement on NEAR L1.
-
-## 🎯 Main Goal
-
-Build a production-ready MVP without TEE (Trusted Execution Environment), with architecture that allows easy TEE integration via Phala Network in Phase 2.
-
-## 📊 Current Progress (Updated: 2025-10-22)
-
-### ✅ Already Implemented:
-
-#### 1. **Smart Contract** (`/contract`) - 100% ✅ COMPLETE + ENHANCED
-- ✅ Contract `offchainvm.near` **FULLY READY** with proper techniques from working contract
-- ✅ **promise_yield_create / promise_yield_resume** - correct yield/resume implementation
-- ✅ **DATA_ID_REGISTER** (register 37) for data_id
-- ✅ **Modular structure**: lib.rs, execution.rs, events.rs, views.rs, admin.rs, tests/
-- ✅ **Execution Functions**:
-  - `request_execution` - request off-chain execution with payment (with resource limit validation)
-  - `resolve_execution` - resolve by operator (with resources_used logging)
-  - `on_execution_response` - callback with result (cost calculation, refund, resources_used logging)
-  - `cancel_stale_execution` - cancel stale requests (10 min timeout)
-- ✅ **Secrets Management Functions** ✨ **NEW (2025-10-22)**:
-  - `store_secrets` - Store encrypted secrets with repo/branch/profile/access_condition
-  - `delete_secrets` - Delete secrets and refund storage deposit
-  - `get_secrets` - Retrieve encrypted secrets (access control validated by keystore)
-  - `secrets_exist` - Check if secrets exist for given key
-  - `list_user_secrets` - List all secrets owned by a user (with indexing)
-  - **User index**: `LookupMap<AccountId, UnorderedSet<SecretKey>>` for efficient lookups
-  - **Storage cost**: Proportional to data size + ~64 bytes for index entry
-- ✅ **Admin Functions**: set_owner, set_operator, set_paused, set_pricing, emergency_cancel_execution
-- ✅ **View Functions**: get_request, get_stats, get_pricing, get_config, is_paused, **estimate_execution_cost**, **get_max_limits**, **list_user_secrets**
-- ✅ **NEW: Dynamic pricing based on resource limits**:
-  - `estimate_cost()` - calculates cost based on requested limits (not fixed base fee)
-  - `estimate_execution_cost()` - public view method for users
-  - Payment validation against estimated cost
-- ✅ **NEW: Hard resource caps**:
-  - `MAX_INSTRUCTIONS`: 100 billion instructions
-  - `MAX_EXECUTION_SECONDS`: 60 seconds
-  - Validation on request_execution to prevent excessive resource requests
-- ✅ **NEW: Actual metrics tracking**:
-  - `ResourceMetrics` now contains: `instructions` (fuel consumed), `time_ms` (precise timing)
-  - Removed fake `memory_bytes` field
-  - All logs show actual resources used
-- ✅ **Events**: execution_requested, execution_completed (standard: "near-outlayer")
-- ✅ **18 unit tests** - ALL PASSING (basic, admin, execution, cost calculation)
-- ✅ **Builds**: cargo near build - ~207KB WASM
-- ✅ **Configuration**: rust-toolchain.toml (1.85.0), build.sh, Cargo.toml (near-sdk 5.9.0)
-- ✅ **README.md** with full API documentation and examples
-
-#### 2. **Coordinator API Server** (`/coordinator`) - 100% ✅ RUNNING
-- ✅ **Rust + Axum HTTP server**
-- ✅ **Running on port 8080**
-- ✅ All endpoints implemented:
-  - `GET /tasks/poll` - Long-poll for tasks
-  - `POST /tasks/complete` - Complete task (now with instructions field)
-  - `POST /tasks/fail` - Mark task as failed
-  - `POST /tasks/create` - Create new task (for event monitor)
-  - `GET /wasm/:checksum` - Download WASM file
-  - `POST /wasm/upload` - Upload compiled WASM
-  - `GET /wasm/exists/:checksum` - Check if WASM exists
-  - `POST /locks/acquire` - Acquire distributed lock
-  - `DELETE /locks/release/:lock_key` - Release lock
-- ✅ **Storage layer:**
-  - PostgreSQL for metadata
-  - Redis for task queue (BRPOP for blocking retrieval)
-  - Local filesystem for WASM cache
-  - LRU eviction logic
-- ✅ **Auth middleware** with SHA256 hashed bearer tokens
-- ✅ **SQL migrations** applied
-- ✅ docker-compose.yml for dev environment (PostgreSQL + Redis)
-
-#### 3. **Infrastructure**
-- ✅ PostgreSQL 14 running
-- ✅ Redis 7 running
-- ✅ Database migrations applied
-- ✅ WASM cache directory: `/tmp/offchainvm/wasm`
-
-#### 4. **Worker** (`/worker`) - 100% ✅ COMPLETE + ENHANCED
-- ✅ **All modules implemented and compiling**
-- ✅ **config.rs** - Environment configuration with validation:
-  - Support for custom NEAR RPC URLs (with API keys embedded in URL)
-  - Support for custom Neardata API URLs (with API keys embedded in URL)
-  - Updated `.env.example` with examples for Pagoda, Infura providers
-- ✅ **api_client.rs** - Full HTTP client for Coordinator API:
-  - poll_task() - Long-poll for new tasks
-  - complete_task() / fail_task() - Report status (now includes instructions)
-  - upload_wasm() / download_wasm() - WASM cache management
-  - acquire_lock() / release_lock() - Distributed locking
-  - create_task() - Task creation from event monitor
-  - **ExecutionResult** now includes `instructions: u64` field
-- ✅ **event_monitor.rs** - NEAR blockchain event monitoring (optional)
-- ✅ **compiler.rs** - GitHub → WASM compilation with distributed locking
-  - Cache checking before compilation
-  - Lock acquisition to prevent duplicate work
-  - TODO: Docker integration for sandboxed builds
-- ✅ **executor.rs** - WASM execution with wasmi:
-  - **NEW: Actual instruction counting** via wasmi fuel metering
-  - Returns `(output, fuel_consumed)` tuple
-  - All execution results include real `instructions` count
-  - Memory and time limit enforcement
-  - **NEW: Full WASI environment variables support**:
-    - Accepts `Option<HashMap<String, String>>` with env vars from decrypted secrets
-    - WasiEnv structure stores env vars in WASI-compatible format (`KEY=VALUE\0`)
-    - Implements `environ_sizes_get` and `environ_get` WASI functions
-    - WASM code can access secrets via `std::env::var("KEY")`
-  - Minimal WASI interface (random_get, fd_write, proc_exit, environ_*)
-- ✅ **near_client.rs** - NEAR RPC client:
-  - submit_execution_result() - Calls resolve_execution on contract
-  - **NEW: Sends actual metrics** (instructions, time_ms) instead of zeros
-  - Transaction signing and submission
-  - Finalization waiting
-- ✅ **keystore_client.rs** - Keystore integration for encrypted secrets:
-  - **NEW: JSON secrets parsing** - returns `HashMap<String, String>` instead of raw bytes
-  - decrypt_secrets() - Sends attestation + encrypted data to keystore
-  - generate_attestation() - TEE attestation (simulated/sgx/sev/none modes)
-  - Automatic JSON validation and parsing
-- ✅ **main.rs** - Complete worker loop:
-  - Task polling from Coordinator API
-  - Compile task handling (with input_data)
-  - Execute task handling (with input_data - fixed old TODO)
-  - **NEW: Encrypted secrets decryption and env vars injection**:
-    - Decrypts secrets via keystore if provided
-    - Parses JSON to HashMap
-    - Passes env vars to executor → WASI environment
-    - WASM code can access secrets transparently
-  - Event monitor spawning (optional)
-- ✅ **README.md** - Full documentation with setup, configuration, and deployment
-- ✅ **.env.example** - Complete configuration template with API key examples
-- ✅ **Compiles successfully** - warnings only (unused fields), 0 errors
-
-#### 5. **Keystore Worker** (`/keystore-worker`) - 100% ✅ COMPLETE + ENHANCED
-- ✅ **Python Flask API server** for secret management running on port 8081
-- ✅ **Secrets Endpoints**:
-  - `GET /pubkey?repo=X&owner=Y&branch=Z` - Get encryption public key for specific repo
-  - `POST /decrypt` - Decrypt secrets with TEE attestation + access control validation
-  - `GET /health` - Health check
-- ✅ **GitHub Endpoints** ✨ **NEW (2025-10-22)**:
-  - `GET /github/secrets-pubkey?repo=X&owner=Y` - Get public key from Coordinator API
-  - Integration with Coordinator API for centralized key management
-- ✅ **Access Control Validation** ✨ **NEW**:
-  - Validates access conditions before decrypting (AllowAll, Whitelist, AccountPattern, NEAR balance, FT balance, NFT ownership)
-  - Makes RPC calls to NEAR for balance checks
-  - Supports complex Logic conditions (AND/OR/NOT)
-- ✅ **Simple XOR encryption** (MVP) - will be replaced with ChaCha20-Poly1305 in production
-- ✅ **Attestation verification** - validates worker's TEE measurements
-- ✅ **encrypt_secrets.py** - Helper script to encrypt secrets:
-  - **JSON format** - accepts `{"KEY":"value"}` instead of `KEY=value,KEY2=value2`
-  - Validates JSON structure before encryption
-  - Outputs encrypted array for contract calls
-- ✅ **Docker support** with docker-compose.yml
-
-#### 6. **Dashboard** (`/dashboard`) - 100% ✅ COMPLETE + REFACTORED
-- ✅ **Next.js 15 + TypeScript** web application running on port 3000
-- ✅ **NEAR Wallet Integration** via @near-wallet-selector
-- ✅ **Pages**:
-  - `/` - Home page with project overview
-  - `/executions` - List execution requests and results
-  - `/secrets` - **Secrets management** ✨ **FULLY REFACTORED (2025-10-22)**
-  - `/stats` - Platform statistics
-  - `/workers` - Worker monitoring
-  - `/settings` - User settings and earnings
-  - `/playground` - Test WASM execution
-- ✅ **Secrets Page Architecture** ✨ **NEW (2025-10-22)**:
-  - **Modular component structure** (6 files, ~480 lines):
-    - `page.tsx` (168 lines) - Main page with state management
-    - `types.ts` - TypeScript type definitions
-    - `utils.ts` - Helper functions with proper type guards
-    - `AccessConditionBuilder.tsx` - Form for access conditions
-    - `SecretCard.tsx` - Individual secret display card
-    - `SecretsList.tsx` - List container with loading/empty states
-    - `SecretsForm.tsx` - Create/edit form with client-side encryption
-  - **Features**:
-    - View all user's secrets via `list_user_secrets` contract method
-    - Create new secrets with repo/branch/profile/access control
-    - Edit existing secrets (loads data into form)
-    - Delete secrets with confirmation + storage refund
-    - Client-side encryption using **coordinator proxy** (`/secrets/pubkey` endpoint)
-    - Access condition builder with all types (AllowAll, Whitelist, NEAR balance, FT, NFT, Logic)
-    - Real-time secrets list refresh after operations
-  - **Security**: Dashboard never directly accesses keystore (port 8081) - all requests go through coordinator proxy
-    - Responsive design with Tailwind CSS
-- ✅ **Build Status**: TypeScript compilation successful, no errors
-- ✅ **Documentation**: Full refactoring summary in `REFACTORING_SUMMARY.md`
-
-### 🔧 Recent Enhancements (2025-10-22):
-
-1. **Branch Resolution via Coordinator API with Redis Caching** ✨ **NEW (2025-10-22)**:
-   - **Architecture**: Coordinator handles GitHub API + Redis caching, workers call coordinator
-   - **Coordinator** (`coordinator/src/handlers/github.rs`):
-     - Endpoint: `GET /github/resolve-branch?repo=...&commit=...` (public, no auth)
-     - Detects if commit is SHA (40/7-8 hex chars) or branch name
-     - **For SHA commits**: Queries GitHub API `/commits/{sha}/branches-where-head`
-     - **For branch names**: Returns as-is without API call (fast path)
-     - **Caching**: All results cached in Redis for 7 days
-   - **Worker** (`worker/src/api_client.rs`):
-     - New method: `api_client.resolve_branch(repo, commit)`
-     - Calls coordinator before secrets decryption in Compile/Execute tasks
-     - Fallback to `branch=None` if coordinator API fails
-   - **Benefits**: Centralized rate limit management, Redis caching, enables per-branch secrets
-   - **No API key required** for public repositories
-
-2. **Repo-Based Secrets Management** ✨ **NEW**:
-   - Contract: `store_secrets`, `delete_secrets`, `get_secrets`, `secrets_exist`, `list_user_secrets`
-   - User index: `LookupMap<AccountId, UnorderedSet<SecretKey>>` for O(1) user lookups
-   - Storage cost: Base data + ~64 bytes for index entry, refunded on delete
-   - Access control: AllowAll, Whitelist, AccountPattern, NEAR/FT/NFT balance checks, Logic (AND/OR/NOT)
-   - Keystore integration: Validates access conditions before decryption
-   - Worker integration: Fetches secrets from contract, decrypts via keystore, injects into WASI env
-
-3. **Dashboard Secrets Page Refactoring** ✨ **NEW**:
-   - Reduced main page from 667 → 168 lines (75% reduction)
-   - Created 5 reusable components (types, utils, form, list, card, builder)
-   - Improved type safety: replaced `any` with `unknown` + type guards
-   - React best practices: useCallback, proper dependencies
-   - Features: view/create/edit/delete secrets with real-time updates
-   - Client-side encryption with XOR (MVP)
-
-### 🔧 Previous Enhancements (2025-10-10):
-
-1. **Encrypted Secrets with WASI Environment Variables**:
-   - Changed secrets format from `KEY1=value1,KEY2=value2` to JSON `{"KEY1":"value1","KEY2":"value2"}`
-   - Worker automatically decrypts secrets via keystore
-   - Parses JSON to HashMap and injects into WASI environment
-   - WASM code can access secrets using standard `std::env::var("KEY_NAME")`
-   - Full end-to-end flow: Contract → Encrypted → Keystore → Worker → WASI → WASM
-   - Updated encrypt_secrets.py with JSON validation
-
-2. **Resource Metrics Overhaul** (2025-10-09):
-   - Removed fake `memory_bytes: 0` field from contract and worker
-   - Added real `instructions` tracking from wasmi fuel consumption
-   - Changed `time_seconds` to `time_ms` for better precision
-   - Updated all logs to show actual resources used
-
-3. **Dynamic Pricing System** (2025-10-09):
-   - New `estimate_cost()` method based on requested resource limits
-   - Payment validation now checks against estimated cost (not just base_fee)
-   - Users can query cost before execution via `estimate_execution_cost()`
-   - Pricing: `base_fee + (instructions/1M × per_instruction_fee) + (time_ms × per_ms_fee)`
-
-4. **Hard Resource Caps** (2025-10-09):
-   - `MAX_INSTRUCTIONS = 100B` - prevents excessive resource requests
-   - `MAX_EXECUTION_SECONDS = 60` - hard time limit
-   - Validation on `request_execution()` to reject oversized requests
-   - Public `get_max_limits()` view method
-
-5. **API Configuration** (2025-10-09):
-   - RPC URLs now support API keys embedded in URL
-   - Example formats for Pagoda, Infura, Neardata providers
-   - Updated `.env.example` with clear instructions
-
-6. **Bug Fixes** (2025-10-09):
-   - Fixed `Task::Execute` missing `input_data` field
-   - Removed old TODO comment about fetching input_data
-   - All tasks now properly pass input data to executor
-
-### ⏳ To Be Implemented:
-
-#### 1. **Test WASM Project** (`/test-wasm`) - 50%
-- ✅ Basic structure created
-- ✅ Random number generator placeholder
-- ❌ Actual random number generation with WASI
-- ❌ Proper input/output handling
-- ❌ GitHub repository for end-to-end testing
-
-#### 2. **Deployment Scripts** (`/scripts`) - 0%
-- ❌ `deploy_contract.sh` - Deploy contract to testnet/mainnet
-- ❌ `setup_infrastructure.sh` - Setup PostgreSQL/Redis
-- ❌ `create_worker_token.sh` - Create auth tokens for workers
-
-#### 3. **Docker Configurations** (`/docker`) - 0%
-- ❌ `Dockerfile.coordinator` - Production build for Coordinator API
-- ❌ `Dockerfile.worker` - Production build for Worker
-- ❌ `Dockerfile.compiler` - Sandboxed compiler for GitHub repos
-
-#### 4. **Integration Testing** - 0%
-- ❌ End-to-end tests
-- ❌ Load testing
-- ❌ Security testing
-
-## 🏗️ System Architecture
-
-```
-┌─────────────────┐
-│  Client Contract│
-│   (client.near) │
-└────────┬────────┘
-         │ 1. request_execution(github_repo, commit, input_data, limits)
-         ↓
-┌─────────────────────────────┐
-│   OffchainVM Contract       │
-│   (offchainvm.near)         │
-│   - Validate resource limits│
-│   - Calculate estimated cost│
-│   - Store pending requests  │
-│   - Emit events             │
-└────────┬────────────────────┘
-         │ 2. Event: ExecutionRequested
-         ↓
-┌─────────────────────────────┐
-│   Worker (Event Monitor)    │
-│   - Listen to NEAR events   │
-│   - Create tasks in API     │
-└────────┬────────────────────┘
-         │ 3. POST /tasks/create
-         ↓
-┌──────────────────────────────────────────┐
-│   Coordinator API Server                 │
-│   ┌────────────────────────────────────┐ │
-│   │ PostgreSQL: metadata, analytics    │ │
-│   │ Redis: task queue (BRPOP)          │ │
-│   │ Local FS: WASM cache (LRU eviction)│ │
-│   └────────────────────────────────────┘ │
-│   Endpoints: /tasks/*, /wasm/*, /locks/*│
-│   Auth: Bearer tokens (SHA256)          │
-└────────┬─────────────────────────────────┘
-         │ 4. GET /tasks/poll (long-poll)
-         ↓
-┌──────────────────────────────┐
-│   Worker (Executor)          │
-│   - Get task                 │
-│   - Compile GitHub repo      │
-│   - Execute WASM (wasmi)     │
-│   - Track fuel consumption   │
-│   - Return result + metrics  │
-└────────┬─────────────────────┘
-         │ 5. resolve_execution(result, resources_used)
-         ↓
-┌─────────────────────────────┐
-│   OffchainVM Contract       │
-│   - Log resources used       │
-│   - Calculate actual cost    │
-│   - Refund excess            │
-│   - Emit event               │
-└────────┬────────────────────┘
-         │ 6. Result → Client Contract
-         ↓
-┌─────────────────┐
-│  Client Contract│
-│   (callback)    │
-└─────────────────┘
-```
-
-## 🔑 Key Architecture Decisions
-
-### 1. **Coordinator API Server** (Centralized control)
-- Workers have NO direct access to PostgreSQL/Redis
-- All communication through HTTP API
-- Anti-DDoS via bearer token authentication
-- Single point of control for all state
-
-### 2. **WASM Cache** (Local filesystem with LRU)
-- NO S3 usage (avoid dependency)
-- Storage: `/var/offchainvm/wasm/{sha256}.wasm`
-- LRU eviction: delete old unused files when limit exceeded
-- Workers download WASM via `GET /wasm/{checksum}`
-
-### 3. **Task Queue** (Redis BRPOP via API)
-- Redis LIST for task queue
-- Workers long-poll to API: `GET /tasks/poll?timeout=60`
-- API internally does `BRPOP` (blocking operation, no polling)
-- No busy-waiting, efficient resource usage
-
-### 4. **Compilation** (Docker sandboxed)
-- Each compilation in isolated Docker container
-- `--network=none` - NO network access
-- Resource limits (CPU, memory, timeout)
-- Distributed locks via Redis (prevent duplicate compilations)
-
-### 5. **Execution** (wasmi with instruction metering)
-- WASM interpreter wasmi (not native compilation)
-- Fuel metering for instruction counting (actual values returned)
-- Memory limits
-- Timeout enforcement
-
-### 6. **Pricing Model** (Dynamic, resource-based)
-- Base fee + per-instruction + per-millisecond costs
-- Estimated cost calculated before execution
-- Excess payment refunded after execution
-- No refunds on failure (anti-DoS)
-
-## 📝 Quick Start Commands
-
-### Deploy Contract (Testnet)
-```bash
-cd contract
-cargo near build
-
-# Deploy with initialization
-near contract deploy offchainvm.testnet \
-  use-file res/local/offchainvm_contract.wasm \
-  with-init-call new \
-  json-args '{"owner_id":"offchainvm.testnet","operator_id":"worker.testnet"}' \
-  prepaid-gas '100.0 Tgas' \
-  attached-deposit '0 NEAR' \
-  network-config testnet \
-  sign-with-keychain \
-  send
-```
-
-### Check Coordinator is running
-```bash
-curl http://localhost:8080/health
-# Expected: "OK"
-```
-
-### Create Worker Auth Token
-```sql
--- Connect to PostgreSQL:
-psql postgres://postgres:postgres@localhost/offchainvm
-
--- Create test token (SHA256 hash of "test-worker-token-123"):
-INSERT INTO worker_auth_tokens (token_hash, worker_name, is_active)
-VALUES (
-    'cbd8f6f0e3e8ec29d3d1f58a2c8c6d6e8d7f5a4b3c2d1e0f1a2b3c4d5e6f7a8b',
-    'test-worker-1',
-    true
-);
-```
-
-### Run Worker
-```bash
-cd worker
-
-# Create .env from example
-cp .env.example .env
-
-# Edit .env with your values:
-# - API_BASE_URL=http://localhost:8080
-# - API_AUTH_TOKEN=test-worker-token-123
-# - NEAR_RPC_URL=https://rpc.testnet.near.org (or with API key)
-# - OFFCHAINVM_CONTRACT_ID=offchainvm.testnet
-# - OPERATOR_ACCOUNT_ID=worker.testnet
-# - OPERATOR_PRIVATE_KEY=ed25519:...
-# - KEYSTORE_BASE_URL=http://localhost:8081 (optional, for encrypted secrets)
-# - KEYSTORE_AUTH_TOKEN=your-keystore-token (optional)
-
-# Run worker
-cargo run
-```
-
-### Using Repo-Based Secrets (NEW - Recommended!)
-```bash
-# 1. Start dashboard
-cd dashboard
-npm run dev
-# Open http://localhost:3000/secrets
-
-# 2. Connect wallet and create secrets via UI:
-#    - Enter repo: github.com/alice/myproject
-#    - Enter branch (optional): main
-#    - Enter profile: production
-#    - Enter JSON secrets: {"OPENAI_KEY":"sk-...", "API_TOKEN":"secret123"}
-#    - Select access condition (e.g., AllowAll, Whitelist, NEAR balance)
-#    - Click "Encrypt & Store Secrets"
-#    - Secrets are encrypted client-side and stored on contract
-
-# 3. Request execution with secrets_ref
-near call offchainvm.testnet request_execution \
-  '{
-    "code_source": {
-      "repo": "https://github.com/alice/myproject",
-      "commit": "main",
-      "build_target": "wasm32-wasip1"
-    },
-    "secrets_ref": {
-      "profile": "production",
-      "account_id": "alice.testnet"
-    },
-    "resource_limits": {
-      "max_instructions": 1000000000,
-      "max_memory_mb": 128,
-      "max_execution_seconds": 60
-    },
-    "input_data": "{}"
-  }' \
-  --accountId user.testnet \
-  --deposit 0.1
-
-# 4. Worker will automatically:
-#    - Fetch encrypted secrets from contract (repo + branch + profile + owner)
-#    - Validate access conditions via keystore
-#    - Decrypt secrets via keystore
-#    - Parse JSON: {"OPENAI_KEY":"sk-...", "API_TOKEN":"secret123"}
-#    - Inject into WASI environment
-#    - Your WASM code can use: std::env::var("OPENAI_KEY")
-
-# View all your secrets:
-near view offchainvm.testnet list_user_secrets '{"account_id":"alice.testnet"}'
-
-# Delete secrets (with storage refund):
-near call offchainvm.testnet delete_secrets \
-  '{
-    "repo": "github.com/alice/myproject",
-    "branch": "main",
-    "profile": "production"
-  }' \
-  --accountId alice.testnet \
-  --depositYocto 1
-```
-
-## 📚 Documentation
-
-- [PROJECT.md](PROJECT.md) - Full technical specification
-- [MVP_DEVELOPMENT_PLAN.md](MVP_DEVELOPMENT_PLAN.md) - Development plan with code examples
-- [NEAROffshoreOnepager.md](NEAROffshoreOnepager.md) - Marketing one-pager
-- [README.md](README.md) - Quick start guide
-- [contract/README.md](contract/README.md) - Contract API documentation
-- [worker/README.md](worker/README.md) - Worker setup and configuration
-- [dashboard/REFACTORING_SUMMARY.md](dashboard/REFACTORING_SUMMARY.md) - Dashboard refactoring details ✨ **NEW**
-
-## 🎯 Timeline
-
-- ✅ **Contract**: 1 week - COMPLETE + ENHANCED
-- ✅ **Coordinator API**: 1-2 weeks - COMPLETE
-- ✅ **Worker**: 2-3 weeks - COMPLETE (100%)
-- ⏳ **Test WASM**: 1 day - 50%
-- ⏳ **Testing**: 1 week - 0%
-- **Total MVP**: ~5-7 weeks for 1 experienced Rust developer
-
-## 💡 Important Notes
-
-1. **Coordinator API running on port 8080** - can test endpoints right now
-2. **Keystore worker running on port 8081** - **ISOLATED, accessed only via coordinator proxy** (not directly from outside)
-   - **Docker networking**: Coordinator uses `host.docker.internal:8081` on Mac/Windows
-   - Set `KEYSTORE_BASE_URL=http://host.docker.internal:8081` in `coordinator/.env`
-3. **Dashboard running on port 3000** - full UI for secrets management ✨ **NEW**
-   - Dashboard uses coordinator endpoints (`/secrets/pubkey`, `/github/resolve-branch`)
-   - **Never directly accesses keystore (port 8081)** for security
-4. **Auth disabled in dev mode** (`REQUIRE_AUTH=false` in `.env`) - can make requests without token
-5. **WASM cache** created in `/tmp/offchainvm/wasm` - remember to change to production path
-6. **PostgreSQL and Redis** running via docker-compose
-7. **All SQL migrations applied** - database is ready
-8. **Resource metrics are now real** - instructions and time_ms from actual execution
-9. **Dynamic pricing** - users see estimated cost before execution
-10. **API keys** - can be embedded in NEAR_RPC_URL and NEARDATA_API_URL for paid services
-11. **Repo-based secrets** - Store once, use everywhere. Secrets indexed by user for O(1) lookups ✨ **NEW**
-12. **Access control** - Whitelist, NEAR/FT/NFT balance checks, regex patterns, complex Logic conditions ✨ **NEW**
-
-## 🔄 Next Actions
-
-1. **Complete Test WASM Project**
-   - Implement actual random number generation with WASI
-   - Test input/output handling
-   - Create GitHub repo for testing
-
-2. **Write deployment scripts**
-   - Deploy contract to testnet
-   - Create worker tokens
-   - Production docker images
-
-3. **Integration testing**
-   - End-to-end tests with real contract + worker + coordinator
-   - Load testing with multiple concurrent executions
-   - Security testing for sandboxing and resource limits
-
-4. **Documentation improvements**
-   - Video tutorial for setup
-   - Example projects using OffchainVM
-   - Best practices guide
 
 ---
 
-**Current Date**: 2025-10-22
-**Version**: MVP Phase 1 (without TEE)
-**Status**: Contract ✅ | Coordinator ✅ | Worker ✅ | Keystore ✅ | Dashboard ✅ | Repo-Based Secrets ✅ - Ready for integration testing
+# NEAR OutLayer: Capability-Based Off-Chain Execution
+
+## 🎯 Architectural Vision
+
+**NEAR OutLayer** implements NEAR Protocol's capability-based security model for verifiable off-chain computation. It is not merely an "off-chain compute layer" - it is a **distributed TEE-ready system** that demonstrates how browser-based WASM execution can integrate with blockchain primitives for trustless computation.
+
+### Core Thesis
+
+NEAR Protocol provides unique primitives for WASM TEE integration:
+- **Function Call Access Keys** → Unforgeable capabilities with fine-grained permissions
+- **Asynchronous Receipt Model** → Explicit data dependencies and verifiable execution flow
+- **Gas Metering** → Deterministic resource accounting (1 Tgas = 1ms)
+- **Storage Staking** → Economic capability management with reclamation
+- **State Attestation** → Merkle-based verification anchors
+
+OutLayer implements these primitives in production code **today**, creating the architecture for Phase 2 TEE integration (Phala Network, Intel SGX, AMD SEV) and Phase 3 browser WASM TEE nodes.
+
+---
+
+## 🏗️ Architectural Primitives → Implementation Mapping
+
+### 1. Access Keys as Capabilities
+
+**NEAR Protocol Pattern**: Function Call Access Keys provide protocol-level capability delegation. A key can call specific methods on specific contracts with a gas allowance, but cannot transfer tokens or modify account state.
+
+**OutLayer Implementation**: Secrets management system (`contract/src/secrets.rs`)
+
+```rust
+pub struct SecretsEntry {
+    pub encrypted_secrets: Vec<u8>,
+    pub access_condition: AccessCondition,  // Unforgeable capability check
+    pub stored_at: u64,
+}
+
+pub enum AccessCondition {
+    AllowAll,                                // Open capability
+    Whitelist(Vec<AccountId>),              // Explicit capability grant
+    AccountPattern(String),                  // Pattern-based capability
+    RequireNearBalance { min_balance: U128 }, // Economic capability
+    RequireFtBalance { contract_id: AccountId, min_balance: U128 },
+    RequireNftOwnership { contract_id: AccountId, token_id: Option<String> },
+    Logic(LogicCondition),                   // Composable capabilities (AND/OR/NOT)
+}
+```
+
+**Key Property**: Access conditions are **validated by keystore before decryption** (keystore-worker/src/keystore_service.py:validate_access_condition). This creates an unforgeable, verifiable capability system where the contract stores encrypted data and keystore enforces access control.
+
+**Code Flow**:
+1. User stores secrets: `contract.store_secrets()` → encrypted bytes + access condition on-chain
+2. Worker requests secrets: `contract.get_secrets()` → retrieves encrypted data
+3. Worker decrypts: `keystore.decrypt()` → validates access condition via NEAR RPC, then decrypts
+4. Worker injects: `worker/src/executor/wasi_env.rs` → secrets become WASI environment variables
+
+**Security Boundary**: Contract provides attestation (who stored what), keystore enforces access control, worker provides isolated execution.
+
+### 2. Asynchronous Receipt Model → Job-Based Workflow
+
+**NEAR Protocol Pattern**: Transactions create receipts (1-2 blocks later execution). Cross-contract calls generate DataReceipts with explicit `output_data_receivers` and `input_data_ids`, creating verifiable data flow.
+
+**OutLayer Implementation**: Job atomicity with WASM cache optimization (`coordinator/src/handlers/jobs.rs`)
+
+```rust
+// Database constraint prevents duplicate work
+CREATE TABLE jobs (
+    job_id BIGSERIAL PRIMARY KEY,
+    request_id BIGINT NOT NULL,
+    data_id TEXT NOT NULL,
+    job_type TEXT CHECK (job_type IN ('compile', 'execute')),
+    UNIQUE (request_id, data_id, job_type)  // Atomic capability claim
+);
+
+pub async fn claim_jobs_for_request(
+    request_id: i64,
+    data_id: &str,
+    wasm_checksum: Option<&str>,
+) -> Result<Vec<JobType>> {
+    // If WASM cached: return [Execute] only
+    // If WASM not cached: return [Compile, Execute]
+    // If another worker claimed: return 409 CONFLICT
+}
+```
+
+**Key Property**: Job claims are **atomic and idempotent**. Multiple workers polling simultaneously get deterministic job assignment - one succeeds, others get empty result or conflict. This mirrors NEAR's receipt model where each receipt executes exactly once.
+
+**Code Flow**:
+1. Contract emits event: `ExecutionRequested` → async trigger (like receipt creation)
+2. Worker polls: `GET /tasks/poll` → Redis BRPOP (blocking, no busy-wait)
+3. Worker claims: `POST /jobs/claim` → atomic DB transaction
+4. Worker executes: Compile job → uploads WASM → Execute job → submits result
+5. Contract finalizes: `resolve_execution()` → callback to requester (like DataReceipt delivery)
+
+**Race Condition Protection**: Distributed lock (`coordinator/src/handlers/locks.rs`) prevents duplicate compilations. Tests verify this in `tests/job_workflow.sh`.
+
+### 3. Gas Metering → Resource Accounting
+
+**NEAR Protocol Pattern**: Every WASM instruction costs gas (2,207,874 gas per instruction as of protocol 1.22.0). Runtime injects gas metering code at every basic block. 1 Tgas = 1ms execution time on minimum validator hardware. Maximum 300 Tgas per transaction.
+
+**OutLayer Implementation**: Dual runtime fuel tracking (`worker/src/executor/`)
+
+**WASI P1 (wasmi)** - Instruction-level metering:
+```rust
+// worker/src/executor/wasi_p1.rs
+let mut store = Store::new(&engine, ());
+store.limiter(|_| &mut ResourceLimiter { ... });
+
+// Fuel metering (1 fuel = N instructions)
+store.set_fuel(max_instructions)?;
+instance.exports.main().call(&mut store)?;
+let fuel_consumed = max_instructions - store.fuel_consumed()?;
+
+// Return actual metrics
+ResourceMetrics {
+    instructions: fuel_consumed,
+    time_ms: start.elapsed().as_millis() as u64,
+}
+```
+
+**WASI P2 (wasmtime)** - Component model metering:
+```rust
+// worker/src/executor/wasi_p2.rs
+let mut store = Store::new(&engine, HostState::new(env_vars));
+store.set_fuel(max_instructions as u64)?;
+store.set_epoch_deadline(ticks_for_duration(max_execution_seconds));
+
+let (result, _) = func.call_and_post_return(&mut store, (input_bytes,))?;
+let fuel_consumed = max_instructions as u64 - store.get_fuel()?;
+```
+
+**Key Property**: Metrics are **real and verifiable**. Contract uses these for pricing (`contract/src/execution.rs:calculate_actual_cost`). No fake zeros - actual fuel consumption from WASM runtime.
+
+**Dynamic Pricing**:
+```rust
+// contract/src/execution.rs
+pub fn estimate_cost(&self, limits: &ResourceLimits) -> Balance {
+    let base_fee = self.pricing.base_fee;
+    let instruction_cost = (limits.max_instructions / 1_000_000) as u128 * self.pricing.per_instruction_fee;
+    let time_cost = limits.max_execution_seconds as u128 * 1000 * self.pricing.per_ms_fee;
+    base_fee + instruction_cost + time_cost
+}
+```
+
+Users pay estimated cost upfront (anti-DoS), get refund after execution based on actual usage (fairness).
+
+### 4. Storage Staking → Capability Resource Management
+
+**NEAR Protocol Pattern**: Accounts lock tokens proportional to storage used (1e19 yoctoNEAR per byte). Deleting data returns staked tokens. This is economic capability management - data storage requires holding resources.
+
+**OutLayer Implementation**: Secrets storage with refunds (`contract/src/secrets.rs`)
+
+```rust
+#[payable]
+pub fn store_secrets(
+    &mut self,
+    repo: String,
+    branch: Option<String>,
+    profile: String,
+    encrypted_secrets: Vec<u8>,
+    access_condition: AccessCondition,
+) {
+    let required_storage = self.calculate_storage_cost(&encrypted_secrets);
+    let attached_deposit = env::attached_deposit();
+    require!(attached_deposit >= required_storage, "Insufficient storage deposit");
+
+    // Store with user index for O(1) lookups
+    let key = SecretKey { repo, branch, profile, owner };
+    self.secrets.insert(&key, &entry);
+    self.user_secrets_index.entry(owner).or_insert(UnorderedSet::new()).insert(&key);
+}
+
+pub fn delete_secrets(&mut self, repo: String, branch: Option<String>, profile: String) {
+    let key = SecretKey { repo, branch, profile, owner: env::predecessor_account_id() };
+    let entry = self.secrets.remove(&key).expect("Secrets not found");
+
+    // Refund storage deposit
+    let refund = self.calculate_storage_cost(&entry.encrypted_secrets);
+    Promise::new(env::predecessor_account_id()).transfer(refund);
+}
+```
+
+**Key Property**: Storage is **capability-gated and economically bounded**. Users must pay to store, preventing spam. Refunds incentivize cleanup. Index structure (`LookupMap<AccountId, UnorderedSet<SecretKey>>`) mirrors NEAR's trie-based state management.
+
+**Trade-off**: ~64 bytes index overhead per secret for O(1) user lookups. Acceptable for UX (`list_user_secrets` in dashboard).
+
+### 5. State Attestation → Keystore Verification
+
+**NEAR Protocol Pattern**: State root hashes in block headers. Merkle proofs verify state transitions without full state replication. Validators attest to chunk validity by signing block headers.
+
+**OutLayer Implementation**: TEE attestation verification (`keystore-worker/src/keystore_service.py`)
+
+```python
+def verify_attestation(attestation: Dict, expected_measurements: Dict) -> bool:
+    """
+    Verifies worker's TEE attestation.
+    MVP: Simulated (attestation_type == 'none')
+    Production: SGX/SEV with measurement verification
+    """
+    attestation_type = attestation.get('attestation_type')
+
+    if attestation_type == 'none':
+        # MVP: Accept all (Phase 1)
+        return True
+    elif attestation_type == 'sgx':
+        # Phase 2: Verify Intel SGX quote
+        return verify_sgx_quote(attestation['quote'], expected_measurements['mrenclave'])
+    elif attestation_type == 'sev':
+        # Phase 2: Verify AMD SEV-SNP attestation report
+        return verify_sev_report(attestation['report'], expected_measurements['measurement'])
+    else:
+        return False
+```
+
+**Key Property**: Keystore acts as **verifier**, not just decryptor. Before returning plaintext secrets, it:
+1. Verifies worker's TEE attestation (worker/src/keystore_client.rs:generate_attestation)
+2. Validates access conditions via NEAR RPC (keystore-worker/src/near_client.py)
+3. Only then decrypts and returns secrets
+
+**Current State**: Attestation is simulated (`attestation_type: 'none'`). Code structure is ready for Phase 2 SGX/SEV integration - just swap verification logic.
+
+---
+
+## 📦 Component Architecture
+
+### Smart Contract - Capability Provider & Attestation Anchor
+
+**Location**: `contract/`
+**Role**: Protocol-level access control, not just storage
+
+**Core Insight**: Contract doesn't execute computation - it **manages capabilities** and **anchors attestations**. Worker execution is off-chain, but contract provides:
+- **Economic security**: Payment upfront, refund after verified execution
+- **Capability delegation**: Secrets with access conditions, indexed by user
+- **State attestation**: Execution requests/results recorded on-chain
+- **Async coordination**: Events trigger workers (yield/resume pattern via `promise_yield_create`)
+
+**Key Files**:
+- `src/lib.rs` - Main entry point, initialization
+- `src/execution.rs` - Request/resolve execution with yield/resume
+- `src/secrets.rs` - Secrets storage with access conditions (capability system)
+- `src/events.rs` - Event emission for async coordination
+- `src/admin.rs` - Owner/operator management (privilege separation)
+
+**Build**: `cargo near build` (requires Rust 1.85.0 via rust-toolchain.toml)
+**Deploy**: `near contract deploy outlayer.testnet use-file target/near/outlayer_contract.wasm ...`
+**Test**: `cargo test` (18 unit tests)
+
+**Critical Pattern**: `promise_yield_create` in `request_execution` → `promise_yield_resume` in `resolve_execution`. This is NEAR's async execution primitive - contract yields control, worker executes, worker calls back with result.
+
+### Coordinator - Trusted Computing Base Coordinator
+
+**Location**: `coordinator/`
+**Role**: Centralized state management with security boundaries
+
+**Core Insight**: Coordinator is the **runtime** (NEAR's nearcore equivalent). Workers have zero direct access to PostgreSQL/Redis - all mediated through HTTP API with authentication. This enforces:
+- **Deterministic state transitions**: Jobs claimed atomically, WASM cache managed centrally
+- **Resource coordination**: Distributed locks, LRU eviction
+- **Security boundary enforcement**: Worker authentication, rate limiting (production)
+
+**Key Files**:
+- `src/main.rs` - Axum server setup, middleware
+- `src/handlers/jobs.rs` - **CRITICAL**: Atomic job claims prevent race conditions
+- `src/handlers/wasm_cache.rs` - WASM storage with LRU eviction
+- `src/handlers/locks.rs` - Distributed locking (Redis-based)
+- `src/handlers/github.rs` - Branch resolution with Redis caching
+- `src/storage/` - PostgreSQL + Redis abstractions
+
+**Build**:
+```bash
+# Requires PostgreSQL connection for sqlx
+cargo sqlx migrate run
+cargo sqlx prepare  # Generates .sqlx/sqlx-data.json
+SQLX_OFFLINE=true cargo build --release  # For Docker
+```
+
+**Critical Dependency**: Database must be running before build (sqlx compile-time verification). In Docker: generate sqlx-data.json first, then build with SQLX_OFFLINE=true.
+
+**Ports**: 8080 (HTTP), PostgreSQL 5432, Redis 6379
+
+**Security Note**: Dev mode has `REQUIRE_AUTH=false` in `.env`. Production MUST enable auth with SHA256 hashed tokens in database.
+
+### Worker - Isolated Execution Environment
+
+**Location**: `worker/`
+**Role**: WASM execution with capability-restricted I/O
+
+**Core Insight**: Worker is a **sandboxed runtime** (NEAR's near-vm-runner equivalent). Each execution:
+1. Fetches secrets from contract (encrypted)
+2. Decrypts via keystore (access control validated)
+3. Injects secrets as WASI environment variables
+4. Executes WASM in isolated runtime (wasmi or wasmtime)
+5. Tracks fuel consumption (real metrics)
+6. Submits result to contract via NEAR RPC
+
+**Dual Runtime Strategy**:
+- **wasmi** (WASI P1): Pure interpreter, simpler execution model, stdin/stdout I/O
+- **wasmtime** (WASI P2): Component model, HTTP support, more complex capabilities
+
+**Key Files**:
+- `src/main.rs` - Main loop: poll tasks → claim jobs → execute → submit results
+- `src/executor/wasi_p1.rs` - wasmi execution with fuel metering
+- `src/executor/wasi_p2.rs` - wasmtime execution with component model
+- `src/executor/wasi_env.rs` - **CRITICAL**: Environment variable injection (secrets → WASI)
+- `src/compiler.rs` - GitHub repo → WASM compilation (Docker sandboxed)
+- `src/keystore_client.rs` - Keystore communication with attestation
+- `src/near_client.rs` - NEAR RPC transaction submission
+
+**Build**: `cargo build` (requires Docker daemon for compilation features)
+
+**Configuration** (.env):
+```bash
+API_BASE_URL=http://localhost:8080
+API_AUTH_TOKEN=your-token
+NEAR_RPC_URL=https://rpc.testnet.near.org
+OFFCHAINVM_CONTRACT_ID=outlayer.testnet
+OPERATOR_ACCOUNT_ID=worker.testnet
+OPERATOR_PRIVATE_KEY=ed25519:...
+KEYSTORE_BASE_URL=http://localhost:8081
+ENABLE_EVENT_MONITOR=false  # Only one worker should monitor events
+```
+
+**Security Properties**:
+- WASM execution is isolated (wasmi/wasmtime sandbox)
+- Secrets never touch disk unencrypted
+- Operator key only used for `resolve_execution` transactions
+- Docker compilation with `--network=none` (no internet access during build)
+
+### Keystore - Secret Capability Verifier
+
+**Location**: `keystore-worker/`
+**Role**: Access control enforcement before decryption
+
+**Core Insight**: Keystore is **not just a decryptor** - it is a **capability verifier**. It acts as the security boundary between encrypted storage (contract) and plaintext use (worker). Before decryption:
+1. Verify worker's TEE attestation (currently simulated)
+2. Validate access conditions via NEAR RPC
+3. Only then decrypt with master secret
+
+**Key Files**:
+- `src/keystore_service.py` - Main Flask app, encryption/decryption
+- `src/near_client.py` - NEAR RPC calls for access condition validation
+- `encrypt_secrets.py` - Helper script for client-side encryption (JSON format)
+
+**Encryption**: XOR with master secret (MVP). Production will use ChaCha20-Poly1305 with ECDH key exchange.
+
+**Ports**: 8081 (HTTP, **NEVER exposed directly** - coordinator proxies)
+
+**Docker Networking**: Coordinator accesses keystore via `host.docker.internal:8081` on Mac/Windows. Set `KEYSTORE_BASE_URL=http://host.docker.internal:8081` in coordinator/.env.
+
+**Security Boundary**: Dashboard calls coordinator (`/secrets/pubkey`), coordinator proxies to keystore. This enforces authentication and rate limiting at coordinator layer.
+
+### Dashboard - Capability Grant Interface
+
+**Location**: `dashboard/`
+**Role**: User-facing secrets management with client-side encryption
+
+**Core Insight**: Dashboard demonstrates **principle of least privilege** in browser context. It:
+- Connects to NEAR wallet (wallet-selector)
+- Creates secrets locally (JSON format)
+- Encrypts client-side (fetches pubkey from coordinator, never plaintext to server)
+- Stores encrypted bytes on contract
+- Never directly accesses keystore (port 8081)
+
+**Key Files**:
+- `app/secrets/page.tsx` - Main secrets management page (168 lines after refactor)
+- `app/secrets/components/SecretsForm.tsx` - Create/edit form with encryption
+- `app/secrets/components/AccessConditionBuilder.tsx` - Access condition UI
+- `lib/near.ts` - NEAR wallet integration
+
+**Build**:
+```bash
+npm install
+npm run dev     # Development (Turbopack, port 3000)
+npm run build   # Production build
+```
+
+**Security Property**: Plaintext secrets never leave browser until encrypted. Contract stores only encrypted bytes. Keystore decrypts only when access conditions met.
+
+---
+
+## 🔐 Security Boundaries & Trust Model
+
+### Trust Boundaries
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ TRUSTED COMPUTING BASE                                          │
+│                                                                 │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐        │
+│  │   Contract   │  │ Coordinator  │  │   Keystore   │        │
+│  │   (NEAR L1)  │  │ (PostgreSQL  │  │   (Secrets   │        │
+│  │              │  │  + Redis)    │  │   Verifier)  │        │
+│  └──────────────┘  └──────────────┘  └──────────────┘        │
+│         │                  │                  │                │
+│         │ Attestation      │ API Auth         │ Attestation   │
+│         │ Anchor           │ Enforcement      │ Verification  │
+└─────────┼──────────────────┼──────────────────┼────────────────┘
+          │                  │                  │
+          ▼                  ▼                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ UNTRUSTED EXECUTION ENVIRONMENT                                 │
+│                                                                 │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐        │
+│  │   Worker     │  │    WASM      │  │  Dashboard   │        │
+│  │  (Executor)  │  │   Sandbox    │  │  (Browser)   │        │
+│  └──────────────┘  └──────────────┘  └──────────────┘        │
+│                                                                 │
+│  • Must authenticate to coordinator                             │
+│  • Must provide attestation to keystore                         │
+│  • WASM execution isolated (no system access)                   │
+│  • Secrets only available as WASI env vars (ephemeral)          │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Attack Surface Analysis
+
+**What CANNOT be compromised by malicious worker**:
+- Contract state (worker only reads, contract validates)
+- Other users' secrets (access control validated by keystore)
+- Coordinator database (worker has no DB access, only HTTP API)
+- NEAR operator keys (worker has key but can only call `resolve_execution`)
+
+**What CAN be compromised by malicious worker**:
+- Execution results for requests it processes (worker submits arbitrary results)
+- Secrets for jobs with `AllowAll` access condition (no restrictions)
+- Gas costs (worker can submit inflated metrics, but contract has MAX_INSTRUCTIONS cap)
+
+**Mitigations**:
+- **Economic**: Users pay for execution, malicious results hurt worker's reputation
+- **Phase 2**: TEE attestation prevents worker code tampering
+- **Phase 3**: Multiple workers execute same job, results verified via consensus
+
+**CRITICAL**: Current MVP (Phase 1) trusts workers to execute honestly. This is acceptable for:
+- Development/testing
+- Closed worker sets (run your own worker)
+- Non-critical computations
+
+Production (Phase 2+) requires TEE attestation.
+
+---
+
+## 🛠️ Critical Development Patterns
+
+### WASI Development Pattern
+
+**Context**: When human asks to create a new WASI example for OutLayer.
+
+**MANDATORY STEPS** (never skip):
+
+1. **Read existing examples first**:
+   ```bash
+   ls wasi-examples/
+   cat wasi-examples/WASI_TUTORIAL.md  # MUST READ
+   ```
+
+2. **Understand the structure**:
+   - `Cargo.toml` must use `[[bin]]` format (not `[lib]`)
+   - Must have `main()` function (not `lib.rs`)
+   - Must use `wasm32-wasip1` or `wasm32-wasip2` target
+   - WASI P1: stdin/stdout I/O
+   - WASI P2: HTTP via `wasi:http` component model
+
+3. **Copy proven pattern**:
+   ```bash
+   # Choose template
+   cp -r wasi-examples/random-ark wasi-examples/my-example  # For P1
+   cp -r wasi-examples/ai-ark wasi-examples/my-example      # For P2
+   ```
+
+4. **Modify carefully**:
+   - Keep Cargo.toml structure
+   - Keep WASI imports exactly as in template
+   - Only modify business logic
+
+5. **Test with runner**:
+   ```bash
+   cargo build --release --target wasm32-wasip1
+   cd wasi-examples/wasi-test-runner
+   cargo run -- --wasm ../my-example/target/wasm32-wasip1/release/my_example.wasm --input '{}'
+   ```
+
+**Why this matters**: WASI has subtle pitfalls (component model, memory management, I/O patterns). Existing examples are battle-tested. DO NOT write from scratch.
+
+**Ask human**: "Which example should I use as template?" if multiple viable options exist.
+
+### Secrets Injection Flow
+
+**Context**: How secrets get from contract to WASM code.
+
+**Full Flow**:
+
+1. **User stores** (dashboard or CLI):
+   ```bash
+   # Dashboard: Secrets page → Create secrets form
+   # Encrypted client-side before contract call
+   near call outlayer.testnet store_secrets '{
+     "repo": "github.com/alice/myproject",
+     "branch": "main",
+     "profile": "production",
+     "encrypted_secrets": [base64_encrypted_bytes],
+     "access_condition": {"AllowAll": {}}
+   }' --accountId alice.testnet --deposit 0.01
+   ```
+
+2. **User requests execution**:
+   ```bash
+   near call outlayer.testnet request_execution '{
+     "code_source": {
+       "repo": "https://github.com/alice/myproject",
+       "commit": "main",
+       "build_target": "wasm32-wasip1"
+     },
+     "secrets_ref": {
+       "profile": "production",
+       "account_id": "alice.testnet"
+     },
+     "resource_limits": { ... }
+   }' --accountId user.testnet --deposit 0.1
+   ```
+
+3. **Worker fetches secrets** (`worker/src/main.rs`):
+   ```rust
+   let secrets_ref = task.secrets_ref;
+   let encrypted_secrets = contract.get_secrets(
+       secrets_ref.repo,
+       secrets_ref.branch,
+       secrets_ref.profile,
+       secrets_ref.account_id
+   ).await?;
+   ```
+
+4. **Worker decrypts** (`worker/src/keystore_client.rs`):
+   ```rust
+   let attestation = generate_attestation(config.attestation_mode);
+   let secrets_json = keystore_client.decrypt_secrets(
+       encrypted_secrets,
+       attestation
+   ).await?;
+   // Returns HashMap<String, String> parsed from JSON
+   ```
+
+5. **Worker injects** (`worker/src/executor/wasi_env.rs`):
+   ```rust
+   let env_vars = secrets_map.unwrap_or_default();
+   let wasi_env = WasiEnv::new(env_vars);  // Converts to "KEY=VALUE\0" format
+
+   // In wasmi/wasmtime imports:
+   "environ_get" => wasi_env.environ_get(),
+   "environ_sizes_get" => wasi_env.environ_sizes_get(),
+   ```
+
+6. **WASM code uses** (user's Rust code):
+   ```rust
+   fn main() {
+       let api_key = std::env::var("OPENAI_KEY").expect("OPENAI_KEY not set");
+       let result = call_openai_api(api_key);
+       println!("{}", result);
+   }
+   ```
+
+**Key Code Locations**:
+- Contract: `contract/src/secrets.rs` (storage)
+- Worker keystore call: `worker/src/keystore_client.rs:decrypt_secrets`
+- WASI injection: `worker/src/executor/wasi_env.rs`
+- WASI P1 executor: `worker/src/executor/wasi_p1.rs` (imports)
+- WASI P2 executor: `worker/src/executor/wasi_p2.rs` (component model)
+
+**Security**: Secrets exist in memory only during execution, never touch disk unencrypted, WASM sandbox prevents exfiltration outside stdout.
+
+### Keystore Isolation Pattern
+
+**Context**: Keystore (port 8081) must NEVER be directly accessible.
+
+**Architecture**:
+```
+Dashboard (browser)
+    │
+    └─> Coordinator (port 8080)
+            │
+            └─> Keystore (port 8081, internal only)
+```
+
+**Why**:
+- Coordinator enforces authentication (bearer tokens)
+- Coordinator enforces rate limiting
+- Coordinator logs all access
+- Keystore does not implement these - it only verifies attestations and access conditions
+
+**Docker Networking**:
+- Mac/Windows: `KEYSTORE_BASE_URL=http://host.docker.internal:8081` in coordinator/.env
+- Linux: Use host network mode or docker network with service name
+
+**Coordinator Proxy** (`coordinator/src/handlers/secrets.rs`):
+```rust
+pub async fn get_secrets_pubkey(
+    Extension(keystore_client): Extension<KeystoreClient>,
+    Query(params): Query<SecretsKeyQuery>,
+) -> Result<Json<PubkeyResponse>, StatusCode> {
+    // Coordinator proxies to keystore, adds auth/logging
+    keystore_client.get_pubkey(&params.repo, &params.owner, params.branch.as_deref()).await
+}
+```
+
+**Dashboard Usage** (`dashboard/lib/secrets.ts`):
+```typescript
+// Dashboard calls coordinator, NOT keystore directly
+const response = await fetch(`${COORDINATOR_API_URL}/secrets/pubkey?repo=${repo}&owner=${owner}`);
+const { pubkey } = await response.json();
+const encrypted = encryptWithXOR(secretsJson, pubkey);
+```
+
+**NEVER**:
+- Expose keystore port (8081) in docker-compose ports section
+- Call keystore directly from dashboard
+- Share keystore URL with untrusted clients
+
+### Database Migrations Pattern
+
+**Context**: Adding/modifying PostgreSQL schema.
+
+**Steps**:
+```bash
+cd coordinator
+
+# 1. Create migration
+sqlx migrate add your_feature_name
+# Creates: migrations/YYYYMMDDHHMMSS_your_feature_name.sql
+
+# 2. Write SQL
+echo "CREATE TABLE new_table (...);" > migrations/YYYYMMDDHHMMSS_your_feature_name.sql
+
+# 3. Apply migration (requires running PostgreSQL)
+sqlx migrate run
+
+# 4. Regenerate sqlx-data.json (for Docker builds)
+cargo sqlx prepare
+# Updates: .sqlx/sqlx-data.json
+
+# 5. Commit both files
+git add migrations/ .sqlx/
+git commit -m "feat: add new_table for your_feature"
+```
+
+**CRITICAL**: `cargo sqlx prepare` MUST be run after schema changes. Docker builds use `SQLX_OFFLINE=true` which requires up-to-date sqlx-data.json.
+
+**Testing Migrations**:
+```bash
+# Reset database to clean state
+docker-compose down -v
+docker-compose up -d postgres
+sqlx migrate run
+
+# Verify
+psql postgres://postgres:postgres@localhost/offchainvm
+\dt  -- List tables
+```
+
+---
+
+## ⚙️ Build & Test Commands
+
+### Building Components
+
+```bash
+# Contract (requires cargo-near)
+cd contract && cargo near build
+# Output: target/near/outlayer_contract.wasm (~200KB)
+
+# Coordinator (requires PostgreSQL connection)
+cd coordinator
+sqlx migrate run
+cargo build --release
+# Or for Docker: SQLX_OFFLINE=true cargo build --release
+
+# Worker (requires Docker daemon for compilation features)
+cd worker && cargo build --release
+
+# Keystore
+cd keystore-worker && cargo build --release
+
+# Dashboard
+cd dashboard
+npm install
+npm run build
+```
+
+### Running Tests
+
+```bash
+# Contract unit tests (fast, no dependencies)
+cd contract && cargo test
+
+# Integration tests (requires coordinator + PostgreSQL + Redis running)
+cd tests
+./unit.sh              # WASM builds + cargo tests
+./compilation.sh       # Real GitHub repo compilation
+./integration.sh       # API endpoint tests
+./job_workflow.sh      # Race condition verification (CRITICAL)
+./e2e.sh              # Full contract flow (requires testnet contract)
+./run_all.sh          # All tests sequentially
+
+# Individual test
+cd worker && cargo test keystore_client::tests::test_decrypt_secrets
+```
+
+### Development Environment
+
+```bash
+# Start infrastructure
+cd coordinator && docker-compose up -d
+
+# Start coordinator
+cd coordinator && cargo run
+
+# Start worker
+cd worker && cargo run
+
+# Start keystore
+cd keystore-worker && cargo run
+
+# Start dashboard
+cd dashboard && npm run dev
+
+# Check health
+curl http://localhost:8080/health  # Coordinator
+curl http://localhost:8081/health  # Keystore
+curl http://localhost:3000          # Dashboard
+```
+
+### Debugging
+
+```bash
+# Check PostgreSQL
+docker exec -it offchainvm-postgres psql -U postgres -d offchainvm
+\dt                    # List tables
+SELECT * FROM jobs ORDER BY created_at DESC LIMIT 10;
+SELECT * FROM wasm_cache ORDER BY last_accessed DESC LIMIT 10;
+
+# Check Redis
+docker exec -it offchainvm-redis redis-cli
+KEYS *                 # List all keys
+LLEN task_queue        # Queue length
+HGETALL lock:compile:* # Check locks
+
+# Check WASM cache
+ls -lh /tmp/offchainvm/wasm/
+
+# Monitor logs
+docker-compose logs -f coordinator
+tail -f worker.log
+```
+
+---
+
+## 🧪 Integration Testing as Verification
+
+Tests verify **security properties**, not just functionality.
+
+### Race Condition Tests (`tests/job_workflow.sh`)
+
+**What it verifies**: Job atomicity prevents duplicate work
+
+```bash
+# Simulates multiple workers claiming same job
+# Expected: Only one worker succeeds, others get empty or conflict
+# Critical property: UNIQUE constraint on (request_id, data_id, job_type)
+```
+
+**Why it matters**: Without atomicity, two workers could compile same WASM simultaneously (waste) or execute same job twice (double billing).
+
+**Code under test**: `coordinator/src/handlers/jobs.rs:claim_jobs_for_request`
+
+### Compilation Tests (`tests/compilation.sh`)
+
+**What it verifies**: Docker sandboxing prevents malicious builds
+
+```bash
+# Compiles real GitHub repo in isolated container
+# Expected: WASM magic number present, valid module
+# Container has: --network=none (no internet access)
+```
+
+**Why it matters**: Compilation code is untrusted (from GitHub). Isolation prevents supply chain attacks.
+
+**Code under test**: `worker/src/compiler.rs`
+
+### E2E Tests (`tests/e2e.sh`)
+
+**What it verifies**: Full capability flow
+
+```bash
+# 1. Contract: request_execution (payment, validation)
+# 2. Worker: poll, claim, compile, execute
+# 3. Contract: resolve_execution (metrics, refund)
+# 4. Contract: callback to requester
+# Expected: Result matches, refund correct, events emitted
+```
+
+**Why it matters**: Verifies contract ↔ worker ↔ keystore integration works end-to-end with real NEAR testnet.
+
+**Code under test**: Entire system
+
+---
+
+## 🚀 Phase 2/3 Vision: Production TEE Integration
+
+### Current State (Phase 1 - MVP)
+
+**What works today**:
+- Capability-based architecture (access conditions, secrets, resource limits)
+- Atomic job coordination (race-free execution)
+- Real resource metering (fuel tracking, dynamic pricing)
+- Client-side encryption (dashboard → contract)
+- Access control validation (keystore checks NEAR state)
+
+**What is simulated**:
+- TEE attestation (`attestation_type: 'none'`)
+- XOR encryption (insecure, placeholder for ChaCha20-Poly1305)
+- Trust in worker honesty (no hardware enforcement)
+
+**Acceptable for**:
+- Development and testing
+- Closed worker sets (you run your own worker)
+- Non-critical computations
+- Proof-of-concept demonstrations
+
+### Phase 2: Hardware TEE (Phala Network / Intel SGX / AMD SEV)
+
+**Goal**: Replace simulated attestation with real TEE hardware.
+
+**Changes Required**:
+
+1. **Keystore** (`keystore-worker/src/keystore_service.py:verify_attestation`):
+   ```python
+   # Current: if attestation_type == 'none': return True
+   # Phase 2: Verify SGX quote or SEV report
+   elif attestation_type == 'sgx':
+       quote = attestation['quote']
+       mrenclave = expected_measurements['mrenclave']
+       return verify_sgx_quote(quote, mrenclave)  # Intel SGX SDK
+   ```
+
+2. **Worker** (`worker/src/keystore_client.rs:generate_attestation`):
+   ```rust
+   // Current: generates dummy attestation
+   // Phase 2: Request hardware attestation
+   pub fn generate_attestation(mode: AttestationMode) -> Attestation {
+       match mode {
+           AttestationMode::Sgx => {
+               let quote = sgx_quote_create();  // Intel SGX DCAP
+               Attestation { attestation_type: "sgx", quote, .. }
+           }
+       }
+   }
+   ```
+
+3. **Encryption** (keystore-worker/encrypt_secrets.py):
+   ```python
+   # Current: XOR with master secret (insecure!)
+   # Phase 2: ChaCha20-Poly1305 with ECDH key exchange
+   def encrypt_secrets(secrets_json: str, recipient_pubkey: bytes) -> bytes:
+       ephemeral_keypair = X25519.generate()
+       shared_secret = ephemeral_keypair.exchange(recipient_pubkey)
+       chacha = ChaCha20Poly1305(derive_key(shared_secret))
+       ciphertext = chacha.encrypt(nonce, secrets_json.encode(), aad)
+       return ephemeral_keypair.public + ciphertext
+   ```
+
+**Files Ready for TEE**:
+- ✅ `worker/src/keystore_client.rs` - Attestation generation interface
+- ✅ `keystore-worker/src/keystore_service.py` - Attestation verification dispatch
+- ✅ `contract/src/secrets.rs` - Encrypted storage (encryption-agnostic)
+- ❌ `keystore-worker/encrypt_secrets.py` - Needs ChaCha20-Poly1305 rewrite
+- ❌ `worker/src/executor/` - Needs sealed storage for keys
+
+**Timeline**: 2-4 weeks with SGX hardware/SDK access.
+
+### Phase 3: Browser WASM TEE Nodes
+
+**Goal**: Browser becomes distributed OutLayer worker.
+
+**Architecture**:
+```
+Browser Tab
+    │
+    ├─> IndexedDB (sealed storage for worker keys)
+    ├─> WebCrypto (attestation key generation)
+    ├─> WebAssembly (WASM execution sandbox)
+    │
+    └─> OutLayer Coordinator (HTTP API)
+            │
+            └─> NEAR Contract (capability verification)
+```
+
+**Key Patterns**:
+
+1. **Function Call Access Keys as Worker Capabilities**:
+   ```javascript
+   // Browser generates key pair
+   const workerKey = KeyPair.fromRandom('ed25519');
+
+   // Request capability from user
+   await wallet.addFunctionCallAccessKey({
+       publicKey: workerKey.getPublicKey(),
+       contractId: 'outlayer.near',
+       methodNames: ['submit_execution_result'],
+       allowance: NEAR.toUnits('0.25')  // Gas budget
+   });
+
+   // Store in IndexedDB (sealed storage)
+   await indexedDB.put('worker-key', workerKey.toString());
+   ```
+
+2. **Long-Polling for Tasks**:
+   ```javascript
+   // Browser polls coordinator (like current worker)
+   async function pollTasks() {
+       const response = await fetch(`${COORDINATOR_API}/tasks/poll?timeout=60`, {
+           headers: { 'Authorization': `Bearer ${workerToken}` }
+       });
+       const task = await response.json();
+       if (task) {
+           await executeTask(task);
+       }
+   }
+   ```
+
+3. **WASM Execution with Gas Metering**:
+   ```javascript
+   // Instantiate WASM with fuel tracking
+   const wasmBytes = await fetch(task.wasm_url).then(r => r.arrayBuffer());
+   const gasTracker = new GasTracker({ maxGas: task.max_gas });
+
+   const instance = await WebAssembly.instantiate(wasmBytes, {
+       env: {
+           // Meter every operation
+           memory_read: gasTracker.meter((...) => { ... }, 1000),
+           // Capability-based network access
+           http_request: gasTracker.meter(async (url) => {
+               if (!task.capabilities.network.includes(url)) {
+                   throw new Error('No capability for ' + url);
+               }
+               return await fetch(url);
+           }, 10000)
+       }
+   });
+
+   const result = await instance.exports.execute(task.args);
+   const gasUsed = gasTracker.used();
+   ```
+
+4. **State Attestation via Contract**:
+   ```javascript
+   // Pre-execution attestation
+   await contract.attest_execution_start({
+       execution_id: task.id,
+       wasm_hash: sha256(wasmBytes),
+       worker_state_root: await getIndexedDBRoot(),
+       timestamp: Date.now()
+   });
+
+   // Execute...
+
+   // Post-execution attestation
+   await contract.attest_execution_complete({
+       execution_id: task.id,
+       result_hash: sha256(result),
+       gas_used: gasUsed,
+       proof: generateProof(execution)
+   });
+   ```
+
+**Files Ready for Browser**:
+- ✅ Architecture: Coordinator API is HTTP (browser-compatible)
+- ✅ Authentication: Bearer tokens (can be stored in IndexedDB)
+- ✅ Task model: Job-based workflow already async
+- ❌ Compilation: Browser cannot compile (must download pre-compiled WASM)
+- ❌ Attestation: Need WebCrypto-based proof generation
+
+**Timeline**: 4-8 weeks after Phase 2 completes.
+
+---
+
+## 📍 Quick Reference
+
+### Port Mapping
+
+| Service       | Port  | Access                  |
+|---------------|-------|-------------------------|
+| Coordinator   | 8080  | Public (HTTP API)       |
+| Keystore      | 8081  | Internal only (proxied) |
+| Dashboard     | 3000  | Public (browser)        |
+| PostgreSQL    | 5432  | Internal only           |
+| Redis         | 6379  | Internal only           |
+
+### Key File Locations
+
+| Pattern                | Location                                    |
+|------------------------|---------------------------------------------|
+| Access conditions      | `contract/src/secrets.rs`                   |
+| Job atomicity          | `coordinator/src/handlers/jobs.rs`          |
+| Fuel metering          | `worker/src/executor/wasi_p1.rs`, `wasi_p2.rs` |
+| WASI env injection     | `worker/src/executor/wasi_env.rs`           |
+| Keystore verification  | `keystore-worker/src/keystore_service.py`   |
+| TEE attestation        | `worker/src/keystore_client.rs`             |
+| Client encryption      | `dashboard/lib/secrets.ts`                  |
+
+### Common Pitfalls
+
+| Problem                          | Solution                                      |
+|----------------------------------|-----------------------------------------------|
+| sqlx compile error               | Run `cargo sqlx prepare` after schema changes |
+| Keystore unreachable from Docker | Use `host.docker.internal:8081` on Mac/Windows |
+| Worker can't access Docker       | Add user to `docker` group on Linux           |
+| Contract deploy fails            | Check `cargo-near` installed, Rust 1.85.0     |
+| WASM execution fails             | Check WASI imports match template exactly     |
+
+### Environment Setup Checklist
+
+```bash
+# 1. Prerequisites
+rustup target add wasm32-wasip1 wasm32-wasip2
+cargo install cargo-near
+npm install -g npm@latest
+
+# 2. Infrastructure
+cd coordinator && docker-compose up -d
+sqlx migrate run
+
+# 3. Contract
+cd contract
+cargo near build
+near contract deploy outlayer.testnet use-file target/near/outlayer_contract.wasm ...
+
+# 4. Coordinator
+cd coordinator
+cp .env.example .env
+# Edit: DATABASE_URL, REDIS_URL, REQUIRE_AUTH=false
+cargo run
+
+# 5. Worker
+cd worker
+cp .env.example .env
+# Edit: API_BASE_URL, NEAR_RPC_URL, OPERATOR_PRIVATE_KEY
+cargo run
+
+# 6. Keystore (optional)
+cd keystore-worker
+cargo run
+
+# 7. Dashboard
+cd dashboard
+cp .env.example .env.local
+npm run dev
+```
+
+---
+
+## Documentation Chapters
+
+Technical documentation covering completed work (Phases 1-2) and strategic vision (Phases 3-6) is available in `md-claude-chapters/`.
+
+### Completed Phases
+
+**[Chapter 1: RPC Throttling - Infrastructure Protection](md-claude-chapters/01-rpc-throttling.md)** (Complete)
+- Phase 1: Token bucket algorithm, rate limit profiles (5 rps anonymous / 20 rps keyed)
+- Production ready coordinator middleware with automatic retry client
+- ~500 lines distilling Phase 1 completion work
+
+**[Chapter 2: Linux/WASM Integration](md-claude-chapters/02-linux-wasm-integration.md)** (Complete)
+- Phase 2: Three-layer execution model (ContractSimulator → LinuxExecutor → Workers)
+- Demo mode functional with NEAR syscall mapping (400-499)
+- ~800 lines explaining native WASM kernel (not x86 emulation) and NOMMU architecture
+
+### Strategic Vision (Phases 3-6)
+
+**[Chapter 3: Multi-Layer Roadmap](md-claude-chapters/03-multi-layer-roadmap.md)** (Strategic Plan)
+- Phases 3-6: QuickJS (2-3 weeks) → Frozen Realms (2-3 weeks) → Production Linux (3-4 weeks) → Applications (4-6 weeks)
+- Task breakdowns with implementation steps, code examples, go/no-go decision points
+- ~1200 lines of strategic roadmap with technical depth
+
+**[Chapter 6: 4-Layer Architecture Deep Dive](md-claude-chapters/06-4-layer-architecture.md)** (Technical Analysis)
+- L1→L2→L3→L4 stack: Host WASM Runtime → Guest OS → Guest Runtime → Guest Code
+- Explains security model, I/O Trombone problem (fundamental performance trade-off), competitive positioning
+- ~1500 lines - most complex chapter, explains why multi-layer architecture enables capabilities impossible elsewhere
+- Warning: Budget 30-45 minutes for careful reading
+
+**[Chapter 7: Daring Applications](md-claude-chapters/07-daring-applications.md)** (Market Vision)
+- Three applications: AI Trading Agents, Deterministic Plugin Systems, Stateful Multi-Process Edge Computing
+- Each includes competitive analysis explaining why alternatives cannot provide these capabilities
+- ~1000+ lines with complete implementation examples
+
+### Reference Documentation
+
+**[Chapter 4: IIFE Bundling](md-claude-chapters/04-iife-bundling.md)** (Reference - Not Yet Implemented)
+- Zero-config browser distribution (drop-in `<script>` tag usage)
+- 5-phase implementation roadmap, tsup configuration patterns
+- ~600 lines - note: Linux kernel (~24 MB) requires lazy loading strategy
+
+**[Chapter 5: Performance Benchmarking](md-claude-chapters/05-performance-benchmarking.md)** (Methodology)
+- Benchmark framework, test scenarios, comparison matrix
+- Performance targets: Direct mode (<10ms), Linux mode (<50ms cold start)
+- ~700 lines - note: Targets are projections awaiting production Linux kernel implementation
+
+### Chapter Index
+
+**Start here**: [md-claude-chapters/README.md](md-claude-chapters/README.md) - Includes reading paths for developers, architects, and decision makers, plus detailed explanations of key concepts (NOMMU, I/O Trombone, Frozen Realms) where concepts are subtle.
+
+---
+
+## 🎓 Learning Path for New Contributors
+
+**If you are new to OutLayer**, read in this order:
+
+1. **This file (CLAUDE.md)** - Architectural vision (you are here)
+2. **contract/README.md** - Smart contract API reference
+3. **wasi-examples/WASI_TUTORIAL.md** - How to write WASM for OutLayer
+4. **tests/job_workflow.sh** - Race condition verification (shows atomicity in action)
+5. **coordinator/src/handlers/jobs.rs** - Job claim logic (core coordination pattern)
+6. **worker/src/main.rs** - Main worker loop (shows full execution flow)
+
+**If you want to implement a feature**, ask yourself:
+1. Does this change security boundaries? (If yes, discuss with human first)
+2. Which component owns this responsibility? (Contract, Coordinator, Worker, Keystore?)
+3. How does this interact with capabilities? (Access keys, secrets, resource limits)
+4. What tests verify this works? (Unit, integration, E2E)
+
+**If you encounter resistance** (e.g., "this seems over-engineered"):
+- Remember: This is a **capability-based system**, not a simple API
+- Every abstraction serves a security boundary
+- Shortcuts may break TEE integration path
+- Ask human for clarification if unsure
+
+---
+
+**Current Date**: 2025-11-05
+**Version**: Phase 1 (MVP without hardware TEE)
+**Status**: All components operational, ready for Phase 2 TEE integration
+
+**Next Milestone**: Replace simulated attestation with Intel SGX or AMD SEV verification in keystore.

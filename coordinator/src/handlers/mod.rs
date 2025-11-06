@@ -4,6 +4,7 @@ pub mod jobs;
 pub mod locks;
 pub mod pricing;
 pub mod public;
+pub mod rpc_proxy;
 pub mod tasks;
 pub mod wasm;
 pub mod workers;

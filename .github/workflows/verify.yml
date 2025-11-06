@@ -1,0 +1,117 @@
+name: verify
+on:
+  pull_request:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  # Existing verification suite tests
+  verification-suite:
+    name: Verification Suite (outlayer-verification-suite)
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        rust: [stable]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with: { toolchain: ${{ matrix.rust }} }
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build -p outlayer-verification-suite --all-features
+      - name: Test (proptest 1k cases)
+        env:
+          RUST_BACKTRACE: "1"
+        run: cargo test -p outlayer-verification-suite -- --nocapture
+
+  # Verification Tests (82/82 passing)
+  verification-tests:
+    name: Verification Tests (82/82)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install WASM targets
+        run: rustup target add wasm32-wasip1 wasm32-wasip2
+
+      - name: Build random-ark WASM module
+        run: |
+          cd wasi-examples/random-ark
+          cargo build --release --target wasm32-wasip1
+
+      - name: Run verification tests
+        env:
+          RUST_BACKTRACE: "1"
+        run: |
+          mkdir -p logs
+          cd tests/verification-tests
+          cargo test -- --nocapture 2>&1 | tee ../../logs/all_tests.log
+
+      - name: Verify test claims
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: node scripts/verify-tests.mjs
+        env:
+          LOGS_DIR: logs
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-test-logs-${{ github.run_id }}
+          path: logs/
+
+  # Research: nearcore conformance (future work)
+  # Only runs when research/ directory changes or on manual trigger
+  research-nearcore-conformance:
+    name: Research - Nearcore Conformance
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.changed_files, 'research/')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build with primitives feature
+        run: |
+          cd research/nearcore-conformance
+          cargo build --features primitives
+
+      - name: Test primitives parity
+        run: |
+          cd research/nearcore-conformance
+          cargo test --features primitives -- --nocapture
+
+      - name: Test fee parity placeholder
+        run: |
+          cd research/nearcore-conformance
+          cargo test --features fee-parity -- --nocapture
+
+  # Linting
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with: { toolchain: stable, components: clippy,rustfmt }
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy - verification suite
+        run: cargo clippy -p outlayer-verification-suite -- -D warnings
+
+      - name: Clippy - verification tests
+        run: cargo clippy -p verification-tests --all-features -- -D warnings
+
+      - name: Clippy - research (if primitives enabled)
+        run: |
+          cd research/nearcore-conformance
+          cargo clippy --features primitives -- -D warnings

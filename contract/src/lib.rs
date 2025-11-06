@@ -11,6 +11,7 @@ use std::convert::TryInto;
 mod admin;
 mod events;
 mod execution;
+mod math;     // Phase 1: Checked arithmetic helpers
 mod secrets;
 mod types;
 mod views;

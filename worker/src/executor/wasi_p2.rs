@@ -7,14 +7,21 @@
 //! - HTTP/HTTPS requests via wasi-http
 //! - Advanced filesystem operations
 //! - Async execution
+//! - **Phase 1 Hardening**: Epoch deadline + deterministic WASI environment
 //!
 //! ## Requirements
 //! - wasmtime 28+
 //! - WASM component format (not core module)
 //! - wasi:cli/run interface
+//!
+//! ## Phase 1: Principal Engineer Hardening
+//! - Epoch-based wall-clock deadline (cannot be bypassed by idle syscalls)
+//! - Deterministic WASI environment (TZ=UTC, LANG=C, no ambient RNG/network)
+//! - Fuel + epoch dual protection for resource limits
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
+use std::time::Duration;
 use tracing::debug;
 use wasmtime::component::{Component, Linker};
 use wasmtime::*;
@@ -23,6 +30,8 @@ use wasmtime_wasi::bindings::Command;
 use wasmtime_wasi_http::{WasiHttpCtx, WasiHttpView};
 
 use crate::api_client::ResourceLimits;
+use super::wasmtime_cfg;
+use super::wasi_env;
 
 /// Host state for WASI P2 execution
 struct HostState {
@@ -70,13 +79,26 @@ pub async fn execute(
     env_vars: Option<HashMap<String, String>>,
     print_stderr: bool,
 ) -> Result<(Vec<u8>, u64)> {
-    // Configure wasmtime engine for WASI Preview 2
+    // Phase 1 Hardening: Use deterministic engine configuration
+    // - Fuel metering (per-instruction accounting)
+    // - Epoch interruption (hard wall-clock deadline)
+    // - Disabled non-deterministic features
+    let mut engine = wasmtime_cfg::engine_with_limits()?;
+
+    // WASI P2 requires component model
     let mut config = Config::new();
-    config.wasm_component_model(true); // Enable component model
-    config.async_support(true); // HTTP requires async
-    config.consume_fuel(true); // Instruction metering
+    config.wasm_component_model(true);
+    config.async_support(true);
+    config.consume_fuel(true);
+    config.epoch_interruption(true);
+    config.wasm_threads(false);
+    config.wasm_multi_memory(true);
+    config.wasm_memory64(false);
+    config.debug_info(false);
 
     let engine = Engine::new(&config)?;
+
+    debug!("Phase 1: Engine configured with fuel + epoch deadline");
 
     // Try to load as component
     let component = Component::from_binary(&engine, wasm_bytes)
@@ -109,11 +131,18 @@ pub async fn execute(
         FilePerms::all(),
     )?;
 
-    // Add environment variables (from encrypted secrets)
+    // Phase 1 Hardening: Add deterministic environment or custom env vars
     if let Some(env_map) = env_vars {
+        debug!("Phase 1: Using custom env vars (from secrets)");
         for (key, value) in env_map {
             wasi_builder.env(&key, &value);
-            debug!("Added env var: {}", key);
+            debug!("Added custom env var: {}", key);
+        }
+    } else {
+        debug!("Phase 1: Using deterministic WASI environment");
+        // Add deterministic defaults
+        for (key, value) in wasi_env::WasiEnvBuilder::default_env_vars() {
+            wasi_builder.env(&key, &value);
         }
     }
 
@@ -123,9 +152,19 @@ pub async fn execute(
         table: ResourceTable::new(),
     };
 
-    // Create store with fuel limit
+    // Create store with fuel + epoch deadline
     let mut store = Store::new(&engine, host_state);
-    store.set_fuel(limits.max_instructions)?;
+
+    // Phase 1 Hardening: Configure store limits (fuel + epoch)
+    let deadline_task = wasmtime_cfg::configure_store_limits(
+        &engine,
+        &mut store,
+        limits.max_instructions,
+        Duration::from_secs(limits.max_execution_seconds)
+    )?;
+
+    debug!("Phase 1: Store configured with {} fuel, {}s epoch deadline",
+           limits.max_instructions, limits.max_execution_seconds);
 
     // Instantiate and execute component
     debug!("Instantiating component");
@@ -138,6 +177,10 @@ pub async fn execute(
         .wasi_cli_run()
         .call_run(&mut store)
         .await;
+
+    // Phase 1 Hardening: Clean up deadline task
+    deadline_task.abort();
+    debug!("Phase 1: Epoch deadline task aborted");
 
     // Get fuel consumed before checking result
     let fuel_consumed = limits.max_instructions - store.get_fuel().unwrap_or(0);

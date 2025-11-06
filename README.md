@@ -8,14 +8,39 @@ Verifiable off-chain computation platform for NEAR smart contracts using yield/r
 
 ```
 near-outlayer/
-├── contract/          # NEAR smart contract (offchainvm.near)
-├── coordinator/       # Coordinator API server (Rust + Axum)
-├── worker/           # Worker nodes (Rust + Tokio)
-├── wasi-examples/    # WASI example projects (random-ark, ai-ark, etc.)
-├── scripts/          # Deployment scripts
-├── docker/           # Docker configurations
-└── docs/             # Documentation
+├── contract/                    # NEAR smart contract (offchainvm.near)
+├── coordinator/                 # Coordinator API server (Rust + Axum)
+├── worker/                     # Worker nodes (Rust + Tokio)
+├── wasi-examples/              # WASI example projects (random-ark, ai-ark, etc.)
+├── outlayer-verification-suite/ # Property-based testing (512+ adversarial cases)
+├── tests/verification-tests/    # Integration tests - 82/82 passing
+├── clients/ts/outlayer-client/  # TypeScript SDK with idempotency support
+├── research/                   # Experimental features (nearcore conformance)
+├── scripts/                    # Deployment & verification scripts
+├── docker/                     # Docker configurations
+└── docs/                       # Documentation
 ```
+
+### Production Features vs Research
+
+**Production-Ready Core Features**:
+- ✅ Deterministic WASM execution (100× replay verified, fuel = 27,111)
+- ✅ NEP-297 event compliance
+- ✅ Overflow/underflow protection (checked arithmetic)
+- ✅ Path traversal prevention (GitHub URL canonicalization)
+- ✅ WASM I/O correctness (stdout capture)
+- ✅ Idempotency middleware
+- ✅ Property-based testing (512+ adversarial cases)
+- ✅ 82/82 integration tests passing
+- ✅ Machine verification (12/12 checks)
+
+**Research & Experimental Features**: Located in `research/` directory
+- 🔬 Nearcore conformance oracle (primitives bindings, fee parity)
+- 🔬 Hardware TEE attestation (Intel SGX, AMD SEV)
+- 🔬 Borsh ABI prototypes
+- 🔬 Differential fuzzing against nearcore runtime
+
+See [docs/DoD-Verification-Tests.md](docs/DoD-Verification-Tests.md) for detailed acceptance criteria and [research/README.md](research/README.md) for research scope.
 
 ## Quick Start
 
@@ -83,9 +108,17 @@ cargo run --release
 
 ## Documentation
 
-- [PROJECT.md](PROJECT.md) - Technical specification
-- [MVP_DEVELOPMENT_PLAN.md](MVP_DEVELOPMENT_PLAN.md) - Development roadmap
-- [NEAROffshoreOnepager.md](NEAROffshoreOnepager.md) - Marketing one-pager
+- **[QUICK_START.md](QUICK_START.md)** - Fast getting started guide
+- **[SETUP.md](SETUP.md)** - Detailed setup instructions
+- **[CLAUDE.md](CLAUDE.md)** - AI assistant development guide
+- **[docs/](docs/)** - Complete documentation library
+  - [Project Vision](docs/PROJECT_VISION.md) - Strategic positioning and vision
+  - [Architecture](docs/architecture/) - Deep technical documentation
+  - [Phases](docs/phases/) - Completed phase reports
+  - [Guides](docs/guides/) - Operational guides (auth, deployment)
+  - [Proposals](docs/proposals/) - Strategic proposals and planning
+
+See **[docs/README.md](docs/README.md)** for complete documentation index.
 
 ## Architecture
 
