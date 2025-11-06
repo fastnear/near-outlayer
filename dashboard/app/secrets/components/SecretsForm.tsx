@@ -54,7 +54,7 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
       return;
     }
 
-    // Validate JSON
+    // Validate JSON format (keystore will check for reserved keywords)
     try {
       const parsed = JSON.parse(plaintextSecrets);
       if (typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -68,20 +68,33 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
     setEncrypting(true);
 
     try {
-      // Get public key from coordinator (which proxies to keystore)
-      const params = new URLSearchParams({
+      // Get public key from coordinator (which proxies to keystore with validation)
+      const payload = {
         repo: repo.trim(),
         owner: accountId,
-      });
-      if (branch.trim()) {
-        params.set('branch', branch.trim());
-      }
+        branch: branch.trim() || null,
+        secrets_json: plaintextSecrets, // Keystore will validate for reserved keywords
+      };
 
-      const pubkeyResp = await fetch(`${coordinatorUrl}/secrets/pubkey?${params}`);
+      const pubkeyResp = await fetch(`${coordinatorUrl}/secrets/pubkey`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
       if (!pubkeyResp.ok) {
         const errorText = await pubkeyResp.text();
-        throw new Error(`Failed to get public key: ${errorText}`);
+        // Extract error message from JSON if possible
+        try {
+          const errorJson = JSON.parse(errorText);
+          throw new Error(errorJson.error || errorText);
+        } catch {
+          throw new Error(`Keystore rejected secrets: ${errorText}`);
+        }
       }
+
       const pubkeyData = await pubkeyResp.json();
       const pubkeyHex = pubkeyData.pubkey;
       const repoNormalized = pubkeyData.repo_normalized; // Get normalized repo from coordinator

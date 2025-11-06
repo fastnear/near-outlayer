@@ -153,24 +153,26 @@ Build a production-ready MVP without TEE (Trusted Execution Environment), with a
 - ✅ **Compiles successfully** - warnings only (unused fields), 0 errors
 
 #### 5. **Keystore Worker** (`/keystore-worker`) - 100% ✅ COMPLETE + ENHANCED
-- ✅ **Python Flask API server** for secret management running on port 8081
+- ✅ **Rust + Axum API server** for secret management running on port 8081
 - ✅ **Secrets Endpoints**:
   - `GET /pubkey?repo=X&owner=Y&branch=Z` - Get encryption public key for specific repo
-  - `POST /decrypt` - Decrypt secrets with TEE attestation + access control validation
+  - `POST /decrypt` - Decrypt secrets with TEE attestation + access control validation ✨ **NEW: Reserved keywords validation**
   - `GET /health` - Health check
-- ✅ **GitHub Endpoints** ✨ **NEW (2025-10-22)**:
-  - `GET /github/secrets-pubkey?repo=X&owner=Y` - Get public key from Coordinator API
-  - Integration with Coordinator API for centralized key management
-- ✅ **Access Control Validation** ✨ **NEW**:
+- ✅ **Access Control Validation**:
   - Validates access conditions before decrypting (AllowAll, Whitelist, AccountPattern, NEAR balance, FT balance, NFT ownership)
   - Makes RPC calls to NEAR for balance checks
   - Supports complex Logic conditions (AND/OR/NOT)
+- ✅ **Reserved Keywords Protection** ✨ **NEW (2025-11-06)**:
+  - Rejects secrets containing reserved NEAR environment variables (NEAR_SENDER_ID, NEAR_TRANSACTION_HASH, etc.)
+  - Prevents accidental override of system variables
+  - Returns clear error message to user
 - ✅ **Simple XOR encryption** (MVP) - will be replaced with ChaCha20-Poly1305 in production
 - ✅ **Attestation verification** - validates worker's TEE measurements
-- ✅ **encrypt_secrets.py** - Helper script to encrypt secrets:
-  - **JSON format** - accepts `{"KEY":"value"}` instead of `KEY=value,KEY2=value2`
-  - Validates JSON structure before encryption
-  - Outputs encrypted array for contract calls
+- ✅ **Helper Scripts**:
+  - `encrypt_secrets.py` - CLI tool to encrypt secrets:
+    - **JSON format** - accepts `{"KEY":"value"}`
+    - ✨ **NEW: Validates reserved keywords** before encryption
+    - Outputs encrypted array for contract calls
 - ✅ **Docker support** with docker-compose.yml
 
 #### 6. **Dashboard** (`/dashboard`) - 100% ✅ COMPLETE + REFACTORED

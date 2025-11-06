@@ -312,9 +312,11 @@ async fn fetch_branch_from_github(
     Ok(Some("main".to_string()))
 }
 
-/// GET /secrets/pubkey?repo=...&branch=...&owner=...
+/// POST /secrets/pubkey
+/// Request: { "repo": "...", "branch": "...", "owner": "...", "secrets_json": "{...}" }
 ///
 /// Get public key for encrypting secrets for a specific repository, branch, and owner.
+/// Keystore validates secrets JSON and rejects reserved keywords before returning pubkey.
 /// This endpoint proxies the request to the keystore worker.
 ///
 /// Query parameters:
@@ -331,10 +333,11 @@ async fn fetch_branch_from_github(
 /// - 400: Invalid repo format, missing owner, or keystore not configured
 /// - 502: Keystore error
 #[derive(Debug, Deserialize)]
-pub struct GetPubkeyQuery {
+pub struct GetPubkeyRequest {
     pub repo: String,
     pub branch: Option<String>,
     pub owner: String, // NEAR account ID (required)
+    pub secrets_json: String, // Secrets to validate before encryption
 }
 
 #[derive(Debug, Serialize)]
@@ -346,8 +349,8 @@ pub struct GetPubkeyResponse {
 }
 
 pub async fn get_secrets_pubkey(
-    Query(query): Query<GetPubkeyQuery>,
     State(state): State<AppState>,
+    Json(req): Json<GetPubkeyRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     // Check if keystore is configured
     let keystore_url = state
@@ -360,7 +363,7 @@ pub async fn get_secrets_pubkey(
         ))?;
 
     // Validate owner account ID
-    if query.owner.is_empty() {
+    if req.owner.is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
             "Owner account ID is required".to_string(),
@@ -368,30 +371,35 @@ pub async fn get_secrets_pubkey(
     }
 
     // Normalize repo URL
-    let normalized_repo = parse_github_repo(&query.repo)
+    let normalized_repo = parse_github_repo(&req.repo)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid repo format: {}", e)))?;
 
     // Build seed for keystore: repo:owner[:branch]
     // This prevents secret reuse attacks (different owners get different keys)
-    let seed = if let Some(ref branch) = query.branch {
-        format!("{}:{}:{}", normalized_repo, query.owner, branch)
+    let seed = if let Some(ref branch) = req.branch {
+        format!("{}:{}:{}", normalized_repo, req.owner, branch)
     } else {
-        format!("{}:{}", normalized_repo, query.owner)
+        format!("{}:{}", normalized_repo, req.owner)
     };
 
     tracing::info!(
         "🔐 ENCRYPTION SEED (coordinator): repo_normalized={}, owner={}, branch={:?}, seed={}",
         normalized_repo,
-        query.owner,
-        query.branch,
+        req.owner,
+        req.branch,
         seed
     );
 
-    // Call keystore to get pubkey
+    // Call keystore to get pubkey (POST with seed and secrets_json for validation)
     let client = reqwest::Client::new();
+    let payload = serde_json::json!({
+        "seed": seed,
+        "secrets_json": req.secrets_json,
+    });
+
     let mut request_builder = client
-        .get(format!("{}/pubkey", keystore_url))
-        .query(&[("seed", &seed)]);
+        .post(format!("{}/pubkey", keystore_url))
+        .json(&payload);
 
     // Add Authorization header if token is configured
     if let Some(ref token) = state.config.keystore_auth_token {
@@ -440,8 +448,8 @@ pub async fn get_secrets_pubkey(
         StatusCode::OK,
         Json(GetPubkeyResponse {
             repo_normalized: normalized_repo,
-            branch: query.branch,
-            owner: query.owner,
+            branch: req.branch,
+            owner: req.owner,
             pubkey: keystore_data.pubkey,
         }),
     ))

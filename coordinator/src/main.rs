@@ -147,7 +147,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             get(handlers::public::get_user_earnings),
         )
         .route("/github/resolve-branch", get(handlers::github::resolve_branch))
-        .route("/secrets/pubkey", get(handlers::github::get_secrets_pubkey))
+        .route("/secrets/pubkey", post(handlers::github::get_secrets_pubkey))
         .route("/health", get(|| async { "OK" }));
 
     // Build internal routes (no auth - for worker communication only)
