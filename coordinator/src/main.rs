@@ -1,7 +1,10 @@
 mod auth;
+mod auth_near;  // Phase 1: NEAR-signed authentication
 mod config;
 mod github;
+mod github_canon;  // Phase 1: Code source canonicalization
 mod handlers;
+mod middleware;
 mod models;
 mod near_client;
 mod storage;
@@ -18,6 +21,7 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::info;
 
 use config::Config;
+use middleware::throttle::{RateLimitProfile, ThrottleManager};
 use storage::lru_eviction::LruEviction;
 use models::PricingConfig;
 
@@ -29,6 +33,7 @@ pub struct AppState {
     pub lru_eviction: Arc<LruEviction>,
     pub pricing: Arc<RwLock<PricingConfig>>,  // Pricing from contract
     pub pricing_updated_at: Arc<RwLock<SystemTime>>,  // Last update time
+    pub throttle_manager: Arc<ThrottleManager>,  // RPC throttling
 }
 
 #[tokio::main]
@@ -94,6 +99,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    // Initialize throttle manager
+    let anon_profile = RateLimitProfile {
+        rps: 5,
+        burst: 10,
+        concurrent: 4,
+    };
+    let keyed_profile = RateLimitProfile {
+        rps: 20,
+        burst: 40,
+        concurrent: 8,
+    };
+    let throttle_manager = Arc::new(ThrottleManager::new(anon_profile, keyed_profile));
+    info!("Throttle manager initialized (anon: 5rps, keyed: 20rps)");
+
     // Build application state
     let state = AppState {
         db,
@@ -102,6 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         lru_eviction,
         pricing: Arc::new(RwLock::new(initial_pricing)),
         pricing_updated_at: Arc::new(RwLock::new(SystemTime::now())),
+        throttle_manager: throttle_manager.clone(),
     };
 
     // Build protected routes (require auth)
@@ -131,6 +151,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::auth_middleware,
+        ));
+
+    // Build RPC proxy routes (public with throttling)
+    let rpc_proxy = Router::new()
+        .route("/near-rpc", post(handlers::rpc_proxy::proxy_near_rpc))
+        .route("/external/:service", post(handlers::rpc_proxy::proxy_external_api))
+        .route("/throttle/metrics", get(handlers::rpc_proxy::get_throttle_metrics))
+        .with_state(Arc::new(state.clone()))
+        .layer(axum::middleware::from_fn_with_state(
+            throttle_manager.clone(),
+            middleware::throttle::throttle_middleware,
         ));
 
     // Build public routes (no auth required)
@@ -176,6 +207,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Combine routers
     let app = Router::new()
         .merge(protected)
+        .merge(rpc_proxy)
         .merge(public)
         .merge(internal)
         .merge(admin)

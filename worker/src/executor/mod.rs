@@ -39,6 +39,10 @@ use crate::api_client::{ExecutionOutput, ExecutionResult, ResourceLimits, Respon
 mod wasi_p1;
 mod wasi_p2;
 
+// Phase 1: Principal Engineer Hardening - Deterministic Execution
+pub mod wasmtime_cfg;  // Fuel + epoch deadline configuration
+pub mod wasi_env;      // Deterministic WASI environment
+
 /// WASM executor supporting multiple WASI versions
 pub struct Executor {
     /// Maximum instructions allowed per execution (default)

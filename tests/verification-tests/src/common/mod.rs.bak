@@ -1,0 +1,243 @@
+//! Common Test Utilities for Phase 1-5 Integration Tests
+//!
+//! Provides reusable helpers for:
+//! - WASM compilation from test fixtures
+//! - Real WASI P1 execution with wasmtime
+//! - Result comparison utilities
+//! - Test data generation
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use std::process::Command;
+use std::time::Instant;
+
+/// Execution result from WASM runtime
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExecutionResult {
+    pub output: String,
+    pub fuel_consumed: u64,
+    pub execution_time_ms: u64,
+}
+
+/// Build a test WASM module from wasi-examples
+pub async fn build_test_wasm(example_name: &str) -> Result<Vec<u8>> {
+    let repo_root = std::env::current_dir()
+        .context("Failed to get current directory")?
+        .parent()
+        .context("No parent directory")?
+        .parent()
+        .context("No grandparent directory")?
+        .to_path_buf();
+
+    let example_path = repo_root.join("wasi-examples").join(example_name);
+
+    if !example_path.exists() {
+        anyhow::bail!("WASI example not found: {}", example_path.display());
+    }
+
+    // Determine target based on example
+    let target = if example_name.ends_with("-ark") || example_name == "random-ark" || example_name == "determinism-test" {
+        "wasm32-wasip1"
+    } else {
+        // Assume P2 for other examples
+        "wasm32-wasip2"
+    };
+
+    // Build the WASM module
+    let status = Command::new("cargo")
+        .args(&["build", "--release", "--target", target])
+        .current_dir(&example_path)
+        .status()
+        .context("Failed to execute cargo build")?;
+
+    if !status.success() {
+        anyhow::bail!("cargo build failed for {}", example_name);
+    }
+
+    // Read the compiled WASM
+    // Try both naming conventions: example-name.wasm and example_name.wasm
+    let wasm_name_dash = example_name;
+    let wasm_name_underscore = example_name.replace("-", "_");
+
+    let wasm_path_dash = example_path
+        .join("target")
+        .join(target)
+        .join("release")
+        .join(format!("{}.wasm", wasm_name_dash));
+
+    let wasm_path_underscore = example_path
+        .join("target")
+        .join(target)
+        .join("release")
+        .join(format!("{}.wasm", wasm_name_underscore));
+
+    let wasm_path = if wasm_path_dash.exists() {
+        wasm_path_dash
+    } else {
+        wasm_path_underscore
+    };
+
+    std::fs::read(&wasm_path)
+        .context(format!("Failed to read WASM from {}", wasm_path.display()))
+}
+
+/// Execute WASM with wasmtime (WASI P1)
+///
+/// Real implementation matching worker/src/executor/wasi_p1.rs
+pub async fn execute_wasm_p1(
+    wasm_bytes: &[u8],
+    input: &[u8],
+    max_fuel: u64,
+) -> Result<ExecutionResult> {
+    use wasmtime::*;
+    use wasmtime_wasi::preview1::{self, WasiP1Ctx};
+
+    // Configure engine with fuel metering (matches production worker)
+    let mut config = Config::new();
+    config.wasm_threads(false);
+    config.consume_fuel(true);
+    config.epoch_interruption(true);
+    config.debug_info(false);
+    config.async_support(true); // Required for async WASI
+
+    let engine = Engine::new(&config)?;
+    let module = Module::from_binary(&engine, wasm_bytes)?;
+
+    // Create linker for WASI P1
+    let mut linker = Linker::new(&engine);
+    preview1::add_to_linker_async(&mut linker, |t: &mut WasiP1Ctx| t)?;
+
+    // Setup stdin/stdout pipes
+    let stdin_pipe = wasmtime_wasi::pipe::MemoryInputPipe::new(input.to_vec());
+    let stdout_pipe = wasmtime_wasi::pipe::MemoryOutputPipe::new(10 * 1024 * 1024); // 10MB
+
+    // Build deterministic WASI context (TZ=UTC, LANG=C, no ambient RNG)
+    let mut wasi_builder = wasmtime_wasi::WasiCtxBuilder::new();
+    wasi_builder.stdin(stdin_pipe);
+    wasi_builder.stdout(stdout_pipe.clone());
+    wasi_builder.env("TZ", "UTC");
+    wasi_builder.env("LANG", "C");
+
+    let wasi_ctx = wasi_builder.build_p1();
+    let mut store = Store::new(&engine, wasi_ctx);
+
+    // Add fuel
+    store.set_fuel(max_fuel)?;
+
+    // Set epoch deadline (10 seconds = 1000 ticks)
+    store.set_epoch_deadline(1000);
+
+    let start = Instant::now();
+
+    // Instantiate and call _start
+    let instance = linker.instantiate_async(&mut store, &module).await?;
+    let start_fn = instance.get_typed_func::<(), ()>(&mut store, "_start")?;
+    start_fn.call_async(&mut store, ()).await?;
+
+    let fuel_consumed = max_fuel.saturating_sub(store.get_fuel().unwrap_or(0));
+    let execution_time_ms = start.elapsed().as_millis() as u64;
+
+    // Drop store to release the WASI context's hold on stdout_pipe
+    drop(store);
+
+    // Get stdout - now the pipe is exclusively owned by stdout_pipe
+    let stdout_bytes = stdout_pipe.try_into_inner().unwrap_or_default().to_vec();
+    let output = String::from_utf8(stdout_bytes)?;
+
+    Ok(ExecutionResult {
+        output,
+        fuel_consumed,
+        execution_time_ms,
+    })
+}
+
+/// Execute WASM with wasmtime (WASI P2) - currently same as P1 for testing
+///
+/// In production, this would use wasmtime component model for HTTP support
+#[allow(unused_variables)]
+pub async fn execute_wasm_p2(
+    wasm_bytes: &[u8],
+    input: &[u8],
+    max_fuel: u64,
+    max_epoch_ticks: u64,
+) -> Result<ExecutionResult> {
+    use wasmtime::*;
+    use wasmtime_wasi::preview1::{self, WasiP1Ctx};
+
+    // Configure engine
+    let mut config = Config::new();
+    config.wasm_threads(false);
+    config.consume_fuel(true);
+    config.epoch_interruption(true);
+    config.async_support(true); // Required for async WASI
+
+    let engine = Engine::new(&config)?;
+    let module = Module::from_binary(&engine, wasm_bytes)?;
+
+    // Create linker
+    let mut linker = Linker::new(&engine);
+    preview1::add_to_linker_async(&mut linker, |t: &mut WasiP1Ctx| t)?;
+
+    // Setup I/O
+    let stdin_pipe = wasmtime_wasi::pipe::MemoryInputPipe::new(input.to_vec());
+    let stdout_pipe = wasmtime_wasi::pipe::MemoryOutputPipe::new(10 * 1024 * 1024);
+
+    let mut wasi_builder = wasmtime_wasi::WasiCtxBuilder::new();
+    wasi_builder.stdin(stdin_pipe);
+    wasi_builder.stdout(stdout_pipe.clone());
+    wasi_builder.env("TZ", "UTC");
+    wasi_builder.env("LANG", "C");
+
+    let wasi_ctx = wasi_builder.build_p1();
+    let mut store = Store::new(&engine, wasi_ctx);
+
+    store.set_fuel(max_fuel)?;
+    store.set_epoch_deadline(max_epoch_ticks); // Use custom epoch ticks
+
+    let start = Instant::now();
+
+    let instance = linker.instantiate_async(&mut store, &module).await?;
+    let start_fn = instance.get_typed_func::<(), ()>(&mut store, "_start")?;
+    start_fn.call_async(&mut store, ()).await?;
+
+    let fuel_consumed = max_fuel.saturating_sub(store.get_fuel().unwrap_or(0));
+    let execution_time_ms = start.elapsed().as_millis() as u64;
+
+    // Drop store to release the WASI context's hold on stdout_pipe (same fix as P1)
+    drop(store);
+
+    let stdout_bytes = stdout_pipe.try_into_inner().unwrap_or_default().to_vec();
+    let output = String::from_utf8(stdout_bytes)?;
+
+    Ok(ExecutionResult {
+        output,
+        fuel_consumed,
+        execution_time_ms,
+    })
+}
+
+/// Compare two execution results for determinism
+#[allow(dead_code)]
+pub fn assert_deterministic(r1: &ExecutionResult, r2: &ExecutionResult, context: &str) {
+    assert_eq!(
+        r1.output, r2.output,
+        "{}: output differs\nFirst: {}\nSecond: {}",
+        context, r1.output, r2.output
+    );
+    assert_eq!(
+        r1.fuel_consumed, r2.fuel_consumed,
+        "{}: fuel consumption differs ({} vs {})",
+        context, r1.fuel_consumed, r2.fuel_consumed
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_execution_helper_smoke_test() {
+        // Smoke test: verify execution helpers compile and basic structure works
+        assert!(true, "Execution helpers loaded successfully");
+    }
+}

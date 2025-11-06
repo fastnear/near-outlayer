@@ -1,0 +1,1395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEAR OutLayer - Browser WASM Test</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #fff;
+            padding: 20px;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .subtitle {
+            font-size: 1rem;
+            opacity: 0.9;
+            margin-bottom: 30px;
+        }
+
+        .status {
+            background: rgba(255,255,255,0.1);
+            backdrop-filter: blur(10px);
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+
+        .status-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .status-item:last-child {
+            border-bottom: none;
+        }
+
+        .status-label {
+            font-weight: bold;
+        }
+
+        .status-value {
+            font-family: monospace;
+        }
+
+        .terminal {
+            background: #1e1e1e;
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 10px;
+            padding: 20px;
+            min-height: 400px;
+            max-height: 600px;
+            overflow-y: auto;
+            font-family: 'SF Mono', Monaco, monospace;
+            font-size: 14px;
+            line-height: 1.6;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+        }
+
+        .terminal-header {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 15px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .terminal-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .dot-red { background: #ff5f56; }
+        .dot-yellow { background: #ffbd2e; }
+        .dot-green { background: #27c93f; }
+
+        .terminal-content {
+            color: #d4d4d4;
+        }
+
+        .log-entry {
+            margin-bottom: 5px;
+        }
+
+        .log-success { color: #4ade80; }
+        .log-error { color: #f87171; }
+        .log-info { color: #60a5fa; }
+        .log-warn { color: #fbbf24; }
+
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        button {
+            background: rgba(255,255,255,0.2);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.3);
+            color: white;
+            padding: 15px 25px;
+            border-radius: 8px;
+            font-family: inherit;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        button:hover {
+            background: rgba(255,255,255,0.3);
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(0,0,0,0.2);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .metric-card {
+            background: rgba(255,255,255,0.1);
+            backdrop-filter: blur(10px);
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+
+        .metric-label {
+            font-size: 12px;
+            opacity: 0.8;
+            margin-bottom: 5px;
+        }
+
+        .metric-value {
+            font-size: 24px;
+            font-weight: bold;
+        }
+
+        .footer {
+            margin-top: 40px;
+            text-align: center;
+            opacity: 0.7;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 NEAR OutLayer Browser Test</h1>
+        <p class="subtitle">Testing wasm32-unknown-unknown contract execution in browser</p>
+
+        <div class="status">
+            <div class="status-item">
+                <span class="status-label">NEARVMLogic:</span>
+                <span class="status-value" id="vmlogic-status">Loading...</span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">ContractSimulator:</span>
+                <span class="status-value" id="simulator-status">Loading...</span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">WASM Contract:</span>
+                <span class="status-value" id="wasm-status">Loading...</span>
+            </div>
+        </div>
+
+        <div class="controls">
+            <button onclick="testInitialize()">1. Initialize Contract</button>
+            <button onclick="testIncrement()">2. Increment Counter</button>
+            <button onclick="testQuery()">3. Query Count</button>
+            <button onclick="testGetInfo()">4. Get Full Info</button>
+            <button onclick="testReset()">5. Reset Counter</button>
+            <button onclick="runFullTest()">▶️ Run Full Test Suite</button>
+        </div>
+
+        <h2 style="margin-top: 30px; font-size: 1.5rem;">🌐 Phase 1: RPC Throttling</h2>
+        <div class="controls">
+            <button onclick="initRPCClient()">📡 Initialize RPC Client</button>
+            <button onclick="testSingleRPC()">🔍 Single RPC Call</button>
+            <button onclick="testBurstRPC()">💥 Burst 10 Calls (Test Throttle)</button>
+            <button onclick="testRateLimitRecovery()">⏱️ Test 429 Recovery</button>
+            <button onclick="showRPCStats()">📊 Show RPC Statistics</button>
+            <button onclick="testThrottleMetrics()">📈 Get Throttle Metrics</button>
+        </div>
+
+        <h2 style="margin-top: 30px; font-size: 1.5rem;">🐧 Phase 2: Linux/WASM Execution</h2>
+        <div class="controls">
+            <button onclick="setExecutionModeDirect()">⚡ Direct Mode (Default)</button>
+            <button onclick="setExecutionModeLinux()">🐧 Linux Mode (Demo)</button>
+            <button onclick="testDirectExecution()">▶️ Test Direct Execution</button>
+            <button onclick="testLinuxExecution()">▶️ Test Linux Execution</button>
+            <button onclick="compareExecutionModes()">⚖️ Compare Both Modes</button>
+            <button onclick="showLinuxStats()">📊 Show Linux Statistics</button>
+        </div>
+
+        <h2 style="margin-top: 30px; font-size: 1.5rem;">🔒 Phase 3: Sealed Storage</h2>
+        <div class="controls">
+            <button onclick="initSealedStorage()">🔐 Initialize Sealed Storage</button>
+            <button onclick="sealCurrentState()">🔒 Seal & Encrypt State</button>
+            <button onclick="unsealState()">🔓 Unseal & Decrypt State</button>
+            <button onclick="verifyAttestation()">✓ Verify Attestation</button>
+            <button onclick="clearAllState()">🗑️ Clear All State</button>
+            <button onclick="testSealedWorkflow()">▶️ Test Sealed Workflow</button>
+        </div>
+
+        <h2 style="margin-top: 30px; font-size: 1.5rem;">🔐 Phase 4: Hermes Enclave (E2EE Ferry)</h2>
+        <div class="controls">
+            <button onclick="setExecutionModeEnclave()">🔐 Switch to Enclave Mode</button>
+            <button onclick="testEnclaveKeyCustody()">🔑 Demo: Key Custody</button>
+            <button onclick="testEnclaveAIInference()">🧠 Demo: AI Inference</button>
+            <button onclick="compareAllModes()">📊 Compare All Modes</button>
+            <button onclick="showEnclaveStats()">📈 Show Enclave Stats</button>
+        </div>
+
+        <div class="terminal">
+            <div class="terminal-header">
+                <div class="terminal-dot dot-red"></div>
+                <div class="terminal-dot dot-yellow"></div>
+                <div class="terminal-dot dot-green"></div>
+            </div>
+            <div class="terminal-content" id="terminal">
+                <div class="log-entry log-info">Initializing NEAR OutLayer Browser Environment...</div>
+            </div>
+        </div>
+
+        <div class="metrics">
+            <div class="metric-card">
+                <div class="metric-label">Total Gas Used</div>
+                <div class="metric-value" id="total-gas">0</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Executions</div>
+                <div class="metric-value" id="total-executions">0</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">State Size</div>
+                <div class="metric-value" id="state-size">0</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Last Execution</div>
+                <div class="metric-value" id="last-time">0ms</div>
+            </div>
+        </div>
+
+        <div class="footer">
+            Built with ❤️ by NEAR OutLayer Team | Phase 1: RPC Throttling | Phase 2: Linux/WASM | Phase 3: Sealed Storage | Phase 4: Hermes Enclave
+        </div>
+    </div>
+
+    <!-- Load our JavaScript modules -->
+    <script src="src/near-vm-logic.js"></script>
+    <script src="src/sealed-storage.js"></script>
+    <script src="src/linux-executor.js"></script>
+    <script src="src/frozen-realm.js"></script>
+    <script src="src/crypto-utils.js"></script>
+    <script src="src/enclave-executor.js"></script>
+    <script src="src/contract-simulator.js"></script>
+    <script src="src/rpc-client.js"></script>
+
+    <script>
+        // Global RPC client instance
+        let rpcClient = null;
+
+        // Terminal logging
+        const terminal = document.getElementById('terminal');
+
+        function log(message, type = 'info') {
+            const entry = document.createElement('div');
+            entry.className = `log-entry log-${type}`;
+            entry.textContent = message;
+            terminal.appendChild(entry);
+            terminal.scrollTop = terminal.scrollHeight;
+        }
+
+        function logSeparator() {
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            entry.textContent = '═'.repeat(80);
+            terminal.appendChild(entry);
+        }
+
+        // Update status indicators
+        function updateStatus(id, status, isGood = true) {
+            document.getElementById(id).textContent = status;
+            document.getElementById(id).style.color = isGood ? '#4ade80' : '#f87171';
+        }
+
+        // Update metrics
+        function updateMetrics(stats) {
+            document.getElementById('total-gas').textContent =
+                (stats.totalGasUsed / 1000000000000).toFixed(2) + ' Tgas';
+            document.getElementById('total-executions').textContent =
+                stats.totalExecutions;
+            document.getElementById('state-size').textContent =
+                stats.stateSize + ' keys';
+            document.getElementById('last-time').textContent =
+                stats.lastExecutionTime.toFixed(2) + 'ms';
+        }
+
+        // Global simulator instance
+        let simulator;
+        let wasmLoaded = false;
+
+        // Initialize
+        async function initialize() {
+            try {
+                log('Loading NEARVMLogic...', 'info');
+                if (typeof NEARVMLogic === 'undefined') {
+                    throw new Error('NEARVMLogic not loaded');
+                }
+                updateStatus('vmlogic-status', '✓ Loaded', true);
+                log('✓ NEARVMLogic loaded successfully', 'success');
+
+                log('Loading ContractSimulator...', 'info');
+                if (typeof ContractSimulator === 'undefined') {
+                    throw new Error('ContractSimulator not loaded');
+                }
+                simulator = new ContractSimulator({ verboseLogging: false });
+                updateStatus('simulator-status', '✓ Loaded', true);
+                log('✓ ContractSimulator loaded successfully', 'success');
+
+                log('Fetching counter.wasm...', 'info');
+                const response = await fetch('counter.wasm');
+                if (!response.ok) {
+                    throw new Error(`Failed to load WASM: ${response.statusText}`);
+                }
+                const wasmBytes = await response.arrayBuffer();
+                log(`✓ WASM loaded (${(wasmBytes.byteLength / 1024).toFixed(1)} KB)`, 'success');
+
+                // Pre-compile the module
+                log('Compiling WASM module...', 'info');
+                await simulator.loadContract(new Uint8Array(wasmBytes));
+                log('✓ WASM compiled successfully', 'success');
+
+                wasmLoaded = true;
+                updateStatus('wasm-status', '✓ Ready', true);
+
+                logSeparator();
+                log('🎉 All systems ready! Click a button to test.', 'success');
+
+            } catch (error) {
+                log(`ERROR: ${error.message}`, 'error');
+                updateStatus('wasm-status', '✗ Failed', false);
+            }
+        }
+
+        // Test functions
+        async function testInitialize() {
+            if (!wasmLoaded) {
+                log('Please wait for initialization to complete', 'warn');
+                return;
+            }
+
+            logSeparator();
+            log('TEST: Initialize Contract (new)', 'info');
+
+            try {
+                const result = await simulator.execute(
+                    'counter.wasm',
+                    'new',
+                    {}
+                );
+
+                log(`✓ Contract initialized`, 'success');
+                log(`Gas used: ${result.gasUsed.toLocaleString()}`, 'info');
+                log(`Time: ${result.executionTime.toFixed(2)}ms`, 'info');
+
+                updateMetrics(simulator.getStats());
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        }
+
+        async function testIncrement() {
+            if (!wasmLoaded) {
+                log('Please wait for initialization to complete', 'warn');
+                return;
+            }
+
+            logSeparator();
+            log('TEST: Increment Counter', 'info');
+
+            try {
+                const result = await simulator.execute(
+                    'counter.wasm',
+                    'increment',
+                    {}
+                );
+
+                log(`✓ Counter incremented`, 'success');
+                log(`Gas used: ${result.gasUsed.toLocaleString()}`, 'info');
+                log(`Logs: ${result.logs.join(', ')}`, 'info');
+
+                updateMetrics(simulator.getStats());
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        }
+
+        async function testQuery() {
+            if (!wasmLoaded) {
+                log('Please wait for initialization to complete', 'warn');
+                return;
+            }
+
+            logSeparator();
+            log('TEST: Query Count (get_count)', 'info');
+
+            try {
+                const result = await simulator.query(
+                    'counter.wasm',
+                    'get_count',
+                    {}
+                );
+
+                log(`✓ Query successful`, 'success');
+                log(`Result: ${JSON.stringify(result.result)}`, 'success');
+                log(`Gas used: ${result.gasUsed.toLocaleString()}`, 'info');
+
+                updateMetrics(simulator.getStats());
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        }
+
+        async function testGetInfo() {
+            if (!wasmLoaded) {
+                log('Please wait for initialization to complete', 'warn');
+                return;
+            }
+
+            logSeparator();
+            log('TEST: Get Full Info (get_info)', 'info');
+
+            try {
+                const result = await simulator.query(
+                    'counter.wasm',
+                    'get_info',
+                    {}
+                );
+
+                log(`✓ Query successful`, 'success');
+                log(`Result:`, 'info');
+                Object.entries(result.result).forEach(([key, value]) => {
+                    log(`  ${key}: ${value}`, 'info');
+                });
+
+                updateMetrics(simulator.getStats());
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        }
+
+        async function testReset() {
+            if (!wasmLoaded) {
+                log('Please wait for initialization to complete', 'warn');
+                return;
+            }
+
+            logSeparator();
+            log('TEST: Reset Counter', 'info');
+
+            try {
+                const result = await simulator.execute(
+                    'counter.wasm',
+                    'reset',
+                    {}
+                );
+
+                log(`✓ Counter reset`, 'success');
+                log(`Logs: ${result.logs.join(', ')}`, 'info');
+
+                updateMetrics(simulator.getStats());
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        }
+
+        async function runFullTest() {
+            if (!wasmLoaded) {
+                log('Please wait for initialization to complete', 'warn');
+                return;
+            }
+
+            logSeparator();
+            log('🚀 RUNNING FULL TEST SUITE', 'info');
+            logSeparator();
+
+            try {
+                // Test 1: Initialize
+                log('Test 1/6: Initialize contract...', 'info');
+                await simulator.execute('counter.wasm', 'new', {});
+                log('✓ Test 1 passed', 'success');
+
+                // Test 2: Increment
+                log('\nTest 2/6: Increment counter...', 'info');
+                await simulator.execute('counter.wasm', 'increment', {});
+                log('✓ Test 2 passed', 'success');
+
+                // Test 3: Query
+                log('\nTest 3/6: Query count...', 'info');
+                const count1 = await simulator.query('counter.wasm', 'get_count', {});
+                if (count1.result === 1) {
+                    log(`✓ Test 3 passed (count = ${count1.result})`, 'success');
+                } else {
+                    throw new Error(`Expected count = 1, got ${count1.result}`);
+                }
+
+                // Test 4: Increment by amount
+                log('\nTest 4/6: Increment by 5...', 'info');
+                await simulator.execute('counter.wasm', 'increment_by', { amount: 5 });
+                log('✓ Test 4 passed', 'success');
+
+                // Test 5: Verify new count
+                log('\nTest 5/6: Verify count = 6...', 'info');
+                const count2 = await simulator.query('counter.wasm', 'get_count', {});
+                if (count2.result === 6) {
+                    log(`✓ Test 5 passed (count = ${count2.result})`, 'success');
+                } else {
+                    throw new Error(`Expected count = 6, got ${count2.result}`);
+                }
+
+                // Test 6: Get full info
+                log('\nTest 6/6: Get full info...', 'info');
+                const info = await simulator.query('counter.wasm', 'get_info', {});
+                log(`✓ Test 6 passed`, 'success');
+                log(`  count: ${info.result.count}`, 'info');
+                log(`  is_even: ${info.result.is_even}`, 'info');
+                log(`  signer: ${info.result.signer}`, 'info');
+
+                logSeparator();
+                log('🎉 ALL TESTS PASSED!', 'success');
+                logSeparator();
+
+                updateMetrics(simulator.getStats());
+
+            } catch (error) {
+                log(`\n✗ TEST FAILED: ${error.message}`, 'error');
+            }
+        }
+
+        // ===================================================================
+        // RPC CLIENT FUNCTIONS (Phase 1)
+        // ===================================================================
+
+        async function initRPCClient() {
+            try {
+                log('📡 Initializing RPC Client...', 'info');
+
+                // Create RPC client pointing to coordinator
+                rpcClient = new RPCClient({
+                    coordinatorUrl: 'http://localhost:8080',
+                    network: 'testnet',
+                    verbose: true,
+                    // apiKey: 'your-api-key-here', // Uncomment for 20rps instead of 5rps
+                });
+
+                log('✓ RPC Client initialized (coordinator: http://localhost:8080)', 'success');
+                log('  Rate limit: 5 rps (anonymous) / 20 rps (with API key)', 'info');
+            } catch (error) {
+                log(`✗ Error initializing RPC client: ${error.message}`, 'error');
+            }
+        }
+
+        async function testSingleRPC() {
+            if (!rpcClient) {
+                log('⚠️ Please initialize RPC client first', 'warn');
+                return;
+            }
+
+            try {
+                log('\n🔍 Testing single RPC call...', 'info');
+                log('Calling: getStatus()', 'info');
+
+                const startTime = Date.now();
+                const status = await rpcClient.getStatus();
+                const elapsed = Date.now() - startTime;
+
+                log(`✓ RPC call successful (${elapsed}ms)`, 'success');
+                log(`  Chain ID: ${status.chain_id}`, 'info');
+                log(`  Latest block: ${status.sync_info.latest_block_height}`, 'info');
+                log(`  Node version: ${status.version.version}`, 'info');
+            } catch (error) {
+                log(`✗ RPC call failed: ${error.message}`, 'error');
+            }
+        }
+
+        async function testBurstRPC() {
+            if (!rpcClient) {
+                log('⚠️ Please initialize RPC client first', 'warn');
+                return;
+            }
+
+            try {
+                log('\n💥 Testing burst of 10 RPC calls...', 'info');
+                log('This will trigger rate limiting at ~5rps', 'info');
+
+                const startTime = Date.now();
+                const promises = [];
+
+                // Fire 10 requests simultaneously
+                for (let i = 0; i < 10; i++) {
+                    promises.push(
+                        rpcClient.getGasPrice(null)
+                            .then(price => {
+                                log(`  Call ${i + 1}/10: success (gas price: ${price})`, 'success');
+                            })
+                            .catch(err => {
+                                log(`  Call ${i + 1}/10: ${err.message}`, 'error');
+                            })
+                    );
+                }
+
+                await Promise.all(promises);
+
+                const elapsed = Date.now() - startTime;
+                log(`✓ All calls completed in ${elapsed}ms`, 'success');
+                log(`  Expected time: ~2s (10 calls ÷ 5 rps)`, 'info');
+                log(`  Actual time: ${(elapsed / 1000).toFixed(2)}s`, 'info');
+
+            } catch (error) {
+                log(`✗ Burst test failed: ${error.message}`, 'error');
+            }
+        }
+
+        async function testRateLimitRecovery() {
+            if (!rpcClient) {
+                log('⚠️ Please initialize RPC client first', 'warn');
+                return;
+            }
+
+            try {
+                log('\n⏱️ Testing 429 recovery with auto-retry...', 'info');
+
+                // Fire 20 requests to definitely hit limit
+                log('Sending 20 rapid requests...', 'info');
+
+                const promises = [];
+                for (let i = 0; i < 20; i++) {
+                    promises.push(
+                        rpcClient.call('gas_price', [null], { maxRetries: 2 })
+                            .catch(err => ({ error: err.message }))
+                    );
+                }
+
+                const results = await Promise.all(promises);
+
+                const successful = results.filter(r => !r.error).length;
+                const failed = results.filter(r => r.error).length;
+
+                log(`✓ Recovery test complete`, 'success');
+                log(`  Successful: ${successful}/20`, 'success');
+                log(`  Failed: ${failed}/20`, failed > 0 ? 'warn' : 'info');
+                log('  Note: Client auto-retries on 429 with backoff', 'info');
+
+            } catch (error) {
+                log(`✗ Recovery test failed: ${error.message}`, 'error');
+            }
+        }
+
+        async function showRPCStats() {
+            if (!rpcClient) {
+                log('⚠️ Please initialize RPC client first', 'warn');
+                return;
+            }
+
+            try {
+                log('\n📊 RPC Client Statistics:', 'info');
+
+                const stats = rpcClient.getStats();
+
+                log(`  Total requests: ${stats.totalRequests}`, 'info');
+                log(`  Successful: ${stats.successfulRequests} (${stats.successRate})`, 'success');
+                log(`  Failed: ${stats.failedRequests}`, stats.failedRequests > 0 ? 'warn' : 'info');
+                log(`  Retried: ${stats.retriedRequests}`, 'info');
+                log(`  Avg retry delay: ${stats.avgRetryDelay}`, 'info');
+
+            } catch (error) {
+                log(`✗ Error getting stats: ${error.message}`, 'error');
+            }
+        }
+
+        async function testThrottleMetrics() {
+            try {
+                log('\n📈 Fetching coordinator throttle metrics...', 'info');
+
+                const response = await fetch('http://localhost:8080/throttle/metrics');
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+                }
+
+                const metrics = await response.json();
+
+                log('✓ Throttle metrics retrieved:', 'success');
+
+                Object.entries(metrics).forEach(([bucket, [rps, burst, inFlight]]) => {
+                    log(`  ${bucket}:`, 'info');
+                    log(`    RPS: ${rps}, Burst: ${burst}, In-flight: ${inFlight}`, 'info');
+                });
+
+            } catch (error) {
+                log(`✗ Error fetching metrics: ${error.message}`, 'error');
+                log('  Make sure coordinator is running on localhost:8080', 'warn');
+            }
+        }
+
+        // ===================================================================
+        // LINUX EXECUTION FUNCTIONS (Phase 2)
+        // ===================================================================
+
+        async function setExecutionModeDirect() {
+            try {
+                log('\n⚡ Switching to Direct execution mode...', 'info');
+                await simulator.setExecutionMode('direct');
+                log('✓ Now using Direct WASM execution', 'success');
+                log('  Contracts execute directly via WebAssembly.instantiate()', 'info');
+            } catch (error) {
+                log(`✗ Error switching mode: ${error.message}`, 'error');
+            }
+        }
+
+        async function setExecutionModeLinux() {
+            try {
+                log('\n🐧 Switching to Linux execution mode...', 'info');
+                log('  This will initialize a Linux kernel in WASM (demo mode)', 'info');
+
+                await simulator.setExecutionMode('linux');
+
+                log('✓ Now using Linux/WASM execution', 'success');
+                log('  Contracts execute inside full Linux kernel environment', 'info');
+                log('  Note: Running in DEMO mode (simulated kernel)', 'warn');
+            } catch (error) {
+                log(`✗ Error switching mode: ${error.message}`, 'error');
+            }
+        }
+
+        async function testDirectExecution() {
+            try {
+                log('\n⚡ Testing Direct execution mode...', 'info');
+
+                // Ensure we're in direct mode
+                if (simulator.getExecutionMode() !== 'direct') {
+                    await simulator.setExecutionMode('direct');
+                }
+
+                // Execute increment
+                const startTime = Date.now();
+                await simulator.execute('test-contracts/counter/res/counter.wasm', 'increment');
+                const elapsed = Date.now() - startTime;
+
+                log(`✓ Direct execution complete in ${elapsed}ms`, 'success');
+
+                // Query result
+                const result = await simulator.query('test-contracts/counter/res/counter.wasm', 'get_count');
+                log(`  Counter value: ${result.result.count}`, 'info');
+
+            } catch (error) {
+                log(`✗ Direct execution failed: ${error.message}`, 'error');
+            }
+        }
+
+        async function testLinuxExecution() {
+            try {
+                log('\n🐧 Testing Linux execution mode...', 'info');
+
+                // Ensure we're in Linux mode
+                if (simulator.getExecutionMode() !== 'linux') {
+                    await simulator.setExecutionMode('linux');
+                }
+
+                // Execute increment
+                const startTime = Date.now();
+                await simulator.execute('test-contracts/counter/res/counter.wasm', 'increment');
+                const elapsed = Date.now() - startTime;
+
+                log(`✓ Linux execution complete in ${elapsed}ms`, 'success');
+                log('  Note: Demo mode - simulated Linux execution', 'info');
+
+                // Query result
+                const result = await simulator.query('test-contracts/counter/res/counter.wasm', 'get_count');
+                log(`  Counter value: ${result.result.count}`, 'info');
+
+            } catch (error) {
+                log(`✗ Linux execution failed: ${error.message}`, 'error');
+            }
+        }
+
+        async function compareExecutionModes() {
+            try {
+                log('\n⚖️  Comparing Direct vs Linux execution modes...', 'info');
+                logSeparator();
+
+                // Test 1: Direct mode
+                log('\n[1/2] Testing Direct mode...', 'info');
+                await simulator.setExecutionMode('direct');
+
+                const directStart = Date.now();
+                await simulator.execute('test-contracts/counter/res/counter.wasm', 'increment');
+                const directTime = Date.now() - directStart;
+
+                const directStats = simulator.getStats();
+                log(`✓ Direct: ${directTime}ms`, 'success');
+
+                // Test 2: Linux mode
+                log('\n[2/2] Testing Linux mode...', 'info');
+                await simulator.setExecutionMode('linux');
+
+                const linuxStart = Date.now();
+                await simulator.execute('test-contracts/counter/res/counter.wasm', 'increment');
+                const linuxTime = Date.now() - linuxStart;
+
+                const linuxStats = simulator.getLinuxStats();
+                log(`✓ Linux: ${linuxTime}ms (demo mode)`, 'success');
+
+                // Comparison
+                logSeparator();
+                log('\n📊 Comparison Results:', 'info');
+                log(`  Direct execution: ${directTime}ms`, 'info');
+                log(`  Linux execution: ${linuxTime}ms (simulated)`, 'info');
+                log(`  Overhead: ${linuxTime - directTime}ms`, 'info');
+                log(`  Note: In production, Linux adds ~2-5x overhead`, 'warn');
+
+                // Switch back to direct
+                await simulator.setExecutionMode('direct');
+
+            } catch (error) {
+                log(`✗ Comparison failed: ${error.message}`, 'error');
+            }
+        }
+
+        async function showLinuxStats() {
+            try {
+                log('\n📊 Linux Executor Statistics:', 'info');
+
+                const stats = simulator.getLinuxStats();
+
+                if (!stats.available) {
+                    log('  Linux executor not initialized', 'warn');
+                    log('  Click "🐧 Linux Mode (Demo)" to initialize', 'info');
+                    return;
+                }
+
+                log(`  Kernel ready: ${stats.kernelReady ? 'Yes' : 'No'}`, 'info');
+                log(`  Boot time: ${stats.bootTime}ms`, 'info');
+                log(`  Total tasks executed: ${stats.totalTasks}`, 'info');
+                log(`  Total instructions: ${stats.totalInstructions.toLocaleString()}`, 'info');
+                log(`  Total syscalls: ${stats.totalSyscalls}`, 'info');
+                log(`  Active tasks: ${stats.activeTasks}`, 'info');
+                log(`  Demo mode: ${stats.demoMode ? 'Yes (simulated)' : 'No (real kernel)'}`, 'warn');
+
+                const simStats = simulator.getStats();
+                log(`\n  Contract Statistics:`, 'info');
+                log(`  Direct executions: ${simStats.directExecutions}`, 'info');
+                log(`  Linux executions: ${simStats.linuxExecutions}`, 'info');
+
+            } catch (error) {
+                log(`✗ Error getting stats: ${error.message}`, 'error');
+            }
+        }
+
+        // ===================================================================
+        // SEALED STORAGE FUNCTIONS (Phase 3)
+        // ===================================================================
+
+        let sealedStorageInitialized = false;
+
+        async function initSealedStorage() {
+            if (sealedStorageInitialized) {
+                log('Sealed storage already initialized', 'warn');
+                return;
+            }
+
+            logSeparator();
+            log('🔐 Initializing Sealed Storage (WebCrypto)', 'info');
+
+            try {
+                await simulator.initializeSealedStorage();
+                sealedStorageInitialized = true;
+                log('✓ Sealed storage initialized', 'success');
+                log('  - AES-GCM 256-bit master key generated', 'info');
+                log('  - ECDSA P-256 attestation keypair generated', 'info');
+                log('  - IndexedDB connection established', 'info');
+            } catch (error) {
+                log(`✗ Initialization failed: ${error.message}`, 'error');
+            }
+        }
+
+        async function sealCurrentState() {
+            if (!wasmLoaded) {
+                log('Please wait for initialization to complete', 'warn');
+                return;
+            }
+
+            if (!sealedStorageInitialized) {
+                log('Please initialize sealed storage first', 'warn');
+                return;
+            }
+
+            logSeparator();
+            log('🔒 Sealing Current State', 'info');
+
+            try {
+                const { sealed, attestation } = await simulator.sealState('counter.wasm');
+
+                log(`✓ State sealed successfully`, 'success');
+                log(`  Ciphertext size: ${sealed.ciphertext.length} bytes`, 'info');
+                log(`  IV: ${sealed.iv.slice(0, 6).join(', ')}...`, 'info');
+                log(`  Timestamp: ${new Date(sealed.timestamp).toLocaleString()}`, 'info');
+                log('', 'info');
+                log(`✓ Attestation generated`, 'success');
+                log(`  Type: ${attestation.attestation_type}`, 'info');
+                log(`  Hash: ${attestation.state_hash.slice(0, 8).map(b => b.toString(16).padStart(2, '0')).join('')}...`, 'info');
+                log(`  Signature: ${attestation.signature.length} bytes`, 'info');
+                log('', 'info');
+                log(`✓ Persisted to IndexedDB`, 'success');
+
+            } catch (error) {
+                log(`✗ Sealing failed: ${error.message}`, 'error');
+            }
+        }
+
+        async function unsealState() {
+            if (!wasmLoaded) {
+                log('Please wait for initialization to complete', 'warn');
+                return;
+            }
+
+            if (!sealedStorageInitialized) {
+                log('Please initialize sealed storage first', 'warn');
+                return;
+            }
+
+            logSeparator();
+            log('🔓 Unsealing State from IndexedDB', 'info');
+
+            try {
+                const success = await simulator.unsealState('counter.wasm');
+
+                if (success) {
+                    log(`✓ State unsealed successfully`, 'success');
+                    log(`  Keys restored: ${nearState.size}`, 'info');
+                    updateMetrics(simulator.getStats());
+                } else {
+                    log('ℹ No sealed state found', 'warn');
+                }
+
+            } catch (error) {
+                log(`✗ Unsealing failed: ${error.message}`, 'error');
+            }
+        }
+
+        async function verifyAttestation() {
+            if (!sealedStorageInitialized) {
+                log('Please initialize sealed storage first', 'warn');
+                return;
+            }
+
+            logSeparator();
+            log('✓ Verifying State Attestation', 'info');
+
+            try {
+                const valid = await simulator.verifyStateAttestation('counter.wasm');
+
+                if (valid) {
+                    log(`✓ Attestation valid and state hash matches`, 'success');
+                } else {
+                    log(`✗ Attestation invalid or state hash mismatch`, 'error');
+                }
+
+            } catch (error) {
+                log(`✗ Verification failed: ${error.message}`, 'error');
+            }
+        }
+
+        async function clearAllState() {
+            logSeparator();
+            log('🗑️ Clearing All State', 'info');
+
+            try {
+                // Clear runtime state
+                simulator.clearState();
+                log('✓ Runtime state cleared', 'success');
+
+                // Clear sealed storage if initialized
+                if (sealedStorageInitialized && simulator.sealedStorage) {
+                    await simulator.sealedStorage.clearAll();
+                    log('✓ Sealed storage cleared from IndexedDB', 'success');
+                }
+
+                updateMetrics(simulator.getStats());
+
+            } catch (error) {
+                log(`✗ Clear failed: ${error.message}`, 'error');
+            }
+        }
+
+        async function testSealedWorkflow() {
+            if (!wasmLoaded) {
+                log('Please wait for initialization to complete', 'warn');
+                return;
+            }
+
+            logSeparator();
+            log('🚀 TESTING SEALED STORAGE WORKFLOW', 'info');
+            logSeparator();
+
+            try {
+                // Step 1: Initialize sealed storage
+                log('Step 1/7: Initialize sealed storage...', 'info');
+                if (!sealedStorageInitialized) {
+                    await simulator.initializeSealedStorage();
+                    sealedStorageInitialized = true;
+                }
+                log('✓ Step 1 complete', 'success');
+
+                // Step 2: Initialize contract
+                log('\nStep 2/7: Initialize contract...', 'info');
+                await simulator.execute('counter.wasm', 'new', {});
+                log('✓ Step 2 complete', 'success');
+
+                // Step 3: Increment a few times
+                log('\nStep 3/7: Increment counter 3 times...', 'info');
+                for (let i = 0; i < 3; i++) {
+                    await simulator.execute('counter.wasm', 'increment', {});
+                }
+                const count1 = await simulator.query('counter.wasm', 'get_count', {});
+                log(`✓ Step 3 complete (count = ${count1.result})`, 'success');
+
+                // Step 4: Seal state
+                log('\nStep 4/7: Seal and encrypt state...', 'info');
+                await simulator.sealState('counter.wasm');
+                log('✓ Step 4 complete', 'success');
+
+                // Step 5: Clear runtime state
+                log('\nStep 5/7: Clear runtime state (simulating browser restart)...', 'info');
+                simulator.clearState();
+                log('✓ Step 5 complete (state cleared from memory)', 'success');
+
+                // Step 6: Unseal state
+                log('\nStep 6/7: Unseal and decrypt state...', 'info');
+                await simulator.unsealState('counter.wasm');
+                log('✓ Step 6 complete', 'success');
+
+                // Step 7: Verify count is restored
+                log('\nStep 7/7: Verify count is restored...', 'info');
+                const count2 = await simulator.query('counter.wasm', 'get_count', {});
+                if (count2.result === 3) {
+                    log(`✓ Step 7 complete (count = ${count2.result})`, 'success');
+                } else {
+                    throw new Error(`Expected count = 3, got ${count2.result}`);
+                }
+
+                logSeparator();
+                log('🎉 SEALED STORAGE WORKFLOW TEST PASSED!', 'success');
+                log('State successfully encrypted, persisted, and restored!', 'success');
+                logSeparator();
+
+                updateMetrics(simulator.getStats());
+
+            } catch (error) {
+                log(`\n✗ WORKFLOW TEST FAILED: ${error.message}`, 'error');
+            }
+        }
+
+        // ============================================================================
+        // Phase 4: Hermes Enclave Functions
+        // ============================================================================
+
+        async function setExecutionModeEnclave() {
+            try {
+                log('Switching to Enclave execution mode...', 'info');
+                await simulator.setExecutionMode('enclave');
+                log('✓ Enclave mode active', 'success');
+                log('  L1 (Browser): ✅ Active', 'info');
+                log('  L2 (Linux): ❌ Bypassed (Phase 1)', 'info');
+                log('  L3 (QuickJS): ❌ Bypassed (Phase 1)', 'info');
+                log('  L4 (Frozen Realm): ✅ Active', 'success');
+            } catch (error) {
+                log(`✗ Failed to switch to enclave mode: ${error.message}`, 'error');
+            }
+        }
+
+        async function testEnclaveKeyCustody() {
+            try {
+                logSeparator();
+                log('🔑 ENCLAVE KEY CUSTODY DEMO', 'info');
+                logSeparator();
+
+                // Ensure we're in enclave mode
+                await simulator.setExecutionMode('enclave');
+
+                // Create crypto utils
+                const crypto = new CryptoUtils({ verbose: false });
+
+                // Generate enclave key (32 bytes hex)
+                const enclaveKey = '0123456789abcdef'.repeat(4);
+                log(`Enclave key: ${enclaveKey.slice(0, 16)}...`, 'info');
+
+                // Create test data
+                const transaction = {
+                    from: 'alice.near',
+                    to: 'bob.near',
+                    amount: 100,
+                    message: 'Payment for services'
+                };
+                const masterSeed = 'my-super-secret-master-seed-phrase-here';
+
+                log('Encrypting payload and secret...', 'info');
+
+                // Encrypt payload
+                const payloadJSON = JSON.stringify(transaction);
+                const encryptedPayload = await crypto.encryptSimple(payloadJSON, enclaveKey);
+                log(`✓ Payload encrypted (${encryptedPayload.length} chars)`, 'success');
+
+                // Encrypt secret
+                const encryptedSecret = await crypto.encryptSimple(masterSeed, enclaveKey);
+                log(`✓ Secret encrypted (${encryptedSecret.length} chars)`, 'success');
+
+                // Load guest code
+                log('Loading L4 guest code...', 'info');
+                const guestCode = await fetch('/l4-guest-examples/confidential-key-custody.js')
+                    .then(r => r.text());
+                log(`✓ Guest code loaded (${guestCode.length} chars)`, 'success');
+
+                // Execute in Frozen Realm
+                log('\n🔐 Executing in Frozen Realm...', 'info');
+                const result = await simulator.execute(
+                    guestCode,
+                    'ignored', // Method name ignored for enclave mode
+                    {
+                        encryptedPayload,
+                        encryptedSecret,
+                        enclaveKey
+                    }
+                );
+
+                log(`\n✓ Execution complete in ${result.executionTime.toFixed(2)}ms`, 'success');
+                log(`  L4 time: ${result.l4Time.toFixed(2)}ms`, 'info');
+                log(`  Layers: ${result.layers.join(' → ')}`, 'info');
+
+                // Decrypt result
+                log('\nDecrypting result...', 'info');
+                const decrypted = await crypto.decryptSimple(result.result, enclaveKey);
+                const response = JSON.parse(decrypted);
+
+                log('\n📋 RESULT:', 'success');
+                log(`  Success: ${response.success}`, 'info');
+                log(`  Transaction signed: ✅`, 'success');
+                log(`  Signature: ${response.signedTransaction.signature.slice(0, 32)}...`, 'info');
+                log(`  Private key exposed to L1-L3: ${response.stats.privateKeyExposed}`, 'success');
+                log(`  Layers that saw plaintext: ${response.stats.layersThatSawPlaintext.join(', ')}`, 'success');
+
+                logSeparator();
+                log('🎉 KEY CUSTODY DEMO COMPLETE!', 'success');
+                log('Private key generated and used in L4, never exposed to L1-L3!', 'success');
+                logSeparator();
+
+                updateMetrics(simulator.getStats());
+
+            } catch (error) {
+                log(`\n✗ KEY CUSTODY DEMO FAILED: ${error.message}`, 'error');
+                console.error(error);
+            }
+        }
+
+        async function testEnclaveAIInference() {
+            try {
+                logSeparator();
+                log('🧠 ENCLAVE AI INFERENCE DEMO', 'info');
+                logSeparator();
+
+                // Ensure we're in enclave mode
+                await simulator.setExecutionMode('enclave');
+
+                // Create crypto utils
+                const crypto = new CryptoUtils({ verbose: false });
+
+                // Generate enclave key
+                const enclaveKey = 'abcdef0123456789'.repeat(4);
+                log(`Enclave key: ${enclaveKey.slice(0, 16)}...`, 'info');
+
+                // Create test medical data (PHI/PII)
+                const medicalData = {
+                    patientId: 'P-12345',
+                    age: 45,
+                    symptoms: ['chest pain', 'shortness of breath'],
+                    history: ['hypertension', 'diabetes'],
+                    medications: ['lisinopril', 'metformin']
+                };
+                const apiKey = 'sk-proj-...test-openai-key...';
+
+                log('Encrypting medical data and API key...', 'info');
+
+                // Encrypt payload
+                const payloadJSON = JSON.stringify(medicalData);
+                const encryptedPayload = await crypto.encryptSimple(payloadJSON, enclaveKey);
+                log(`✓ Medical data encrypted (${encryptedPayload.length} chars)`, 'success');
+
+                // Encrypt secret
+                const encryptedSecret = await crypto.encryptSimple(apiKey, enclaveKey);
+                log(`✓ API key encrypted (${encryptedSecret.length} chars)`, 'success');
+
+                // Load guest code
+                log('Loading L4 guest code...', 'info');
+                const guestCode = await fetch('/l4-guest-examples/confidential-ai-inference.js')
+                    .then(r => r.text());
+                log(`✓ Guest code loaded (${guestCode.length} chars)`, 'success');
+
+                // Execute in Frozen Realm
+                log('\n🧠 Executing AI inference in Frozen Realm...', 'info');
+                const result = await simulator.execute(
+                    guestCode,
+                    'ignored',
+                    {
+                        encryptedPayload,
+                        encryptedSecret,
+                        enclaveKey
+                    }
+                );
+
+                log(`\n✓ Execution complete in ${result.executionTime.toFixed(2)}ms`, 'success');
+                log(`  L4 time: ${result.l4Time.toFixed(2)}ms`, 'info');
+
+                // Decrypt result
+                log('\nDecrypting result...', 'info');
+                const decrypted = await crypto.decryptSimple(result.result, enclaveKey);
+                const response = JSON.parse(decrypted);
+
+                log('\n📋 RESULT:', 'success');
+                log(`  Patient: ${response.patientId}`, 'info');
+                log(`  Assessment preview: ${response.assessment.slice(0, 80)}...`, 'info');
+                log(`  Tokens used: ${response.tokensUsed}`, 'info');
+                log(`  API key exposed to L1-L3: ${response.securityGuarantees.apiKeyExposedToL1_L3}`, 'success');
+                log(`  PHI exposed to L1-L3: ${response.securityGuarantees.phiExposedToL1_L3}`, 'success');
+                log(`  Prompt exposed to L1-L3: ${response.securityGuarantees.promptExposedToL1_L3}`, 'success');
+
+                logSeparator();
+                log('🎉 AI INFERENCE DEMO COMPLETE!', 'success');
+                log('Medical data and API key decrypted ONLY in L4!', 'success');
+                logSeparator();
+
+                updateMetrics(simulator.getStats());
+
+            } catch (error) {
+                log(`\n✗ AI INFERENCE DEMO FAILED: ${error.message}`, 'error');
+                console.error(error);
+            }
+        }
+
+        async function compareAllModes() {
+            try {
+                logSeparator();
+                log('📊 COMPARING ALL EXECUTION MODES', 'info');
+                logSeparator();
+
+                const results = {};
+
+                // Test Direct mode
+                log('\n1️⃣ Testing Direct Mode...', 'info');
+                await simulator.setExecutionMode('direct');
+                const directStart = Date.now();
+                await simulator.execute('counter.wasm', 'increment');
+                results.direct = Date.now() - directStart;
+                log(`  Direct: ${results.direct}ms`, 'success');
+
+                // Test Linux mode
+                log('\n2️⃣ Testing Linux Mode...', 'info');
+                await simulator.setExecutionMode('linux');
+                const linuxStart = Date.now();
+                await simulator.execute('counter.wasm', 'increment');
+                results.linux = Date.now() - linuxStart;
+                log(`  Linux: ${results.linux}ms`, 'success');
+
+                // Test Enclave mode (simplified test)
+                log('\n3️⃣ Testing Enclave Mode...', 'info');
+                await simulator.setExecutionMode('enclave');
+                const crypto = new CryptoUtils({ verbose: false });
+                const enclaveKey = '0123456789abcdef'.repeat(4);
+                const encryptedPayload = await crypto.encryptSimple('{"test": true}', enclaveKey);
+                const encryptedSecret = await crypto.encryptSimple('secret', enclaveKey);
+                const enclaveStart = Date.now();
+                await simulator.execute(
+                    'return await crypto.decrypt(encryptedPayload, enclaveKey);',
+                    'ignored',
+                    { encryptedPayload, encryptedSecret, enclaveKey }
+                );
+                results.enclave = Date.now() - enclaveStart;
+                log(`  Enclave: ${results.enclave}ms`, 'success');
+
+                // Display comparison
+                log('\n📊 COMPARISON RESULTS:', 'info');
+                log(`  Direct:   ${results.direct}ms (baseline)`, 'info');
+                log(`  Linux:    ${results.linux}ms (${(results.linux / results.direct).toFixed(1)}x)`, 'info');
+                log(`  Enclave:  ${results.enclave}ms (${(results.enclave / results.direct).toFixed(1)}x)`, 'info');
+
+                log('\n💡 INSIGHTS:', 'info');
+                log(`  Direct: Fastest, no isolation beyond WASM`, 'info');
+                log(`  Linux: POSIX environment, ${results.linux}ms overhead`, 'info');
+                log(`  Enclave: E2EE + Frozen Realm, ${results.enclave}ms overhead`, 'info');
+
+                logSeparator();
+
+            } catch (error) {
+                log(`\n✗ COMPARISON FAILED: ${error.message}`, 'error');
+            }
+        }
+
+        async function showEnclaveStats() {
+            try {
+                const stats = simulator.getStats();
+
+                logSeparator();
+                log('📈 ENCLAVE STATISTICS', 'info');
+                logSeparator();
+
+                log(`Total executions: ${stats.totalExecutions}`, 'info');
+                log(`  Direct: ${stats.directExecutions || 0}`, 'info');
+                log(`  Linux: ${stats.linuxExecutions || 0}`, 'info');
+                log(`  Enclave: ${stats.enclaveExecutions || 0}`, 'info');
+
+                log(`\nTotal gas used: ${stats.totalGasUsed.toLocaleString()}`, 'info');
+                log(`Last execution: ${stats.lastExecutionTime.toFixed(2)}ms`, 'info');
+
+                if (simulator.enclaveExecutor) {
+                    const enclaveStats = simulator.enclaveExecutor.getStats();
+                    log(`\nEnclave-specific:`, 'info');
+                    log(`  Encrypted executions: ${enclaveStats.encryptedExecutions}`, 'info');
+                    log(`  Avg execution time: ${enclaveStats.avgExecutionTime.toFixed(2)}ms`, 'info');
+                    log(`  Avg decryption time: ${enclaveStats.avgDecryptionTime.toFixed(2)}ms`, 'info');
+
+                    if (enclaveStats.frozenRealm) {
+                        log(`\nFrozen Realm:`, 'info');
+                        log(`  Total executions: ${enclaveStats.frozenRealm.totalExecutions}`, 'info');
+                        log(`  Primordials frozen: ${enclaveStats.frozenRealm.primordialsFrozen}`, 'info');
+                        log(`  Avg exec time: ${enclaveStats.frozenRealm.avgExecutionTime.toFixed(2)}ms`, 'info');
+                    }
+
+                    if (enclaveStats.crypto) {
+                        log(`\nCrypto operations:`, 'info');
+                        log(`  Encryptions: ${enclaveStats.crypto.encryptions}`, 'info');
+                        log(`  Decryptions: ${enclaveStats.crypto.decryptions}`, 'info');
+                        log(`  Hashes: ${enclaveStats.crypto.hashes}`, 'info');
+                    }
+                }
+
+                logSeparator();
+
+            } catch (error) {
+                log(`✗ Failed to show stats: ${error.message}`, 'error');
+            }
+        }
+
+        // Auto-initialize on load
+        window.addEventListener('load', () => {
+            setTimeout(initialize, 100);
+        });
+    </script>
+</body>
+</html>

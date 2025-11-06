@@ -1,0 +1,19 @@
+[package]
+name = "counter-contract"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+near-sdk = { version = "5.9.0", features = ["legacy"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+
+[profile.release]
+codegen-units = 1
+opt-level = "z"
+lto = true
+debug = false
+panic = "abort"
+overflow-checks = true

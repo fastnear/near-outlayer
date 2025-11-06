@@ -1,0 +1,25 @@
+{
+  "name": "near-outlayer-browser-worker",
+  "version": "1.0.0",
+  "description": "NEAR OutLayer Browser Worker - Phase 4: Hermes Enclave",
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
+    "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage"
+  },
+  "keywords": [
+    "near",
+    "wasm",
+    "enclave",
+    "frozen-realm",
+    "e2ee"
+  ],
+  "author": "OutLayer Team + Hermes Enclave",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/jest": "^29.5.11",
+    "jest": "^29.7.0",
+    "jest-environment-jsdom": "^29.7.0"
+  }
+}

@@ -1,0 +1,20 @@
+[package]
+name = "outlayer-verification-suite"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+blake3 = "1.5"
+proptest = "1.4"
+
+# Optional: Nearcore integration (for differential oracle testing)
+near-vm-runner = { version = "0.32", optional = true }
+near-parameters = { version = "0.32", optional = true }
+near-primitives = { version = "0.32", optional = true }
+
+# Optional: Wasmtime engine (for real WASM execution testing)
+wasmtime = { version = "27.0", optional = true }
+
+[features]
+nearcore-oracle = ["near-vm-runner", "near-parameters", "near-primitives"]
+engine-wasmtime = ["wasmtime"]
