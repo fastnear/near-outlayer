@@ -90,8 +90,9 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
         try {
           const errorJson = JSON.parse(errorText);
           throw new Error(errorJson.error || errorText);
-        } catch {
-          throw new Error(`Keystore rejected secrets: ${errorText}`);
+        } catch (parseErr) {
+          // If not JSON, show raw error text
+          throw new Error(errorText);
         }
       }
 

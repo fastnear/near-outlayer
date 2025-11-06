@@ -422,13 +422,18 @@ pub async fn get_secrets_pubkey(
     if !keystore_response.status().is_success() {
         let status = keystore_response.status();
         let body = keystore_response.text().await.unwrap_or_default();
+
+        // If keystore returned 400 (validation error), pass it through as-is
+        // Otherwise return 502 (proxy error)
+        let response_status = if status == reqwest::StatusCode::BAD_REQUEST {
+            StatusCode::BAD_REQUEST
+        } else {
+            StatusCode::BAD_GATEWAY
+        };
+
         return Err((
-            StatusCode::BAD_GATEWAY,
-            format!(
-                "Keystore returned error {}: {}",
-                status,
-                body.chars().take(200).collect::<String>()
-            ),
+            response_status,
+            body // Return raw error message from keystore
         ));
     }
 
