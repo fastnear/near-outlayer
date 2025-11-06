@@ -19,6 +19,14 @@ pub struct ExecutionRequestedEvent {
     pub block_height: u64,  // Added locally, not from contract event
     #[serde(skip)]
     pub transaction_hash: Option<String>,  // Original transaction hash from neardata
+    #[serde(skip)]
+    pub receipt_id: Option<String>,  // Receipt ID from neardata
+    #[serde(skip)]
+    pub predecessor_id: Option<String>,  // Predecessor from neardata
+    #[serde(skip)]
+    pub signer_public_key: Option<String>,  // Signer public key from neardata
+    #[serde(skip)]
+    pub gas_burnt: Option<u64>,  // Gas burnt from neardata
 }
 
 /// Parsed request data from the JSON string
@@ -73,6 +81,20 @@ struct ReceiptExecutionOutcome {
 struct Receipt {
     receiver_id: Option<String>,
     receipt_id: Option<String>,
+    predecessor_id: Option<String>,
+    receipt: Option<ReceiptAction>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "Action")]
+struct ReceiptAction {
+    #[serde(rename = "Action")]
+    action: Option<ActionDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ActionDetails {
+    signer_public_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -85,6 +107,7 @@ struct ExecutionOutcome {
 struct Outcome {
     logs: Option<Vec<String>>,
     receipt_ids: Option<Vec<String>>,
+    gas_burnt: Option<u64>,
 }
 
 /// FastNEAR status response
@@ -341,20 +364,34 @@ impl EventMonitor {
                 for outcome in receipt_outcomes {
                     receipts_checked += 1;
 
-                    // Check receiver_id matches our contract and get tx_hash
-                    let (is_our_contract, transaction_hash) = if let Some(receipt) = &outcome.receipt {
+                    // Extract neardata fields
+                    let receipt_id = outcome.receipt.as_ref()
+                        .and_then(|r| r.receipt_id.clone());
+                    let predecessor_id = outcome.receipt.as_ref()
+                        .and_then(|r| r.predecessor_id.clone());
+                    let signer_public_key = outcome.receipt.as_ref()
+                        .and_then(|r| r.receipt.as_ref())
+                        .and_then(|action| action.action.as_ref())
+                        .and_then(|details| details.signer_public_key.clone());
+                    let gas_burnt = outcome.execution_outcome.as_ref()
+                        .and_then(|exec| exec.outcome.as_ref())
+                        .and_then(|o| o.gas_burnt);
+                    let transaction_hash = outcome.tx_hash.clone();
+
+                    // Check receiver_id matches our contract
+                    let is_our_contract = if let Some(receipt) = &outcome.receipt {
                         if let Some(receiver_id) = &receipt.receiver_id {
                             if receiver_id == self.contract_id.as_str() {
                                 contract_receipts += 1;
-                                (true, outcome.tx_hash.clone())
+                                true
                             } else {
-                                (false, None)
+                                false
                             }
                         } else {
-                            (false, None)
+                            false
                         }
                     } else {
-                        (false, None)
+                        false
                     };
 
                     if !is_our_contract {
@@ -370,6 +407,10 @@ impl EventMonitor {
                                         self.process_log(log, block_height)
                                     {
                                         event.transaction_hash = transaction_hash.clone();
+                                        event.receipt_id = receipt_id.clone();
+                                        event.predecessor_id = predecessor_id.clone();
+                                        event.signer_public_key = signer_public_key.clone();
+                                        event.gas_burnt = gas_burnt;
                                         events.push(event);
                                     }
                                 }
@@ -482,6 +523,11 @@ impl EventMonitor {
             block_height: Some(event.block_height),
             block_timestamp: Some(event.timestamp),
             contract_id: Some(self.contract_id.to_string()),
+            transaction_hash: event.transaction_hash.clone(),
+            receipt_id: event.receipt_id.clone(),
+            predecessor_id: event.predecessor_id.clone(),
+            signer_public_key: event.signer_public_key.clone(),
+            gas_burnt: event.gas_burnt,
         };
 
         // Create task in coordinator API
@@ -501,7 +547,6 @@ impl EventMonitor {
                 context,
                 Some(request_data.sender_id.clone()), // user_account_id
                 Some(request_data.payment.clone()),   // near_payment_yocto
-                event.transaction_hash.clone(),       // transaction_hash from neardata
             )
             .await
         {

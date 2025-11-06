@@ -38,6 +38,16 @@ pub struct ExecutionContext {
     pub block_timestamp: Option<u64>,
     #[serde(default)]
     pub contract_id: Option<String>,
+    #[serde(default)]
+    pub transaction_hash: Option<String>,
+    #[serde(default)]
+    pub receipt_id: Option<String>,
+    #[serde(default)]
+    pub predecessor_id: Option<String>,
+    #[serde(default)]
+    pub signer_public_key: Option<String>,
+    #[serde(default)]
+    pub gas_burnt: Option<u64>,
 }
 
 /// Request from user to execute WASM code off-chain
@@ -66,8 +76,6 @@ pub struct ExecutionRequest {
     pub user_account_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub near_payment_yocto: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub transaction_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -803,6 +811,7 @@ impl ApiClient {
     /// * `max_execution_seconds` - Maximum execution time
     /// * `input_data` - Input data JSON string
     /// * `secrets_ref` - Optional reference to secrets stored in contract
+    /// * `context` - Execution context (includes transaction_hash from neardata)
     /// * `user_account_id` - User who requested execution
     /// * `near_payment_yocto` - Payment amount in yoctoNEAR
     ///
@@ -823,7 +832,6 @@ impl ApiClient {
         context: ExecutionContext,
         user_account_id: Option<String>,
         near_payment_yocto: Option<String>,
-        transaction_hash: Option<String>,
     ) -> Result<Option<u64>> {
         let url = format!("{}/executions/create", self.base_url);
 
@@ -842,8 +850,6 @@ impl ApiClient {
             user_account_id: Option<String>,
             #[serde(skip_serializing_if = "Option::is_none")]
             near_payment_yocto: Option<String>,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            transaction_hash: Option<String>,
         }
 
         #[derive(Deserialize)]
@@ -871,7 +877,6 @@ impl ApiClient {
             context,
             user_account_id,
             near_payment_yocto,
-            transaction_hash,
         };
 
         let response = self

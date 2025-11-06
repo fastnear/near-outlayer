@@ -63,6 +63,16 @@ pub struct ExecutionContext {
     pub block_timestamp: Option<u64>,
     #[serde(default)]
     pub contract_id: Option<String>,
+    #[serde(default)]
+    pub transaction_hash: Option<String>,
+    #[serde(default)]
+    pub receipt_id: Option<String>,
+    #[serde(default)]
+    pub predecessor_id: Option<String>,
+    #[serde(default)]
+    pub signer_public_key: Option<String>,
+    #[serde(default)]
+    pub gas_burnt: Option<u64>,
 }
 
 /// Reference to secrets stored in contract (repo-based system)

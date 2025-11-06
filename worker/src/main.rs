@@ -195,7 +195,7 @@ async fn worker_iteration(
     let context = execution_request.context.clone();
     let user_account_id = execution_request.user_account_id.clone();
     let near_payment_yocto = execution_request.near_payment_yocto.clone();
-    let transaction_hash = execution_request.transaction_hash.clone();
+    let transaction_hash = context.transaction_hash.clone();
 
     // Claim jobs for this task
     info!("🎯 Claiming jobs for request_id={} data_id={}", request_id, data_id);
@@ -355,6 +355,18 @@ fn merge_env_vars(
     }
     if let Some(block_timestamp) = context.block_timestamp {
         env_vars.insert("NEAR_BLOCK_TIMESTAMP".to_string(), block_timestamp.to_string());
+    }
+    if let Some(ref receipt_id) = context.receipt_id {
+        env_vars.insert("NEAR_RECEIPT_ID".to_string(), receipt_id.clone());
+    }
+    if let Some(ref predecessor_id) = context.predecessor_id {
+        env_vars.insert("NEAR_PREDECESSOR_ID".to_string(), predecessor_id.clone());
+    }
+    if let Some(ref signer_public_key) = context.signer_public_key {
+        env_vars.insert("NEAR_SIGNER_PUBLIC_KEY".to_string(), signer_public_key.clone());
+    }
+    if let Some(gas_burnt) = context.gas_burnt {
+        env_vars.insert("NEAR_GAS_BURNT".to_string(), gas_burnt.to_string());
     }
 
     // Add user account and payment info
