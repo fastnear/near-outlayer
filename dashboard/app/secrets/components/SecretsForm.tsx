@@ -24,6 +24,7 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
   const [plaintextSecrets, setPlaintextSecrets] = useState('{\n  "API_KEY": "your-api-key"\n}');
   const [accessCondition, setAccessCondition] = useState<AccessCondition>({ type: 'AllowAll' });
   const [encrypting, setEncrypting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // Load initial data if provided (for edit mode)
   useEffect(() => {
@@ -36,18 +37,20 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
   }, [initialData]);
 
   const handleEncryptAndSubmit = async () => {
+    setError(null); // Clear previous errors
+
     if (!isConnected || !accountId) {
-      alert('Please connect your wallet first');
+      setError('Please connect your wallet first');
       return;
     }
 
     if (!repo.trim()) {
-      alert('Repository is required');
+      setError('Repository is required');
       return;
     }
 
     if (!profile.trim()) {
-      alert('Profile is required');
+      setError('Profile is required');
       return;
     }
 
@@ -58,7 +61,7 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
         throw new Error('Secrets must be a JSON object');
       }
     } catch (err) {
-      alert(`Invalid JSON format: ${(err as Error).message}`);
+      setError(`Invalid JSON format: ${(err as Error).message}`);
       return;
     }
 
@@ -135,9 +138,10 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
       setProfile('default');
       setPlaintextSecrets('{\n  "API_KEY": "your-api-key"\n}');
       setAccessCondition({ type: 'AllowAll' });
+      setError(null);
     } catch (err) {
       console.error('Encryption error:', err);
-      alert(`Failed to encrypt secrets: ${(err as Error).message}`);
+      setError(`Failed to encrypt secrets: ${(err as Error).message}`);
     } finally {
       setEncrypting(false);
     }
@@ -235,6 +239,13 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
           <AccessConditionBuilder condition={accessCondition} onChange={setAccessCondition} />
         </div>
 
+        {/* Error Display */}
+        {error && (
+          <div className="mb-4 bg-red-50 border border-red-200 rounded-lg p-4">
+            <p className="text-sm text-red-800">{error}</p>
+          </div>
+        )}
+
         {/* Submit Button */}
         <div className="flex items-center justify-between">
           <button
@@ -263,6 +274,7 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
             <li>Storage costs ~0.01 NEAR per secret set</li>
           </ul>
         </div>
+
       </div>
     </div>
   );

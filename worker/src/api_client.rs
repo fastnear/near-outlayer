@@ -40,50 +40,34 @@ pub struct ExecutionContext {
     pub contract_id: Option<String>,
 }
 
-/// Task types that worker can receive
+/// Request from user to execute WASM code off-chain
+///
+/// Flow:
+/// 1. Event Monitor detects on-chain execution request
+/// 2. Sends ExecutionRequest to Coordinator API
+/// 3. Coordinator places in Redis queue for workers
+/// 4. Worker polls and receives ExecutionRequest
+/// 5. Worker claims jobs via coordinator (which decides: compile+execute or just execute)
+/// 6. Worker processes jobs and returns result to contract
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum Task {
-    Compile {
-        request_id: u64,
-        data_id: String,
-        code_source: CodeSource,
-        resource_limits: ResourceLimits,
-        input_data: String,
-        #[serde(default)]
-        secrets_ref: Option<SecretsReference>,
-        #[serde(default)]
-        response_format: ResponseFormat,
-        #[serde(default)]
-        context: ExecutionContext,
-        #[serde(default)]
-        user_account_id: Option<String>,
-        #[serde(default)]
-        near_payment_yocto: Option<String>,
-        #[serde(default)]
-        transaction_hash: Option<String>,
-    },
-    Execute {
-        request_id: u64,
-        data_id: String,
-        wasm_checksum: String,
-        resource_limits: ResourceLimits,
-        input_data: String,
-        #[serde(default)]
-        secrets_ref: Option<SecretsReference>,
-        #[serde(default)]
-        build_target: Option<String>,
-        #[serde(default)]
-        response_format: ResponseFormat,
-        #[serde(default)]
-        context: ExecutionContext,
-        #[serde(default)]
-        user_account_id: Option<String>,
-        #[serde(default)]
-        near_payment_yocto: Option<String>,
-        #[serde(default)]
-        transaction_hash: Option<String>,
-    },
+pub struct ExecutionRequest {
+    pub request_id: u64,
+    pub data_id: String,
+    pub code_source: CodeSource,
+    pub resource_limits: ResourceLimits,
+    pub input_data: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secrets_ref: Option<SecretsReference>,
+    #[serde(default)]
+    pub response_format: ResponseFormat,
+    #[serde(default)]
+    pub context: ExecutionContext,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_account_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub near_payment_yocto: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transaction_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -208,19 +192,19 @@ impl ApiClient {
         })
     }
 
-    /// Poll for a new task (long-polling)
+    /// Poll for a new execution request (long-polling)
     ///
     /// # Arguments
     /// * `timeout` - Timeout in seconds for long-polling (max 60)
     ///
     /// # Returns
-    /// * `Ok(Some(task))` - New task received
-    /// * `Ok(None)` - No task available (timeout reached)
+    /// * `Ok(Some(request))` - New execution request received
+    /// * `Ok(None)` - No request available (timeout reached)
     /// * `Err(_)` - Request failed
-    pub async fn poll_task(&self, timeout: u64) -> Result<Option<Task>> {
-        let url = format!("{}/tasks/poll?timeout={}", self.base_url, timeout);
+    pub async fn poll_task(&self, timeout: u64) -> Result<Option<ExecutionRequest>> {
+        let url = format!("{}/executions/poll?timeout={}", self.base_url, timeout);
 
-        tracing::debug!("🔍 Polling for task: {}", url);
+        tracing::debug!("🔍 Polling for execution request: {}", url);
 
         let response = self
             .client
@@ -237,11 +221,11 @@ impl ApiClient {
             StatusCode::OK => {
                 let body_text = response.text().await?;
                 tracing::debug!("📦 Poll response body: {}", body_text);
-                let task: Task = serde_json::from_str(&body_text)
-                    .context(format!("Failed to parse task JSON: {}", body_text))?;
-                Ok(Some(task))
+                let request: ExecutionRequest = serde_json::from_str(&body_text)
+                    .context(format!("Failed to parse execution request JSON: {}", body_text))?;
+                Ok(Some(request))
             }
-            StatusCode::NO_CONTENT => Ok(None), // No task available
+            StatusCode::NO_CONTENT => Ok(None), // No request available
             status => {
                 let error_text = response
                     .text()
@@ -807,7 +791,7 @@ impl ApiClient {
         Ok(())
     }
 
-    /// Create a new task (used by event monitor)
+    /// Create a new execution request (used by event monitor)
     ///
     /// # Arguments
     /// * `request_id` - Execution request ID from contract
@@ -822,7 +806,7 @@ impl ApiClient {
     /// * `user_account_id` - User who requested execution
     /// * `near_payment_yocto` - Payment amount in yoctoNEAR
     ///
-    /// Returns `Ok(Some(request_id))` if task was created, `Ok(None)` if duplicate
+    /// Returns `Ok(Some(request_id))` if request was created, `Ok(None)` if duplicate
     pub async fn create_task(
         &self,
         request_id: u64,
@@ -841,7 +825,7 @@ impl ApiClient {
         near_payment_yocto: Option<String>,
         transaction_hash: Option<String>,
     ) -> Result<Option<u64>> {
-        let url = format!("{}/tasks/create", self.base_url);
+        let url = format!("{}/executions/create", self.base_url);
 
         #[derive(Serialize)]
         struct CreateRequest {

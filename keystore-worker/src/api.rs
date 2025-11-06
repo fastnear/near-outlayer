@@ -297,13 +297,56 @@ async fn decrypt_handler(
         ApiError::InternalError(format!("Decryption failed: {}", e))
     })?;
 
-    // 6. Encode plaintext as base64 for safe JSON transport
+    // 6. Parse and validate secrets JSON
+    let plaintext_str = String::from_utf8(plaintext_bytes.clone())
+        .map_err(|e| ApiError::InternalError(format!("Decrypted secrets are not valid UTF-8: {}", e)))?;
+
+    let secrets_map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&plaintext_str)
+        .map_err(|e| ApiError::InternalError(format!("Decrypted secrets are not valid JSON: {}", e)))?;
+
+    // Reserved keywords that should not be overridden by user secrets
+    const RESERVED_KEYWORDS: &[&str] = &[
+        "NEAR_SENDER_ID",
+        "NEAR_CONTRACT_ID",
+        "NEAR_USER_ACCOUNT_ID",
+        "NEAR_PAYMENT_YOCTO",
+        "NEAR_TRANSACTION_HASH",
+        "NEAR_BLOCK_HEIGHT",
+        "NEAR_BLOCK_TIMESTAMP",
+        "NEAR_MAX_INSTRUCTIONS",
+        "NEAR_MAX_MEMORY_MB",
+        "NEAR_MAX_EXECUTION_SECONDS",
+        "NEAR_REQUEST_ID",
+    ];
+
+    // Check for reserved keywords
+    let reserved_found: Vec<&str> = secrets_map.keys()
+        .filter(|k| RESERVED_KEYWORDS.contains(&k.as_str()))
+        .map(|k| k.as_str())
+        .collect();
+
+    if !reserved_found.is_empty() {
+        tracing::error!(
+            task_id = %task_id_str,
+            reserved_keys = ?reserved_found,
+            "Secrets contain reserved system keywords"
+        );
+        return Err(ApiError::BadRequest(format!(
+            "Secrets contain reserved system keywords that cannot be overridden: {}. \
+            These environment variables are automatically set by OutLayer worker. \
+            Please use different key names.",
+            reserved_found.join(", ")
+        )));
+    }
+
+    // 7. Encode plaintext as base64 for safe JSON transport
     let plaintext_b64 = base64::encode(&plaintext_bytes);
 
     tracing::info!(
         task_id = %task_id_str,
         plaintext_size = plaintext_bytes.len(),
-        "Successfully decrypted secrets"
+        num_secrets = secrets_map.len(),
+        "Successfully decrypted and validated secrets"
     );
 
     Ok(Json(DecryptResponse {

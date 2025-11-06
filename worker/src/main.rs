@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use tracing::{error, info, warn};
 
-use api_client::{ApiClient, CodeSource, ExecutionResult, JobInfo, JobType, Task};
+use api_client::{ApiClient, CodeSource, ExecutionResult, JobInfo, JobType};
 use compiler::Compiler;
 use config::Config;
 use event_monitor::EventMonitor;
@@ -177,46 +177,25 @@ async fn worker_iteration(
         .await
         .context("Failed to poll for task")?;
 
-    let Some(task) = task else {
-        // No task available
+    let Some(execution_request) = task else {
+        // No execution request available
         return Ok(false);
     };
 
-    info!("📨 Received task: {:?}", task);
+    info!("📨 Received execution request: {:?}", execution_request);
 
-    // Extract task details
-    let (request_id, data_id, code_source, resource_limits, input_data, secrets_ref, response_format, context, user_account_id, near_payment_yocto, transaction_hash) = match &task {
-        Task::Compile {
-            request_id,
-            data_id,
-            code_source,
-            resource_limits,
-            input_data,
-            secrets_ref,
-            response_format,
-            context,
-            user_account_id,
-            near_payment_yocto,
-            transaction_hash,
-            ..
-        } => (
-            *request_id,
-            data_id.clone(),
-            code_source.clone(),
-            resource_limits.clone(),
-            input_data.clone(),
-            secrets_ref.clone(),
-            response_format.clone(),
-            context.clone(),
-            user_account_id.clone(),
-            near_payment_yocto.clone(),
-            transaction_hash.clone(),
-        ),
-        Task::Execute { .. } => {
-            warn!("⚠️ Received Execute task directly - this should not happen in job-based workflow");
-            return Ok(true);
-        }
-    };
+    // Extract request details
+    let request_id = execution_request.request_id;
+    let data_id = execution_request.data_id.clone();
+    let code_source = execution_request.code_source.clone();
+    let resource_limits = execution_request.resource_limits.clone();
+    let input_data = execution_request.input_data.clone();
+    let secrets_ref = execution_request.secrets_ref.clone();
+    let response_format = execution_request.response_format.clone();
+    let context = execution_request.context.clone();
+    let user_account_id = execution_request.user_account_id.clone();
+    let near_payment_yocto = execution_request.near_payment_yocto.clone();
+    let transaction_hash = execution_request.transaction_hash.clone();
 
     // Claim jobs for this task
     info!("🎯 Claiming jobs for request_id={} data_id={}", request_id, data_id);
@@ -328,6 +307,7 @@ async fn worker_iteration(
                     &context,
                     user_account_id.as_ref(),
                     near_payment_yocto.as_ref(),
+                    transaction_hash.as_ref(),
                     request_id,
                     &data_id,
                     compiled_wasm.as_ref().map(|(cs, b, ct, ca)| (cs, b, ct, ca.as_deref())), // Pass local WASM cache
@@ -356,6 +336,9 @@ fn merge_env_vars(
     context: &api_client::ExecutionContext,
     resource_limits: &api_client::ResourceLimits,
     request_id: u64,
+    user_account_id: Option<&String>,
+    near_payment_yocto: Option<&String>,
+    transaction_hash: Option<&String>,
 ) -> std::collections::HashMap<String, String> {
 
     let mut env_vars = user_secrets.unwrap_or_default();
@@ -372,6 +355,17 @@ fn merge_env_vars(
     }
     if let Some(block_timestamp) = context.block_timestamp {
         env_vars.insert("NEAR_BLOCK_TIMESTAMP".to_string(), block_timestamp.to_string());
+    }
+
+    // Add user account and payment info
+    if let Some(user_id) = user_account_id {
+        env_vars.insert("NEAR_USER_ACCOUNT_ID".to_string(), user_id.clone());
+    }
+    if let Some(payment) = near_payment_yocto {
+        env_vars.insert("NEAR_PAYMENT_YOCTO".to_string(), payment.clone());
+    }
+    if let Some(tx_hash) = transaction_hash {
+        env_vars.insert("NEAR_TRANSACTION_HASH".to_string(), tx_hash.clone());
     }
 
     // Add resource limits
@@ -573,6 +567,7 @@ async fn handle_execute_job(
     context: &api_client::ExecutionContext,
     user_account_id: Option<&String>,
     near_payment_yocto: Option<&String>,
+    transaction_hash: Option<&String>,
     request_id: u64,
     data_id: &str,
     compiled_wasm: Option<(&String, &Vec<u8>, &u64, Option<&str>)>, // Local cache from compile job (checksum, bytes, compile_time_ms, created_at)
@@ -739,7 +734,7 @@ async fn handle_execute_job(
     };
 
     // Merge environment variables
-    let env_vars = merge_env_vars(user_secrets, context, resource_limits, request_id);
+    let env_vars = merge_env_vars(user_secrets, context, resource_limits, request_id, user_account_id, near_payment_yocto, transaction_hash);
 
     // Get build target from code source
     let build_target = match code_source {
@@ -905,370 +900,6 @@ async fn handle_execute_job(
             }
 
             return Err(e);
-        }
-    }
-
-    Ok(())
-}
-
-/// OLD HANDLERS - TO BE REMOVED AFTER TESTING
-
-/// Handle a compilation task - now also executes and submits result
-async fn handle_compile_task(
-    api_client: &ApiClient,
-    compiler: &Compiler,
-    executor: &Executor,
-    near_client: &NearClient,
-    keystore_client: Option<&KeystoreClient>,
-    config: &Config,
-    request_id: u64,
-    data_id: String,
-    code_source: CodeSource,
-    resource_limits: api_client::ResourceLimits,
-    input_data: String,
-    secrets_ref: Option<api_client::SecretsReference>,
-    response_format: api_client::ResponseFormat,
-    context: api_client::ExecutionContext,
-    user_account_id: Option<String>,
-    near_payment_yocto: Option<String>,
-) -> Result<()> {
-    info!("🔨 Starting compilation for request_id={}", request_id);
-
-    // Step 1: Compile the code
-    let checksum = match compiler.compile(&code_source).await {
-        Ok(checksum) => {
-            info!("✅ Compilation successful: checksum={}", checksum);
-            checksum
-        }
-        Err(e) => {
-            // e.to_string() already includes "Compilation failed: " prefix from CompilationError::Display
-            let error_msg = e.to_string();
-            warn!("❌ {}", error_msg);
-
-            // Create error result to submit to NEAR
-            let error_result = ExecutionResult {
-                success: false,
-                output: None,
-                error: Some(error_msg.clone()),
-                execution_time_ms: 0,
-                instructions: 0,
-                compile_time_ms: None, // Compilation failed before execute
-                compilation_note: None,
-            };
-
-            // Submit error to NEAR contract
-            match near_client.submit_execution_result(request_id, &error_result).await {
-                Ok((tx_hash, _outcome)) => {
-                    info!("✅ Compilation error submitted to NEAR: tx_hash={}", tx_hash);
-                }
-                Err(submit_err) => {
-                    error!("❌ Failed to submit compilation error to NEAR: {}", submit_err);
-                }
-            }
-
-            // Mark task as failed in coordinator
-            api_client
-                .fail_task(request_id, error_msg)
-                .await
-                .context("Failed to fail compile task")?;
-            return Ok(());
-        }
-    };
-
-    // Step 2: Download the compiled WASM
-    info!("📥 Downloading compiled WASM: checksum={}", checksum);
-    let wasm_bytes = match api_client.download_wasm(&checksum).await {
-        Ok(bytes) => {
-            info!("✅ Downloaded WASM: {} bytes", bytes.len());
-            bytes
-        }
-        Err(e) => {
-            warn!("❌ Failed to download WASM: {}", e);
-            api_client
-                .fail_task(request_id, format!("Failed to download WASM: {}", e))
-                .await?;
-            return Ok(());
-        }
-    };
-
-    // Step 3: Decrypt secrets from contract if provided (new repo-based system)
-    let env_vars = if let Some(secrets_ref) = &secrets_ref {
-        info!("🔐 Decrypting repo-based secrets: profile={}, owner={}", secrets_ref.profile, secrets_ref.account_id);
-
-        if let Some(keystore) = keystore_client {
-            // Get repo from code_source
-            let repo = code_source.repo();
-
-            // Resolve branch from commit via coordinator API (with caching)
-            let commit = code_source.commit();
-            let branch = match api_client.resolve_branch(repo, commit).await {
-                Ok(b) => {
-                    if let Some(ref branch_name) = b {
-                        info!("✅ Coordinator resolved '{}' → branch '{}'", commit, branch_name);
-                    } else {
-                        info!("⚠️  Coordinator: commit '{}' not found, using wildcard (branch=None)", commit);
-                    }
-                    b
-                }
-                Err(e) => {
-                    warn!("⚠️  Coordinator API failed: {}, using wildcard (branch=None)", e);
-                    None
-                }
-            };
-
-            // user_account_id is the account that requested execution (used for access control)
-            let caller = user_account_id.as_ref().map(|s| s.as_str()).unwrap_or(&secrets_ref.account_id);
-            match keystore.decrypt_secrets_from_contract(repo, branch.as_deref(), &secrets_ref.profile, &secrets_ref.account_id, caller, Some(&request_id.to_string())).await {
-                Ok(secrets) => {
-                    info!("✅ Secrets decrypted successfully! {} environment variables", secrets.len());
-                    Some(secrets)
-                }
-                Err(e) => {
-                    // Error message already user-friendly from keystore_client
-                    let error_msg = e.to_string();
-                    warn!("❌ Secrets decryption failed: {}", error_msg);
-                    api_client.fail_task(request_id, error_msg).await?;
-                    return Ok(());
-                }
-            }
-        } else {
-            warn!("⚠️  secrets_ref provided but keystore not configured - ignoring");
-            None
-        }
-    } else {
-        info!("ℹ️  No secrets_ref in task");
-        None
-    };
-
-    // Step 4: Execute the WASM
-    info!("⚙️  Executing WASM for request_id={} (size={} bytes)", request_id, wasm_bytes.len());
-
-    // Use input_data from contract request
-    info!("📝 Using input from contract: {}", input_data);
-    if env_vars.is_some() {
-        info!("🔑 Secrets available for execution (will be passed via WASI env)");
-    }
-    info!("📊 Resource limits: max_instructions={}, max_memory={}MB, max_time={}s",
-        resource_limits.max_instructions,
-        resource_limits.max_memory_mb,
-        resource_limits.max_execution_seconds);
-
-    let input_bytes = input_data.as_bytes().to_vec();
-    info!("🚀 Starting WASM execution now...");
-
-    // Extract build_target for optimized executor selection
-    let build_target = match &code_source {
-        CodeSource::GitHub { build_target, .. } => Some(build_target.as_str()),
-    };
-
-    // Merge user secrets with system environment variables
-    let merged_env_vars = merge_env_vars(env_vars, &context, &resource_limits, request_id);
-    info!("🌍 Environment variables: {} total", merged_env_vars.len());
-
-    let result = match executor.execute(&wasm_bytes, &input_bytes, &resource_limits, Some(merged_env_vars), build_target, &response_format).await {
-        Ok(result) => {
-            info!("✅ WASM Execution completed: success={}, time={}ms, error={:?}",
-                result.success,
-                result.execution_time_ms,
-                result.error);
-            if let Some(ref output) = &result.output {
-                use api_client::ExecutionOutput;
-                let output_preview = match output {
-                    ExecutionOutput::Bytes(data) => format!("Bytes({} bytes)", data.len()),
-                    ExecutionOutput::Text(data) => {
-                        let preview = if data.len() > 200 { &data[..200] } else { data };
-                        format!("Text: {}", preview)
-                    }
-                    ExecutionOutput::Json(data) => format!("Json: {}", serde_json::to_string(data).unwrap_or_default()),
-                };
-                info!("📤 WASM Output: {}", output_preview);
-            }
-            result
-        }
-        Err(e) => {
-            warn!("❌ WASM Execution failed: {}", e);
-            api_client
-                .fail_task(request_id, format!("Execution failed: {}", e))
-                .await?;
-            return Ok(());
-        }
-    };
-
-    // Step 4: Submit result to NEAR contract (promise_yield_resume)
-    info!("📤 Submitting result to NEAR contract via promise_yield_resume");
-    info!("   request_id={}", request_id);
-    info!("   data_id={}", data_id);
-    info!("   success={}", result.success);
-    match near_client.submit_execution_result(request_id, &result).await {
-        Ok((tx_hash, outcome)) => {
-            info!("✅ Successfully submitted to NEAR: tx_hash={}", tx_hash);
-
-            // Extract actual cost from contract logs
-            let actual_cost = NearClient::extract_payment_from_logs(&outcome);
-            let actual_cost_near = actual_cost as f64 / 1e24;
-            info!("💰 Extracted execution cost from contract logs: {} yoctoNEAR ({:.6} NEAR)",
-                actual_cost, actual_cost_near);
-
-            // Extract GitHub repo and commit from code_source
-            let (github_repo, github_commit) = match &code_source {
-                CodeSource::GitHub { repo, commit, .. } => {
-                    (Some(repo.clone()), Some(commit.clone()))
-                }
-            };
-
-            // Mark task as complete in coordinator with cost from contract
-            api_client
-                .complete_task(
-                    request_id,
-                    Some(data_id.clone()),
-                    result,
-                    Some(tx_hash),
-                    user_account_id,
-                    Some(actual_cost.to_string()), // Send cost extracted from contract logs
-                    config.worker_id.clone(),
-                    github_repo,
-                    github_commit,
-                )
-                .await
-                .context("Failed to complete task in coordinator")?;
-
-            info!("🎉 Task completed end-to-end for request_id={}", request_id);
-        }
-        Err(e) => {
-            error!("❌ Failed to submit result to NEAR: {}", e);
-            error!("Full error: {:?}", e);
-            // Print error chain
-            for (i, cause) in e.chain().enumerate() {
-                error!("  [{}] {}", i, cause);
-            }
-            api_client
-                .fail_task(request_id, format!("Failed to submit to NEAR: {}", e))
-                .await?;
-        }
-    }
-
-    Ok(())
-}
-
-/// Handle an execution task
-async fn handle_execute_task(
-    api_client: &ApiClient,
-    executor: &Executor,
-    near_client: &NearClient,
-    keystore_client: Option<&KeystoreClient>,
-    config: &Config,
-    request_id: u64,
-    data_id: String,
-    wasm_checksum: String,
-    resource_limits: api_client::ResourceLimits,
-    input_data: String,
-    secrets_ref: Option<api_client::SecretsReference>,
-    build_target: Option<String>,
-    response_format: api_client::ResponseFormat,
-    context: api_client::ExecutionContext,
-    user_account_id: Option<String>,
-    near_payment_yocto: Option<String>,
-) -> Result<()> {
-    info!(
-        "Executing WASM for request_id={}, data_id={}, checksum={}",
-        request_id, data_id, wasm_checksum
-    );
-
-    // Download WASM from coordinator
-    let wasm_bytes = match api_client.download_wasm(&wasm_checksum).await {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            warn!(
-                "Failed to download WASM for request_id={}: {}",
-                request_id, e
-            );
-            api_client
-                .fail_task(request_id, format!("Failed to download WASM: {}", e))
-                .await?;
-            return Ok(());
-        }
-    };
-
-    // Get secrets from contract and decrypt via keystore (new repo-based system)
-    let env_vars = if let Some(secrets_ref) = &secrets_ref {
-        info!("🔐 Decrypting repo-based secrets: profile={}, owner={}", secrets_ref.profile, secrets_ref.account_id);
-
-        // NOTE: This function (handle_execute_task) is deprecated in favor of job-based workflow
-        // In job-based workflow, code_source is always available (via handle_execute_job)
-        // For direct Execute tasks, we'd need to either:
-        // 1. Add code_source to Task::Execute
-        // 2. Query coordinator for wasm metadata to get repo
-        // For now, skip secrets in this deprecated path
-        warn!("⚠️  Direct Execute task with secrets_ref not supported (use job-based workflow)");
-        None
-    } else {
-        info!("ℹ️  No secrets_ref in task");
-        None
-    };
-
-    // Use input data from task
-    info!("📝 Using input from task: {}", input_data);
-    if env_vars.is_some() {
-        info!("🔑 Secrets will be passed via WASI environment");
-    }
-    let input_bytes = input_data.as_bytes().to_vec();
-
-    // Merge user secrets with system environment variables
-    let merged_env_vars = merge_env_vars(env_vars, &context, &resource_limits, request_id);
-    info!("🌍 Environment variables: {} total", merged_env_vars.len());
-
-    // Execute WASM with environment variables and build target hint
-    let result = executor
-        .execute(&wasm_bytes, &input_bytes, &resource_limits, Some(merged_env_vars), build_target.as_deref(), &response_format)
-        .await
-        .context("Failed to execute WASM")?;
-
-    info!(
-        "Execution completed for request_id={}, success={}",
-        request_id, result.success
-    );
-
-    // Submit result to NEAR contract using request_id
-    match near_client.submit_execution_result(request_id, &result).await {
-        Ok((tx_hash, outcome)) => {
-            info!("Successfully submitted result to NEAR for request_id={}, tx_hash={}", request_id, tx_hash);
-
-            // Extract actual cost from contract logs (contains estimated_cost from contract calculation)
-            let actual_cost = NearClient::extract_payment_from_logs(&outcome);
-            let actual_cost_near = actual_cost as f64 / 1e24;
-            info!("💰 Extracted execution cost from contract logs: {} yoctoNEAR ({:.6} NEAR)",
-                actual_cost, actual_cost_near);
-
-            // Mark task as complete in coordinator with cost from contract
-            api_client
-                .complete_task(
-                    request_id,
-                    Some(data_id.clone()),
-                    result,
-                    Some(tx_hash),
-                    user_account_id,
-                    Some(actual_cost.to_string()), // Send cost extracted from contract logs
-                    config.worker_id.clone(),
-                    None, // No github_repo for Execute tasks
-                    None, // No github_commit for Execute tasks
-                )
-                .await
-                .context("Failed to complete execute task")?;
-        }
-        Err(e) => {
-            warn!(
-                "Failed to submit result to NEAR for request_id={}: {}",
-                request_id, e
-            );
-
-            // Mark task as failed
-            api_client
-                .fail_task(
-                    request_id,
-                    format!("Failed to submit result to NEAR: {}", e),
-                )
-                .await
-                .context("Failed to fail execute task")?;
         }
     }
 

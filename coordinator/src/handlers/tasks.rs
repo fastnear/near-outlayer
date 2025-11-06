@@ -7,7 +7,7 @@ use redis::AsyncCommands;
 use serde::Deserialize;
 use tracing::{debug, error};
 
-use crate::models::{CreateTaskRequest, CreateTaskResponse, Task};
+use crate::models::{CreateTaskRequest, CreateTaskResponse, ExecutionRequest};
 use crate::AppState;
 
 #[derive(Deserialize)]
@@ -20,11 +20,12 @@ fn default_timeout() -> u64 {
     60
 }
 
-/// Long-poll for next task
+/// Long-poll for next execution request
+/// Workers call this endpoint to receive work from the Redis queue
 pub async fn poll_task(
     State(state): State<AppState>,
     Query(params): Query<PollTaskQuery>,
-) -> Result<Json<Task>, StatusCode> {
+) -> Result<Json<ExecutionRequest>, StatusCode> {
     let timeout = params.timeout.min(120); // Max 2 minutes
 
     debug!("Polling for task with timeout {}s", timeout);
@@ -50,15 +51,15 @@ pub async fn poll_task(
 
     match result {
         Some((_key, json)) => {
-            debug!("Task received: {}", json);
-            let task: Task = serde_json::from_str(&json).map_err(|e| {
-                error!("Failed to deserialize task: {}", e);
+            debug!("ExecutionRequest received: {}", json);
+            let request: ExecutionRequest = serde_json::from_str(&json).map_err(|e| {
+                error!("Failed to deserialize execution request: {}", e);
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
-            Ok(Json(task))
+            Ok(Json(request))
         }
         None => {
-            debug!("Poll timeout - no tasks available");
+            debug!("Poll timeout - no execution requests available");
             Err(StatusCode::NO_CONTENT)
         }
     }
@@ -98,8 +99,8 @@ pub async fn create_task(
     // Normalize repo URL to full https:// format for git clone
     let code_source = payload.code_source.normalize();
 
-    // Push to Redis queue
-    let task = Task::Compile {
+    // Create execution request and push to Redis queue
+    let execution_request = ExecutionRequest {
         request_id,
         data_id: payload.data_id.clone(),
         code_source,
@@ -113,8 +114,8 @@ pub async fn create_task(
         transaction_hash: payload.transaction_hash,
     };
 
-    let task_json = serde_json::to_string(&task).map_err(|e| {
-        error!("Failed to serialize task: {}", e);
+    let request_json = serde_json::to_string(&execution_request).map_err(|e| {
+        error!("Failed to serialize execution request: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
@@ -123,14 +124,14 @@ pub async fn create_task(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    conn.lpush::<_, _, ()>(&state.config.redis_task_queue, task_json)
+    conn.lpush::<_, _, ()>(&state.config.redis_task_queue, request_json)
         .await
         .map_err(|e| {
-            error!("Failed to push task to Redis: {}", e);
+            error!("Failed to push execution request to Redis: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    debug!("Task {} pushed to queue", request_id);
+    debug!("ExecutionRequest {} pushed to queue", request_id);
     Ok((StatusCode::CREATED, Json(CreateTaskResponse {
         request_id: request_id as i64,
         created: true,

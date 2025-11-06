@@ -109,9 +109,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Job endpoints (protected)
         .route("/jobs/claim", post(handlers::jobs::claim_job))
         .route("/jobs/complete", post(handlers::jobs::complete_job))
-        // Task endpoints (protected) - for Redis queue management
-        .route("/tasks/poll", get(handlers::tasks::poll_task))
-        .route("/tasks/create", post(handlers::tasks::create_task))
+        // Execution request endpoints (protected) - for Redis queue management
+        .route("/executions/poll", get(handlers::tasks::poll_task))
+        .route("/executions/create", post(handlers::tasks::create_task))
         // WASM cache endpoints (protected)
         .route("/wasm/:checksum", get(handlers::wasm::get_wasm))
         .route("/wasm/upload", post(handlers::wasm::upload_wasm))

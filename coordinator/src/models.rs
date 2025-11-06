@@ -72,7 +72,8 @@ pub struct SecretsReference {
     pub account_id: String,
 }
 
-/// Job types
+/// Type of work to be performed by worker
+/// Created by coordinator when breaking down ExecutionRequest into specific tasks
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum JobType {
@@ -80,29 +81,34 @@ pub enum JobType {
     Execute,
 }
 
-/// Task types (kept for backward compatibility with worker polling)
+/// Request from user to execute WASM code off-chain
+///
+/// Flow:
+/// 1. Event Monitor detects on-chain execution request
+/// 2. Sends ExecutionRequest to Coordinator API
+/// 3. Coordinator places in Redis queue for workers
+/// 4. Worker polls and receives ExecutionRequest
+/// 5. Worker claims jobs via coordinator (which decides: compile+execute or just execute)
+/// 6. Worker processes jobs and returns result to contract
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum Task {
-    Compile {
-        request_id: u64,
-        data_id: String,
-        code_source: CodeSource,
-        resource_limits: ResourceLimits,
-        input_data: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        secrets_ref: Option<SecretsReference>,
-        #[serde(default)]
-        response_format: ResponseFormat,
-        #[serde(default)]
-        context: ExecutionContext,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        user_account_id: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        near_payment_yocto: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        transaction_hash: Option<String>,
-    },
+pub struct ExecutionRequest {
+    pub request_id: u64,
+    pub data_id: String,
+    pub code_source: CodeSource,
+    pub resource_limits: ResourceLimits,
+    pub input_data: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secrets_ref: Option<SecretsReference>,
+    #[serde(default)]
+    pub response_format: ResponseFormat,
+    #[serde(default)]
+    pub context: ExecutionContext,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_account_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub near_payment_yocto: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transaction_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

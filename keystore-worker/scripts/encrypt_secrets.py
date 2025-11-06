@@ -117,12 +117,40 @@ Examples:
 
     args = parser.parse_args()
 
+    # Reserved keywords that should not be overridden by user secrets
+    RESERVED_KEYWORDS = [
+        "NEAR_SENDER_ID",
+        "NEAR_CONTRACT_ID",
+        "NEAR_USER_ACCOUNT_ID",
+        "NEAR_PAYMENT_YOCTO",
+        "NEAR_TRANSACTION_HASH",
+        "NEAR_BLOCK_HEIGHT",
+        "NEAR_BLOCK_TIMESTAMP",
+        "NEAR_MAX_INSTRUCTIONS",
+        "NEAR_MAX_MEMORY_MB",
+        "NEAR_MAX_EXECUTION_SECONDS",
+        "NEAR_REQUEST_ID",
+    ]
+
     # Validate JSON format
     try:
         parsed = json.loads(args.secrets_json)
         if not isinstance(parsed, dict):
             print("Error: Secrets must be a JSON object, e.g. {\"KEY\":\"value\"}", file=sys.stderr)
             sys.exit(1)
+
+        # Check for reserved keywords
+        reserved_found = [key for key in parsed.keys() if key in RESERVED_KEYWORDS]
+        if reserved_found:
+            print(f"❌ Error: Cannot use reserved system keywords as secret keys:", file=sys.stderr)
+            for key in reserved_found:
+                print(f"  - {key}", file=sys.stderr)
+            print(f"\nReserved keywords (automatically set by OutLayer worker):", file=sys.stderr)
+            for key in RESERVED_KEYWORDS:
+                print(f"  - {key}", file=sys.stderr)
+            print(f"\nPlease rename these keys in your secrets.", file=sys.stderr)
+            sys.exit(1)
+
     except json.JSONDecodeError as e:
         print(f"Error: Invalid JSON format: {e}", file=sys.stderr)
         sys.exit(1)
