@@ -96,11 +96,13 @@ pub struct DecryptResponse {
     pub plaintext_secrets: String,
 }
 
-/// Query parameters for pubkey endpoint
+/// Request to get public key (includes secrets for validation)
 #[derive(Debug, Deserialize)]
-pub struct PubkeyQuery {
+pub struct PubkeyRequest {
     /// Seed for deriving keypair (format: "repo:owner[:branch]")
     pub seed: String,
+    /// Secrets as JSON string for validation (e.g., '{"API_KEY":"value"}')
+    pub secrets_json: String,
 }
 
 /// Response with public key
@@ -122,7 +124,7 @@ pub struct HealthResponse {
 pub fn create_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health_handler))
-        .route("/pubkey", get(pubkey_handler))
+        .route("/pubkey", post(pubkey_handler)) // Changed to POST to accept secrets for validation
         .route("/decrypt", post(decrypt_handler))
         // Auth middleware applies to all routes (keystore is internal)
         .layer(middleware::from_fn_with_state(
@@ -141,15 +143,59 @@ async fn health_handler(State(state): State<AppState>) -> Json<HealthResponse> {
     })
 }
 
-/// Get public key for a specific seed
+/// Get public key for encryption AND validate secrets before encryption
 async fn pubkey_handler(
-    Query(query): Query<PubkeyQuery>,
     State(state): State<AppState>,
+    Json(req): Json<PubkeyRequest>,
 ) -> Result<Json<PubkeyResponse>, ApiError> {
+    // 1. Validate secrets JSON first (check for reserved keywords)
+    let secrets_map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&req.secrets_json)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid JSON format: {}", e)))?;
+
+    // Reserved keywords that should not be overridden by user secrets
+    const RESERVED_KEYWORDS: &[&str] = &[
+        "NEAR_SENDER_ID",
+        "NEAR_CONTRACT_ID",
+        "NEAR_USER_ACCOUNT_ID",
+        "NEAR_PAYMENT_YOCTO",
+        "NEAR_TRANSACTION_HASH",
+        "NEAR_BLOCK_HEIGHT",
+        "NEAR_BLOCK_TIMESTAMP",
+        "NEAR_MAX_INSTRUCTIONS",
+        "NEAR_MAX_MEMORY_MB",
+        "NEAR_MAX_EXECUTION_SECONDS",
+        "NEAR_REQUEST_ID",
+    ];
+
+    // Check for reserved keywords
+    let reserved_found: Vec<&str> = secrets_map.keys()
+        .filter(|k| RESERVED_KEYWORDS.contains(&k.as_str()))
+        .map(|k| k.as_str())
+        .collect();
+
+    if !reserved_found.is_empty() {
+        tracing::warn!(
+            reserved_keys = ?reserved_found,
+            "Rejected secrets with reserved keywords"
+        );
+        return Err(ApiError::BadRequest(format!(
+            "❌ Вы не можете создать секрет с именем '{}' - это служебное поле OutLayer worker. \
+            Пожалуйста, используйте другое имя для вашего секрета.",
+            reserved_found.join(", ")
+        )));
+    }
+
+    // 2. Generate public key for encryption
     let pubkey_hex = state
         .keystore
-        .public_key_hex(&query.seed)
+        .public_key_hex(&req.seed)
         .map_err(|e| ApiError::InternalError(format!("Failed to derive public key: {}", e)))?;
+
+    tracing::info!(
+        seed = %req.seed,
+        num_secrets = secrets_map.len(),
+        "Validated secrets and generated pubkey"
+    );
 
     Ok(Json(PubkeyResponse { pubkey: pubkey_hex }))
 }
@@ -297,56 +343,13 @@ async fn decrypt_handler(
         ApiError::InternalError(format!("Decryption failed: {}", e))
     })?;
 
-    // 6. Parse and validate secrets JSON
-    let plaintext_str = String::from_utf8(plaintext_bytes.clone())
-        .map_err(|e| ApiError::InternalError(format!("Decrypted secrets are not valid UTF-8: {}", e)))?;
-
-    let secrets_map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&plaintext_str)
-        .map_err(|e| ApiError::InternalError(format!("Decrypted secrets are not valid JSON: {}", e)))?;
-
-    // Reserved keywords that should not be overridden by user secrets
-    const RESERVED_KEYWORDS: &[&str] = &[
-        "NEAR_SENDER_ID",
-        "NEAR_CONTRACT_ID",
-        "NEAR_USER_ACCOUNT_ID",
-        "NEAR_PAYMENT_YOCTO",
-        "NEAR_TRANSACTION_HASH",
-        "NEAR_BLOCK_HEIGHT",
-        "NEAR_BLOCK_TIMESTAMP",
-        "NEAR_MAX_INSTRUCTIONS",
-        "NEAR_MAX_MEMORY_MB",
-        "NEAR_MAX_EXECUTION_SECONDS",
-        "NEAR_REQUEST_ID",
-    ];
-
-    // Check for reserved keywords
-    let reserved_found: Vec<&str> = secrets_map.keys()
-        .filter(|k| RESERVED_KEYWORDS.contains(&k.as_str()))
-        .map(|k| k.as_str())
-        .collect();
-
-    if !reserved_found.is_empty() {
-        tracing::error!(
-            task_id = %task_id_str,
-            reserved_keys = ?reserved_found,
-            "Secrets contain reserved system keywords"
-        );
-        return Err(ApiError::BadRequest(format!(
-            "Secrets contain reserved system keywords that cannot be overridden: {}. \
-            These environment variables are automatically set by OutLayer worker. \
-            Please use different key names.",
-            reserved_found.join(", ")
-        )));
-    }
-
-    // 7. Encode plaintext as base64 for safe JSON transport
+    // 6. Encode plaintext as base64 for safe JSON transport
     let plaintext_b64 = base64::encode(&plaintext_bytes);
 
     tracing::info!(
         task_id = %task_id_str,
         plaintext_size = plaintext_bytes.len(),
-        num_secrets = secrets_map.len(),
-        "Successfully decrypted and validated secrets"
+        "Successfully decrypted secrets"
     );
 
     Ok(Json(DecryptResponse {
