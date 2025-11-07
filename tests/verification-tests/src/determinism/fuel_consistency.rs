@@ -8,7 +8,7 @@
 //! - Epoch deadline does not affect determinism (timeout mechanism is orthogonal)
 
 #[cfg(test)]
-use crate::common::{build_test_wasm, execute_wasm_p1, assert_deterministic};
+use crate::common::{assert_deterministic, build_test_wasm, execute_wasm_p1};
 #[cfg(test)]
 use anyhow::Result;
 
@@ -27,7 +27,8 @@ async fn test_100x_same_input_determinism() -> Result<()> {
 
     // Execute 100 times
     for iteration in 0..100 {
-        let result = execute_wasm_p1(&wasm, input, max_fuel).await
+        let result = execute_wasm_p1(&wasm, input, max_fuel)
+            .await
             .unwrap_or_else(|_| panic!("iteration {iteration} failed"));
         results.push(result);
     }
@@ -45,7 +46,10 @@ async fn test_100x_same_input_determinism() -> Result<()> {
     println!("✓ 100x determinism verified");
     println!("  Output: {} bytes", first.output.len());
     println!("  Fuel consumed: {}", first.fuel_consumed);
-    println!("  Avg time: {} ms", results.iter().map(|r| r.execution_time_ms).sum::<u64>() / 100);
+    println!(
+        "  Avg time: {} ms",
+        results.iter().map(|r| r.execution_time_ms).sum::<u64>() / 100
+    );
 
     Ok(())
 }

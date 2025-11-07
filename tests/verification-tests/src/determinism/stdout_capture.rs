@@ -32,11 +32,19 @@ async fn test_stdout_capture_json_output() -> Result<()> {
 
     // Debug: print raw output
     eprintln!("DEBUG: Raw output length: {} bytes", result.output.len());
-    eprintln!("DEBUG: Raw output (first 200 chars): {:?}", &result.output.chars().take(200).collect::<String>());
+    eprintln!(
+        "DEBUG: Raw output (first 200 chars): {:?}",
+        &result.output.chars().take(200).collect::<String>()
+    );
 
     // Verify output is valid JSON
-    let parsed: serde_json::Value = serde_json::from_str(&result.output)
-        .map_err(|e| anyhow::anyhow!("Failed to parse output as JSON: {}. Output was: '{}'", e, result.output))?;
+    let parsed: serde_json::Value = serde_json::from_str(&result.output).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to parse output as JSON: {}. Output was: '{}'",
+            e,
+            result.output
+        )
+    })?;
 
     // Verify expected fields exist
     assert!(
@@ -148,7 +156,8 @@ async fn test_stdout_capture_deterministic_output() -> Result<()> {
     let first = &outputs[0];
     for (i, output) in outputs.iter().enumerate().skip(1) {
         assert_eq!(
-            output, first,
+            output,
+            first,
             "Execution {} output differs from first execution",
             i + 1
         );
@@ -243,7 +252,10 @@ async fn test_stdout_capture_no_data_loss() -> Result<()> {
     );
 
     println!("✓ No data loss in stdout capture");
-    println!("  Verified {} bytes captured identically", original_output.len());
+    println!(
+        "  Verified {} bytes captured identically",
+        original_output.len()
+    );
 
     Ok(())
 }

@@ -37,7 +37,10 @@ pub async fn build_test_wasm(example_name: &str) -> Result<Vec<u8>> {
     }
 
     // Determine target based on example
-    let target = if example_name.ends_with("-ark") || example_name == "random-ark" || example_name == "determinism-test" {
+    let target = if example_name.ends_with("-ark")
+        || example_name == "random-ark"
+        || example_name == "determinism-test"
+    {
         "wasm32-wasip1"
     } else {
         // Assume P2 for other examples
@@ -78,8 +81,7 @@ pub async fn build_test_wasm(example_name: &str) -> Result<Vec<u8>> {
         wasm_path_underscore
     };
 
-    std::fs::read(&wasm_path)
-        .context(format!("Failed to read WASM from {}", wasm_path.display()))
+    std::fs::read(&wasm_path).context(format!("Failed to read WASM from {}", wasm_path.display()))
 }
 
 /// Execute WASM with wasmtime (WASI P1)

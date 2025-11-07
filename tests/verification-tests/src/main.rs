@@ -9,11 +9,11 @@
 //! executed via cargo's test framework, not custom runners.
 
 mod common;
-mod determinism;
 mod contract_events;
 mod coordinator_hardening;
-mod wasi_helpers;
+mod determinism;
 mod typescript_client;
+mod wasi_helpers;
 
 fn main() {
     println!("Phase 1-5 Integration Tests");

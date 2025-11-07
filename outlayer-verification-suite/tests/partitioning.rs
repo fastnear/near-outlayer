@@ -134,7 +134,10 @@ mod unit_tests {
     #[test]
     fn test_partition_indices() {
         // Empty
-        assert_eq!(partition_indices(0, &[]), Vec::<std::ops::Range<usize>>::new());
+        assert_eq!(
+            partition_indices(0, &[]),
+            Vec::<std::ops::Range<usize>>::new()
+        );
 
         // Single partition
         assert_eq!(partition_indices(10, &[10]), vec![0..10]);
@@ -146,6 +149,9 @@ mod unit_tests {
         assert_eq!(partition_indices(5, &[10, 10]), vec![0..5]);
 
         // Many small chunks
-        assert_eq!(partition_indices(10, &[1, 1, 1, 1]), vec![0..1, 1..2, 2..3, 3..4, 4..10]);
+        assert_eq!(
+            partition_indices(10, &[1, 1, 1, 1]),
+            vec![0..1, 1..2, 2..3, 3..4, 4..10]
+        );
     }
 }

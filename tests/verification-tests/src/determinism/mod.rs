@@ -6,9 +6,9 @@
 //! - Epoch deadline timeout behavior
 //! - Fuel accounting accuracy
 
-pub mod fuel_consistency;
-pub mod epoch_deadline;
 pub mod cross_runtime;
+pub mod epoch_deadline;
+pub mod fuel_consistency;
 pub mod stdout_capture;
 
 #[cfg(test)]

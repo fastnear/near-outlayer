@@ -225,10 +225,7 @@ mod tests {
 
         for path in malicious_paths {
             let result = validate_build_path(path);
-            assert!(
-                result.is_err(),
-                "Path traversal should be blocked: {path}"
-            );
+            assert!(result.is_err(), "Path traversal should be blocked: {path}");
         }
 
         println!("✓ Path traversal attacks blocked");
@@ -246,10 +243,7 @@ mod tests {
 
         for path in absolute_paths {
             let result = validate_build_path(path);
-            assert!(
-                result.is_err(),
-                "Absolute path should be rejected: {path}"
-            );
+            assert!(result.is_err(), "Absolute path should be rejected: {path}");
         }
 
         println!("✓ Absolute paths rejected");
@@ -310,7 +304,7 @@ mod tests {
         // URL-encoded path traversal
         let encoded_paths = vec![
             "%2e%2e%2f%2e%2e%2fetc%2fpasswd", // URL-encoded ../../../etc/passwd
-            "..%2f..%2fetc%2fpasswd",          // Partially encoded
+            "..%2f..%2fetc%2fpasswd",         // Partially encoded
         ];
 
         for path in encoded_paths {
@@ -337,7 +331,9 @@ mod tests {
         let double_encoded = "..%252f..%252fetc%252fpasswd";
 
         // First decode
-        let first_decode = double_encoded.replace("%252f", "%2f").replace("%252F", "%2F");
+        let first_decode = double_encoded
+            .replace("%252f", "%2f")
+            .replace("%252F", "%2F");
         // Second decode
         let second_decode = first_decode.replace("%2f", "/").replace("%2F", "/");
 
@@ -378,10 +374,7 @@ mod tests {
 
         for path in paths_with_dots {
             let result = validate_build_path(path);
-            assert!(
-                result.is_err(),
-                "Path with '..' should be blocked: {path}"
-            );
+            assert!(result.is_err(), "Path with '..' should be blocked: {path}");
         }
 
         println!("✓ Two consecutive dots blocked in any position");

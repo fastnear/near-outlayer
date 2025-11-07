@@ -35,11 +35,7 @@ async fn test_multiple_inputs_cross_runtime() -> Result<()> {
     let wasm = build_test_wasm("random-ark").await?;
     let max_fuel = 100_000_000;
 
-    let test_inputs = vec![
-        r#"{"seed": 1}"#,
-        r#"{"seed": 100}"#,
-        r#"{"seed": 65535}"#,
-    ];
+    let test_inputs = vec![r#"{"seed": 1}"#, r#"{"seed": 100}"#, r#"{"seed": 65535}"#];
 
     for input_str in test_inputs {
         let input = input_str.as_bytes();

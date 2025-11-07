@@ -10,8 +10,7 @@ use std::collections::HashSet;
 #[allow(clippy::expect_used)] // Static regex pattern, guaranteed valid
 pub fn arb_account_id() -> impl Strategy<Value = AccountId> {
     // Safety: regex is valid and static
-    proptest::string::string_regex("[a-z0-9\\-]{2,48}\\.near")
-        .expect("valid regex")
+    proptest::string::string_regex("[a-z0-9\\-]{2,48}\\.near").expect("valid regex")
 }
 
 /// Strategy: Generate function arguments (0-1024 bytes)

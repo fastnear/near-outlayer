@@ -182,8 +182,18 @@ mod tests {
 
         println!("✓ compute_execution_cost: Realistic cost calculation");
         println!("  Base: {base_fee} yN");
-        println!("  Instructions: {} * {} = {} yN", instructions, per_instruction_fee, instructions as u128 * per_instruction_fee);
-        println!("  Time: {} ms * {} = {} yN", time_ms, per_ms_fee, time_ms as u128 * per_ms_fee);
+        println!(
+            "  Instructions: {} * {} = {} yN",
+            instructions,
+            per_instruction_fee,
+            instructions as u128 * per_instruction_fee
+        );
+        println!(
+            "  Time: {} ms * {} = {} yN",
+            time_ms,
+            per_ms_fee,
+            time_ms as u128 * per_ms_fee
+        );
         println!("  Total: {cost} yN");
 
         Ok(())
@@ -216,7 +226,10 @@ mod tests {
 
         // Zero fees
         let cost = compute_execution_cost(1_000_000, 10_000_000, 0, 1000, 0)?;
-        assert_eq!(cost, 1_000_000u128, "Cost should be base fee only with zero rates");
+        assert_eq!(
+            cost, 1_000_000u128,
+            "Cost should be base fee only with zero rates"
+        );
 
         println!("✓ compute_execution_cost: Zero edge cases handled");
         Ok(())
@@ -292,7 +305,11 @@ mod tests {
 
         println!("✓ estimate_cost: Realistic upfront cost estimation");
         println!("  Max instructions: {max_instructions}");
-        println!("  Max time: {} seconds = {} ms", max_execution_seconds, max_execution_seconds * 1000);
+        println!(
+            "  Max time: {} seconds = {} ms",
+            max_execution_seconds,
+            max_execution_seconds * 1000
+        );
         println!("  Estimated cost: {cost} yN");
 
         Ok(())
@@ -320,13 +337,7 @@ mod tests {
     #[test]
     fn test_estimate_cost_massive_instructions() {
         // Test with u64::MAX instructions
-        let result = estimate_cost(
-            1_000_000,
-            u64::MAX,
-            u128::MAX,
-            60,
-            1000,
-        );
+        let result = estimate_cost(1_000_000, u64::MAX, u128::MAX, 60, 1000);
 
         assert!(
             result.is_err(),
@@ -369,7 +380,10 @@ mod tests {
         )?;
 
         // Should not overflow, result is valid
-        assert!(cost > base_fee, "Cost should include instruction and time fees");
+        assert!(
+            cost > base_fee,
+            "Cost should include instruction and time fees"
+        );
 
         println!("✓ Large but valid cost calculation (1B instructions, 1 minute)");
         println!("  Total cost: {cost} yN");
@@ -385,7 +399,11 @@ mod tests {
 
         // Zero base fee
         let cost = compute_execution_cost(0, 1000, 10, 1000, 10)?;
-        assert_eq!(cost, 10_000 + 10_000, "Cost should be instruction + time fees only");
+        assert_eq!(
+            cost,
+            10_000 + 10_000,
+            "Cost should be instruction + time fees only"
+        );
 
         println!("✓ Zero cost components handled correctly");
         Ok(())

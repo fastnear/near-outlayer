@@ -9,8 +9,8 @@
 //! 2. Followed by a single valid JSON string
 //! 3. JSON must have {standard, version, event} fields (data is optional)
 
-use serde::{Deserialize, Serialize};
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 
 /// NEP-297 Event Log Data
 ///
@@ -75,7 +75,10 @@ mod tests {
 
         let event = parse_nep297_event(log)?;
 
-        assert_eq!(event.standard, "outlayer", "Event standard must be 'outlayer'");
+        assert_eq!(
+            event.standard, "outlayer",
+            "Event standard must be 'outlayer'"
+        );
         assert_eq!(event.version, "1.0.0", "Event version must be '1.0.0'");
         assert_eq!(event.event, "execution_requested", "Event type must match");
         assert!(event.data.is_some(), "Event data should be present");
@@ -197,7 +200,10 @@ EVENT_JSON:{"standard":"outlayer","version":"1.0.0","event":"xyz"}"#;
 
         // Parsing should fail (only first line parsed, second line causes newline in JSON)
         let result = parse_nep297_event(log);
-        assert!(result.is_err(), "Multiple events in single log should be rejected");
+        assert!(
+            result.is_err(),
+            "Multiple events in single log should be rejected"
+        );
 
         println!("✓ Multiple events in single log correctly rejected");
     }

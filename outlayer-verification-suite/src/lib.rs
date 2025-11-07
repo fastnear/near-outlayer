@@ -1,6 +1,11 @@
 #![forbid(unsafe_code)]
 #![deny(warnings)]
-#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::dbg_macro)]
+#![deny(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::dbg_macro
+)]
 
 //! Outlayer Verification Suite
 //!

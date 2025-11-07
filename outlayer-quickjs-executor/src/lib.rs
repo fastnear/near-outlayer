@@ -82,7 +82,11 @@ impl QuickJsExecutor {
         wcfg.debug_info(false);
         let engine = Engine::new(&wcfg).context("create wasmtime engine")?;
         let module = Module::new(&engine, quickjs_wasm).context("compile quickjs module")?;
-        Ok(Self { engine, module, cfg })
+        Ok(Self {
+            engine,
+            module,
+            cfg,
+        })
     }
 
     /// Execute a contract function. Deterministic within the JS you supply.
@@ -154,8 +158,8 @@ impl QuickJsExecutor {
             return Err(anyhow!("loader did not write {OUT_NAME}"));
         }
         let out_bytes = fs::read(&out_path).context("read out.json")?;
-        let parsed: serde_json::Value = serde_json::from_slice(&out_bytes)
-            .context("parse out.json")?;
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&out_bytes).context("parse out.json")?;
         let result = parsed.get("result").cloned().unwrap_or(json!(null));
 
         let new_state = fs::read(work.join(STATE_NAME)).context("read state.json")?;
