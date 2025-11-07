@@ -747,7 +747,7 @@ near deploy tokensale.testnet \\
         <h3 className="text-xl font-semibold mb-4">Ready to Build?</h3>
         <ul className="list-disc list-inside space-y-2 text-gray-700">
           <li>Read the <a href="https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/WASI_TUTORIAL.md" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">complete WASI tutorial</a></li>
-          <li>Clone examples: <code className="bg-gray-100 px-2 py-1 rounded">git clone https://github.com/zavodil/near-offshore.git</code></li>
+          <li>Clone examples: <code className="bg-gray-100 px-2 py-1 rounded">git clone https://github.com/fastnear/near-outlayer.git</code></li>
           <li>Start with <strong>random-ark</strong> or <strong>echo-ark</strong> for simple use cases</li>
           <li>Try <strong>weather-ark</strong> for instant testing (pre-configured secrets on testnet!)</li>
           <li>Use <strong>ai-ark</strong> or <strong>oracle-ark</strong> for HTTPS-based applications</li>
