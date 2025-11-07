@@ -62,6 +62,15 @@ const pageStructure = {
     { id: 'wasm-caching', title: 'WASM Caching Strategy' },
     { id: 'high-availability', title: 'High Availability' },
   ],
+  '/docs/examples': [
+    { id: 'random-ark', title: 'Random Number' },
+    { id: 'echo-ark', title: 'Echo' },
+    { id: 'ai-ark', title: 'AI Integration' },
+    { id: 'weather-ark', title: 'Weather Oracle' },
+    { id: 'oracle-ark', title: 'Price Oracle' },
+    { id: 'intents-ark', title: 'NEAR Intents swap' },
+    { id: 'captcha-ark', title: '2FA Verification' },
+  ],
 };
 
 export default function DocsLayout({
@@ -257,17 +266,43 @@ export default function DocsLayout({
                   </div>
                 )}
               </div>
-              {/* WASI Examples - no subsections */}
-              <Link
-                href="/docs/examples"
-                className={`block w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-                  isActive('/docs/examples')
-                    ? 'bg-[var(--primary-orange)] text-white'
-                    : 'text-gray-700 hover:bg-gray-100'
-                }`}
-              >
-                WASI Examples
-              </Link>
+              {/* WASI Examples */}
+              <div>
+                <Link
+                  href="/docs/examples"
+                  className={`flex items-center justify-between w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                    isActive('/docs/examples')
+                      ? 'bg-[var(--primary-orange)] text-white'
+                      : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                  onClick={(e) => {
+                    if (isActive('/docs/examples')) {
+                      e.preventDefault();
+                      toggleExpand('/docs/examples');
+                    }
+                  }}
+                >
+                  <span>WASI Examples</span>
+                  {pageStructure['/docs/examples'] && (
+                    <svg className={`w-4 h-4 transition-transform ${expandedPages['/docs/examples'] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  )}
+                </Link>
+                {expandedPages['/docs/examples'] && pageStructure['/docs/examples'] && (
+                  <div className="ml-4 mt-1 space-y-1">
+                    {pageStructure['/docs/examples'].map(section => (
+                      <button
+                        key={section.id}
+                        onClick={() => scrollToSection(section.id)}
+                        className="block w-full text-left px-3 py-1.5 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
+                      >
+                        {section.title}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
 
               {/* Managing Secrets */}
               <div>

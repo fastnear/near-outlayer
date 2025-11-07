@@ -9,20 +9,43 @@ export default function ExamplesPage() {
     <div className="prose max-w-none">
       <h2 className="text-3xl font-bold mb-6 text-[var(--primary-orange)]">WASI Examples</h2>
 
-      <p className="text-gray-700 mb-6">
+      <p className="text-gray-700 mb-4">
         Production-ready examples demonstrating different WASI patterns and use cases. All examples are open-source and fully documented.
       </p>
 
+      <div className="mb-4 p-4 bg-gray-50 border-l-4 border-gray-400">
+        <p className="text-sm text-gray-700">
+          🚢 <strong>Why &ldquo;ark&rdquo;?</strong> We use <span className="font-mono font-semibold">*-ark</span> as a naming convention for WASI projects, inspired by <strong>NOAH Ark</strong> (where NOAH stands for <strong>N</strong>ear <strong>O</strong>ffchain <strong>A</strong>gent <strong>H</strong>ub). Each &ldquo;ark&rdquo; is a self-contained, autonomous container that safely executes off-chain computation and returns results back to the blockchain.
+        </p>
+      </div>
+
+      <div className="mb-6 p-4 bg-blue-50 border-l-4 border-blue-400">
+        <p className="text-sm text-gray-700">
+          📚 <strong>New to WASI?</strong> Read the <Link href="/docs/wasi" className="text-[var(--primary-orange)] hover:underline font-semibold">Writing WASI Code</Link> guide first to understand WASI basics, supported languages, and critical requirements.
+        </p>
+      </div>
+
       <div className="space-y-8">
         {/* random-ark */}
-        <div className="border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow">
-          <h3 className="text-2xl font-semibold mb-3">
-            <a href="https://github.com/zavodil/random-ark" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+        <div id="random-ark" className="border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow scroll-mt-4">
+          <div className="flex items-start justify-between mb-3">
+            <h3 className="text-2xl font-semibold">
               random-ark
-            </a>
-            <span className="ml-3 text-sm bg-blue-100 text-blue-800 px-3 py-1 rounded">WASI P1</span>
-            <span className="ml-2 text-sm bg-green-100 text-green-800 px-3 py-1 rounded">Beginner</span>
-          </h3>
+              <span className="ml-3 text-sm bg-blue-100 text-blue-800 px-3 py-1 rounded">WASI P1</span>
+              <span className="ml-2 text-sm bg-green-100 text-green-800 px-3 py-1 rounded">Beginner</span>
+            </h3>
+          </div>
+          <a
+            href="https://github.com/zavodil/random-ark"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 px-4 py-2 mb-4 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors font-medium"
+          >
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+              <path fillRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clipRule="evenodd"/>
+            </svg>
+            <span>Source Code on GitHub</span>
+          </a>
           <p className="text-gray-700 mb-4">
             Generate cryptographically secure random numbers using WASI random source. Perfect starter example for learning WASI basics.
           </p>
@@ -91,14 +114,25 @@ near tx-status TRANSACTION_HASH --accountId your-account.testnet`}
         </div>
 
         {/* echo-ark */}
-        <div className="border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow">
-          <h3 className="text-2xl font-semibold mb-3">
-            <a href="https://github.com/zavodil/echo-ark" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+        <div id="echo-ark" className="border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow scroll-mt-4">
+          <div className="flex items-start justify-between mb-3">
+            <h3 className="text-2xl font-semibold">
               echo-ark
-            </a>
-            <span className="ml-3 text-sm bg-blue-100 text-blue-800 px-3 py-1 rounded">WASI P1</span>
-            <span className="ml-2 text-sm bg-green-100 text-green-800 px-3 py-1 rounded">Beginner</span>
-          </h3>
+              <span className="ml-3 text-sm bg-blue-100 text-blue-800 px-3 py-1 rounded">WASI P1</span>
+              <span className="ml-2 text-sm bg-green-100 text-green-800 px-3 py-1 rounded">Beginner</span>
+            </h3>
+          </div>
+          <a
+            href="https://github.com/zavodil/echo-ark"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 px-4 py-2 mb-4 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors font-medium"
+          >
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+              <path fillRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clipRule="evenodd"/>
+            </svg>
+            <span>Source Code on GitHub</span>
+          </a>
           <p className="text-gray-700 mb-4">
             Echo messages with NEAR blockchain context information. Demonstrates how to access execution metadata via environment variables.
           </p>
@@ -159,14 +193,25 @@ near call outlayer.testnet request_execution '{
         </div>
 
         {/* ai-ark */}
-        <div className="border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow">
-          <h3 className="text-2xl font-semibold mb-3">
-            <a href="https://github.com/zavodil/ai-ark" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+        <div id="ai-ark" className="border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow scroll-mt-4">
+          <div className="flex items-start justify-between mb-3">
+            <h3 className="text-2xl font-semibold">
               ai-ark
-            </a>
-            <span className="ml-3 text-sm bg-purple-100 text-purple-800 px-3 py-1 rounded">WASI P2</span>
-            <span className="ml-2 text-sm bg-yellow-100 text-yellow-800 px-3 py-1 rounded">Intermediate</span>
-          </h3>
+              <span className="ml-3 text-sm bg-purple-100 text-purple-800 px-3 py-1 rounded">WASI P2</span>
+              <span className="ml-2 text-sm bg-yellow-100 text-yellow-800 px-3 py-1 rounded">Intermediate</span>
+            </h3>
+          </div>
+          <a
+            href="https://github.com/zavodil/ai-ark"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 px-4 py-2 mb-4 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors font-medium"
+          >
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+              <path fillRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clipRule="evenodd"/>
+            </svg>
+            <span>Source Code on GitHub</span>
+          </a>
           <p className="text-gray-700 mb-4">
             OpenAI API integration with HTTPS POST requests. Your first step into WASI Preview 2 capabilities and external API calls.
           </p>
@@ -230,14 +275,25 @@ near call outlayer.testnet request_execution '{
         </div>
 
         {/* weather-ark */}
-        <div className="border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow">
-          <h3 className="text-2xl font-semibold mb-3">
-            <a href="https://github.com/zavodil/weather-ark" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+        <div id="weather-ark" className="border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow scroll-mt-4">
+          <div className="flex items-start justify-between mb-3">
+            <h3 className="text-2xl font-semibold">
               weather-ark
-            </a>
-            <span className="ml-3 text-sm bg-purple-100 text-purple-800 px-3 py-1 rounded">WASI P2</span>
-            <span className="ml-2 text-sm bg-yellow-100 text-yellow-800 px-3 py-1 rounded">Intermediate</span>
-          </h3>
+              <span className="ml-3 text-sm bg-purple-100 text-purple-800 px-3 py-1 rounded">WASI P2</span>
+              <span className="ml-2 text-sm bg-yellow-100 text-yellow-800 px-3 py-1 rounded">Intermediate</span>
+            </h3>
+          </div>
+          <a
+            href="https://github.com/zavodil/weather-ark"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 px-4 py-2 mb-4 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors font-medium"
+          >
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+              <path fillRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clipRule="evenodd"/>
+            </svg>
+            <span>Source Code on GitHub</span>
+          </a>
           <p className="text-gray-700 mb-4">
             Real-time weather data oracle via OpenWeather API. Specialized oracle example showing how to fetch and format data from a specific API. Ready to test on testnet with pre-configured secrets!
           </p>
@@ -363,14 +419,25 @@ near call outlayer.testnet request_execution '{
         </div>
 
         {/* oracle-ark */}
-        <div className="border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow">
-          <h3 className="text-2xl font-semibold mb-3">
-            <a href="https://github.com/zavodil/oracle-ark" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+        <div id="oracle-ark" className="border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow scroll-mt-4">
+          <div className="flex items-start justify-between mb-3">
+            <h3 className="text-2xl font-semibold">
               oracle-ark
-            </a>
-            <span className="ml-3 text-sm bg-purple-100 text-purple-800 px-3 py-1 rounded">WASI P2</span>
-            <span className="ml-2 text-sm bg-orange-100 text-orange-800 px-3 py-1 rounded">Advanced</span>
-          </h3>
+              <span className="ml-3 text-sm bg-purple-100 text-purple-800 px-3 py-1 rounded">WASI P2</span>
+              <span className="ml-2 text-sm bg-orange-100 text-orange-800 px-3 py-1 rounded">Advanced</span>
+            </h3>
+          </div>
+          <a
+            href="https://github.com/zavodil/oracle-ark"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 px-4 py-2 mb-4 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors font-medium"
+          >
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+              <path fillRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clipRule="evenodd"/>
+            </svg>
+            <span>Source Code on GitHub</span>
+          </a>
           <p className="text-gray-700 mb-4">
             Multi-source price oracle with aggregation and validation. Production-ready decentralized oracle for cryptocurrency and commodity prices.
           </p>
@@ -467,14 +534,25 @@ near call outlayer.testnet request_execution '{
         </div>
 
         {/* intents-ark */}
-        <div className="border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow">
-          <h3 className="text-2xl font-semibold mb-3">
-            <a href="https://github.com/zavodil/intents-ark" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+        <div id="intents-ark" className="border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow scroll-mt-4">
+          <div className="flex items-start justify-between mb-3">
+            <h3 className="text-2xl font-semibold">
               intents-ark
-            </a>
-            <span className="ml-3 text-sm bg-purple-100 text-purple-800 px-3 py-1 rounded">WASI P2</span>
-            <span className="ml-2 text-sm bg-orange-100 text-orange-800 px-3 py-1 rounded">Advanced</span>
-          </h3>
+              <span className="ml-3 text-sm bg-purple-100 text-purple-800 px-3 py-1 rounded">WASI P2</span>
+              <span className="ml-2 text-sm bg-orange-100 text-orange-800 px-3 py-1 rounded">Advanced</span>
+            </h3>
+          </div>
+          <a
+            href="https://github.com/zavodil/intents-ark"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 px-4 py-2 mb-4 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors font-medium"
+          >
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+              <path fillRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clipRule="evenodd"/>
+            </svg>
+            <span>Source Code on GitHub</span>
+          </a>
           <p className="text-gray-700 mb-4">
             DEX token swaps via NEAR Intents protocol. User&apos;s FT transfer transaction pauses, WASI performs swap off-chain, then resolves by sending swapped tokens back - all within single transaction.
           </p>
@@ -540,14 +618,25 @@ near call wrap.near ft_transfer_call '{
         </div>
 
         {/* captcha-ark */}
-        <div className="border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow">
-          <h3 className="text-2xl font-semibold mb-3">
-            <a href="https://github.com/zavodil/captcha-ark" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+        <div id="captcha-ark" className="border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow scroll-mt-4">
+          <div className="flex items-start justify-between mb-3">
+            <h3 className="text-2xl font-semibold">
               captcha-ark
-            </a>
-            <span className="ml-3 text-sm bg-purple-100 text-purple-800 px-3 py-1 rounded">WASI P2</span>
-            <span className="ml-2 text-sm bg-green-100 text-green-800 px-3 py-1 rounded">Full Stack</span>
-          </h3>
+              <span className="ml-3 text-sm bg-purple-100 text-purple-800 px-3 py-1 rounded">WASI P2</span>
+              <span className="ml-2 text-sm bg-green-100 text-green-800 px-3 py-1 rounded">Full Stack</span>
+            </h3>
+          </div>
+          <a
+            href="https://github.com/zavodil/captcha-ark"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 px-4 py-2 mb-4 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors font-medium"
+          >
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+              <path fillRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clipRule="evenodd"/>
+            </svg>
+            <span>Source Code on GitHub</span>
+          </a>
           <p className="text-gray-700 mb-4">
             Token sale with mandatory CAPTCHA verification. Transaction won&apos;t complete until user solves CAPTCHA. WASI worker receives session ID from backend and waits for verification signal. Example implementation demonstrating async human verification pattern.
           </p>
