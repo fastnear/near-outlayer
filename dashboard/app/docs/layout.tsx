@@ -83,10 +83,10 @@ export default function DocsLayout({
     [pathname]: true, // Auto-expand current page
   });
 
-  // Auto-expand menu when pathname changes
+  // Auto-expand only current page when pathname changes
   useEffect(() => {
     if (pageStructure[pathname as keyof typeof pageStructure]) {
-      setExpandedPages(prev => ({ ...prev, [pathname]: true }));
+      setExpandedPages({ [pathname]: true }); // Only current page
     }
   }, [pathname]);
 
