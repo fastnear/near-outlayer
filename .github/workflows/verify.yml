@@ -108,6 +108,9 @@ jobs:
       - name: Clippy - verification suite
         run: cargo clippy -p outlayer-verification-suite -- -D warnings
 
+      - name: Clippy - quickjs executor
+        run: cargo clippy -p outlayer-quickjs-executor -- -D warnings
+
       - name: Clippy - verification tests
         run: cargo clippy -p verification-tests --all-features -- -D warnings
 
