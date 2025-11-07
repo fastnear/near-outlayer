@@ -6,7 +6,6 @@
 //! This test runs 512+ randomized scenarios and verifies all callbacks are authorized.
 
 use outlayer_verification_suite::strategies::*;
-use outlayer_verification_suite::*;
 use proptest::prelude::*;
 
 proptest! {

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Soft Enclave — Automated Tests</title>
+  <style>
+    html,body{margin:0;padding:0;background:#0b0c10;color:#e6e6e6;font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,Ubuntu;}
+    .wrap{max-width:880px;margin:40px auto;padding:0 16px;}
+    h1{font-size:20px;margin:0 0 16px;}
+    .card{background:#111318;border:1px solid #1c1f28;border-radius:12px;padding:16px;margin:12px 0;}
+    .row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+    .muted{color:#9aa1a7}
+    .btn{background:#2b66f6;color:white;border:0;border-radius:10px;padding:10px 14px;font-weight:600;cursor:pointer}
+    .btn[disabled]{opacity:.5;cursor:not-allowed}
+    code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,Menlo,monospace}
+    .log{background:#0f1115;border:1px solid #232838;border-radius:10px;padding:12px;white-space:pre-wrap;font-size:12px;color:#cbd1d8}
+    .ok{color:#22c55e}
+    .bad{color:#ef4444}
+    ul{padding-left:18px}
+  </style>
+  <div class="wrap">
+    <h1>Soft Enclave — Automated Tests</h1>
+    <div class="card">
+      <div class="row">
+        <label>Enclave origin</label>
+        <input id="enclaveOrigin" value="http://localhost:9090" size="40">
+        <button id="run" class="btn">Run tests</button>
+      </div>
+      <div class="muted">Serve this page on <code>http://localhost:8080</code> and the enclave on <code>http://localhost:9090</code>.</div>
+    </div>
+    <div class="card">
+      <b>Results</b>
+      <ul id="results"></ul>
+      <div id="summary" class="muted"></div>
+    </div>
+    <div class="card">
+      <b>Log</b>
+      <pre class="log" id="log"></pre>
+    </div>
+  </div>
+  <script type="module" src="./test-runner.js"></script>
+</html>

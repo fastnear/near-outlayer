@@ -74,7 +74,7 @@ proptest! {
 
         // Should either succeed or fail for non-gas reasons
         prop_assert!(
-            matches!(res, Ok(_)) || matches!(res, Err(EnclaveError::CapabilityViolation) | Err(EnclaveError::IntegrityError)),
+            res.is_ok() || matches!(res, Err(EnclaveError::CapabilityViolation) | Err(EnclaveError::IntegrityError)),
             "Execution should not fail for gas when gas >= required. \
              Got: {:?}",
             res

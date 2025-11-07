@@ -1,0 +1,18 @@
+name: pr-ready
+on:
+  pull_request:
+    paths-ignore: ['research/**']
+  push:
+    branches: [ main, master ]
+    paths-ignore: ['research/**']
+
+jobs:
+  sanity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - run: node --version
+      - name: PR sanity
+        run: node scripts/pr_sanity.mjs

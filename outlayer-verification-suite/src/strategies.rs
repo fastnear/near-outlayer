@@ -7,8 +7,11 @@ use proptest::prelude::*;
 use std::collections::HashSet;
 
 /// Strategy: Generate valid NEAR account IDs
+#[allow(clippy::expect_used)] // Static regex pattern, guaranteed valid
 pub fn arb_account_id() -> impl Strategy<Value = AccountId> {
-    proptest::string::string_regex("[a-z0-9\\-]{2,48}\\.near").unwrap()
+    // Safety: regex is valid and static
+    proptest::string::string_regex("[a-z0-9\\-]{2,48}\\.near")
+        .expect("valid regex")
 }
 
 /// Strategy: Generate function arguments (0-1024 bytes)
@@ -30,11 +33,13 @@ pub fn arb_sealed_state() -> impl Strategy<Value = SealedState> {
 }
 
 /// Strategy: Generate method names (common + random)
+#[allow(clippy::expect_used)] // Static regex pattern, guaranteed valid
 pub fn arb_method_name() -> impl Strategy<Value = String> {
     prop_oneof![
         Just("do_something_and_callback".to_string()),
         Just("do_something_else".to_string()),
-        proptest::string::string_regex("[a-z_]{5,30}").unwrap()
+        // Safety: regex is valid and static
+        proptest::string::string_regex("[a-z_]{5,30}").expect("valid regex")
     ]
 }
 
@@ -69,13 +74,10 @@ pub fn arb_receipt() -> impl Strategy<Value = Receipt> {
 pub fn allowed_constraints() -> AccessKeyConstraints {
     AccessKeyConstraints {
         allowed_receiver: "callback.near".to_string(),
-        allowed_methods: HashSet::from_iter(
-            [
-                "on_something_done".to_string(),
-                "on_failure".to_string(),
-            ]
-            .into_iter(),
-        ),
+        allowed_methods: HashSet::from_iter([
+            "on_something_done".to_string(),
+            "on_failure".to_string(),
+        ]),
         gas_allowance: 300_000_000_000_000, // 300 Tgas
     }
 }

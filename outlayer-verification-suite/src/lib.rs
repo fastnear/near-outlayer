@@ -1,3 +1,7 @@
+#![forbid(unsafe_code)]
+#![deny(warnings)]
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::dbg_macro)]
+
 //! Outlayer Verification Suite
 //!
 //! Property-based testing harness for NEAR OutLayer TEE security properties.
@@ -22,7 +26,6 @@
 //! cargo test --features engine-wasmtime
 //! ```
 
-use blake3;
 use std::collections::HashSet;
 
 pub type AccountId = String;

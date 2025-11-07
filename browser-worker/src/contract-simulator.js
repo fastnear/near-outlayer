@@ -45,7 +45,7 @@ class ContractSimulator {
       verboseLogging: options.verboseLogging || false,
       defaultGasLimit: options.defaultGasLimit || 300000000000000, // 300 Tgas
       enableSealedStorage: options.enableSealedStorage || false, // Phase 3: Sealed storage
-      executionMode: options.executionMode || 'direct', // 'direct' | 'linux' | 'enclave'
+      executionMode: options.executionMode || 'direct', // 'direct' | 'linux' | 'enclave' | 'quickjs-browser'
       ...options
     };
 
@@ -84,6 +84,27 @@ class ContractSimulator {
         executionTimeout: this.options.defaultGasLimit / 1000000, // Convert Tgas to ms
       });
     }
+
+    // QuickJS browser executor instance (if mode is 'quickjs-browser') - Phase 3
+    this.quickjsEnclave = null;
+    if (this.options.executionMode === 'quickjs-browser') {
+      // Lazy initialization - will be created on first use
+      this.initQuickJSEnclave();
+    }
+  }
+
+  /**
+   * Initialize QuickJS browser enclave (lazy)
+   */
+  async initQuickJSEnclave() {
+    if (this.quickjsEnclave) return;
+
+    // Dynamic import to avoid loading quickjs-emscripten if not needed
+    const { QuickJSEnclave } = await import('./quickjs-enclave');
+    this.quickjsEnclave = await QuickJSEnclave.create({
+      memoryBytes: 64 << 20, // 64 MiB default
+    });
+    this.log('[QUICKJS] Enclave initialized');
   }
 
   /**
@@ -348,13 +369,132 @@ class ContractSimulator {
     this.stats.totalExecutions++;
 
     // Route execution based on mode
-    if (this.options.executionMode === 'linux') {
+    if (this.options.executionMode === 'quickjs-browser') {
+      return await this.executeQuickJSBrowser(wasmSource, methodName, args, context);
+    } else if (this.options.executionMode === 'linux') {
       return await this.executeLinux(wasmSource, methodName, args, context);
     } else if (this.options.executionMode === 'enclave') {
       return await this.executeEnclave(wasmSource, methodName, args, context);
     } else {
       return await this.executeDirect(wasmSource, methodName, args, context);
     }
+  }
+
+  /**
+   * Execute JavaScript contract in QuickJS browser enclave (Phase 3)
+   * @param {string} jsSource - JavaScript contract source code
+   * @param {string} methodName - Function name to call
+   * @param {object} args - Function arguments
+   * @param {object} context - Execution context (seed, policy overrides)
+   * @returns {Promise<{result: any, gasUsed: number, logs: string[], executionTime: number}>}
+   */
+  async executeQuickJSBrowser(jsSource, methodName, args = {}, context = {}) {
+    const startTime = performance.now();
+
+    this.log(`\n${'='.repeat(60)}`);
+    this.log(`EXECUTE (QuickJS Browser): ${methodName}`);
+    this.log(`${'='.repeat(60)}`);
+
+    // Ensure enclave is initialized
+    await this.initQuickJSEnclave();
+
+    // Load JavaScript source if it's a path
+    let source = jsSource;
+    if (typeof jsSource === 'string' && (jsSource.endsWith('.js') || jsSource.includes('/'))) {
+      // Try to fetch/read the file
+      if (typeof FS !== 'undefined' && FS.analyzePath && FS.analyzePath(jsSource).exists) {
+        source = FS.readFile(jsSource, { encoding: 'utf8' });
+      } else {
+        const response = await fetch(jsSource);
+        source = await response.text();
+      }
+      this.log(`Loaded JS contract: ${jsSource} (${source.length} chars)`);
+    }
+
+    // Prepare invocation
+    const invocation = {
+      source: source,
+      func: methodName,
+      args: Object.values(args), // Convert {a: 1, b: 2} to [1, 2]
+      priorState: this.getQuickJSState(),
+      seed: context.seed || `${Date.now()}-${Math.random()}`, // Deterministic seed if provided
+      policy: {
+        timeMs: context.timeMs || Math.floor(this.options.defaultGasLimit / 1000000), // Convert Tgas to ms
+        memoryBytes: context.memoryBytes || (32 << 20), // 32 MiB default
+      },
+    };
+
+    this.log(`Function: ${methodName}`);
+    this.log(`Args: ${JSON.stringify(invocation.args)}`);
+    this.log(`Prior state keys: ${Object.keys(invocation.priorState).length}`);
+    this.log(`Seed: ${invocation.seed}`);
+    this.log(`Policy: ${invocation.policy.timeMs}ms, ${(invocation.policy.memoryBytes / (1 << 20)).toFixed(1)} MiB`);
+
+    try {
+      const result = await this.quickjsEnclave.invoke(invocation);
+
+      const endTime = performance.now();
+      const executionTime = endTime - startTime;
+
+      // Update state
+      this.saveQuickJSState(result.state);
+
+      // Convert time to "gas" (1ms = 1 Tgas for estimation)
+      const gasUsed = Math.floor(result.diagnostics.timeMs * 1000000);
+
+      this.log(`\nResult: ${JSON.stringify(result.result, null, 2)}`);
+      this.log(`Gas used (estimated): ${gasUsed.toLocaleString()} (${(gasUsed / 1000000000000).toFixed(2)} Tgas)`);
+      this.log(`Execution time: ${executionTime.toFixed(2)}ms`);
+      this.log(`QuickJS time: ${result.diagnostics.timeMs.toFixed(2)}ms`);
+      this.log(`State keys: ${Object.keys(result.state).length}`);
+      this.log(`Logs: ${result.diagnostics.logs.length} entries`);
+      if (result.diagnostics.logs.length > 0) {
+        this.log(`\nContract logs:`);
+        result.diagnostics.logs.forEach(log => this.log(`  ${log}`));
+      }
+      this.log(`${'='.repeat(60)}\n`);
+
+      this.stats.totalGasUsed += gasUsed;
+      this.stats.lastExecutionTime = executionTime;
+
+      return {
+        result: result.result,
+        gasUsed: gasUsed,
+        logs: result.diagnostics.logs,
+        executionTime: executionTime,
+        quickjsTime: result.diagnostics.timeMs,
+        interrupted: result.diagnostics.interrupted,
+        stateKeys: Object.keys(result.state).length,
+        mode: 'quickjs-browser'
+      };
+    } catch (error) {
+      const endTime = performance.now();
+      const executionTime = endTime - startTime;
+
+      this.log(`\n[ERROR] ${error.message}`);
+      this.log(`Execution time: ${executionTime.toFixed(2)}ms`);
+      this.log(`${'='.repeat(60)}\n`);
+
+      throw error;
+    }
+  }
+
+  /**
+   * Get QuickJS state from nearState or isolated storage
+   */
+  getQuickJSState() {
+    // Store QuickJS state separately to avoid mixing with WASM contract state
+    if (!this._quickjsState) {
+      this._quickjsState = {};
+    }
+    return this._quickjsState;
+  }
+
+  /**
+   * Save QuickJS state
+   */
+  saveQuickJSState(state) {
+    this._quickjsState = state;
   }
 
   /**

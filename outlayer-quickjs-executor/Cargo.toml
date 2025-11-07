@@ -1,0 +1,15 @@
+[package]
+name = "outlayer-quickjs-executor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+tempfile.workspace = true
+wasmtime = { workspace = true, features = ["cranelift"] }
+wasmtime-wasi.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+cap-std = "3.0"
