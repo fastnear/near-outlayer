@@ -69,6 +69,7 @@ const pageStructure = {
     { id: 'weather-ark', title: 'Weather Oracle' },
     { id: 'oracle-ark', title: 'Price Oracle' },
     { id: 'intents-ark', title: 'NEAR Intents swap' },
+    { id: 'private-dao-ark', title: 'Private DAO Voting' },
     { id: 'captcha-ark', title: '2FA Verification' },
   ],
 };

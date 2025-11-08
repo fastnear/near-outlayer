@@ -222,7 +222,7 @@ export function WasiSection() {
         <section id="working-examples">
           <h3 className="text-xl font-semibold mb-3">Working Examples</h3>
           <p className="text-gray-700 mb-4">
-            We provide 7 complete, open-source examples demonstrating different WASI patterns:
+            We provide 8 complete, open-source examples demonstrating different WASI patterns:
           </p>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
@@ -284,6 +284,17 @@ export function WasiSection() {
                 <span className="ml-2 text-xs bg-purple-100 text-purple-800 px-2 py-1 rounded">P2</span>
               </h4>
               <p className="text-sm text-gray-600">DEX swaps via NEAR Intents (paused FT transfer)</p>
+            </div>
+
+            <div className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
+              <h4 className="font-semibold mb-1">
+                <a href="https://github.com/zavodil/private-dao-ark" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+                  private-dao-ark
+                </a>
+                <span className="ml-2 text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">P1</span>
+                <span className="ml-2 text-xs bg-red-100 text-red-800 px-2 py-1 rounded">Advanced</span>
+              </h4>
+              <p className="text-sm text-gray-600">Anonymous DAO voting with cryptographic privacy (ECIES, HKDF, Merkle trees)</p>
             </div>
 
             <div className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
@@ -421,7 +432,8 @@ echo '{"message":"test"}' | wasmtime --env SECRET=my-key your-app.wasm`}
             <li>Test your WASM locally with wasmtime before deploying</li>
             <li>Start with <strong>random-ark</strong> or <strong>echo-ark</strong> for simple use cases</li>
             <li>Use <strong>ai-ark</strong> or <strong>oracle-ark</strong> for HTTPS-based applications</li>
-            <li>Study <strong>captcha-ark</strong> for async human verification patterns</li>
+            <li>Study <strong>private-dao-ark</strong> for advanced cryptography (ECIES, HKDF, Merkle trees) and privacy patterns</li>
+            <li>Deploy <strong>captcha-ark</strong> for full-stack async human verification</li>
           </ul>
         </section>
       </div>

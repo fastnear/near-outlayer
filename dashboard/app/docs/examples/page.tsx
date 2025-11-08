@@ -617,6 +617,245 @@ near call wrap.near ft_transfer_call '{
           </div>
         </div>
 
+        {/* private-dao-ark */}
+        <div id="private-dao-ark" className="border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow scroll-mt-4">
+          <div className="flex items-start justify-between mb-3">
+            <h3 className="text-2xl font-semibold">
+              private-dao-ark
+              <span className="ml-3 text-sm bg-purple-100 text-purple-800 px-3 py-1 rounded">WASI P1</span>
+              <span className="ml-2 text-sm bg-red-100 text-red-800 px-3 py-1 rounded">Advanced</span>
+            </h3>
+          </div>
+          <a
+            href="https://github.com/zavodil/private-dao-ark"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 px-4 py-2 mb-4 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors font-medium"
+          >
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+              <path fillRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clipRule="evenodd"/>
+            </svg>
+            <span>Source Code on GitHub</span>
+          </a>
+          <p className="text-gray-700 mb-4">
+            Anonymous, verifiable DAO voting with cryptographic privacy. Heavy cryptography (ECIES encryption, HKDF key derivation, merkle tree proofs) executed off-chain in TEE. Each user&apos;s vote is encrypted on-chain, tallying happens in secure enclave, only aggregate counts are revealed.
+          </p>
+
+          <div className="mb-4 p-3 bg-purple-50 border-l-4 border-purple-400">
+            <p className="text-sm text-gray-700 mb-2">
+              🔐 <strong>Privacy Guarantees:</strong>
+            </p>
+            <ul className="text-sm text-gray-700 space-y-1 ml-4 list-disc">
+              <li>Individual votes remain secret - only aggregate counts revealed</li>
+              <li>DAO members can send encrypted noise instead of real votes to hide voting activity from observers</li>              
+              <li>Merkle proofs allow voters to verify their vote was counted without revealing how they voted</li>
+            </ul>
+          </div>
+
+          <h4 className="font-semibold mt-4 mb-2">Key Features:</h4>
+          <ul className="list-disc list-inside text-gray-700 space-y-1 mb-4">
+            <li>ECIES encryption for private votes (secp256k1)</li>
+            <li>HKDF-SHA256 deterministic key derivation from single master secret</li>
+            <li>Merkle tree construction for vote inclusion proofs</li>
+            <li><strong>Dummy messages:</strong> Send encrypted noise to hide whether you voted (indistinguishable from real votes on-chain)</li>
+            <li><strong>Vote changes:</strong> Vote multiple times, timestamp-based deduplication (latest vote wins)</li>
+            <li>TEE attestation for execution integrity</li>
+            <li>Full-stack React frontend with NEAR Wallet integration</li>
+          </ul>
+
+          <h4 className="font-semibold mt-4 mb-2">Architecture:</h4>
+          <SyntaxHighlighter language="text" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.75rem' }}>
+{`1. Generate master secret:
+   OutLayer → TEE generates random master secret (stored encrypted)
+
+2. User joins DAO:
+   Contract → OutLayer → TEE derives pubkey from master secret
+
+3. User votes:
+   Frontend encrypts vote with pubkey → Contract stores encrypted vote
+
+4. Finalize proposal:
+   Contract → OutLayer → TEE decrypts votes + tallies + builds merkle tree
+   Returns aggregate counts + merkle proofs (individual votes never exposed)
+
+5. Verify vote:
+   User computes vote hash → Verifies merkle proof against root
+
+Privacy Features:
+- Individual votes never revealed (only aggregate counts)
+- Dummy messages: Send encrypted noise to hide voting activity
+- Vote changes: Vote multiple times, only latest counts (timestamped)
+- Merkle proofs: Verify inclusion without revealing vote content
+
+Cost: Heavy cryptography off-chain = ~$0.001 per vote`}
+          </SyntaxHighlighter>
+
+          <h4 className="font-semibold mt-4 mb-2">Cryptographic Components:</h4>
+          <div className="space-y-2 mb-4">
+            <div className="border-l-4 border-blue-400 pl-3">
+              <strong className="text-sm">HKDF Key Derivation</strong>
+              <SyntaxHighlighter language="rust" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.75rem', marginTop: '0.5rem' }}>
+{`// Single master secret → unique key per user
+let info = format!("user:{}:{}", dao_account, user_account);
+let user_privkey = hkdf_sha256(&master_secret, info.as_bytes());
+let user_pubkey = secp256k1::derive_public_key(&user_privkey);`}
+              </SyntaxHighlighter>
+            </div>
+
+            <div className="border-l-4 border-green-400 pl-3">
+              <strong className="text-sm">ECIES Encryption (Frontend)</strong>
+              <SyntaxHighlighter language="typescript" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.75rem', marginTop: '0.5rem' }}>
+{`import { encrypt } from 'eciesjs';
+
+const vote = "yes";  // or "no"
+const pubkeyHex = await contract.get_user_pubkey({ user });
+const encrypted = encrypt(pubkeyHex, Buffer.from(vote));
+await contract.cast_vote({ proposal_id, encrypted_vote: encrypted.toString('hex') });`}
+              </SyntaxHighlighter>
+            </div>
+
+            <div className="border-l-4 border-purple-400 pl-3">
+              <strong className="text-sm">Vote Hash Computation (Critical!)</strong>
+              <SyntaxHighlighter language="typescript" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.75rem', marginTop: '0.5rem' }}>
+{`// Must preserve u64 precision - use BigInt!
+const timestamp = result.receipts_outcome[0].outcome.status.SuccessValue;
+const timestampStr = atob(timestamp).trim();  // Keep as string
+const timestampBigInt = BigInt(timestampStr);
+
+// Convert to 8-byte little-endian
+const buffer = new ArrayBuffer(8);
+new DataView(buffer).setBigUint64(0, timestampBigInt, true);
+
+// SHA256(user + timestamp_le + encrypted)
+const combined = concat(
+  textEncoder.encode(accountId),
+  new Uint8Array(buffer),
+  textEncoder.encode(encrypted)
+);
+const voteHash = hex(await crypto.subtle.digest('SHA-256', combined));`}
+              </SyntaxHighlighter>
+            </div>
+
+            <div className="border-l-4 border-orange-400 pl-3">
+              <strong className="text-sm">Merkle Proof Verification</strong>
+              <SyntaxHighlighter language="typescript" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.75rem', marginTop: '0.5rem' }}>
+{`// Try all possible paths (2^depth combinations)
+async function verifyProof(voteHash, proofPath, merkleRoot) {
+  async function tryPaths(hash, remaining) {
+    if (!remaining.length) return hash === merkleRoot;
+
+    const [sibling, ...rest] = remaining;
+
+    // Try both orderings
+    if (await tryPaths(await sha256(hash + sibling), rest)) return true;
+    if (await tryPaths(await sha256(sibling + hash), rest)) return true;
+
+    return false;
+  }
+  return await tryPaths(voteHash, proofPath);
+}`}
+              </SyntaxHighlighter>
+            </div>
+          </div>
+
+          <h4 className="font-semibold mt-4 mb-2">How to Deploy:</h4>
+          <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
+{`# 1. Generate DAO master secret in TEE
+# (Alternatively: generate locally and store encrypted)
+openssl rand -hex 32 > dao_master_secret.txt
+
+# 2. Store master secret via Dashboard (encrypted in keystore)
+# Open https://outlayer.fastnear.com/secrets:
+# - Repo: github.com/YOUR_USERNAME/private-dao-ark
+# - Profile: production
+# - Secrets JSON: {"DAO_MASTER_SECRET":"<paste hex from file>"}
+# - Access: AllowAll (or Whitelist for DAO admin only)
+
+# 3. Clone and build WASI module
+git clone https://github.com/zavodil/private-dao-ark.git
+cd private-dao-ark
+cargo build --target wasm32-wasip1 --release
+git push origin main
+
+# 4. Deploy DAO contract
+cd dao-contract
+cargo near build
+near deploy privatedao.testnet \\
+  use-file res/private_dao_contract.wasm \\
+  with-init-call new \\
+  json-args '{
+    "owner_id":"owner.testnet",
+    "name":"My Private DAO",
+    "outlayer_contract":"outlayer.testnet",
+    "wasi_repo":"https://github.com/YOUR_USERNAME/private-dao-ark",
+    "wasi_commit":"main",
+    "secrets_profile":"production",
+    "secrets_owner":"your.testnet",
+    "membership_mode":"Public"
+  }' \\
+  prepaid-gas '100.0 Tgas' \\
+  attached-deposit '0 NEAR'
+
+# 5. Deploy frontend
+cd ../dao-frontend
+npm install
+cat > .env <<EOF
+REACT_APP_CONTRACT_ID=privatedao.testnet
+REACT_APP_NEAR_NETWORK=testnet
+EOF
+npm run build
+# Deploy build/ to Vercel/Netlify/Cloudflare Pages
+
+# 6. Users can now:
+# - Join DAO (get encrypted pubkey derived from master secret)
+# - Create proposals with quorum requirements
+# - Vote privately (votes encrypted with their pubkey)
+# - Finalize proposals (OutLayer decrypts in TEE and tallies)
+# - Verify their vote was counted (merkle proof verification)`}
+          </SyntaxHighlighter>
+
+          <h4 className="font-semibold mt-4 mb-2">Use Cases:</h4>
+          <ul className="list-disc list-inside text-gray-700 space-y-2 mb-4 ml-4">
+            <li><strong>Anonymous Governance:</strong> Board elections where individual votes should remain secret</li>
+            <li><strong>Whistleblower Protection:</strong> Report issues without revealing identity</li>
+            <li><strong>Salary Decisions:</strong> Vote on compensation without peer pressure</li>
+            <li><strong>Grant Allocation:</strong> Fund projects while preventing vote buying</li>
+            <li><strong>Conflict Resolution:</strong> Vote on sensitive matters privately</li>
+          </ul>
+
+          <h4 className="font-semibold mt-4 mb-2">Technical Highlights:</h4>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+            <div className="p-3 bg-gray-50 border border-gray-200 rounded">
+              <strong className="text-sm block mb-1">💰 Cost Efficiency</strong>
+              <p className="text-xs text-gray-700">Heavy cryptography off-chain: ~$0.001/vote<br/>ECIES + HKDF + Merkle trees feasible with OutLayer</p>
+            </div>
+            <div className="p-3 bg-gray-50 border border-gray-200 rounded">
+              <strong className="text-sm block mb-1">🔒 Privacy Model</strong>
+              <p className="text-xs text-gray-700">Encrypted votes on-chain<br/>Dummy messages hide voting activity<br/>Vote changes allowed (latest wins)<br/>Decryption in secure enclave</p>
+            </div>
+            <div className="p-3 bg-gray-50 border border-gray-200 rounded">
+              <strong className="text-sm block mb-1">✅ Verifiability</strong>
+              <p className="text-xs text-gray-700">Merkle proofs: Voters verify inclusion<br/>TEE attestation: Verify execution integrity</p>
+            </div>
+            <div className="p-3 bg-gray-50 border border-gray-200 rounded">
+              <strong className="text-sm block mb-1">⚡ Scalability</strong>
+              <p className="text-xs text-gray-700">Master secret in TEE → unlimited users<br/>No storage overhead for keys</p>
+            </div>
+          </div>
+
+          <div className="mt-4 p-3 bg-yellow-50 border-l-4 border-yellow-400">
+            <p className="text-sm text-gray-700 mb-2">
+              <strong>⚠️ Production Considerations:</strong>
+            </p>
+            <ul className="text-sm text-gray-700 space-y-1 ml-4 list-disc">
+              <li>Master secret must be highly secured (hardware wallet, multi-sig, etc.)</li>
+              <li>TEE attestation currently uses MVP mode - upgrade to SGX/SEV for production</li>
+              <li>Frontend must correctly compute vote hash (BigInt for u64 precision!)</li>
+              <li>Vote hash saved by user is CRITICAL for later verification</li>
+            </ul>
+          </div>
+        </div>
+
         {/* captcha-ark */}
         <div id="captcha-ark" className="border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow scroll-mt-4">
           <div className="flex items-start justify-between mb-3">
@@ -743,16 +982,60 @@ near deploy tokensale.testnet \\
         </div>
       </div>
 
-      <div className="mt-8 p-6 bg-gray-50 border border-gray-200 rounded-lg">
-        <h3 className="text-xl font-semibold mb-4">Ready to Build?</h3>
+      <div className="mt-8 p-6 bg-gradient-to-r from-orange-50 to-green-50 border border-orange-200 rounded-lg">
+        <h3 className="text-xl font-semibold mb-3 text-gray-900">🚀 What Makes OutLayer Special?</h3>
+        <p className="text-gray-700 mb-4">
+          OutLayer enables <strong>complex off-chain computation</strong> that would be impossible or prohibitively expensive on-chain. These examples demonstrate the unique capabilities:
+        </p>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+          <div className="p-4 bg-white rounded-lg border border-gray-200">
+            <h4 className="font-semibold text-sm mb-2 text-[var(--primary-orange)]">💰 Cost Efficiency</h4>
+            <ul className="text-xs text-gray-700 space-y-1">
+              <li><strong>Private DAO:</strong> Heavy cryptography off-chain (~$0.001/vote)</li>
+              <li><strong>Oracle:</strong> Multi-source aggregation without contract bloat</li>
+              <li><strong>AI:</strong> LLM calls impossible on-chain, trivial with OutLayer</li>
+            </ul>
+          </div>
+
+          <div className="p-4 bg-white rounded-lg border border-gray-200">
+            <h4 className="font-semibold text-sm mb-2 text-[var(--primary-green)]">🔐 Privacy & Security</h4>
+            <ul className="text-xs text-gray-700 space-y-1">
+              <li><strong>Private DAO:</strong> Anonymous voting with merkle proofs</li>
+              <li><strong>Encrypted Secrets:</strong> API keys decrypted only in TEE</li>
+              <li><strong>Intents:</strong> Private key operations in secure enclave</li>
+            </ul>
+          </div>
+
+          <div className="p-4 bg-white rounded-lg border border-gray-200">
+            <h4 className="font-semibold text-sm mb-2 text-blue-600">⚡ Advanced Capabilities</h4>
+            <ul className="text-xs text-gray-700 space-y-1">
+              <li><strong>HTTP Requests:</strong> External APIs (OpenAI, CoinGecko, etc.)</li>
+              <li><strong>Heavy Crypto:</strong> ECIES, HKDF, Merkle trees, secp256k1</li>
+              <li><strong>Complex Logic:</strong> Multi-source validation & aggregation</li>
+            </ul>
+          </div>
+
+          <div className="p-4 bg-white rounded-lg border border-gray-200">
+            <h4 className="font-semibold text-sm mb-2 text-purple-600">🎯 Real-World Integration</h4>
+            <ul className="text-xs text-gray-700 space-y-1">
+              <li><strong>CAPTCHA:</strong> Human verification for token sales</li>
+              <li><strong>DEX Swaps:</strong> Paused FT transfers with async execution</li>
+              <li><strong>Full Stack:</strong> Frontend + Backend + Contract + WASI</li>
+            </ul>
+          </div>
+        </div>
+
+        <h3 className="text-xl font-semibold mb-3 mt-6 text-gray-900">📚 Ready to Build?</h3>
         <ul className="list-disc list-inside space-y-2 text-gray-700">
-          <li>Read the <a href="https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/WASI_TUTORIAL.md" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">complete WASI tutorial</a></li>
-          <li>Clone examples: <code className="bg-gray-100 px-2 py-1 rounded">git clone https://github.com/fastnear/near-outlayer.git</code></li>
-          <li>Start with <strong>random-ark</strong> or <strong>echo-ark</strong> for simple use cases</li>
-          <li>Try <strong>weather-ark</strong> for instant testing (pre-configured secrets on testnet!)</li>
-          <li>Use <strong>ai-ark</strong> or <strong>oracle-ark</strong> for HTTPS-based applications</li>
-          <li>Study <strong>captcha-ark</strong> for full-stack deployment</li>
-          <li>Explore <strong>intents-ark</strong> for advanced DeFi integration</li>
+          <li>Read the <a href="https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/WASI_TUTORIAL.md" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline font-semibold">complete WASI tutorial</a></li>
+          <li>Clone examples: <code className="bg-white px-2 py-1 rounded border border-gray-300">git clone https://github.com/fastnear/near-outlayer.git</code></li>
+          <li><strong>Beginners:</strong> Start with <strong>random-ark</strong> or <strong>echo-ark</strong> for WASI basics</li>
+          <li><strong>Quick Test:</strong> Try <strong>weather-ark</strong> with pre-configured secrets on testnet!</li>
+          <li><strong>HTTPS Apps:</strong> Use <strong>ai-ark</strong> or <strong>oracle-ark</strong> for external API integration</li>
+          <li><strong>Advanced Crypto:</strong> Study <strong>private-dao-ark</strong> for privacy & verifiability patterns</li>
+          <li><strong>Full Stack:</strong> Deploy <strong>captcha-ark</strong> for complete production example</li>
+          <li><strong>DeFi Integration:</strong> Explore <strong>intents-ark</strong> for paused transactions & swaps</li>
         </ul>
       </div>
     </div>
