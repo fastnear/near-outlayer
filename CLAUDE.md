@@ -7,6 +7,14 @@ If you are not sure, just reply "I don't know how to do it". It's totally ok, hy
 
 **IMPORTANT**: Human will manage coordinator restarts, docker-compose, and contract deployment himself. DO NOT try to restart coordinator, deploy contract, or manage docker containers. Just write code and let human handle the deployment.
 
+**DO NOT CREATE SUMMARY FILES**: Human does NOT read "summary", "changelog", or "update" files. DO NOT create files like:
+- DOCUMENTATION_UPDATE_*.md
+- BUILD_COMMANDS_SUMMARY.md
+- FRONTEND_ECIES_DONE.md
+- *_SUMMARY.md
+- CHANGES.md
+These files waste time. Human only reads code and core documentation (README, TUTORIAL, etc).
+
 **CRITICAL - WASI Development**: When human asks to write a new WASI container/example, you MUST:
 1. FIRST read existing examples in `wasi-examples/` directory to understand the patterns
 2. ALWAYS read and follow `wasi-examples/WASI_TUTORIAL.md` tutorial
@@ -15,6 +23,16 @@ If you are not sure, just reply "I don't know how to do it". It's totally ok, hy
 5. Copy the structure and conventions from existing working examples
 6. Ask human which example to use as a template if multiple exist
 This ensures consistency and reduces bugs by reusing proven patterns.
+
+**CRITICAL - NEAR Contract Development**: When writing NEAR smart contracts:
+1. ALWAYS use `cargo near build` - NEVER use raw `cargo build --target wasm32-unknown-unknown`
+2. ALWAYS create `rust-toolchain.toml` with `channel = "1.85.0"`
+3. ALWAYS add `schemars = "0.8"` to Cargo.toml dependencies
+4. ALWAYS add `use schemars::JsonSchema;` to types.rs
+5. ALWAYS add `JsonSchema` derive to ALL enums and structs used in public API
+6. For AccountId fields in structs with JsonSchema, use `#[schemars(with = "String")]`
+7. Update near-sdk to version 5.9.0 (not 5.5.0)
+See `wasi-examples/WASI_TUTORIAL.md` section "WASI vs NEAR Smart Contracts" for details.
 </CRITICAL>
 
 # NEAR OutLayer MVP Development - Context

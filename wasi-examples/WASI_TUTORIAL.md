@@ -2,6 +2,51 @@
 
 This guide explains how to create WASM modules that work with NEAR OutLayer platform.
 
+> **🚨 IMPORTANT:** If you just need to know which build command to use, read [BUILD_TARGETS.md](BUILD_TARGETS.md) first!
+
+## ⚠️ CRITICAL: WASI vs NEAR Smart Contracts
+
+**DO NOT CONFUSE THESE TWO!**
+
+| Type | Target | Build Command | rust-toolchain.toml? | Purpose |
+|------|--------|---------------|---------------------|---------|
+| **WASI Module** | `wasm32-wasip1` or `wasm32-wasip2` | `cargo build --target wasm32-wasip1 --release` | ❌ No | Off-chain computation |
+| **NEAR Contract** | `wasm32-unknown-unknown` | `cargo near build` | ✅ **YES** (1.85.0) | On-chain smart contract |
+
+**NEVER use `cargo build --target wasm32-unknown-unknown` for WASI modules!**
+**NEVER use `cargo build --target wasm32-wasip1` for NEAR contracts!**
+
+### For NEAR Smart Contracts (on-chain):
+```bash
+# ✅ CORRECT - Use cargo-near
+cargo near build
+
+# ❌ WRONG - DO NOT use raw cargo build
+cargo build --target wasm32-unknown-unknown --release
+```
+
+**CRITICAL: NEAR contracts MUST have rust-toolchain.toml:**
+```toml
+# dao-contract/rust-toolchain.toml
+[toolchain]
+channel = "1.85.0"
+```
+
+**Why rust-toolchain.toml is required:**
+- `cargo near build` requires **specific Rust version** (currently 1.85.0)
+- Without this file, build may fail with ABI incompatibility errors
+- WASI modules **don't need** this file (work with any recent Rust)
+- Always copy rust-toolchain.toml from working NEAR contract examples
+
+### For WASI Modules (off-chain OutLayer):
+```bash
+# ✅ CORRECT - Use wasip1 or wasip2
+cargo build --target wasm32-wasip1 --release
+
+# ❌ WRONG - DO NOT use wasm32-unknown-unknown
+cargo build --target wasm32-unknown-unknown --release
+```
+
 ## Table of Contents
 
 1. [Overview](#overview)
@@ -385,7 +430,124 @@ your-wasi-app/
 
 **Bottom line**: Always start from a working example, don't experiment with versions until your app works.
 
-### 1. Binary Format (Not Library)
+### 1. Wrong Build Target (CRITICAL!)
+
+**THIS IS THE #1 MISTAKE!**
+
+```bash
+# ❌ CRITICAL ERROR: Using wrong target for WASI modules
+cargo build --target wasm32-unknown-unknown --release
+# This produces NEAR contract WASM, NOT WASI module!
+# It will NOT work with OutLayer worker!
+
+# ✅ CORRECT: Use wasip1 for WASI modules
+cargo build --target wasm32-wasip1 --release
+
+# ✅ CORRECT: Use wasip2 for WASI modules with HTTP
+cargo build --target wasm32-wasip2 --release
+```
+
+**Why this matters:**
+- `wasm32-unknown-unknown` = NEAR contracts (on-chain, no WASI)
+- `wasm32-wasip1/wasip2` = OutLayer modules (off-chain, with WASI)
+- Using wrong target produces incompatible WASM that will fail at runtime
+
+**For NEAR contracts (different from WASI modules!):**
+```bash
+# ✅ CORRECT: Use cargo-near for NEAR contracts
+cargo near build
+
+# ❌ WRONG: DO NOT use raw cargo build
+cargo build --target wasm32-unknown-unknown --release
+```
+
+**See the difference?**
+| What you're building | Target | Build command |
+|---------------------|--------|---------------|
+| **WASI Module** (OutLayer) | `wasm32-wasip1` | `cargo build --target wasm32-wasip1 --release` |
+| **NEAR Contract** (on-chain) | `wasm32-unknown-unknown` | `cargo near build` |
+
+**NEAR Contract Setup Checklist:**
+
+```bash
+# 1. Create rust-toolchain.toml (REQUIRED!)
+cat > rust-toolchain.toml <<EOF
+[toolchain]
+channel = "1.85.0"
+EOF
+
+# 2. Update Cargo.toml dependencies
+# Add these to [dependencies]:
+# near-sdk = { version = "5.9.0", features = ["legacy"] }
+# schemars = "0.8"
+
+# 3. In types.rs, add:
+# use schemars::JsonSchema;
+
+# 4. Add JsonSchema derive to all types:
+# #[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, JsonSchema, ...)]
+
+# 5. For AccountId fields, use:
+# #[schemars(with = "String")]
+# pub owner: AccountId,
+
+# 6. Build with cargo-near
+cargo near build
+```
+
+**Example NEAR Contract Cargo.toml:**
+```toml
+[package]
+name = "my-contract"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk = { version = "5.9.0", features = ["legacy"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+schemars = "0.8"  # REQUIRED for contract ABI
+
+[profile.release]
+codegen-units = 1
+opt-level = "z"
+lto = true
+debug = false
+panic = "abort"
+overflow-checks = true
+```
+
+**Example types.rs with JsonSchema:**
+```rust
+use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
+use near_sdk::serde::{Deserialize, Serialize};
+use near_sdk::AccountId;
+use schemars::JsonSchema;  // REQUIRED!
+
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, JsonSchema, Clone, Debug)]
+#[borsh(crate = "near_sdk::borsh")]
+#[serde(crate = "near_sdk::serde")]
+pub enum Status {
+    Active,
+    Completed,
+}
+
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, JsonSchema, Clone, Debug)]
+#[borsh(crate = "near_sdk::borsh")]
+#[serde(crate = "near_sdk::serde")]
+pub struct MyData {
+    pub id: u64,
+    pub title: String,
+    #[schemars(with = "String")]  // REQUIRED for AccountId!
+    pub owner: AccountId,
+    pub status: Status,
+}
+```
+
+### 2. Binary Format (Not Library)
 
 ```toml
 # ✅ CORRECT
@@ -522,6 +684,125 @@ if output.len() > 800 {
 **Problem**: Using WASI P1 instead of P2
 
 **Solution**: Use `wasm32-wasip2` target and `wasi-http-client` crate
+
+### 7. Frontend transaction errors with wallet-selector
+
+**Problem**: Using manual action format like `{ type: 'FunctionCall', params: {...} }`
+
+**Error**: `Enum key (type) not found in enum schema`
+
+**Solution**: Use `actionCreators` from `@near-js/transactions`:
+
+```typescript
+import { actionCreators } from '@near-js/transactions';
+
+// ❌ WRONG - This will fail with enum schema error
+await wallet.signAndSendTransaction({
+  receiverId: contractId,
+  actions: [{
+    type: 'FunctionCall',
+    params: {
+      methodName: 'my_method',
+      args: { foo: 'bar' },
+      gas: '100000000000000',
+      deposit: '1000000000000000000000',
+    },
+  }],
+});
+
+// ✅ CORRECT - Use actionCreators
+const action = actionCreators.functionCall(
+  'my_method',           // method name
+  { foo: 'bar' },        // args object
+  BigInt('100000000000000'),                // gas (BigInt)
+  BigInt('1000000000000000000000')         // deposit in yoctoNEAR (BigInt)
+);
+
+await wallet.signAndSendTransaction({
+  receiverId: contractId,
+  actions: [action],
+});
+```
+
+**Why**: @near-wallet-selector expects properly formatted actions from `@near-js/transactions`, not raw objects.
+
+**See working example**: `wasi-examples/captcha-ark/launchpad-app/src/App.tsx`
+
+### 8. OutLayer callback deserialization errors
+
+**Problem**: Callback receives OutLayer response but fails to deserialize
+
+**Error**: `Failed to deserialize callback using JSON. Error: 'missing field pubkey'` or `invalid type: map, expected a string`
+
+**Root cause**: OutLayer returns wrapped response format:
+```json
+{
+  "success": true,
+  "result": {"your_data": "here"},
+  "error": null
+}
+```
+
+**Solution**: Use `OutLayerResponse` wrapper type in callback:
+
+```rust
+// types.rs - Define wrapper type
+#[derive(Serialize, Deserialize, JsonSchema, Debug)]
+#[serde(crate = "near_sdk::serde")]
+pub struct OutLayerResponse {
+    pub success: bool,
+    pub result: serde_json::Value,
+    pub error: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Debug)]
+#[serde(crate = "near_sdk::serde")]
+pub struct YourActualResponse {
+    pub some_field: String,
+}
+
+// lib.rs - Callback implementation
+#[private]
+pub fn on_outlayer_callback(
+    &mut self,
+    user: AccountId,
+    #[callback_result] result: Result<Option<OutLayerResponse>, PromiseError>,
+) {
+    match result {
+        Ok(Some(outlayer_response)) => {
+            // Check success flag
+            if !outlayer_response.success {
+                let error_msg = outlayer_response.error.unwrap_or_else(|| "Unknown error".to_string());
+                env::panic_str(&format!("OutLayer error: {}", error_msg));
+            }
+
+            // Parse result field to get your actual data
+            let your_data: YourActualResponse = match serde_json::from_value(outlayer_response.result) {
+                Ok(r) => r,
+                Err(e) => {
+                    env::panic_str(&format!("Invalid result format: {}", e));
+                }
+            };
+
+            // Use your_data.some_field here
+            log!("Received: {}", your_data.some_field);
+        }
+        Ok(None) => {
+            env::panic_str("OutLayer execution returned None");
+        }
+        Err(e) => {
+            env::panic_str(&format!("Promise error: {:?}", e));
+        }
+    }
+}
+```
+
+**Why this works**:
+- NEAR SDK automatically deserializes the JSON response into `OutLayerResponse`
+- You then manually parse the `result` field using `serde_json::from_value`
+- This two-step approach handles the wrapper format correctly
+
+**See working example**: `wasi-examples/private-dao-ark/dao-contract/src/lib.rs` (on_key_derived callback)
 
 ## Examples
 
