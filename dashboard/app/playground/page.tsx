@@ -13,6 +13,7 @@ interface BasePreset {
   name: string;
   description?: string;
   networks?: ('testnet' | 'mainnet')[];
+  docsLink?: string; // Link to example in /docs/examples
 }
 
 // Direct execution preset (calls OutLayer)
@@ -60,6 +61,7 @@ const DIRECT_PRESETS: DirectPreset[] = [
     args: '{"min":1,"max":100}',
     responseFormat: 'Json',
     networks: ['testnet', 'mainnet'],
+    docsLink: '/docs/examples#random-ark',
   },
   {
     type: 'direct',
@@ -74,6 +76,7 @@ const DIRECT_PRESETS: DirectPreset[] = [
     secretsOwnerTestnet: 'zavodil2.testnet',
     secretsOwnerMainnet: 'zavodil.near',
     networks: ['testnet', 'mainnet'],
+    docsLink: '/docs/examples#ai-ark',
   },
   {
     type: 'direct',
@@ -85,6 +88,7 @@ const DIRECT_PRESETS: DirectPreset[] = [
     args: 'Hello, NEARverse!',
     responseFormat: 'Text',
     networks: ['testnet', 'mainnet'],
+    docsLink: '/docs/examples#echo-ark',
   },
   {
     type: 'direct',
@@ -99,6 +103,7 @@ const DIRECT_PRESETS: DirectPreset[] = [
     secretsOwnerTestnet: 'zavodil2.testnet',
     secretsOwnerMainnet: 'zavodil.near',
     networks: ['testnet', 'mainnet'],
+    docsLink: '/docs/examples#weather-ark',
   },
   {
     type: 'direct',
@@ -113,6 +118,7 @@ const DIRECT_PRESETS: DirectPreset[] = [
     secretsOwnerTestnet: 'zavodil2.testnet',
     secretsOwnerMainnet: 'zavodil.near',
     networks: ['testnet', 'mainnet'],
+    docsLink: '/docs/examples#oracle-ark',
   },
   {
     type: 'direct',
@@ -127,7 +133,8 @@ const DIRECT_PRESETS: DirectPreset[] = [
     secretsOwnerTestnet: 'zavodil2.testnet',
     secretsOwnerMainnet: 'zavodil.near',
     networks: ['testnet', 'mainnet'],
-  },  
+    docsLink: '/docs/examples#ethereum-api',
+  },
 ];
 
 // ============================================================================
@@ -150,6 +157,7 @@ const PROXY_PRESETS: ProxyPreset[] = [
     wasmCommit: 'main',
     wasmBuildTarget: 'wasm32-wasip1',
     increaseDepositIfNoCache: true, // Add 0.1 NEAR if WASM not cached
+    docsLink: '/docs/examples#random-ark',
   },
   {
     type: 'proxy',
@@ -166,6 +174,7 @@ const PROXY_PRESETS: ProxyPreset[] = [
     wasmCommit: 'main',
     wasmBuildTarget: 'wasm32-wasip2',
     increaseDepositIfNoCache: false, // ft_transfer_call accepts only 1 yoctoNEAR
+    docsLink: '/docs/examples#intents-ark',
   },
 ];
 
@@ -633,6 +642,21 @@ function PlaygroundContent() {
                     <div className="text-sm text-yellow-800 whitespace-pre-line">
                       {formatDescription(preset.description)}
                     </div>
+                    {preset.docsLink && (
+                      <div className="mt-3">
+                        <a
+                          href={preset.docsLink}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-2 text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline"
+                        >
+                          📖 View detailed documentation
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                          </svg>
+                        </a>
+                      </div>
+                    )}
                   </div>
                 );
               })()}

@@ -68,6 +68,7 @@ const pageStructure = {
     { id: 'ai-ark', title: 'AI Integration' },
     { id: 'weather-ark', title: 'Weather Oracle' },
     { id: 'oracle-ark', title: 'Price Oracle' },
+    { id: 'ethereum-api', title: 'Ethereum API' },
     { id: 'intents-ark', title: 'NEAR Intents swap' },
     { id: 'private-dao-ark', title: 'Private DAO Voting' },
     { id: 'captcha-ark', title: '2FA Verification' },
@@ -269,7 +270,7 @@ export default function DocsLayout({
                   </div>
                 )}
               </div>
-              {/* WASI Examples */}
+              {/* Example Projects */}
               <div>
                 <Link
                   href="/docs/examples"
@@ -285,7 +286,7 @@ export default function DocsLayout({
                     }
                   }}
                 >
-                  <span>WASI Examples</span>
+                  <span>Example Projects</span>
                   {pageStructure['/docs/examples'] && (
                     <svg className={`w-4 h-4 transition-transform ${expandedPages['/docs/examples'] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />

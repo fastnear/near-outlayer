@@ -48,7 +48,7 @@ export default function ExamplesPage() {
   useHashNavigation();
   return (
     <div className="prose max-w-none">
-      <h2 className="text-3xl font-bold mb-6 text-[var(--primary-orange)]">WASI Examples</h2>
+      <h2 className="text-3xl font-bold mb-6 text-[var(--primary-orange)]">Example Projects</h2>
 
       <p className="text-gray-700 mb-4">
         Production-ready examples demonstrating different WASI patterns and use cases. All examples are open-source and fully documented.
