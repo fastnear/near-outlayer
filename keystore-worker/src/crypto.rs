@@ -3,12 +3,21 @@
 //! Uses master secret + HMAC-SHA256 to derive repo-specific keypairs.
 //! Each repository (with owner) gets a unique keypair derived from the same master secret.
 //! All operations are designed to be TEE-safe (no key material leaves secure enclave).
+//!
+//! Encryption: ChaCha20-Poly1305 AEAD (RFC 7539)
+//! - Symmetric encryption with authentication
+//! - 12-byte random nonce per encryption
+//! - Format: [nonce (12 bytes) | ciphertext | auth_tag (16 bytes)]
 
 use anyhow::{Context, Result};
+use chacha20poly1305::{
+    aead::{Aead, AeadCore, KeyInit, OsRng as AeadOsRng},
+    ChaCha20Poly1305, Nonce,
+};
 use ed25519_dalek::{SigningKey, VerifyingKey, Signature, Signer, Verifier};
 use hmac::{Hmac, Mac};
 use rand::{rngs::OsRng, RngCore};
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::RwLock;
 
@@ -92,7 +101,7 @@ impl Keystore {
         }
 
         // Derive keypair using HMAC-SHA256
-        let mut mac = HmacSha256::new_from_slice(&self.master_secret)
+        let mut mac = <HmacSha256 as Mac>::new_from_slice(&self.master_secret)
             .expect("HMAC can take key of any size");
         mac.update(seed.as_bytes());
         let derived_bytes = mac.finalize().into_bytes();
@@ -139,32 +148,70 @@ impl Keystore {
 
     /// Decrypt data that was encrypted for a specific seed
     ///
-    /// This uses a simplified encryption scheme for MVP:
-    /// - XOR with key derived from public key
-    ///
-    /// For production, use X25519-ECDH + ChaCha20-Poly1305.
+    /// Uses ChaCha20-Poly1305 AEAD encryption.
+    /// Format: [nonce (12 bytes) | ciphertext | auth_tag (16 bytes)]
     pub fn decrypt(&self, seed: &str, encrypted_data: &[u8]) -> Result<Vec<u8>> {
         if encrypted_data.len() > MAX_ENCRYPTED_SIZE {
             anyhow::bail!("Encrypted data too large: {} bytes", encrypted_data.len());
         }
 
+        // Minimum size: 12 (nonce) + 16 (tag) = 28 bytes
+        if encrypted_data.len() < 28 {
+            anyhow::bail!(
+                "Encrypted data too short: {} bytes (minimum 28)",
+                encrypted_data.len()
+            );
+        }
+
         let (_signing_key, verifying_key) = self.derive_keypair(seed)?;
 
-        // Derive symmetric key from PUBLIC key (same as encryption)
-        let key_material = verifying_key.to_bytes();
-        let mut hasher = Sha256::new();
-        hasher.update(&key_material);
-        hasher.update(b"keystore-encryption-v1");
-        let derived_key = hasher.finalize();
+        // Use Ed25519 public key as ChaCha20 key (32 bytes)
+        let key_bytes = verifying_key.to_bytes();
+        let cipher = ChaCha20Poly1305::new((&key_bytes).into());
 
-        // Simple XOR decryption (INSECURE - for MVP only)
-        let plaintext: Vec<u8> = encrypted_data
-            .iter()
-            .enumerate()
-            .map(|(i, &byte)| byte ^ derived_key[i % derived_key.len()])
-            .collect();
+        // Extract nonce (first 12 bytes)
+        let nonce = Nonce::from_slice(&encrypted_data[0..12]);
+
+        // Extract ciphertext + tag (remaining bytes)
+        let ciphertext_with_tag = &encrypted_data[12..];
+
+        // Decrypt and verify auth tag
+        let plaintext = cipher
+            .decrypt(nonce, ciphertext_with_tag)
+            .map_err(|e| anyhow::anyhow!("Decryption failed (data tampered or wrong key): {}", e))?;
 
         Ok(plaintext)
+    }
+
+    /// Encrypt plaintext data for a specific seed (server-side encryption)
+    ///
+    /// Uses ChaCha20-Poly1305 AEAD with random nonce.
+    /// Returns: [nonce (12 bytes) | ciphertext | auth_tag (16 bytes)]
+    pub fn encrypt(&self, seed: &str, plaintext: &[u8]) -> Result<Vec<u8>> {
+        if plaintext.len() > MAX_ENCRYPTED_SIZE {
+            anyhow::bail!("Plaintext too large: {} bytes", plaintext.len());
+        }
+
+        let (_signing_key, verifying_key) = self.derive_keypair(seed)?;
+
+        // Use Ed25519 public key as ChaCha20 key
+        let key_bytes = verifying_key.to_bytes();
+        let cipher = ChaCha20Poly1305::new((&key_bytes).into());
+
+        // Generate random 12-byte nonce
+        let nonce = ChaCha20Poly1305::generate_nonce(&mut AeadOsRng);
+
+        // Encrypt and append auth tag
+        let ciphertext_with_tag = cipher
+            .encrypt(&nonce, plaintext)
+            .map_err(|e| anyhow::anyhow!("Encryption failed: {}", e))?;
+
+        // Combine: [nonce | ciphertext | tag]
+        let mut result = Vec::with_capacity(12 + ciphertext_with_tag.len());
+        result.extend_from_slice(&nonce);
+        result.extend_from_slice(&ciphertext_with_tag);
+
+        Ok(result)
     }
 
     /// Sign a message with the private key for a specific seed
@@ -200,7 +247,7 @@ pub fn encrypt_for_keystore(pubkey_hex: &str, plaintext: &[u8]) -> Result<Vec<u8
     }
 
     // Derive symmetric key from public key
-    let mut hasher = Sha256::new();
+    let mut hasher = <Sha256 as Digest>::new();
     hasher.update(&pubkey_bytes);
     hasher.update(b"keystore-encryption-v1");
     let derived_key = hasher.finalize();
@@ -252,8 +299,8 @@ mod tests {
         let seed = "github.com/alice/project:alice.near";
         let plaintext = b"my secret API key: sk-1234567890";
 
-        let pubkey_hex = keystore.public_key_hex(seed).unwrap();
-        let encrypted = encrypt_for_keystore(&pubkey_hex, plaintext).unwrap();
+        // Use keystore.encrypt (ChaCha20) instead of encrypt_for_keystore (XOR)
+        let encrypted = keystore.encrypt(seed, plaintext).unwrap();
         let decrypted = keystore.decrypt(seed, &encrypted).unwrap();
 
         assert_eq!(decrypted, plaintext);

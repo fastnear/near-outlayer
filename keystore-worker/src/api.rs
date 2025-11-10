@@ -6,7 +6,7 @@
 //! - POST /decrypt - Decrypt secrets from contract (requires auth + attestation)
 
 use axum::{
-    extract::{Query, State},
+    extract::State,
     http::StatusCode,
     middleware,
     response::{IntoResponse, Json, Response},
@@ -112,6 +112,40 @@ pub struct PubkeyResponse {
     pub pubkey: String,
 }
 
+/// Request to add generated secrets to existing encrypted secrets
+#[derive(Debug, Deserialize)]
+pub struct AddGeneratedSecretRequest {
+    /// Seed for deriving keypair (format: "repo:owner[:branch]")
+    pub seed: String,
+
+    /// Existing encrypted secrets (base64, can be empty for first generation)
+    /// If empty, starts with empty secrets object
+    pub encrypted_secrets_base64: Option<String>,
+
+    /// New secrets to generate
+    pub new_secrets: Vec<GeneratedSecretSpec>,
+}
+
+/// Specification for a secret to generate
+#[derive(Debug, Deserialize)]
+pub struct GeneratedSecretSpec {
+    /// Secret name (key in JSON)
+    pub name: String,
+
+    /// Generation type (hex32, ed25519, password, etc.)
+    pub generation_type: String,
+}
+
+/// Response after adding generated secrets
+#[derive(Debug, Serialize)]
+pub struct AddGeneratedSecretResponse {
+    /// Updated encrypted secrets (base64)
+    pub encrypted_data_base64: String,
+
+    /// List of generated key names (for UI display)
+    pub generated_keys: Vec<String>,
+}
+
 /// Health check response
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
@@ -126,6 +160,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/health", get(health_handler))
         .route("/pubkey", post(pubkey_handler)) // Changed to POST to accept secrets for validation
         .route("/decrypt", post(decrypt_handler))
+        .route("/add_generated_secret", post(add_generated_secret_handler)) // NEW: Add generated secrets
         // Auth middleware applies to all routes (keystore is internal)
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -359,6 +394,149 @@ async fn decrypt_handler(
 
     Ok(Json(DecryptResponse {
         plaintext_secrets: plaintext_b64,
+    }))
+}
+
+/// Add generated secrets to existing encrypted secrets
+///
+/// Flow:
+/// 1. Decrypt existing secrets (if provided)
+/// 2. Generate new secrets
+/// 3. Check for collisions (key already exists?)
+/// 4. Merge old + new secrets
+/// 5. Re-encrypt and return
+async fn add_generated_secret_handler(
+    State(state): State<AppState>,
+    Json(req): Json<AddGeneratedSecretRequest>,
+) -> Result<Json<AddGeneratedSecretResponse>, ApiError> {
+    tracing::info!(
+        seed = %req.seed,
+        num_new_secrets = req.new_secrets.len(),
+        has_existing = req.encrypted_secrets_base64.is_some(),
+        "Received add_generated_secret request"
+    );
+
+    // 1. Decrypt existing secrets (if any)
+    let mut secrets_map: serde_json::Map<String, serde_json::Value> = if let Some(ref encrypted_b64) = req.encrypted_secrets_base64 {
+        // Decode base64
+        let encrypted_bytes = base64::decode(encrypted_b64)
+            .map_err(|e| ApiError::BadRequest(format!("Invalid base64 in encrypted_secrets: {}", e)))?;
+
+        // Decrypt
+        let plaintext_bytes = state
+            .keystore
+            .decrypt(&req.seed, &encrypted_bytes)
+            .map_err(|e| ApiError::InternalError(format!("Failed to decrypt existing secrets: {}", e)))?;
+
+        // Parse JSON
+        let plaintext_str = String::from_utf8(plaintext_bytes)
+            .map_err(|e| ApiError::InternalError(format!("Decrypted data is not valid UTF-8: {}", e)))?;
+
+        serde_json::from_str(&plaintext_str)
+            .map_err(|e| ApiError::InternalError(format!("Decrypted data is not valid JSON: {}", e)))?
+    } else {
+        // Start with empty secrets
+        serde_json::Map::new()
+    };
+
+    tracing::debug!(
+        existing_keys = secrets_map.len(),
+        "Decrypted existing secrets"
+    );
+
+    // 2. Check for collisions BEFORE generating
+    let mut collisions: Vec<String> = Vec::new();
+    for spec in &req.new_secrets {
+        if secrets_map.contains_key(&spec.name) {
+            collisions.push(spec.name.clone());
+        }
+    }
+
+    if !collisions.is_empty() {
+        return Err(ApiError::BadRequest(format!(
+            "Cannot generate secrets: keys already exist: {}. Please use different names or remove existing keys first.",
+            collisions.join(", ")
+        )));
+    }
+
+    // 3. Generate new secrets
+    let mut generated_keys: Vec<String> = Vec::new();
+    for spec in &req.new_secrets {
+        // Build generation directive
+        let directive = format!("generate_outlayer_secret:{}", spec.generation_type);
+
+        // Generate
+        let generated_value = crate::secret_generation::generate_secret(&directive)
+            .map_err(|e| ApiError::BadRequest(format!(
+                "Failed to generate secret '{}' with type '{}': {}",
+                spec.name, spec.generation_type, e
+            )))?;
+
+        tracing::info!(
+            key = %spec.name,
+            gen_type = %spec.generation_type,
+            "Generated secret"
+        );
+
+        // Add to secrets map
+        secrets_map.insert(spec.name.clone(), serde_json::Value::String(generated_value));
+        generated_keys.push(spec.name.clone());
+    }
+
+    // 4. Validate no reserved keywords (final check)
+    const RESERVED_KEYWORDS: &[&str] = &[
+        "NEAR_SENDER_ID",
+        "NEAR_CONTRACT_ID",
+        "NEAR_BLOCK_HEIGHT",
+        "NEAR_BLOCK_TIMESTAMP",
+        "NEAR_RECEIPT_ID",
+        "NEAR_PREDECESSOR_ID",
+        "NEAR_SIGNER_PUBLIC_KEY",
+        "NEAR_GAS_BURNT",
+        "NEAR_USER_ACCOUNT_ID",
+        "NEAR_PAYMENT_YOCTO",
+        "NEAR_TRANSACTION_HASH",
+        "NEAR_MAX_INSTRUCTIONS",
+        "NEAR_MAX_MEMORY_MB",
+        "NEAR_MAX_EXECUTION_SECONDS",
+        "NEAR_REQUEST_ID",
+    ];
+
+    let reserved_found: Vec<&str> = secrets_map.keys()
+        .filter(|k| RESERVED_KEYWORDS.contains(&k.as_str()))
+        .map(|k| k.as_str())
+        .collect();
+
+    if !reserved_found.is_empty() {
+        return Err(ApiError::BadRequest(format!(
+            "Cannot use reserved system keywords as secret keys: {}. \
+            These environment variables are automatically set by OutLayer worker.",
+            reserved_found.join(", ")
+        )));
+    }
+
+    // 5. Re-encrypt merged secrets
+    let final_secrets_json = serde_json::to_string(&secrets_map)
+        .map_err(|e| ApiError::InternalError(format!("Failed to serialize secrets: {}", e)))?;
+
+    let encrypted_bytes = state
+        .keystore
+        .encrypt(&req.seed, final_secrets_json.as_bytes())
+        .map_err(|e| ApiError::InternalError(format!("Failed to encrypt secrets: {}", e)))?;
+
+    let encrypted_base64 = base64::encode(&encrypted_bytes);
+
+    tracing::info!(
+        seed = %req.seed,
+        total_secrets = secrets_map.len(),
+        generated_count = generated_keys.len(),
+        encrypted_size = encrypted_bytes.len(),
+        "Successfully added generated secrets"
+    );
+
+    Ok(Json(AddGeneratedSecretResponse {
+        encrypted_data_base64: encrypted_base64,
+        generated_keys,
     }))
 }
 

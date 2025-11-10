@@ -5,6 +5,7 @@ import { useNearWallet } from '@/contexts/NearWalletContext';
 import { actionCreators } from '@near-js/transactions';
 import WalletConnectionModal from '@/components/WalletConnectionModal';
 import { SecretsForm } from './components/SecretsForm';
+import { GenerateSecretsForm } from './components/GenerateSecretsForm';
 import { SecretsList } from './components/SecretsList';
 import { UserSecret, FormData } from './components/types';
 import { getCoordinatorApiUrl } from '@/lib/api';
@@ -21,6 +22,7 @@ export default function SecretsPage() {
   // UI state
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'create' | 'generate'>('create');
 
   // Edit mode
   const [editingSecret, setEditingSecret] = useState<UserSecret | null>(null);
@@ -175,6 +177,12 @@ export default function SecretsPage() {
     }
   };
 
+  const handleGenerated = (generatedKeys: string[]) => {
+    setSuccess(`✅ Generated ${generatedKeys.length} secret(s): ${generatedKeys.join(', ')}`);
+    // Note: Generated secrets are not stored in contract yet - user needs to do that separately
+    // This is intentional - generation is separate from storing
+  };
+
   return (
     <div className="max-w-4xl mx-auto">
       {/* Header */}
@@ -219,23 +227,58 @@ export default function SecretsPage() {
         </div>
       )}
 
-      {/* Secrets Form */}
+      {/* Tabs */}
+      <div className="mt-8 border-b border-gray-200">
+        <nav className="-mb-px flex space-x-8">
+          <button
+            onClick={() => setActiveTab('create')}
+            className={`py-4 px-1 border-b-2 font-medium text-sm ${
+              activeTab === 'create'
+                ? 'border-blue-500 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            }`}
+          >
+            📝 Create/Edit Secrets
+          </button>
+          <button
+            onClick={() => setActiveTab('generate')}
+            className={`py-4 px-1 border-b-2 font-medium text-sm ${
+              activeTab === 'generate'
+                ? 'border-green-500 text-green-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            }`}
+          >
+            🔑 Generate Secrets
+          </button>
+        </nav>
+      </div>
+
+      {/* Forms */}
       <div className="mt-8">
-        <SecretsForm
-          isConnected={isConnected}
-          accountId={accountId}
-          onSubmit={handleSubmitSecrets}
-          coordinatorUrl={coordinatorUrl}
-          initialData={
-            editingSecret
-              ? {
-                  repo: editingSecret.repo,
-                  branch: editingSecret.branch || '',
-                  profile: editingSecret.profile,
-                }
-              : undefined
-          }
-        />
+        {activeTab === 'create' ? (
+          <SecretsForm
+            isConnected={isConnected}
+            accountId={accountId}
+            onSubmit={handleSubmitSecrets}
+            coordinatorUrl={coordinatorUrl}
+            initialData={
+              editingSecret
+                ? {
+                    repo: editingSecret.repo,
+                    branch: editingSecret.branch || '',
+                    profile: editingSecret.profile,
+                  }
+                : undefined
+            }
+          />
+        ) : (
+          <GenerateSecretsForm
+            isConnected={isConnected}
+            accountId={accountId}
+            coordinatorUrl={coordinatorUrl}
+            onGenerated={handleGenerated}
+          />
+        )}
       </div>
 
       {/* User's Secrets List */}

@@ -24,6 +24,7 @@ mod attestation;
 mod config;
 mod crypto;
 mod near;
+mod secret_generation;
 mod types;
 mod utils;
 

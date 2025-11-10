@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { ChaCha20Poly1305 } from '@stablelib/chacha20poly1305';
+import { randomBytes } from '@stablelib/random';
 import { AccessConditionBuilder } from './AccessConditionBuilder';
 import { AccessCondition, FormData } from './types';
 import { convertAccessToContractFormat } from './utils';
@@ -110,21 +112,24 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
         plaintext_length: plaintextSecrets.length
       });
 
-      // Encrypt secrets (simple XOR encryption - same as encrypt_secrets.py)
+      // Encrypt secrets with ChaCha20-Poly1305 AEAD
       const keyMaterial = hexToBytes(pubkeyHex);
       const encoder = new TextEncoder();
       const plaintextBytes = encoder.encode(plaintextSecrets);
 
-      // Derive symmetric key (SHA-256 of pubkey + salt)
-      const hashInput = new Uint8Array([...keyMaterial, ...encoder.encode('keystore-encryption-v1')]);
-      const derivedKeyBuffer = await crypto.subtle.digest('SHA-256', hashInput);
-      const derivedKey = new Uint8Array(derivedKeyBuffer);
+      // Use Ed25519 public key as ChaCha20 key (32 bytes)
+      const cipher = new ChaCha20Poly1305(keyMaterial);
 
-      // XOR encryption
-      const encrypted = new Uint8Array(plaintextBytes.length);
-      for (let i = 0; i < plaintextBytes.length; i++) {
-        encrypted[i] = plaintextBytes[i] ^ derivedKey[i % derivedKey.length];
-      }
+      // Generate random 12-byte nonce
+      const nonce = randomBytes(12);
+
+      // Encrypt and append auth tag
+      const ciphertextWithTag = cipher.seal(nonce, plaintextBytes);
+
+      // Combine: [nonce (12 bytes) | ciphertext | auth_tag (16 bytes)]
+      const encrypted = new Uint8Array(12 + ciphertextWithTag.length);
+      encrypted.set(nonce, 0);
+      encrypted.set(ciphertextWithTag, 12);
 
       const encryptedArray = Array.from(encrypted);
 
@@ -281,7 +286,8 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
         <div className="mt-6 bg-blue-50 border border-blue-200 rounded-lg p-4">
           <h3 className="text-sm font-medium text-blue-900 mb-2">💡 How it works</h3>
           <ul className="text-xs text-blue-800 space-y-1 list-disc list-inside">
-            <li>Secrets are encrypted client-side using keystore&apos;s public key</li>
+            <li>Secrets are encrypted client-side with ChaCha20-Poly1305 AEAD</li>
+            <li>Uses keystore&apos;s public key (coordinator never sees plaintext)</li>
             <li>Encrypted data is stored on NEAR contract</li>
             <li>Only verified TEE workers can decrypt secrets during execution</li>
             <li>You can update secrets anytime (will overwrite existing)</li>

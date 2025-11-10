@@ -224,15 +224,18 @@ mod tests {
 
     #[test]
     fn test_simulated_attestation() {
+        // Use a proper 32-byte (64 hex chars) SHA256 hash
+        let code_hash_hex = "a".repeat(64); // Valid 32-byte hash in hex
+
         let measurements = ExpectedMeasurements {
-            code_hash: vec!["abc123".to_string()],
+            code_hash: vec![code_hash_hex.clone()],
             signer_hash: None,
             min_security_version: 1,
         };
 
         let attestation = Attestation {
             tee_type: "simulated".to_string(),
-            quote: base64::encode(hex::decode("abc123").unwrap()),
+            quote: base64::encode(hex::decode(&code_hash_hex).unwrap()),
             worker_pubkey: None,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

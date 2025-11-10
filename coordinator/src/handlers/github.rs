@@ -460,6 +460,169 @@ pub async fn get_secrets_pubkey(
     ))
 }
 
+/// POST /secrets/add_generated_secret
+/// Request: {
+///   "repo": "...",
+///   "owner": "...",
+///   "branch": "...",
+///   "encrypted_secrets_base64": "...", // Optional - existing encrypted secrets
+///   "new_secrets": [
+///     {"name": "MASTER_KEY", "generation_type": "hex32"},
+///     {"name": "API_KEY", "generation_type": "password:64"}
+///   ]
+/// }
+///
+/// Incrementally add auto-generated secrets to existing encrypted data.
+/// This endpoint proxies the request to the keystore worker which will:
+/// 1. Decrypt existing secrets (if provided)
+/// 2. Check for key name collisions
+/// 3. Generate new secrets with specified types
+/// 4. Re-encrypt merged secrets with ChaCha20-Poly1305
+/// 5. Return new encrypted_data_base64 + list of generated key names
+///
+/// Security: Uses same seed as get_pubkey, maintains zero-knowledge (coordinator doesn't see plaintext)
+///
+/// Returns:
+/// - 200: { "encrypted_data_base64": "...", "generated_keys": ["MASTER_KEY", "API_KEY"] }
+/// - 400: Invalid request, key collision, or keystore not configured
+/// - 502: Keystore error
+#[derive(Debug, Deserialize)]
+pub struct AddGeneratedSecretRequest {
+    pub repo: String,
+    pub owner: String,
+    pub branch: Option<String>,
+    pub encrypted_secrets_base64: Option<String>, // Existing encrypted secrets (optional)
+    pub new_secrets: Vec<GeneratedSecretSpec>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct GeneratedSecretSpec {
+    pub name: String,
+    pub generation_type: String, // hex32, hex16, hex64, ed25519, ed25519_seed, password, password:N
+}
+
+#[derive(Debug, Serialize)]
+pub struct AddGeneratedSecretResponse {
+    pub encrypted_data_base64: String,
+    pub generated_keys: Vec<String>,
+}
+
+pub async fn add_generated_secret(
+    State(state): State<AppState>,
+    Json(req): Json<AddGeneratedSecretRequest>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    // Check if keystore is configured
+    let keystore_url = state
+        .config
+        .keystore_base_url
+        .as_ref()
+        .ok_or((
+            StatusCode::BAD_REQUEST,
+            "Keystore is not configured".to_string(),
+        ))?;
+
+    // Validate owner account ID
+    if req.owner.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Owner account ID is required".to_string(),
+        ));
+    }
+
+    // Validate new_secrets is not empty
+    if req.new_secrets.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "At least one new secret must be specified".to_string(),
+        ));
+    }
+
+    // Normalize repo URL
+    let normalized_repo = parse_github_repo(&req.repo)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid repo format: {}", e)))?;
+
+    // Build seed (same as get_pubkey for consistency)
+    let seed = if let Some(ref branch) = req.branch {
+        format!("{}:{}:{}", normalized_repo, req.owner, branch)
+    } else {
+        format!("{}:{}", normalized_repo, req.owner)
+    };
+
+    tracing::info!(
+        "🔑 GENERATE SECRETS (coordinator): repo={}, owner={}, branch={:?}, seed={}, new_secrets_count={}",
+        normalized_repo,
+        req.owner,
+        req.branch,
+        seed,
+        req.new_secrets.len()
+    );
+
+    // Call keystore to generate and re-encrypt secrets
+    let client = reqwest::Client::new();
+    let payload = serde_json::json!({
+        "seed": seed,
+        "encrypted_secrets_base64": req.encrypted_secrets_base64,
+        "new_secrets": req.new_secrets,
+    });
+
+    let mut request_builder = client
+        .post(format!("{}/add_generated_secret", keystore_url))
+        .json(&payload);
+
+    // Add Authorization header if token is configured
+    if let Some(ref token) = state.config.keystore_auth_token {
+        request_builder = request_builder.header("Authorization", format!("Bearer {}", token));
+    } else {
+        tracing::warn!("⚠️ KEYSTORE_AUTH_TOKEN not configured - keystore request will fail!");
+    }
+
+    let keystore_response = request_builder
+        .send()
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("Failed to connect to keystore: {}", e),
+            )
+        })?;
+
+    if !keystore_response.status().is_success() {
+        let status = keystore_response.status();
+        let body = keystore_response.text().await.unwrap_or_default();
+
+        // If keystore returned 400 (validation error, collision, etc.), pass it through
+        // Otherwise return 502 (proxy error)
+        let response_status = if status == reqwest::StatusCode::BAD_REQUEST {
+            StatusCode::BAD_REQUEST
+        } else {
+            StatusCode::BAD_GATEWAY
+        };
+
+        return Err((response_status, body));
+    }
+
+    #[derive(Deserialize)]
+    struct KeystoreResponse {
+        encrypted_data_base64: String,
+        generated_keys: Vec<String>,
+    }
+
+    let keystore_data: KeystoreResponse = keystore_response.json().await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("Failed to parse keystore response: {}", e),
+        )
+    })?;
+
+    Ok((
+        StatusCode::OK,
+        Json(AddGeneratedSecretResponse {
+            encrypted_data_base64: keystore_data.encrypted_data_base64,
+            generated_keys: keystore_data.generated_keys,
+        }),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
