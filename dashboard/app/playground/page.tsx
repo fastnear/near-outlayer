@@ -53,6 +53,7 @@ const DIRECT_PRESETS: DirectPreset[] = [
   {
     type: 'direct',
     name: 'Random Number Generator',
+    description: '🎲 Generate truly random numbers on-chain. Great for games, lotteries, and any application needing unpredictable randomness.',
     repo: 'https://github.com/zavodil/random-ark',
     commit: 'main',
     buildTarget: 'wasm32-wasip1',
@@ -63,12 +64,13 @@ const DIRECT_PRESETS: DirectPreset[] = [
   {
     type: 'direct',
     name: 'AI Completions',
+    description: '🤖 Get AI inference with system prompt stored in encrypted secrets and user prompt coming from on-chain. Example system prompt: start sentences with "O". Build AI agents, chatbots, content generation.',
     repo: 'https://github.com/zavodil/ai-ark',
     commit: 'main',
     buildTarget: 'wasm32-wasip2',
     args: '{"prompt":"What could the NEAR OutLayer project do?","history":[{"role":"user","content":"Tell me about NEAR"},{"role":"assistant","content":"NEAR is the most scalable Layer 1 blockchain."}],"model_name":"accounts/fireworks/models/gpt-oss-20b","openai_endpoint":"https://api.fireworks.ai/inference/v1/chat/completions","max_tokens":16384}',
     responseFormat: 'Text',
-    secretsProfile: 'default',
+    secretsProfile: 'secret-system-prompt',
     secretsOwnerTestnet: 'zavodil2.testnet',
     secretsOwnerMainnet: 'zavodil.near',
     networks: ['testnet', 'mainnet'],
@@ -76,6 +78,7 @@ const DIRECT_PRESETS: DirectPreset[] = [
   {
     type: 'direct',
     name: 'Echo Generator',
+    description: '📢 Simple echo with blockchain context (sender, block height, timestamp). Perfect starter to understand how contracts interact with OutLayer.',
     repo: 'https://github.com/zavodil/echo-ark',
     commit: 'main',
     buildTarget: 'wasm32-wasip1',
@@ -86,6 +89,7 @@ const DIRECT_PRESETS: DirectPreset[] = [
   {
     type: 'direct',
     name: 'Weather Data Oracle',
+    description: '🌤️ Get real-time weather for any city. Build weather-based smart contracts, agricultural apps, or travel planning tools. Pre-configured secrets ready to test!',
     repo: 'https://github.com/zavodil/weather-ark',
     commit: 'main',
     buildTarget: 'wasm32-wasip2',
@@ -99,6 +103,7 @@ const DIRECT_PRESETS: DirectPreset[] = [
   {
     type: 'direct',
     name: 'Multi-Source Data Oracle',
+    description: '📊 Get reliable crypto/commodity prices from multiple sources (CoinGecko, Binance, Pyth, etc). Automatic aggregation prevents manipulation. Great for DeFi apps.',
     repo: 'https://github.com/zavodil/oracle-ark',
     commit: '88b72003a06dc8d1972b39240e01aa9c0c7bbe24',
     buildTarget: 'wasm32-wasip2',
@@ -109,6 +114,20 @@ const DIRECT_PRESETS: DirectPreset[] = [
     secretsOwnerMainnet: 'zavodil.near',
     networks: ['testnet', 'mainnet'],
   },
+  {
+    type: 'direct',
+    name: 'Ethereum API',
+    description: '⚡ Query Ethereum blockchain data (balances, smart contracts, transactions). Bridge NEAR with Ethereum data for cross-chain applications.',
+    repo: 'https://github.com/zavodil/oracle-ark',
+    commit: 'main',
+    buildTarget: 'wasm32-wasip2',
+    args: '{"requests":[{"id":"alchemy","sources":[{"name":"custom","custom": {"url": "https://eth-mainnet.g.alchemy.com/v2","method": "POST","body": {"method": "eth_getBalance","params": ["0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045", "latest"],"id": 1,"jsonrpc": "2.0"}, "json_path": "result", "value_type": "string"}}]}],"max_price_deviation_percent":10.0}',
+    responseFormat: 'Json',
+    secretsProfile: 'alchemy',
+    secretsOwnerTestnet: 'zavodil2.testnet',
+    secretsOwnerMainnet: 'zavodil.near',
+    networks: ['testnet', 'mainnet'],
+  },  
 ];
 
 // ============================================================================
@@ -192,8 +211,9 @@ function PlaygroundContent() {
     }
   }, [shouldReopenModal, isConnected, clearReopenModal]);
 
-  // Load preset from URL on mount
+  // Load preset from URL on mount and handle hash
   useEffect(() => {
+    // Check for preset in query params
     if (presetFromUrl && initialPreset) {
       setSelectedPreset(initialPreset.name);
       setArgs(initialPreset.args);
@@ -205,11 +225,37 @@ function PlaygroundContent() {
         setSecretsProfile(initialPreset.secretsProfile || '');
       }
     }
+
+    // Check for hash in URL (e.g., #random, #ai)
+    if (typeof window !== 'undefined' && window.location.hash) {
+      const hash = window.location.hash.substring(1); // Remove #
+      const presetByHash = availablePresets.find(p => {
+        // Generate ID from preset name (lowercase, replace spaces with hyphens)
+        const presetId = p.name.toLowerCase().replace(/\s+/g, '-');
+        return presetId === hash;
+      });
+
+      if (presetByHash) {
+        applyPreset(presetByHash.name);
+        // Scroll to the preset button after a short delay
+        setTimeout(() => {
+          const element = document.getElementById(hash);
+          if (element) {
+            element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        }, 100);
+      }
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Update form when network changes - load first available preset
+  // Update form when network changes - load first available preset (only if no hash in URL)
   useEffect(() => {
+    // Skip if there's a hash in URL (already handled by previous effect)
+    if (typeof window !== 'undefined' && window.location.hash) {
+      return;
+    }
+
     const firstPreset = availablePresets[0];
     if (firstPreset) {
       setSelectedPreset(firstPreset.name);
@@ -279,6 +325,12 @@ function PlaygroundContent() {
       }
 
       setWasmInfo(null); // Clear WASM cache info
+
+      // Update URL hash with preset ID
+      if (typeof window !== 'undefined') {
+        const presetId = preset.name.toLowerCase().replace(/\s+/g, '-');
+        window.history.replaceState(null, '', `#${presetId}`);
+      }
     }
   };
 
@@ -490,19 +542,24 @@ function PlaygroundContent() {
                   <div className="flex flex-wrap gap-2">
                     {availablePresets
                       .filter(p => p.type === 'direct')
-                      .map((preset) => (
-                        <button
-                          key={preset.name}
-                          onClick={() => applyPreset(preset.name)}
-                          className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                            selectedPreset === preset.name
-                              ? 'bg-gradient-to-r from-[#c17817] to-[#d4a017] text-white'
-                              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                          }`}
-                        >
-                          {preset.name}
-                        </button>
-                      ))}
+                      .map((preset) => {
+                        // Generate ID from preset name (lowercase, replace spaces with hyphens)
+                        const presetId = preset.name.toLowerCase().replace(/\s+/g, '-');
+                        return (
+                          <button
+                            key={preset.name}
+                            id={presetId}
+                            onClick={() => applyPreset(preset.name)}
+                            className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                              selectedPreset === preset.name
+                                ? 'bg-gradient-to-r from-[#c17817] to-[#d4a017] text-white'
+                                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                            }`}
+                          >
+                            {preset.name}
+                          </button>
+                        );
+                      })}
                   </div>
                 </div>
               )}
@@ -516,19 +573,24 @@ function PlaygroundContent() {
                   <div className="flex flex-wrap gap-2">
                     {availablePresets
                       .filter(p => p.type === 'proxy')
-                      .map((preset) => (
-                        <button
-                          key={preset.name}
-                          onClick={() => applyPreset(preset.name)}
-                          className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                            selectedPreset === preset.name
-                              ? 'bg-gradient-to-r from-[#c17817] to-[#d4a017] text-white'
-                              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                          }`}
-                        >
-                          {preset.name}
-                        </button>
-                      ))}
+                      .map((preset) => {
+                        // Generate ID from preset name (lowercase, replace spaces with hyphens)
+                        const presetId = preset.name.toLowerCase().replace(/\s+/g, '-');
+                        return (
+                          <button
+                            key={preset.name}
+                            id={presetId}
+                            onClick={() => applyPreset(preset.name)}
+                            className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                              selectedPreset === preset.name
+                                ? 'bg-gradient-to-r from-[#c17817] to-[#d4a017] text-white'
+                                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                            }`}
+                          >
+                            {preset.name}
+                          </button>
+                        );
+                      })}
                   </div>
                 </div>
               )}
@@ -614,9 +676,24 @@ function PlaygroundContent() {
               <>
                 {/* GitHub Repository */}
                 <div className="mb-6">
-                  <label htmlFor="repo" className="block text-sm font-medium text-gray-700">
-                    GitHub Repository
-                  </label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label htmlFor="repo" className="block text-sm font-medium text-gray-700">
+                      GitHub Repository
+                    </label>
+                    {repo && (
+                      <a
+                        href={`${repo}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                          <path fillRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clipRule="evenodd"/>
+                        </svg>
+                        Fork It!
+                      </a>
+                    )}
+                  </div>
                   <input
                     type="text"
                     id="repo"

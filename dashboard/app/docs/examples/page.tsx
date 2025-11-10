@@ -266,21 +266,24 @@ near call outlayer.testnet request_execution '{
             <span>Source Code on GitHub</span>
           </a>
           <p className="text-gray-700 mb-4">
-            OpenAI API integration with HTTPS POST requests. Your first step into WASI Preview 2 capabilities and external API calls.
+            OpenAI API integration with HTTPS POST requests. Your first step into WASI Preview 2 capabilities and external API calls. You can store a custom <code className="bg-gray-100 px-2 py-1 rounded">SYSTEM_PROMPT</code> in encrypted secrets to control AI behavior - it will be automatically injected but hidden from end users.
           </p>
 
           <h4 className="font-semibold mt-4 mb-2">Key Features:</h4>
           <ul className="list-disc list-inside text-gray-700 space-y-1 mb-4">
             <li>HTTPS client using <code className="bg-gray-100 px-2 py-1 rounded">wasi-http-client</code> crate</li>
+            <li><strong>Custom system prompts via <code className="bg-gray-100 px-2 py-1 rounded">SYSTEM_PROMPT</code> secret</strong> - control AI behavior invisibly</li>
             <li>External API integration pattern</li>
             <li>Component model example (WASI P2)</li>
             <li>Fuel metering demonstration</li>
             <li>JSON request/response handling</li>
+            <li>Conversation history support</li>
           </ul>
 
           <h4 className="font-semibold mt-4 mb-2">Requirements:</h4>
           <ul className="list-disc list-inside text-gray-700 space-y-1 mb-4 ml-4">
-            <li>OpenAI API key (stored as encrypted secret)</li>
+            <li><code className="bg-gray-100 px-2 py-1 rounded">OPENAI_API_KEY</code> - Required (stored as encrypted secret)</li>
+            <li><code className="bg-gray-100 px-2 py-1 rounded">SYSTEM_PROMPT</code> - Optional (control AI behavior invisibly)</li>
             <li>wasmtime 28+ for local testing</li>
             <li>Network access during execution</li>
           </ul>
@@ -289,12 +292,18 @@ near call outlayer.testnet request_execution '{
           <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
 {`# 1. Get OpenAI API key from https://platform.openai.com/api-keys
 
-# 2. Store API key as encrypted secret via Dashboard
+# 2. Store secrets via Dashboard (with optional SYSTEM_PROMPT)
 # Open https://outlayer.fastnear.com/secrets and create:
 # - Repo: github.com/YOUR_USERNAME/ai-ark
 # - Branch: main
 # - Profile: production
-# - Secrets JSON: {"OPENAI_API_KEY":"sk-..."}
+# - Secrets JSON:
+#   {
+#     "OPENAI_API_KEY": "sk-...",
+#     "SYSTEM_PROMPT": "Only start sentences with O. Omit extra words."
+#   }
+# Note: SYSTEM_PROMPT is optional but powerful - it controls AI behavior
+# while staying hidden from end users who only provide the prompt
 
 # 3. Clone and build
 git clone https://github.com/zavodil/ai-ark.git
@@ -321,9 +330,10 @@ near call outlayer.testnet request_execution '{
 }' --accountId your-account.testnet --deposit 0.1 --gas 300000000000000
 
 # WASI worker will:
-# - Decrypt secrets and inject OPENAI_API_KEY into environment
-# - Execute WASM with your prompt
-# - Return AI response`}
+# - Decrypt secrets and inject OPENAI_API_KEY + SYSTEM_PROMPT into environment
+# - SYSTEM_PROMPT is automatically added to conversation (hidden from user)
+# - Execute WASM with user's prompt
+# - Return AI response (following system prompt rules)`}
           </SyntaxHighlighter>
         </div>
 
@@ -592,6 +602,133 @@ near call outlayer.testnet request_execution '{
 
 # Result will contain median price from multiple sources`}
           </SyntaxHighlighter>
+        </div>
+
+        {/* ethereum-api */}
+        <div id="ethereum-api" className="border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow scroll-mt-4">
+          <AnchorHeading
+            id="ethereum-api"
+            badges={
+              <>
+                <span className="ml-3 text-sm bg-purple-100 text-purple-800 px-3 py-1 rounded">WASI P2</span>
+                <span className="ml-2 text-sm bg-orange-100 text-orange-800 px-3 py-1 rounded">Advanced</span>
+              </>
+            }
+          >
+            Ethereum API Oracle
+          </AnchorHeading>
+          <a
+            href="https://github.com/zavodil/oracle-ark"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 px-4 py-2 mt-4 mb-4 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors font-medium"
+          >
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+              <path fillRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clipRule="evenodd"/>
+            </svg>
+            <span>Source Code on GitHub</span>
+          </a>
+          <p className="text-gray-700 mb-4">
+            Query Ethereum blockchain data via JSON-RPC (balances, smart contracts, transactions). Similar to the previous oracle example but configured for Ethereum node providers like Alchemy. Bridge NEAR with Ethereum data for cross-chain applications.
+          </p>
+
+          <h4 className="font-semibold mt-4 mb-2">Key Features:</h4>
+          <ul className="list-disc list-inside text-gray-700 space-y-1 mb-4">
+            <li>Ethereum JSON-RPC API integration (eth_getBalance, eth_call, etc.)</li>
+            <li>Support for Alchemy, Infura, and other Ethereum node providers</li>
+            <li>Custom request structure with JSON path extraction</li>
+            <li>Cross-chain data oracle for NEAR ↔ Ethereum bridges</li>
+            <li>Encrypted API key storage (Alchemy secrets profile)</li>
+            <li>Production-ready on testnet and mainnet</li>
+          </ul>
+
+          <h4 className="font-semibold mt-4 mb-2">Input Example (Check ETH Balance):</h4>
+          <SyntaxHighlighter language="json" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
+{`{
+  "requests": [
+    {
+      "id": "alchemy",
+      "sources": [
+        {
+          "name": "custom",
+          "custom": {
+            "url": "https://eth-mainnet.g.alchemy.com/v2",
+            "method": "POST",
+            "body": {
+              "method": "eth_getBalance",
+              "params": ["0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045", "latest"],
+              "id": 1,
+              "jsonrpc": "2.0"
+            },
+            "json_path": "result",
+            "value_type": "string"
+          }
+        }
+      ]
+    }
+  ],
+  "max_price_deviation_percent": 10.0
+}`}
+          </SyntaxHighlighter>
+
+          <h4 className="font-semibold mt-4 mb-2">Output Example:</h4>
+          <SyntaxHighlighter language="json" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
+{`{
+  "results": [
+    {
+      "id": "alchemy",
+      "value": "0x1bc16d674ec80000",
+      "sources_used": 1
+    }
+  ]
+}`}
+          </SyntaxHighlighter>
+
+          <h4 className="font-semibold mt-4 mb-2">Quick Start (Testnet):</h4>
+          <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
+{`# Using pre-configured Alchemy secrets on testnet
+near contract call-function as-transaction outlayer.testnet request_execution \\
+  json-args '{
+    "code_source": {
+      "repo": "https://github.com/zavodil/oracle-ark",
+      "commit": "main",
+      "build_target": "wasm32-wasip2"
+    },
+    "secrets_ref": {
+      "profile": "alchemy",
+      "account_id": "zavodil2.testnet"
+    },
+    "resource_limits": {
+      "max_instructions": 100000000,
+      "max_memory_mb": 128,
+      "max_execution_seconds": 60
+    },
+    "input_data": "{\\"requests\\":[{\\"id\\":\\"alchemy\\",\\"sources\\":[{\\"name\\":\\"custom\\",\\"custom\\":{\\"url\\":\\"https://eth-mainnet.g.alchemy.com/v2\\",\\"method\\":\\"POST\\",\\"body\\":{\\"method\\":\\"eth_getBalance\\",\\"params\\":[\\"0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045\\",\\"latest\\"],\\"id\\":1,\\"jsonrpc\\":\\"2.0\\"},\\"json_path\\":\\"result\\",\\"value_type\\":\\"string\\"}}]}],\\"max_price_deviation_percent\\":10.0}"
+  }' \\
+  prepaid-gas '300.0 Tgas' \\
+  attached-deposit '0.1 NEAR' \\
+  sign-as your-account.testnet \\
+  network-config testnet \\
+  sign-with-keychain send`}
+          </SyntaxHighlighter>
+
+          <h4 className="font-semibold mt-4 mb-2">Use Cases:</h4>
+          <ul className="list-disc list-inside text-gray-700 space-y-1 mb-4">
+            <li><strong>Cross-Chain Bridges:</strong> Verify Ethereum transactions on NEAR</li>
+            <li><strong>DeFi Integration:</strong> Monitor Ethereum token balances from NEAR contracts</li>
+            <li><strong>Multi-Chain Wallets:</strong> Display ETH balances in NEAR apps</li>
+            <li><strong>Smart Contract State:</strong> Read Ethereum contract data (ERC20, NFTs)</li>
+            <li><strong>Block Explorer:</strong> Query Ethereum transaction history</li>
+          </ul>
+
+          <h4 className="font-semibold mt-4 mb-2">Notes:</h4>
+          <ul className="list-disc list-inside text-gray-700 space-y-1">
+            <li>Same codebase as <code className="bg-gray-100 px-2 py-1 rounded">oracle-ark</code>, different secrets configuration</li>
+            <li>Requires Alchemy API key (free tier: 300M compute units/month)</li>
+            <li>Supports any Ethereum JSON-RPC method (eth_call, eth_getTransactionReceipt, etc.)</li>
+            <li>Pre-configured secrets available on testnet: <code className="bg-gray-100 px-2 py-1 rounded">zavodil2.testnet</code></li>
+            <li>Mainnet secrets: <code className="bg-gray-100 px-2 py-1 rounded">zavodil.near</code></li>
+          </ul>
         </div>
 
         {/* intents-ark */}
