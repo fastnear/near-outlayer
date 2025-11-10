@@ -1,17 +1,59 @@
 'use client';
 
 import Link from 'next/link';
+import { useEffect } from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
+// Anchor heading component with clickable link
+function AnchorHeading({ id, children }: { id: string; children: React.ReactNode }) {
+  const handleClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const element = document.getElementById(id);
+    if (element) {
+      element.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      window.history.pushState(null, '', `#${id}`);
+    }
+  };
+
+  return (
+    <h3 id={id} className="text-xl font-semibold mb-3 group relative">
+      <a href={`#${id}`} onClick={handleClick} className="hover:text-[var(--primary-orange)] transition-colors">
+        {children}
+        <span className="absolute -left-6 opacity-0 group-hover:opacity-100 transition-opacity text-gray-400">#</span>
+      </a>
+    </h3>
+  );
+}
+
+// Hook to handle hash navigation on page load
+function useHashNavigation() {
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const hash = window.location.hash.slice(1);
+    if (hash) {
+      // Delay to ensure content is rendered
+      setTimeout(() => {
+        const element = document.getElementById(hash);
+        if (element) {
+          element.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }, 100);
+    }
+  }, []);
+}
+
 export default function DeveloperGuideSection() {
+  useHashNavigation();
+
   return (
     <div className="prose max-w-none">
       <h2 className="text-3xl font-bold mb-6 text-[var(--primary-orange)]">Developer Guide: Random Numbers</h2>
 
       {/* TL;DR */}
       <div className="bg-gradient-to-r from-orange-50 to-yellow-50 border-l-4 border-[var(--primary-orange)] p-6 mb-8 rounded-r-lg">
-        <h3 className="text-lg font-bold mb-3 text-gray-800">⚡ TL;DR</h3>
+        <AnchorHeading id="tldr">⚡ TL;DR</AnchorHeading>
         <ul className="space-y-2 text-sm text-gray-700">
           <li>Write WebAssembly project using functions impossible in smart contracts</li>
           <li>Push to public GitHub repo</li>
@@ -25,7 +67,7 @@ export default function DeveloperGuideSection() {
       <div className="space-y-8">
         {/* Problem */}
         <section id="problem">
-          <h3 className="text-xl font-semibold mb-3">🎯 The Problem</h3>
+          <AnchorHeading id="problem">🎯 The Problem</AnchorHeading>
           <p className="text-gray-700 mb-3">
             Smart contracts need randomness for gaming, lotteries, and fair selection. However, on-chain randomness is fundamentally <strong>deterministic</strong> and <strong>controllable by validators</strong>.
           </p>
@@ -41,7 +83,7 @@ export default function DeveloperGuideSection() {
 
         {/* Step 1: Write WASI Code */}
         <section id="step-1">
-          <h3 className="text-xl font-semibold mb-3">📝 Step 1: Write WASI Code</h3>
+          <AnchorHeading id="step-1">📝 Step 1: Write WASI Code</AnchorHeading>
           <p className="text-gray-700 mb-3">
             You need a project that compiles to WebAssembly. OutLayer currently supports <strong>wasm32-wasip1</strong> and <strong>wasm32-wasip2</strong> targets.
           </p>
@@ -108,7 +150,7 @@ path = "src/main.rs"`}
 
         {/* Step 2: Push to GitHub */}
         <section id="step-2">
-          <h3 className="text-xl font-semibold mb-3">📤 Step 2: Make Code Publicly Available</h3>
+          <AnchorHeading id="step-2">📤 Step 2: Make Code Publicly Available</AnchorHeading>
           <p className="text-gray-700 mb-3">
             Your code must be accessible in a <strong>public GitHub repository</strong>. OutLayer workers will compile it on-demand from the source.
           </p>
@@ -129,7 +171,7 @@ path = "src/main.rs"`}
 
         {/* Step 3: Call from CLI */}
         <section id="step-3">
-          <h3 className="text-xl font-semibold mb-3">🚀 Step 3: Call OutLayer Contract</h3>
+          <AnchorHeading id="step-3">🚀 Step 3: Call OutLayer Contract</AnchorHeading>
           <p className="text-gray-700 mb-3">
             Now you can run your code by calling a smart contract. This will <strong>pause the blockchain transaction</strong>,
             execute your code off-chain, and send the result back into the blockchain transaction:
@@ -170,7 +212,7 @@ path = "src/main.rs"`}
 
         {/* Step 4: Result */}
         <section id="step-4">
-          <h3 className="text-xl font-semibold mb-3">✅ Step 4: Get Result</h3>
+          <AnchorHeading id="step-4">✅ Step 4: Get Result</AnchorHeading>
           <p className="text-gray-700 mb-3">
             Check execution result on the <Link href="/executions" className="text-[var(--primary-orange)] hover:underline">Executions</Link> page.
             Since we specified <code className="bg-gray-100 px-2 py-1 rounded">response_format: &quot;Json&quot;</code>, the result will be parsed as JSON:
@@ -190,8 +232,8 @@ path = "src/main.rs"`}
         </section>
 
         {/* Step 5: Advanced - Contract Integration */}
-        <section>
-          <h3 className="text-xl font-semibold mb-3">🔥 Step 5: Use in Your Contract</h3>
+        <section id="step-5">
+          <AnchorHeading id="step-5">🔥 Step 5: Use in Your Contract</AnchorHeading>
           <p className="text-gray-700 mb-3">
             The most exciting part: you can integrate this off-chain code into smart contracts!
             For example, let&apos;s build a coin flip game where players guess heads or tails through a <code className="bg-gray-100 px-2 py-1 rounded">coin-toss</code> contract:
@@ -298,8 +340,8 @@ impl CoinFlipContract {
         </section>
 
         {/* Important Details for Developers */}
-        <section>
-          <h3 className="text-xl font-semibold mb-3">🔧 Important Details for Developers</h3>
+        <section id="important-details">
+          <AnchorHeading id="important-details">🔧 Important Details for Developers</AnchorHeading>
           <div className="space-y-4">
             <div className="bg-gray-50 p-4 rounded-lg">
               <h4 className="font-semibold text-gray-800 mb-2">💰 Payment Flexibility</h4>
@@ -338,8 +380,8 @@ impl CoinFlipContract {
         </section>
 
         {/* Key Takeaways */}
-        <section>
-          <h3 className="text-xl font-semibold mb-3">🎓 Key Takeaways</h3>
+        <section id="key-takeaways">
+          <AnchorHeading id="key-takeaways">🎓 Key Takeaways</AnchorHeading>
           <div className="space-y-3">
             <div className="flex items-start space-x-3">
               <span className="text-xl">✅</span>
@@ -361,8 +403,8 @@ impl CoinFlipContract {
         </section>
 
         {/* Next Steps */}
-        <section>
-          <h3 className="text-xl font-semibold mb-3">🚀 Next Steps</h3>
+        <section id="next-steps-guide">
+          <AnchorHeading id="next-steps-guide">🚀 Next Steps</AnchorHeading>
           <ul className="space-y-2">
             <li className="flex items-center space-x-2">
               <span className="text-[var(--primary-orange)]">→</span>

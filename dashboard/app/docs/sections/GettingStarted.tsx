@@ -1,13 +1,57 @@
+'use client';
+
 import Link from 'next/link';
+import { useEffect } from 'react';
+
+// Anchor heading component with clickable link
+function AnchorHeading({ id, children }: { id: string; children: React.ReactNode }) {
+  const handleClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const element = document.getElementById(id);
+    if (element) {
+      element.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      window.history.pushState(null, '', `#${id}`);
+    }
+  };
+
+  return (
+    <h3 id={id} className="text-xl font-semibold mb-3 group relative">
+      <a href={`#${id}`} onClick={handleClick} className="hover:text-[var(--primary-orange)] transition-colors">
+        {children}
+        <span className="absolute -left-6 opacity-0 group-hover:opacity-100 transition-opacity text-gray-400">#</span>
+      </a>
+    </h3>
+  );
+}
+
+// Hook to handle hash navigation on page load
+function useHashNavigation() {
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const hash = window.location.hash.slice(1);
+    if (hash) {
+      // Delay to ensure content is rendered
+      setTimeout(() => {
+        const element = document.getElementById(hash);
+        if (element) {
+          element.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }, 100);
+    }
+  }, []);
+}
 
 export default function GettingStartedSection() {
+  useHashNavigation();
+
   return (
     <div className="prose max-w-none">
       <h2 className="text-3xl font-bold mb-6 text-[var(--primary-orange)]">Getting Started</h2>
 
       <div className="space-y-8">
         <section id="what-is-outlayer">
-          <h3 className="text-xl font-semibold mb-3">What is OutLayer?</h3>
+          <AnchorHeading id="what-is-outlayer">What is OutLayer?</AnchorHeading>
           <p className="text-gray-700 mb-3">
             OutLayer lets you run <strong>any off-chain code</strong> (random numbers, HTTP requests, AI models, heavy computations)
             and get the result back in your NEAR smart contract using NEAR&apos;s <strong>yield/resume mechanism</strong>.
@@ -19,7 +63,7 @@ export default function GettingStartedSection() {
         </section>
 
         <section id="how-yield-resume-works">
-          <h3 className="text-xl font-semibold mb-3">How Yield/Resume Works on NEAR</h3>
+          <AnchorHeading id="how-yield-resume-works">How Yield/Resume Works on NEAR</AnchorHeading>
           <p className="text-gray-700 mb-3">
             NEAR Protocol&apos;s yield/resume feature allows smart contracts to <strong>pause execution</strong>, wait for external
             computation to complete, then <strong>resume with the result</strong> - all within a single logical transaction.
@@ -210,7 +254,7 @@ export default function GettingStartedSection() {
         </section>
 
         <section id="why-outlayer">
-          <h3 className="text-xl font-semibold mb-3">Why OutLayer Makes This Easy</h3>
+          <AnchorHeading id="why-outlayer">Why OutLayer Makes This Easy</AnchorHeading>
           <div className="space-y-3">
             <div className="bg-gray-50 p-4 rounded-lg border-l-4 border-orange-400">
               <p className="text-sm text-gray-700">
@@ -245,7 +289,7 @@ export default function GettingStartedSection() {
         </section>
 
         <section id="quick-start">
-          <h3 className="text-xl font-semibold mb-3">Quick Start: 4 Steps</h3>
+          <AnchorHeading id="quick-start">Quick Start: 4 Steps</AnchorHeading>
           <div className="space-y-4">
             <div className="bg-white border-2 border-gray-200 rounded-lg p-4">
               <h4 className="font-semibold text-gray-800 mb-2">1️⃣ Write WASI Code</h4>
@@ -300,7 +344,7 @@ export default function GettingStartedSection() {
         </section>
 
         <section id="secrets">
-          <h3 className="text-xl font-semibold mb-3">Need API Keys or Secrets?</h3>
+          <AnchorHeading id="secrets">Need API Keys or Secrets?</AnchorHeading>
           <p className="text-gray-700 mb-3">
             Store encrypted secrets on-chain with access control (whitelists, NEAR balance checks, NFT ownership, etc).
             OutLayer workers decrypt and inject them as environment variables - your WASM code accesses them via <code className="bg-gray-100 px-2 py-1 rounded">std::env::var()</code>.
@@ -314,7 +358,7 @@ export default function GettingStartedSection() {
         </section>
 
         <section id="payment">
-          <h3 className="text-xl font-semibold mb-3">Payment & Pricing</h3>
+          <AnchorHeading id="payment">Payment & Pricing</AnchorHeading>
           <p className="text-gray-700 mb-3">
             Attach NEAR tokens when calling <code className="bg-gray-100 px-2 py-1 rounded">request_execution</code>.
             Cost = base fee + (actual instructions used × price) + (execution time × price).
@@ -327,8 +371,8 @@ export default function GettingStartedSection() {
           </ul>
         </section>
 
-        <section>
-          <h3 className="text-xl font-semibold mb-3">Ready to Build?</h3>
+        <section id="ready-to-build">
+          <AnchorHeading id="ready-to-build">Ready to Build?</AnchorHeading>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <Link href="/docs/dev-guide" className="block bg-gradient-to-br from-orange-50 to-red-50 border-2 border-orange-200 rounded-lg p-4 hover:shadow-lg transition-shadow">
               <h4 className="font-semibold text-gray-800 mb-2">📖 Developer Guide</h4>

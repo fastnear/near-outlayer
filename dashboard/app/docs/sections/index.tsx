@@ -1,9 +1,53 @@
+'use client';
+
 import Link from 'next/link';
+import { useEffect } from 'react';
 
 export { default as GettingStartedSection } from './GettingStarted';
 export { default as DeveloperGuideSection } from './DeveloperGuide';
 
+// Anchor heading component with clickable link
+function AnchorHeading({ id, children }: { id: string; children: React.ReactNode }) {
+  const handleClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const element = document.getElementById(id);
+    if (element) {
+      element.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      window.history.pushState(null, '', `#${id}`);
+    }
+  };
+
+  return (
+    <h3 id={id} className="text-xl font-semibold mb-3 group relative">
+      <a href={`#${id}`} onClick={handleClick} className="hover:text-[var(--primary-orange)] transition-colors">
+        {children}
+        <span className="absolute -left-6 opacity-0 group-hover:opacity-100 transition-opacity text-gray-400">#</span>
+      </a>
+    </h3>
+  );
+}
+
+// Hook to handle hash navigation on page load
+function useHashNavigation() {
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const hash = window.location.hash.slice(1);
+    if (hash) {
+      // Delay to ensure content is rendered
+      setTimeout(() => {
+        const element = document.getElementById(hash);
+        if (element) {
+          element.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }, 100);
+    }
+  }, []);
+}
+
 export function ContractIntegrationSection() {
+  useHashNavigation();
+
   return (
     <div className="prose max-w-none">
       <h2 className="text-3xl font-bold mb-6 text-[var(--primary-orange)]">Contract Integration</h2>
@@ -14,7 +58,7 @@ export function ContractIntegrationSection() {
 
       <div className="space-y-8">
         <section id="request-execution">
-          <h3 className="text-xl font-semibold mb-3">Method: request_execution</h3>
+          <AnchorHeading id="request-execution">Method: request_execution</AnchorHeading>
           <p className="text-gray-700 mb-4">
             Call <code className="bg-gray-100 px-2 py-1 rounded">outlayer.testnet</code> (testnet) or <code className="bg-gray-100 px-2 py-1 rounded">outlayer.near</code> (mainnet)
           </p>
@@ -83,7 +127,7 @@ export function ContractIntegrationSection() {
         </section>
 
         <section id="callback">
-          <h3 className="text-xl font-semibold mb-3">What You Get Back (Callback)</h3>
+          <AnchorHeading id="callback">What You Get Back (Callback)</AnchorHeading>
           <p className="text-gray-700 mb-3">
             OutLayer reads <strong>stdout</strong> from your WASM code and returns it to your contract&apos;s callback.
             You can write anything to stdout - a number, text, JSON object - and parse it however you want.
@@ -102,7 +146,7 @@ export function ContractIntegrationSection() {
         </section>
 
         <section id="pricing-payment">
-          <h3 className="text-xl font-semibold mb-3">Pricing & Payment</h3>
+          <AnchorHeading id="pricing-payment">Pricing & Payment</AnchorHeading>
           <p className="text-gray-700 mb-3">
             Attach NEAR tokens when calling <code className="bg-gray-100 px-2 py-1 rounded">request_execution</code>. Cost is calculated dynamically based on resources used:
           </p>
@@ -115,7 +159,7 @@ export function ContractIntegrationSection() {
         </section>
 
         <section id="performance">
-          <h3 className="text-xl font-semibold mb-3">Performance Tips</h3>
+          <AnchorHeading id="performance">Performance Tips</AnchorHeading>
           <div className="bg-blue-50 border-l-4 border-blue-500 p-4">
             <p className="text-sm text-gray-700 mb-2">
               <strong>GitHub compilation:</strong> ~10 seconds for simple projects, up to few minutes for complex ones (full Rust build with dependencies)
@@ -134,13 +178,15 @@ export function ContractIntegrationSection() {
 }
 
 export function WasiSection() {
+  useHashNavigation();
+
   return (
     <div className="prose max-w-none">
       <h2 className="text-3xl font-bold mb-6 text-[var(--primary-orange)]">Writing WASI Code</h2>
 
       <div className="space-y-6">
         <section id="what-is-wasi">
-          <h3 className="text-xl font-semibold mb-3">What is WASI?</h3>
+          <AnchorHeading id="what-is-wasi">What is WASI?</AnchorHeading>
           <p className="text-gray-700 mb-3">
             <strong>WASI</strong> (WebAssembly System Interface) is a standardized API that allows WebAssembly modules to interact with the outside world - read files, access environment variables, make network requests, and generate random numbers.
           </p>
@@ -150,7 +196,7 @@ export function WasiSection() {
         </section>
 
         <section id="supported-languages">
-          <h3 className="text-xl font-semibold mb-3">Supported Languages</h3>
+          <AnchorHeading id="supported-languages">Supported Languages</AnchorHeading>
           <p className="text-gray-700">
             Any language that compiles to WASM with WASI support: Rust, C/C++, Go, AssemblyScript, and more.
             Rust is recommended for best tooling and ecosystem support.
@@ -158,7 +204,7 @@ export function WasiSection() {
         </section>
 
         <section id="wasi-preview">
-          <h3 className="text-xl font-semibold mb-3">WASI Preview 1 vs Preview 2</h3>
+          <AnchorHeading id="wasi-preview">WASI Preview 1 vs Preview 2</AnchorHeading>
           <p className="text-gray-700 mb-3">
             OutLayer supports both WASI P1 and P2 standards. Choose based on your requirements:
           </p>
@@ -190,7 +236,7 @@ export function WasiSection() {
         </section>
 
         <section id="wasi-interface">
-          <h3 className="text-xl font-semibold mb-3">WASI Interface</h3>
+          <AnchorHeading id="wasi-interface">WASI Interface</AnchorHeading>
           <p className="text-gray-700">
             OutLayer provides a minimal WASI environment with support for:
           </p>
@@ -205,7 +251,7 @@ export function WasiSection() {
         </section>
 
         <section id="critical-requirements">
-          <h3 className="text-xl font-semibold mb-3">Critical Requirements</h3>
+          <AnchorHeading id="critical-requirements">Critical Requirements</AnchorHeading>
           <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4">
             <ul className="list-disc list-inside space-y-2 text-gray-700">
               <li><strong>Binary format:</strong> Must use <code className="bg-gray-100 px-2 py-1 rounded">[[bin]]</code> in Cargo.toml, NOT <code className="bg-gray-100 px-2 py-1 rounded">[lib]</code></li>
@@ -220,7 +266,7 @@ export function WasiSection() {
         </section>
 
         <section id="working-examples">
-          <h3 className="text-xl font-semibold mb-3">Working Examples</h3>
+          <AnchorHeading id="working-examples">Working Examples</AnchorHeading>
           <p className="text-gray-700 mb-4">
             We provide 8 complete, open-source examples demonstrating different WASI patterns:
           </p>
@@ -323,7 +369,7 @@ export function WasiSection() {
         </section>
 
         <section id="resource-considerations">
-          <h3 className="text-xl font-semibold mb-3">Resource Considerations</h3>
+          <AnchorHeading id="resource-considerations">Resource Considerations</AnchorHeading>
           <p className="text-gray-700">
             Be mindful of resource limits: instruction counts, memory usage, and execution time. Optimize your code
             to stay within requested limits to avoid failures and minimize costs.
@@ -337,7 +383,7 @@ export function WasiSection() {
         </section>
 
         <section id="testing-locally">
-          <h3 className="text-xl font-semibold mb-3">Testing Locally</h3>
+          <AnchorHeading id="testing-locally">Testing Locally</AnchorHeading>
 
           <h4 className="text-lg font-semibold mb-2 mt-4">Option 1: WASI Test Runner (Recommended)</h4>
           <p className="text-gray-700 mb-3">
@@ -402,7 +448,7 @@ echo '{"message":"test"}' | wasmtime --env SECRET=my-key your-app.wasm`}
         </section>
 
         <section id="common-pitfalls">
-          <h3 className="text-xl font-semibold mb-3">Common Pitfalls</h3>
+          <AnchorHeading id="common-pitfalls">Common Pitfalls</AnchorHeading>
           <div className="space-y-3">
             <div className="bg-red-50 border-l-4 border-red-400 p-3">
               <strong className="text-red-800">Error: &quot;entry symbol not defined: _initialize&quot;</strong>
@@ -424,7 +470,7 @@ echo '{"message":"test"}' | wasmtime --env SECRET=my-key your-app.wasm`}
         </section>
 
         <section id="next-steps">
-          <h3 className="text-xl font-semibold mb-3">Next Steps</h3>
+          <AnchorHeading id="next-steps">Next Steps</AnchorHeading>
           <ul className="list-disc list-inside space-y-2 text-gray-700">
             <li>Explore <Link href="/docs/examples" className="text-[var(--primary-orange)] hover:underline font-semibold">working examples</Link> with complete source code and deployment guides</li>
             <li>Read the <a href="https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/WASI_TUTORIAL.md" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">complete WASI tutorial</a></li>
@@ -442,13 +488,15 @@ echo '{"message":"test"}' | wasmtime --env SECRET=my-key your-app.wasm`}
 }
 
 export function SecretsSection() {
+  useHashNavigation();
+
   return (
     <div className="prose max-w-none">
       <h2 className="text-3xl font-bold mb-6 text-[var(--primary-orange)]">Managing Secrets</h2>
 
       <div className="space-y-6">
         <section id="what-are-secrets">
-          <h3 className="text-xl font-semibold mb-3">What are Secrets?</h3>
+          <AnchorHeading id="what-are-secrets">What are Secrets?</AnchorHeading>
           <p className="text-gray-700">
             Secrets are encrypted API keys, tokens, or sensitive data stored on-chain. They are automatically decrypted
             and injected as environment variables when your WASM code executes.
@@ -456,16 +504,52 @@ export function SecretsSection() {
         </section>
 
         <section id="creating-secrets">
-          <h3 className="text-xl font-semibold mb-3">Creating Secrets</h3>
-          <p className="text-gray-700">
+          <AnchorHeading id="creating-secrets">Creating Secrets</AnchorHeading>
+          <p className="text-gray-700 mb-3">
             Use the <Link href="/secrets" className="text-[var(--primary-orange)] hover:underline">Secrets</Link> page
             to create encrypted secrets. Specify repository, branch (optional), and profile name. Secrets are encrypted
             client-side before being stored on-chain.
           </p>
+
+          <div className="bg-gray-50 p-4 rounded-lg mt-3">
+            <h4 className="font-semibold mb-2 text-gray-800">Two Ways to Create Secrets:</h4>
+
+            <div className="space-y-3">
+              <div className="border-l-4 border-blue-400 pl-3">
+                <p className="font-semibold text-gray-800 mb-1">1. Manual Secrets</p>
+                <p className="text-sm text-gray-700 mb-2">Provide key-value pairs directly (e.g., API keys you already have)</p>
+                <ul className="list-disc list-inside text-sm text-gray-700 ml-4">
+                  <li>Encrypted client-side with ChaCha20-Poly1305</li>
+                  <li>Example: <code className="bg-gray-100 px-2 py-1 rounded">{`{"OPENAI_KEY": "sk-..."}`}</code></li>
+                  <li className="text-amber-700">⚠️ Cannot use <code className="bg-amber-100 px-1 rounded">PROTECTED_*</code> prefix (reserved for auto-generated)</li>
+                </ul>
+              </div>
+
+              <div className="border-l-4 border-green-400 pl-3">
+                <p className="font-semibold text-gray-800 mb-1">2. Auto-Generated Secrets</p>
+                <p className="text-sm text-gray-700 mb-2">Generate cryptographically secure secrets in TEE without seeing their values</p>
+                <ul className="list-disc list-inside text-sm text-gray-700 ml-4">
+                  <li>Generated inside TEE (nobody ever sees the value)</li>
+                  <li>Perfect for master keys, signing keys, encryption keys</li>
+                  <li className="text-green-700">✅ Must start with <code className="bg-green-100 px-1 rounded">PROTECTED_*</code> prefix (proves TEE generation)</li>
+                  <li>Example: <code className="bg-gray-100 px-2 py-1 rounded">PROTECTED_MASTER_KEY</code></li>
+                  <li>Types: hex32/64, ED25519, password:N</li>
+                </ul>
+              </div>
+            </div>
+
+            <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded">
+              <p className="text-sm text-blue-900 font-medium mb-1">🔐 Naming Convention for Trust</p>
+              <p className="text-xs text-blue-800">
+                The <code className="bg-blue-100 px-1 rounded">PROTECTED_*</code> prefix proves a secret was generated in TEE and never seen by anyone (including developers).
+                Manual secrets cannot use this prefix - enforced by keystore validation.
+              </p>
+            </div>
+          </div>
         </section>
 
         <section id="access-control">
-          <h3 className="text-xl font-semibold mb-3">Access Control</h3>
+          <AnchorHeading id="access-control">Access Control</AnchorHeading>
           <p className="text-gray-700">
             Control who can decrypt your secrets using flexible access conditions:
           </p>
@@ -480,7 +564,7 @@ export function SecretsSection() {
         </section>
 
         <section id="using-secrets">
-          <h3 className="text-xl font-semibold mb-3">Using Secrets in Code</h3>
+          <AnchorHeading id="using-secrets">Using Secrets in Code</AnchorHeading>
           <p className="text-gray-700">
             Access secrets in your WASM code using standard environment variable functions. In Rust:
             <code className="bg-gray-100 px-2 py-1 rounded ml-1">std::env::var(&quot;API_KEY&quot;)</code>
@@ -488,7 +572,7 @@ export function SecretsSection() {
         </section>
 
         <section id="storage-costs">
-          <h3 className="text-xl font-semibold mb-3">Storage Costs</h3>
+          <AnchorHeading id="storage-costs">Storage Costs</AnchorHeading>
           <p className="text-gray-700">
             Secrets storage costs are proportional to data size plus indexing overhead (~64 bytes). Storage fees
             are refunded when you delete secrets.
@@ -496,7 +580,7 @@ export function SecretsSection() {
         </section>
 
         <section id="security-model">
-          <h3 className="text-xl font-semibold mb-3">Security Model</h3>
+          <AnchorHeading id="security-model">Security Model</AnchorHeading>
           <p className="text-gray-700">
             Secrets are encrypted with XOR (MVP phase) and will be upgraded to ChaCha20-Poly1305 in production.
             Decryption happens in TEE workers with attestation verification. Your secrets never leave the secure enclave.
@@ -508,13 +592,15 @@ export function SecretsSection() {
 }
 
 export function PricingSection() {
+  useHashNavigation();
+
   return (
     <div className="prose max-w-none">
       <h2 className="text-3xl font-bold mb-6 text-[var(--primary-orange)]">Pricing & Limits</h2>
 
       <div className="space-y-6">
         <section id="dynamic-pricing">
-          <h3 className="text-xl font-semibold mb-3">Dynamic Pricing Model</h3>
+          <AnchorHeading id="dynamic-pricing">Dynamic Pricing Model</AnchorHeading>
           <p className="text-gray-700">
             Pay only for resources you use. Pricing is based on requested resource limits, not fixed fees.
             Excess payment is automatically refunded after execution.
@@ -522,7 +608,7 @@ export function PricingSection() {
         </section>
 
         <section id="cost-calculation">
-          <h3 className="text-xl font-semibold mb-3">Cost Calculation</h3>
+          <AnchorHeading id="cost-calculation">Cost Calculation</AnchorHeading>
           <p className="text-gray-700">
             Execution cost = <code className="bg-gray-100 px-2 py-1 rounded">base_fee + (instructions × instruction_rate) + (time_ms × time_rate)</code>
           </p>
@@ -533,7 +619,7 @@ export function PricingSection() {
         </section>
 
         <section id="resource-limits">
-          <h3 className="text-xl font-semibold mb-3">Resource Limits</h3>
+          <AnchorHeading id="resource-limits">Resource Limits</AnchorHeading>
           <ul className="list-disc list-inside space-y-2 text-gray-700">
             <li><strong>Max Instructions:</strong> 100 billion instructions per execution</li>
             <li><strong>Max Memory:</strong> Configurable up to platform limits</li>
@@ -543,7 +629,7 @@ export function PricingSection() {
         </section>
 
         <section id="refund-policy">
-          <h3 className="text-xl font-semibold mb-3">Refund Policy</h3>
+          <AnchorHeading id="refund-policy">Refund Policy</AnchorHeading>
           <p className="text-gray-700">
             If your execution uses less resources than requested, the difference is automatically refunded.
             However, failed executions are not refunded (anti-DoS protection).
@@ -551,7 +637,7 @@ export function PricingSection() {
         </section>
 
         <section id="optimization-tips">
-          <h3 className="text-xl font-semibold mb-3">Optimization Tips</h3>
+          <AnchorHeading id="optimization-tips">Optimization Tips</AnchorHeading>
           <ul className="list-disc list-inside space-y-2 text-gray-700">
             <li>Request only the resources you need to minimize upfront costs</li>
             <li>Optimize your WASM code to reduce instruction count</li>
@@ -565,13 +651,15 @@ export function PricingSection() {
 }
 
 export function ArchitectureSection() {
+  useHashNavigation();
+
   return (
     <div className="prose max-w-none">
       <h2 className="text-3xl font-bold mb-6 text-[var(--primary-orange)]">Architecture</h2>
 
       <div className="space-y-6">
         <section id="system-components">
-          <h3 className="text-xl font-semibold mb-3">System Components</h3>
+          <AnchorHeading id="system-components">System Components</AnchorHeading>
           <ul className="list-disc list-inside space-y-2 text-gray-700">
             <li><strong>Smart Contract:</strong> On-chain state management, payment handling, and event emission (outlayer.near / outlayer.testnet)</li>
             <li><strong>Coordinator API:</strong> Task queue management, WASM caching, and distributed locking</li>
@@ -581,7 +669,7 @@ export function ArchitectureSection() {
         </section>
 
         <section id="execution-flow">
-          <h3 className="text-xl font-semibold mb-3">Execution Flow</h3>
+          <AnchorHeading id="execution-flow">Execution Flow</AnchorHeading>
           <ol className="list-decimal list-inside space-y-2 text-gray-700">
             <li>Smart contract calls <code className="bg-gray-100 px-2 py-1 rounded">outlayer.near</code> / <code className="bg-gray-100 px-2 py-1 rounded">outlayer.testnet</code> with execution request</li>
             <li>Contract emits event and enters yield state</li>
@@ -595,7 +683,7 @@ export function ArchitectureSection() {
         </section>
 
         <section id="security-guarantees">
-          <h3 className="text-xl font-semibold mb-3">Security Guarantees</h3>
+          <AnchorHeading id="security-guarantees">Security Guarantees</AnchorHeading>
           <ul className="list-disc list-inside space-y-2 text-gray-700">
             <li><strong>TEE Execution:</strong> Code runs in Trusted Execution Environments with attestation</li>
             <li><strong>Encrypted Secrets:</strong> Secrets are encrypted at rest and decrypted only in TEE</li>
@@ -605,7 +693,7 @@ export function ArchitectureSection() {
         </section>
 
         <section id="scalability">
-          <h3 className="text-xl font-semibold mb-3">Scalability</h3>
+          <AnchorHeading id="scalability">Scalability</AnchorHeading>
           <p className="text-gray-700">
             OutLayer scales horizontally by adding more workers. Workers are stateless and coordinate through the
             Coordinator API. Task distribution is handled via Redis queues with automatic load balancing.
@@ -613,7 +701,7 @@ export function ArchitectureSection() {
         </section>
 
         <section id="wasm-caching">
-          <h3 className="text-xl font-semibold mb-3">WASM Caching Strategy</h3>
+          <AnchorHeading id="wasm-caching">WASM Caching Strategy</AnchorHeading>
           <ul className="list-disc list-inside space-y-2 text-gray-700">
             <li><strong>First execution:</strong> Compile from GitHub (10-300 seconds)</li>
             <li><strong>Subsequent executions:</strong> Load from coordinator cache (~1-2 seconds)</li>
@@ -623,7 +711,7 @@ export function ArchitectureSection() {
         </section>
 
         <section id="high-availability">
-          <h3 className="text-xl font-semibold mb-3">High Availability</h3>
+          <AnchorHeading id="high-availability">High Availability</AnchorHeading>
           <p className="text-gray-700">
             Multiple independent workers monitor for events. If one worker fails, others can pick up the task.
             Automatic failover ensures execution continues even if some workers are offline.

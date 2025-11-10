@@ -504,7 +504,7 @@ pub struct GeneratedSecretSpec {
 #[derive(Debug, Serialize)]
 pub struct AddGeneratedSecretResponse {
     pub encrypted_data_base64: String,
-    pub generated_keys: Vec<String>,
+    pub all_keys: Vec<String>,
 }
 
 pub async fn add_generated_secret(
@@ -604,7 +604,7 @@ pub async fn add_generated_secret(
     #[derive(Deserialize)]
     struct KeystoreResponse {
         encrypted_data_base64: String,
-        generated_keys: Vec<String>,
+        all_keys: Vec<String>,
     }
 
     let keystore_data: KeystoreResponse = keystore_response.json().await.map_err(|e| {
@@ -618,7 +618,7 @@ pub async fn add_generated_secret(
         StatusCode::OK,
         Json(AddGeneratedSecretResponse {
             encrypted_data_base64: keystore_data.encrypted_data_base64,
-            generated_keys: keystore_data.generated_keys,
+            all_keys: keystore_data.all_keys,
         }),
     ))
 }

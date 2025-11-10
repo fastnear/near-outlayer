@@ -207,11 +207,14 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
 
         const data = await response.json();
 
-        // Store generated keys for display
-        setGeneratedKeys(data.generated_keys || []);
+        // Use all_keys from keystore response (authoritative source)
+        const allKeys: string[] = data.all_keys || [];
 
-        console.log('🔑 GENERATED SECRETS:', {
-          generated_keys: data.generated_keys,
+        setGeneratedKeys(allKeys);
+
+        console.log('🔑 ENCRYPTED SECRETS:', {
+          total_keys: allKeys.length,
+          all_keys: allKeys,
           encrypted_data_length: data.encrypted_data_base64.length,
         });
 
@@ -381,6 +384,9 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
           <p className="mt-1 text-xs text-gray-500">
             JSON object with key-value pairs. Keys will be available as environment variables in WASM execution.
           </p>
+          <p className="mt-1 text-xs text-amber-600">
+            ⚠️ Cannot use <code className="bg-amber-100 px-1 rounded">PROTECTED_*</code> prefix (reserved for auto-generated secrets)
+          </p>
         </div>
 
         {/* Secrets to Generate */}
@@ -391,6 +397,9 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
           <p className="text-xs text-gray-600 mb-2">
             Auto-generate cryptographically secure secrets without seeing their values. Perfect for MASTER_KEY, API tokens, passwords, and ED25519 keys.
           </p>
+          <p className="text-xs text-green-600 mb-2">
+            ✅ Must start with <code className="bg-green-100 px-1 rounded">PROTECTED_*</code> prefix (proves secret was generated in TEE)
+          </p>
 
           {secretsToGenerate.length > 0 && (
             <div className="space-y-2 mb-2">
@@ -400,7 +409,7 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
                     type="text"
                     value={secret.name}
                     onChange={(e) => updateSecretRow(secret.id, 'name', e.target.value)}
-                    placeholder="Secret name (e.g., MASTER_KEY)"
+                    placeholder="e.g., PROTECTED_MASTER_KEY"
                     className="flex-1 px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
                     disabled={encrypting}
                   />
@@ -437,11 +446,11 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
           </button>
         </div>
 
-        {/* Generated Keys Display */}
+        {/* All Encrypted Keys Display */}
         {generatedKeys.length > 0 && (
           <div className="mb-4 bg-green-50 border border-green-200 rounded-lg p-4">
             <h3 className="text-sm font-medium text-green-900 mb-2">
-              ✅ Generated Keys (never shown again)
+              ✅ Encrypted Keys ({generatedKeys.length} total)
             </h3>
             <ul className="text-xs text-green-800 space-y-1 list-disc list-inside">
               {generatedKeys.map((key) => (
@@ -449,7 +458,7 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
               ))}
             </ul>
             <p className="mt-2 text-xs text-green-700">
-              These secrets are now encrypted and stored. You cannot retrieve their values later.
+              All secrets are now encrypted and stored. You cannot retrieve their values later.
             </p>
           </div>
         )}

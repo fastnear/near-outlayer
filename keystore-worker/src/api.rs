@@ -142,8 +142,8 @@ pub struct AddGeneratedSecretResponse {
     /// Updated encrypted secrets (base64)
     pub encrypted_data_base64: String,
 
-    /// List of generated key names (for UI display)
-    pub generated_keys: Vec<String>,
+    /// List of ALL secret key names after merge (for verification)
+    pub all_keys: Vec<String>,
 }
 
 /// Health check response
@@ -222,6 +222,24 @@ async fn pubkey_handler(
             These environment variables are automatically set by OutLayer worker. \
             Please use different key names.",
             reserved_found.join(", ")
+        )));
+    }
+
+    // Check for PROTECTED_ prefix in manual secrets (reserved for generated secrets)
+    let protected_manual_keys: Vec<&str> = secrets_map.keys()
+        .filter(|k| k.starts_with("PROTECTED_"))
+        .map(|k| k.as_str())
+        .collect();
+
+    if !protected_manual_keys.is_empty() {
+        tracing::warn!(
+            protected_keys = ?protected_manual_keys,
+            "Rejected manual secrets with PROTECTED_ prefix"
+        );
+        return Err(ApiError::BadRequest(format!(
+            "Manual secrets cannot use 'PROTECTED_' prefix (reserved for auto-generated secrets): {}. \
+            This prefix proves that a secret was generated in TEE and never seen by anyone.",
+            protected_manual_keys.join(", ")
         )));
     }
 
@@ -444,6 +462,32 @@ async fn add_generated_secret_handler(
         "Decrypted existing secrets"
     );
 
+    // Validate that manual secrets don't use PROTECTED_ prefix
+    let protected_manual_keys: Vec<&String> = secrets_map.keys()
+        .filter(|k| k.starts_with("PROTECTED_"))
+        .collect();
+
+    if !protected_manual_keys.is_empty() {
+        return Err(ApiError::BadRequest(format!(
+            "Manual secrets cannot use 'PROTECTED_' prefix (reserved for auto-generated secrets): {}",
+            protected_manual_keys.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(", ")
+        )));
+    }
+
+    // Validate generated secret names MUST start with PROTECTED_
+    let missing_prefix: Vec<&String> = req.new_secrets.iter()
+        .map(|s| &s.name)
+        .filter(|name| !name.starts_with("PROTECTED_"))
+        .collect();
+
+    if !missing_prefix.is_empty() {
+        return Err(ApiError::BadRequest(format!(
+            "Generated secrets must start with 'PROTECTED_' prefix: {}. \
+            This prefix proves that secrets were generated in TEE and never seen by anyone.",
+            missing_prefix.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(", ")
+        )));
+    }
+
     // 2. Check for collisions BEFORE generating
     let mut collisions: Vec<String> = Vec::new();
     for spec in &req.new_secrets {
@@ -526,17 +570,21 @@ async fn add_generated_secret_handler(
 
     let encrypted_base64 = base64::encode(&encrypted_bytes);
 
+    // Get all secret keys for verification
+    let all_secret_keys: Vec<String> = secrets_map.keys().cloned().collect();
+
     tracing::info!(
         seed = %req.seed,
         total_secrets = secrets_map.len(),
-        generated_count = generated_keys.len(),
+        newly_generated_count = generated_keys.len(),
         encrypted_size = encrypted_bytes.len(),
+        all_keys = ?all_secret_keys,
         "Successfully added generated secrets"
     );
 
     Ok(Json(AddGeneratedSecretResponse {
         encrypted_data_base64: encrypted_base64,
-        generated_keys,
+        all_keys: all_secret_keys,
     }))
 }
 

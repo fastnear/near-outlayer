@@ -101,6 +101,8 @@ export default function DocsLayout({
     const element = document.getElementById(sectionId);
     if (element) {
       element.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      // Update URL with hash
+      window.history.pushState(null, '', `#${sectionId}`);
     }
   };
 
