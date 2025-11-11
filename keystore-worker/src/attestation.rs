@@ -37,9 +37,11 @@ pub struct ExpectedMeasurements {
     pub code_hash: Vec<String>,
 
     /// Expected signer (MR_SIGNER for SGX)
+    #[allow(dead_code)]
     pub signer_hash: Option<Vec<String>>,
 
     /// Minimum security version
+    #[allow(dead_code)]
     pub min_security_version: u32,
 }
 
@@ -183,6 +185,7 @@ fn verify_simulated_attestation(
 /// Generate simulated attestation (for testing)
 ///
 /// This is used by executor workers in simulated mode
+#[allow(dead_code)]
 pub fn generate_simulated_attestation(worker_code_path: &str) -> Result<Attestation> {
     let code = std::fs::read(worker_code_path)
         .context("Failed to read worker binary")?;

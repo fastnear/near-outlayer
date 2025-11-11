@@ -11,6 +11,7 @@ use rand::{rngs::OsRng, RngCore, Rng};
 pub const GENERATION_PREFIX: &str = "generate_outlayer_secret:";
 
 /// Check if a value is a generation directive
+#[allow(dead_code)]
 pub fn is_generation_directive(value: &str) -> bool {
     value.starts_with(GENERATION_PREFIX)
 }

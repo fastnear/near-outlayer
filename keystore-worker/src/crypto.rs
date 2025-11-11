@@ -141,6 +141,7 @@ impl Keystore {
     }
 
     /// Get public key as base58 string (NEAR format) for a specific seed
+    #[allow(dead_code)]
     pub fn public_key_base58(&self, seed: &str) -> Result<String> {
         let verifying_key = self.get_public_key_for_seed(seed)?;
         Ok(bs58::encode(verifying_key.as_bytes()).into_string())
@@ -215,12 +216,14 @@ impl Keystore {
     }
 
     /// Sign a message with the private key for a specific seed
+    #[allow(dead_code)]
     pub fn sign(&self, seed: &str, message: &[u8]) -> Result<Signature> {
         let (signing_key, _) = self.derive_keypair(seed)?;
         Ok(signing_key.sign(message))
     }
 
     /// Verify a signature for a specific seed
+    #[allow(dead_code)]
     pub fn verify(&self, seed: &str, message: &[u8], signature: &Signature) -> Result<()> {
         let (_, verifying_key) = self.derive_keypair(seed)?;
         verifying_key
@@ -229,6 +232,7 @@ impl Keystore {
     }
 
     /// Clear the keypair cache (for testing or memory management)
+    #[allow(dead_code)]
     pub fn clear_cache(&self) {
         let mut cache = self.keypair_cache.write().unwrap();
         cache.clear();
@@ -239,6 +243,7 @@ impl Keystore {
 /// Encrypt data for the keystore with a specific public key (used by clients)
 ///
 /// This should be implemented on the client side (executor workers, contract callers)
+#[allow(dead_code)]
 pub fn encrypt_for_keystore(pubkey_hex: &str, plaintext: &[u8]) -> Result<Vec<u8>> {
     let pubkey_bytes = hex::decode(pubkey_hex).context("Invalid hex public key")?;
 

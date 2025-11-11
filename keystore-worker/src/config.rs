@@ -11,9 +11,11 @@ pub struct Config {
     pub server_addr: SocketAddr,
 
     /// NEAR network (testnet, mainnet)
+    #[allow(dead_code)]
     pub near_network: String,
 
     /// NEAR RPC URL
+    #[allow(dead_code)]
     pub near_rpc_url: String,
 
     /// OffchainVM contract account ID
