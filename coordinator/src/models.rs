@@ -179,11 +179,8 @@ mod tests {
             build_target: "wasm32-wasip1".to_string(),
         };
         let normalized = source.normalize();
-        if let CodeSource::GitHub { repo, .. } = normalized {
-            assert_eq!(repo, "https://github.com/alice/project");
-        } else {
-            panic!("Expected GitHub variant");
-        }
+        let CodeSource::GitHub { repo, .. } = normalized;
+        assert_eq!(repo, "https://github.com/alice/project");
     }
 
     #[test]
@@ -194,11 +191,8 @@ mod tests {
             build_target: "wasm32-wasip1".to_string(),
         };
         let normalized = source.normalize();
-        if let CodeSource::GitHub { repo, .. } = normalized {
-            assert_eq!(repo, "http://github.com/alice/project");
-        } else {
-            panic!("Expected GitHub variant");
-        }
+        let CodeSource::GitHub { repo, .. } = normalized;
+        assert_eq!(repo, "http://github.com/alice/project");
     }
 
     #[test]
@@ -209,11 +203,8 @@ mod tests {
             build_target: "wasm32-wasip1".to_string(),
         };
         let normalized = source.normalize();
-        if let CodeSource::GitHub { repo, .. } = normalized {
-            assert_eq!(repo, "https://github.com/alice/project");
-        } else {
-            panic!("Expected GitHub variant");
-        }
+        let CodeSource::GitHub { repo, .. } = normalized;
+        assert_eq!(repo, "https://github.com/alice/project");
     }
 
     #[test]
@@ -224,11 +215,8 @@ mod tests {
             build_target: "wasm32-wasip1".to_string(),
         };
         let normalized = source.normalize();
-        if let CodeSource::GitHub { repo, .. } = normalized {
-            assert_eq!(repo, "https://github.com/alice/project");
-        } else {
-            panic!("Expected GitHub variant");
-        }
+        let CodeSource::GitHub { repo, .. } = normalized;
+        assert_eq!(repo, "https://github.com/alice/project");
     }
 
     #[test]
@@ -239,12 +227,9 @@ mod tests {
             build_target: "wasm32-wasip1".to_string(),
         };
         let normalized = source.normalize();
-        if let CodeSource::GitHub { repo, .. } = normalized {
-            // Invalid format should remain unchanged
-            assert_eq!(repo, "invalid");
-        } else {
-            panic!("Expected GitHub variant");
-        }
+        let CodeSource::GitHub { repo, .. } = normalized;
+        // Invalid format should remain unchanged
+        assert_eq!(repo, "invalid");
     }
 }
 
@@ -288,6 +273,7 @@ pub enum ExecutionOutput {
 pub struct CompleteJobRequest {
     pub job_id: i64,
     pub success: bool,
+    #[allow(dead_code)]
     pub output: Option<ExecutionOutput>,
     pub error: Option<String>,
     pub time_ms: u64,
@@ -305,6 +291,7 @@ pub struct CompleteJobRequest {
 }
 
 /// Legacy: Complete task request
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct CompleteTaskRequest {
     pub request_id: u64,
@@ -330,6 +317,7 @@ pub struct CompleteTaskRequest {
     pub github_commit: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct FailTaskRequest {
     pub request_id: u64,
@@ -343,6 +331,7 @@ pub struct ClaimJobRequest {
     pub data_id: String,
     pub worker_id: String,
     pub code_source: CodeSource,
+    #[allow(dead_code)]
     pub resource_limits: ResourceLimits,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_account_id: Option<String>,
