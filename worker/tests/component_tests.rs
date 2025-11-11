@@ -12,7 +12,7 @@ async fn test_executor_with_minimal_wasm() {
         0x01, 0x00, 0x00, 0x00, // version
     ];
 
-    let executor = Executor::new(1_000_000);
+    let executor = Executor::new(1_000_000, false);
     let limits = ResourceLimits {
         max_instructions: 1_000_000,
         max_memory_mb: 16,
@@ -35,7 +35,7 @@ async fn test_executor_with_minimal_wasm() {
 async fn test_executor_with_invalid_wasm() {
     let invalid_wasm = vec![0xFF, 0xFF, 0xFF, 0xFF]; // Invalid magic number
 
-    let executor = Executor::new(1_000_000);
+    let executor = Executor::new(1_000_000, false);
     let limits = ResourceLimits {
         max_instructions: 1_000_000,
         max_memory_mb: 16,
@@ -110,7 +110,7 @@ mod api_client_tests {
 
     #[test]
     fn test_base_url_trimming() {
-        let client = ApiClient::new(
+        let _client = ApiClient::new(
             "http://localhost:8080/".to_string(),
             "test-token".to_string(),
         )

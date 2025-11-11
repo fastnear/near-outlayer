@@ -7,7 +7,6 @@ mod keystore_client;
 mod near_client;
 
 use anyhow::{Context, Result};
-use std::collections::HashMap;
 use tracing::{error, info, warn};
 
 use api_client::{ApiClient, CodeSource, ExecutionResult, JobInfo, JobType};

@@ -100,12 +100,14 @@ struct ActionDetails {
 #[derive(Debug, Deserialize)]
 struct ExecutionOutcome {
     outcome: Option<Outcome>,
+    #[allow(dead_code)]
     id: Option<String>,  // receipt_id
 }
 
 #[derive(Debug, Deserialize)]
 struct Outcome {
     logs: Option<Vec<String>>,
+    #[allow(dead_code)]
     receipt_ids: Option<Vec<String>>,
     gas_burnt: Option<u64>,
 }
@@ -120,6 +122,7 @@ struct FastNearStatus {
 pub struct EventMonitor {
     api_client: ApiClient,
     neardata_api_url: String,
+    #[allow(dead_code)]
     fastnear_api_url: String,
     contract_id: AccountId,
     current_block: u64,

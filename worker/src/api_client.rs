@@ -255,6 +255,7 @@ impl ApiClient {
     /// * `user_account_id` - User who requested execution
     /// * `near_payment_yocto` - Payment amount in yoctoNEAR
     /// * `worker_id` - This worker's ID
+    #[allow(dead_code)]
     pub async fn complete_task(
         &self,
         request_id: u64,
@@ -327,6 +328,7 @@ impl ApiClient {
     /// # Arguments
     /// * `request_id` - ID of the execution request
     /// * `error` - Error message describing the failure
+    #[allow(dead_code)]
     pub async fn fail_task(&self, request_id: u64, error: String) -> Result<()> {
         let url = format!("{}/tasks/fail", self.base_url);
 

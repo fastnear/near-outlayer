@@ -17,6 +17,7 @@ pub struct Config {
     pub fastnear_api_url: String,
     pub start_block_height: u64,
     pub offchainvm_contract_id: AccountId,
+    #[allow(dead_code)]
     pub operator_account_id: AccountId,
     pub operator_signer: InMemorySigner,
 
@@ -34,7 +35,9 @@ pub struct Config {
 
     // WASM execution limits (defaults)
     pub default_max_instructions: u64,
+    #[allow(dead_code)]
     pub default_max_memory_mb: u32,
+    #[allow(dead_code)]
     pub default_max_execution_seconds: u64,
 
     // Keystore worker (optional - for secret decryption)

@@ -33,7 +33,7 @@ async fn test_wasm_execution() {
     use offchainvm_worker::executor::Executor;
     use offchainvm_worker::api_client::ResourceLimits;
 
-    let executor = Executor::new(10_000_000_000); // 10B instructions
+    let executor = Executor::new(10_000_000_000, true); // 10B instructions, print stderr
 
     let resource_limits = ResourceLimits {
         max_instructions: 10_000_000_000,
@@ -85,7 +85,7 @@ async fn test_minimal_wasm() {
     use offchainvm_worker::executor::Executor;
     use offchainvm_worker::api_client::ResourceLimits;
 
-    let executor = Executor::new(1_000_000);
+    let executor = Executor::new(1_000_000, false);
 
     let resource_limits = ResourceLimits {
         max_instructions: 1_000_000,

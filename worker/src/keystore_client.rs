@@ -124,6 +124,7 @@ impl KeystoreClient {
     }
 
     /// Get keystore public key (for testing/verification)
+    #[allow(dead_code)]
     pub async fn get_public_key(&self) -> Result<String> {
         let url = format!("{}/pubkey", self.base_url);
 

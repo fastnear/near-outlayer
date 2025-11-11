@@ -165,6 +165,7 @@ impl Compiler {
 
     /// OLD METHOD - kept for backward compatibility
     /// Compile WASM and upload to coordinator immediately
+    #[allow(dead_code)]
     pub async fn compile(&self, code_source: &CodeSource) -> Result<String> {
         let (checksum, wasm_bytes, _created_at) = self.compile_local(code_source, None).await?;
 

@@ -434,6 +434,7 @@ impl NearClient {
     }
 
     /// Call a contract method with explicit nonce
+    #[allow(dead_code)]
     async fn call_contract_method_with_nonce(
         &self,
         method_name: &str,
