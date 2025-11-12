@@ -173,7 +173,7 @@ cat ~/.near-credentials/testnet/your-account.testnet.json
 
 ```bash
 cd contract
-cargo build --target wasm32-unknown-unknown --release
+cargo near build non-reproducible-wasm
 ```
 
 ### 2. Deploy to Testnet
