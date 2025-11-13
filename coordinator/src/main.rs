@@ -153,7 +153,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             get(handlers::public::get_user_earnings),
         )
         // TODO Fix
-        .route("/public/api-keys", post(handlers::public::create_api_key))
+        // .route("/public/api-keys", post(handlers::public::create_api_key))
         .route("/github/resolve-branch", get(handlers::github::resolve_branch))
         .route("/secrets/pubkey", post(handlers::github::get_secrets_pubkey))
         .route("/secrets/add_generated_secret", post(handlers::github::add_generated_secret))
