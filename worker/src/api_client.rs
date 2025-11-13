@@ -1012,6 +1012,111 @@ impl ApiClient {
             }
         }
     }
+
+    /// Store task attestation in coordinator
+    ///
+    /// Sends TDX quote and task metadata to coordinator for public verification.
+    /// This endpoint requires worker auth token.
+    ///
+    /// # Arguments
+    /// * `request` - Attestation data with TDX quote and task metadata
+    ///
+    /// # Returns
+    /// * `Ok(())` if attestation was stored successfully
+    /// * `Err` if request failed
+    pub async fn store_attestation(&self, request: StoreAttestationRequest) -> Result<()> {
+        let url = format!("{}/attestations", self.base_url);
+
+        tracing::debug!(
+            task_id = request.task_id,
+            task_type = %request.task_type,
+            "Storing attestation in coordinator"
+        );
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.auth_token))
+            .json(&request)
+            .send()
+            .await
+            .context("Failed to send attestation to coordinator")?;
+
+        match response.status() {
+            StatusCode::CREATED => {
+                tracing::info!(
+                    task_id = request.task_id,
+                    task_type = %request.task_type,
+                    "Successfully stored attestation in coordinator"
+                );
+                Ok(())
+            }
+            StatusCode::BAD_REQUEST => {
+                let error_text = response
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "Invalid request".to_string());
+                anyhow::bail!("Attestation validation failed: {}", error_text)
+            }
+            StatusCode::UNAUTHORIZED => {
+                anyhow::bail!("Worker authentication failed - check API_AUTH_TOKEN")
+            }
+            status => {
+                let error_text = response
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "Unknown error".to_string());
+                anyhow::bail!(
+                    "Failed to store attestation with status {}: {}",
+                    status,
+                    error_text
+                )
+            }
+        }
+    }
+}
+
+/// Task type enum matching coordinator's TaskType
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskType {
+    Compile,
+    Execute,
+}
+
+impl std::fmt::Display for TaskType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TaskType::Compile => write!(f, "compile"),
+            TaskType::Execute => write!(f, "execute"),
+        }
+    }
+}
+
+/// Request to store task attestation in coordinator
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoreAttestationRequest {
+    pub task_id: i64,
+    pub task_type: TaskType,
+
+    // TDX attestation data
+    pub tdx_quote: String, // base64 encoded
+
+    // NEAR context
+    pub request_id: Option<i64>,
+    pub caller_account_id: Option<String>,
+    pub transaction_hash: Option<String>,
+    pub block_height: Option<u64>,
+
+    // Code source
+    pub repo_url: Option<String>,
+    pub commit_hash: Option<String>,
+    pub build_target: Option<String>,
+
+    // Task data hashes
+    pub wasm_hash: Option<String>,
+    pub input_hash: Option<String>,
+    pub output_hash: String,
 }
 
 #[cfg(test)]

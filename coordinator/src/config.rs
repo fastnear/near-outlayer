@@ -36,6 +36,12 @@ pub struct Config {
 
     // CORS
     pub cors_allowed_origins: Vec<String>,
+
+    // Attestation API
+    pub admin_bearer_token: String,
+    pub expected_worker_measurement: String,
+    pub default_rate_limit: u32,
+    pub max_rate_limit: u32,
 }
 
 impl Config {
@@ -95,6 +101,17 @@ impl Config {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect(),
+
+            admin_bearer_token: std::env::var("ADMIN_BEARER_TOKEN")
+                .unwrap_or_else(|_| "change-this-in-production".to_string()),
+            expected_worker_measurement: std::env::var("EXPECTED_WORKER_MEASUREMENT")
+                .unwrap_or_else(|_| "0".repeat(96)),
+            default_rate_limit: std::env::var("DEFAULT_RATE_LIMIT_PER_MINUTE")
+                .unwrap_or_else(|_| "60".to_string())
+                .parse()?,
+            max_rate_limit: std::env::var("MAX_RATE_LIMIT_PER_MINUTE")
+                .unwrap_or_else(|_| "600".to_string())
+                .parse()?,
         })
     }
 }

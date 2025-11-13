@@ -3,6 +3,7 @@ use near_crypto::{InMemorySigner, SecretKey};
 use near_primitives::types::AccountId;
 use std::env;
 use std::str::FromStr;
+use tracing::info;
 
 /// Worker configuration loaded from environment variables
 #[derive(Debug, Clone)]
@@ -44,6 +45,15 @@ pub struct Config {
     pub keystore_base_url: Option<String>,
     pub keystore_auth_token: Option<String>,
     pub tee_mode: String,
+
+    // Worker registration (optional - for TEE key registration)
+    pub register_contract_id: Option<AccountId>,
+    pub register_collateral_json: Option<String>,
+
+    // Init account (optional - for paying gas on worker registration)
+    // If not set, operator_signer will be used for registration
+    pub init_account_id: Option<AccountId>,
+    pub init_account_signer: Option<InMemorySigner>,
 
     // Debug logging (admin only - stores raw stderr/stdout in system_hidden_logs table)
     // WARNING: These logs should NEVER be exposed via public API for security reasons
@@ -119,15 +129,40 @@ impl Config {
         let operator_account_id = AccountId::from_str(&operator_account_id)
             .context("Invalid OPERATOR_ACCOUNT_ID format")?;
 
-        let operator_private_key = env::var("OPERATOR_PRIVATE_KEY")
-            .context("OPERATOR_PRIVATE_KEY environment variable is required")?;
-        let operator_secret_key = SecretKey::from_str(&operator_private_key)
-            .context("Invalid OPERATOR_PRIVATE_KEY format (expected ed25519:...)")?;
+        // Load operator signer from env or from worker keypair file
+        // If OPERATOR_PRIVATE_KEY is set, use it (backward compatibility)
+        // Otherwise, load from ~/.near-credentials/worker-keypair.json (TEE-generated key)
+        let operator_signer = if let Ok(operator_private_key) = env::var("OPERATOR_PRIVATE_KEY") {
+            info!("📝 Using OPERATOR_PRIVATE_KEY from environment (legacy mode)");
+            let operator_secret_key = SecretKey::from_str(&operator_private_key)
+                .context("Invalid OPERATOR_PRIVATE_KEY format (expected ed25519:...)")?;
 
-        let operator_signer = InMemorySigner::from_secret_key(
-            operator_account_id.clone(),
-            operator_secret_key,
-        );
+            InMemorySigner::from_secret_key(
+                operator_account_id.clone(),
+                operator_secret_key,
+            )
+        } else {
+            // Load from worker keypair file (generated during registration)
+            info!("🔑 No OPERATOR_PRIVATE_KEY found - loading worker keypair from file");
+            let keypair_path = Self::get_worker_keypair_path();
+
+            if !keypair_path.exists() {
+                anyhow::bail!(
+                    "Worker keypair not found at {}. Please ensure worker registration has completed successfully.",
+                    keypair_path.display()
+                );
+            }
+
+            let (_, secret_key) = Self::load_worker_keypair(&keypair_path)
+                .context("Failed to load worker keypair")?;
+
+            info!("✅ Loaded worker keypair from {}", keypair_path.display());
+
+            InMemorySigner::from_secret_key(
+                operator_account_id.clone(),
+                secret_key,
+            )
+        };
 
         // Optional fields with defaults
         let worker_id = env::var("WORKER_ID")
@@ -207,6 +242,36 @@ impl Config {
             .parse::<bool>()
             .unwrap_or(false);
 
+        // Worker registration configuration (optional)
+        let register_contract_id = env::var("REGISTER_CONTRACT_ID")
+            .ok()
+            .map(|id| AccountId::from_str(&id))
+            .transpose()
+            .context("Invalid REGISTER_CONTRACT_ID format")?;
+
+        let register_collateral_json = env::var("REGISTER_COLLATERAL_JSON").ok();
+
+        // Init account (optional - for paying gas on worker registration)
+        let (init_account_id, init_account_signer) = if let Ok(init_account_str) = env::var("INIT_ACCOUNT_ID") {
+            let init_account_id = AccountId::from_str(&init_account_str)
+                .context("Invalid INIT_ACCOUNT_ID format")?;
+
+            let init_private_key_str = env::var("INIT_ACCOUNT_PRIVATE_KEY")
+                .context("INIT_ACCOUNT_PRIVATE_KEY is required when INIT_ACCOUNT_ID is set")?;
+
+            let init_private_key = SecretKey::from_str(&init_private_key_str)
+                .context("Invalid INIT_ACCOUNT_PRIVATE_KEY format")?;
+
+            let init_signer = InMemorySigner::from_secret_key(
+                init_account_id.clone(),
+                init_private_key,
+            );
+
+            (Some(init_account_id), Some(init_signer))
+        } else {
+            (None, None)
+        };
+
         Ok(Self {
             api_base_url,
             api_auth_token,
@@ -231,9 +296,48 @@ impl Config {
             keystore_base_url,
             keystore_auth_token,
             tee_mode,
+            register_contract_id,
+            register_collateral_json,
+            init_account_id,
+            init_account_signer,
             save_system_hidden_logs_to_debug,
             print_wasm_stderr,
         })
+    }
+
+    /// Get worker keypair file path (same as in registration.rs)
+    fn get_worker_keypair_path() -> std::path::PathBuf {
+        let home = std::env::var("HOME")
+            .unwrap_or_else(|_| "/root".to_string());
+
+        std::path::PathBuf::from(home)
+            .join(".near-credentials")
+            .join("worker-keypair.json")
+    }
+
+    /// Load worker keypair from file
+    fn load_worker_keypair(path: &std::path::Path) -> Result<(near_crypto::PublicKey, SecretKey)> {
+        let contents = std::fs::read_to_string(path)
+            .context("Failed to read worker keypair file")?;
+
+        let keypair: serde_json::Value = serde_json::from_str(&contents)
+            .context("Failed to parse keypair JSON")?;
+
+        let public_key_str = keypair["public_key"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing public_key field in keypair file"))?;
+
+        let private_key_str = keypair["private_key"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing private_key field in keypair file"))?;
+
+        let public_key: near_crypto::PublicKey = public_key_str.parse()
+            .context("Failed to parse public_key from keypair file")?;
+
+        let secret_key: SecretKey = private_key_str.parse()
+            .context("Failed to parse private_key from keypair file")?;
+
+        Ok((public_key, secret_key))
     }
 
     /// Validate configuration
@@ -319,6 +423,10 @@ mod tests {
             keystore_base_url: None,
             keystore_auth_token: None,
             tee_mode: "none".to_string(),
+            register_contract_id: None,
+            register_collateral_json: None,
+            init_account_id: None,
+            init_account_signer: None,
             save_system_hidden_logs_to_debug: true, // Default: enabled for debugging
             print_wasm_stderr: false,
         }

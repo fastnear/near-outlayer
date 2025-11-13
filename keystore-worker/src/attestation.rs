@@ -81,6 +81,7 @@ pub fn verify_attestation(
     match tee_mode {
         crate::config::TeeMode::Sgx => verify_sgx_attestation(attestation, expected),
         crate::config::TeeMode::Sev => verify_sev_attestation(attestation, expected),
+        crate::config::TeeMode::Tdx => verify_tdx_attestation(attestation, expected),
         crate::config::TeeMode::Simulated => verify_simulated_attestation(attestation, expected),
         crate::config::TeeMode::None => {
             tracing::warn!("TEE verification disabled (dev mode) - accepting all attestations");
@@ -90,6 +91,8 @@ pub fn verify_attestation(
 }
 
 /// Verify Intel SGX attestation
+///
+/// ⚠️ NOT IMPLEMENTED - Use TEE_MODE=none for testing
 fn verify_sgx_attestation(
     attestation: &Attestation,
     _expected: &ExpectedMeasurements,
@@ -98,8 +101,8 @@ fn verify_sgx_attestation(
         anyhow::bail!("Expected SGX attestation, got {}", attestation.tee_type);
     }
 
-    // TODO: Implement full SGX attestation verification
-    // Steps:
+    anyhow::bail!("SGX attestation verification not implemented - use TEE_MODE=none for testing")
+    // TODO: Implement full SGX attestation verification:
     // 1. Decode quote from base64
     // 2. Verify quote signature (ECDSA P256)
     // 3. Check quote report data contains worker_pubkey hash
@@ -107,21 +110,11 @@ fn verify_sgx_attestation(
     // 5. Verify MR_SIGNER matches expected signer
     // 6. Check ISV_SVN >= min_security_version
     // 7. Verify quote is from genuine Intel SGX hardware (via IAS or DCAP)
-
-    tracing::warn!("SGX attestation verification not fully implemented - using placeholder");
-
-    // Placeholder: just check quote is not empty
-    let quote_bytes = base64::decode(&attestation.quote)
-        .context("Failed to decode quote")?;
-
-    if quote_bytes.is_empty() {
-        anyhow::bail!("Empty SGX quote");
-    }
-
-    Ok(())
 }
 
 /// Verify AMD SEV-SNP attestation
+///
+/// ⚠️ NOT IMPLEMENTED - Use TEE_MODE=none for testing
 fn verify_sev_attestation(
     attestation: &Attestation,
     _expected: &ExpectedMeasurements,
@@ -130,24 +123,34 @@ fn verify_sev_attestation(
         anyhow::bail!("Expected SEV attestation, got {}", attestation.tee_type);
     }
 
-    // TODO: Implement full SEV-SNP attestation verification
-    // Steps:
+    anyhow::bail!("SEV attestation verification not implemented - use TEE_MODE=none for testing")
+    // TODO: Implement full SEV-SNP attestation verification:
     // 1. Decode attestation report
     // 2. Verify report signature (ECDSA)
     // 3. Verify measurement matches expected code
     // 4. Check platform version
     // 5. Verify with AMD KDS (Key Distribution Server)
+}
 
-    tracing::warn!("SEV attestation verification not fully implemented - using placeholder");
-
-    let report_bytes = base64::decode(&attestation.quote)
-        .context("Failed to decode report")?;
-
-    if report_bytes.is_empty() {
-        anyhow::bail!("Empty SEV report");
+/// Verify Intel TDX attestation
+///
+/// ⚠️ NOT IMPLEMENTED - Use TEE_MODE=none for testing
+fn verify_tdx_attestation(
+    attestation: &Attestation,
+    _expected: &ExpectedMeasurements,
+) -> Result<()> {
+    if attestation.tee_type != "tdx" {
+        anyhow::bail!("Expected TDX attestation, got {}", attestation.tee_type);
     }
 
-    Ok(())
+    anyhow::bail!("TDX attestation verification not implemented - use TEE_MODE=none for testing")
+    // TODO: Implement full TDX attestation verification:
+    // 1. Decode TDX quote (TD Quote)
+    // 2. Verify quote signature (ECDSA-P256 or ECDSA-P384)
+    // 3. Verify RTMR measurements (RTMR0, RTMR1, RTMR2, RTMR3)
+    // 4. Check TD attributes and XFAM
+    // 5. Verify with Intel PCS (Provisioning Certification Service)
+    // 6. Validate TCB info and collateral
 }
 
 /// Verify simulated attestation (for testing)

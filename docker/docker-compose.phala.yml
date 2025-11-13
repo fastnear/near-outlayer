@@ -1,0 +1,105 @@
+version: '3.8'
+
+# Docker Compose configuration for NEAR OutLayer on Phala Cloud
+#
+# This runs the worker in Intel TDX TEE environment with:
+# - Automatic TDX quote generation via /var/run/dstack.sock (provided by Phala)
+# - Outbound connection to public coordinator API
+# - Optional keystore service for encrypted secrets
+#
+# Deploy via Phala Cloud CLI:
+#   phala cvms create --name near-offshore-worker \
+#     --compose ./docker-compose.phala.yml \
+#     --env-file ./.env.phala \
+#     --vcpu 2 --memory 4096 --disk-size 60
+
+services:
+  # Main worker service
+  worker:
+    image: ${DOCKER_IMAGE_WORKER}
+    container_name: near-offshore-worker
+    restart: unless-stopped
+
+    environment:
+      # Coordinator API (must be publicly accessible)
+      API_BASE_URL: ${API_BASE_URL}
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN}
+
+      # NEAR Configuration
+      NEAR_RPC_URL: ${NEAR_RPC_URL}
+      OFFCHAINVM_CONTRACT_ID: ${OFFCHAINVM_CONTRACT_ID}
+      OPERATOR_ACCOUNT_ID: ${OPERATOR_ACCOUNT_ID}
+      OPERATOR_PRIVATE_KEY: ${OPERATOR_PRIVATE_KEY}
+
+      # TEE Configuration (Phala Cloud)
+      TEE_MODE: tdx
+
+      # Worker Registration (optional)
+      REGISTER_CONTRACT_ID: ${REGISTER_CONTRACT_ID:-}
+      REGISTER_COLLATERAL_JSON: ${REGISTER_COLLATERAL_JSON:-}
+
+      # Keystore (optional - for encrypted secrets)
+      KEYSTORE_BASE_URL: ${KEYSTORE_BASE_URL:-http://keystore:8081}
+      KEYSTORE_AUTH_TOKEN: ${KEYSTORE_AUTH_TOKEN:-}
+
+      # Logging
+      RUST_LOG: ${RUST_LOG:-info}
+      SAVE_SYSTEM_HIDDEN_LOGS_TO_DEBUG: "false"
+      PRINT_WASM_STDERR: "false"
+
+      # Event Monitor (optional)
+      ENABLE_EVENT_MONITOR: ${ENABLE_EVENT_MONITOR:-false}
+      NEARDATA_API_URL: ${NEARDATA_API_URL:-}
+      FASTNEAR_API_URL: ${FASTNEAR_API_URL:-}
+      START_BLOCK_HEIGHT: ${START_BLOCK_HEIGHT:-0}
+
+      # Polling
+      POLL_TIMEOUT_SECONDS: 30
+
+    # Worker needs access to dstack socket for TDX quotes
+    # Phala provides this automatically at /var/run/dstack.sock
+    volumes:
+      - /var/run/dstack.sock:/var/run/dstack.sock:ro
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "ps", "aux", "|", "grep", "-v", "grep", "|", "grep", "worker"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Optional: Keystore service for encrypted secrets
+  # Uncomment if you need secret decryption support
+  # keystore:
+  #   image: ${DOCKER_IMAGE_KEYSTORE}
+  #   container_name: near-offshore-keystore
+  #   restart: unless-stopped
+  #
+  #   environment:
+  #     PORT: 8081
+  #     NEAR_RPC_URL: ${NEAR_RPC_URL}
+  #     OFFCHAINVM_CONTRACT_ID: ${OFFCHAINVM_CONTRACT_ID}
+  #     TEE_MODE: tdx
+  #     RUST_LOG: ${RUST_LOG:-info}
+  #
+  #   # Internal port only (accessed by worker via Docker network)
+  #   expose:
+  #     - "8081"
+  #
+  #   # Keystore also needs dstack socket for attestation
+  #   volumes:
+  #     - /var/run/dstack.sock:/var/run/dstack.sock:ro
+  #
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 10s
+
+# Network configuration
+# Phala Cloud provides Docker bridge network automatically
+networks:
+  default:
+    name: near-offshore-network

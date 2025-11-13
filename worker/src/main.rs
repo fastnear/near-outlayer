@@ -5,6 +5,8 @@ mod event_monitor;
 mod executor;
 mod keystore_client;
 mod near_client;
+mod registration;
+mod tdx_attestation;
 
 use anyhow::{Context, Result};
 use tracing::{error, info, warn};
@@ -67,6 +69,9 @@ async fn main() -> Result<()> {
         None
     };
 
+    // Initialize TDX client for task attestations
+    let tdx_client = tdx_attestation::TdxClient::new(config.tee_mode.clone());
+
     // Initialize NEAR client
     let near_client = NearClient::new(
         config.near_rpc_url.clone(),
@@ -97,6 +102,71 @@ async fn main() -> Result<()> {
         }
     });
     info!("Heartbeat task started (every 30 seconds)");
+
+    // Send startup attestation
+    // Retry every 60 seconds until successful
+    info!("Starting registration loop - will retry every 60 seconds until successful...");
+
+    loop {
+        match send_startup_attestation(&api_client, &tdx_client, &config).await {
+            Ok(_) => {
+                info!("✅ Startup attestation sent successfully - worker registered with coordinator");
+                break;
+            }
+            Err(e) => {
+                warn!("⚠️  Startup attestation failed (will retry in 60 seconds): {}", e);
+                warn!("Common causes:");
+                warn!("  - Coordinator not accessible yet (check API_BASE_URL)");
+                warn!("  - Worker auth token invalid (check API_AUTH_TOKEN)");
+                warn!("  - TEE attestation generation failed (check /var/run/dstack.sock)");
+                warn!("  - Database migration not applied (check coordinator logs)");
+
+                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+            }
+        }
+    }
+
+    // Register worker key with register contract (if configured)
+    if let Some(ref register_contract_id) = config.register_contract_id {
+        info!("🔑 Worker registration enabled - attempting to register with {}...", register_contract_id);
+
+        // Create TDX client for attestation generation
+        let tdx_client = tdx_attestation::TdxClient::new(config.tee_mode.clone());
+
+        // Use init account for gas payment, or fall back to operator account
+        let (init_account_id, init_secret_key) = if let (Some(init_id), Some(init_signer)) =
+            (&config.init_account_id, &config.init_account_signer) {
+            info!("   Using init account for gas payment: {}", init_id);
+            (init_id.clone(), init_signer.secret_key.clone())
+        } else {
+            info!("   No init account configured - using operator account for gas payment");
+            (config.operator_account_id.clone(), config.operator_signer.secret_key.clone())
+        };
+
+        // Attempt registration
+        let (_public_key, _secret_key) = match registration::register_worker_on_startup(
+            config.near_rpc_url.clone(),
+            register_contract_id.clone(),
+            init_account_id.clone(),
+            init_secret_key.clone(),
+            &tdx_client,
+            config.register_collateral_json.clone(),
+        ).await {
+            Ok((public_key, secret_key)) => {
+                info!("✅ Worker keypair ready: {}", public_key);
+                info!("   Key registered and ready for signing execution results");
+                (public_key, secret_key)
+            }
+            Err(e) => {
+                error!("❌ Worker registration flow failed: {}", e);
+                error!("   Worker CANNOT start without registered key");
+                return Err(anyhow::anyhow!("Worker registration failed: {}", e));
+            }
+        };
+    } else {
+        info!("Worker registration disabled (REGISTER_CONTRACT_ID not set)");
+        info!("⚠️  Worker will use OPERATOR_PRIVATE_KEY from .env for all transactions");
+    }
 
     // Start event monitor if enabled
     if config.enable_event_monitor {
@@ -140,6 +210,7 @@ async fn main() -> Result<()> {
             &executor,
             &near_client,
             keystore_client.as_ref(),
+            &tdx_client,
             &config,
         )
         .await
@@ -168,6 +239,7 @@ async fn worker_iteration(
     executor: &Executor,
     near_client: &NearClient,
     keystore_client: Option<&KeystoreClient>,
+    tdx_client: &tdx_attestation::TdxClient,
     config: &Config,
 ) -> Result<bool> {
     // Poll for a task (with long-polling)
@@ -249,8 +321,12 @@ async fn worker_iteration(
                 match handle_compile_job(
                     api_client,
                     compiler,
+                    keystore_client,
+                    tdx_client,
                     &job,
                     &code_source,
+                    &context,
+                    &user_account_id,
                     pricing,
                     near_payment_yocto.as_ref(),
                     request_id,
@@ -297,6 +373,7 @@ async fn worker_iteration(
                     executor,
                     near_client,
                     keystore_client,
+                    tdx_client,
                     &job,
                     &code_source,
                     &resource_limits,
@@ -395,8 +472,12 @@ fn merge_env_vars(
 async fn handle_compile_job(
     api_client: &ApiClient,
     compiler: &Compiler,
+    _keystore_client: Option<&KeystoreClient>,
+    tdx_client: &tdx_attestation::TdxClient,
     job: &JobInfo,
     code_source: &CodeSource,
+    context: &api_client::ExecutionContext,
+    user_account_id: &Option<String>,
     pricing: &api_client::PricingConfig,
     user_payment: Option<&String>,
     request_id: u64,
@@ -510,6 +591,49 @@ async fn handle_compile_job(
                 // Continue anyway - will upload later
             }
 
+            // Generate and store TDX attestation
+            match tdx_client.generate_task_attestation(
+                "compile",
+                job.job_id,
+                Some(code_source.repo()),
+                Some(code_source.commit()),
+                Some(code_source.build_target()),
+                None, // No wasm_hash for compile (we produce it)
+                None, // No input_hash for compile
+                &checksum, // output_hash is the compiled WASM checksum
+                context.block_height,
+            ) {
+                Ok(tdx_quote) => {
+                    // Send attestation to coordinator
+                    let attestation_request = api_client::StoreAttestationRequest {
+                        task_id: job.job_id,
+                        task_type: api_client::TaskType::Compile,
+                        tdx_quote,
+                        request_id: Some(request_id as i64),
+                        caller_account_id: user_account_id.clone(),
+                        transaction_hash: context.transaction_hash.clone(),
+                        block_height: context.block_height,
+                        repo_url: Some(code_source.repo().to_string()),
+                        commit_hash: Some(code_source.commit().to_string()),
+                        build_target: Some(code_source.build_target().to_string()),
+                        wasm_hash: None,
+                        input_hash: None,
+                        output_hash: checksum.clone(),
+                    };
+
+                    if let Err(e) = api_client.store_attestation(attestation_request).await {
+                        warn!("⚠️ Failed to store compilation attestation: {}", e);
+                        // Non-critical - continue anyway
+                    } else {
+                        info!("✅ Stored compilation attestation for task_id={}", job.job_id);
+                    }
+                }
+                Err(e) => {
+                    warn!("⚠️ Failed to generate TDX attestation for compilation: {}", e);
+                    // Non-critical - continue anyway
+                }
+            }
+
             Ok((checksum, wasm_bytes, compile_time_ms, created_at))
         }
         Err(e) => {
@@ -569,6 +693,7 @@ async fn handle_execute_job(
     executor: &Executor,
     near_client: &NearClient,
     keystore_client: Option<&KeystoreClient>,
+    tdx_client: &tdx_attestation::TdxClient,
     job: &JobInfo,
     code_source: &CodeSource,
     resource_limits: &api_client::ResourceLimits,
@@ -832,6 +957,70 @@ async fn handle_execute_job(
                         warn!("⚠️ Failed to report execute job completion: {}", e);
                         // Continue anyway - NEAR transaction is already submitted
                     }
+
+                    // Generate and store TDX attestation
+                    {
+                        // Calculate output hash (SHA256 of output)
+                        use sha2::{Digest, Sha256};
+                        let output_hash = if let Some(ref output) = execution_result.output {
+                            let mut hasher = Sha256::new();
+                            match output {
+                                api_client::ExecutionOutput::Bytes(bytes) => hasher.update(bytes),
+                                api_client::ExecutionOutput::Text(text) => hasher.update(text.as_bytes()),
+                                api_client::ExecutionOutput::Json(json) => hasher.update(json.to_string().as_bytes()),
+                            }
+                            hex::encode(hasher.finalize())
+                        } else {
+                            "no-output".to_string()
+                        };
+
+                        // Calculate input hash
+                        let mut input_hasher = Sha256::new();
+                        input_hasher.update(input_data.as_bytes());
+                        let input_hash = hex::encode(input_hasher.finalize());
+
+                        match tdx_client.generate_task_attestation(
+                            "execute",
+                            job.job_id,
+                            Some(code_source.repo()),
+                            Some(code_source.commit()),
+                            Some(code_source.build_target()),
+                            Some(wasm_checksum),
+                            Some(&input_hash),
+                            &output_hash,
+                            context.block_height,
+                        ) {
+                            Ok(tdx_quote) => {
+                                // Send attestation to coordinator
+                                let attestation_request = api_client::StoreAttestationRequest {
+                                    task_id: job.job_id,
+                                    task_type: api_client::TaskType::Execute,
+                                    tdx_quote,
+                                    request_id: Some(request_id as i64),
+                                    caller_account_id: user_account_id.cloned(),
+                                    transaction_hash: transaction_hash.cloned(),
+                                    block_height: context.block_height,
+                                    repo_url: Some(code_source.repo().to_string()),
+                                    commit_hash: Some(code_source.commit().to_string()),
+                                    build_target: Some(code_source.build_target().to_string()),
+                                    wasm_hash: Some(wasm_checksum.clone()),
+                                    input_hash: Some(input_hash),
+                                    output_hash,
+                                };
+
+                                if let Err(e) = api_client.store_attestation(attestation_request).await {
+                                    warn!("⚠️ Failed to store execution attestation: {}", e);
+                                    // Non-critical - continue anyway
+                                } else {
+                                    info!("✅ Stored execution attestation for task_id={}", job.job_id);
+                                }
+                            }
+                            Err(e) => {
+                                warn!("⚠️ Failed to generate TDX attestation for execution: {}", e);
+                                // Non-critical - continue anyway
+                            }
+                        }
+                    }
                 }
                 Err(e) => {
                     let error_msg = format!("Failed to submit to NEAR: {}", e);
@@ -919,3 +1108,57 @@ async fn handle_execute_job(
 
 // Tests moved to coordinator/src/handlers/github.rs
 // Branch resolution is now done via coordinator API with Redis caching
+
+/// Send startup attestation to coordinator
+///
+/// This registers the worker with the coordinator and updates its RTMR3 measurement.
+/// Called in a retry loop on worker startup, BEFORE event monitor and task polling.
+///
+/// If this fails, it will be retried every 60 seconds until successful.
+async fn send_startup_attestation(
+    api_client: &ApiClient,
+    tdx_client: &tdx_attestation::TdxClient,
+    config: &Config,
+) -> Result<()> {
+    use api_client::{StoreAttestationRequest, TaskType};
+
+    // Generate TDX quote for startup
+    let tdx_quote = tdx_client
+        .generate_task_attestation(
+            "startup",
+            -1, // task_id = -1 for startup registration
+            None,
+            None,
+            None,
+            None,
+            None,
+            "worker_startup",
+            None,
+        )
+        .context("Failed to generate startup TDX quote")?;
+
+    // Create attestation request
+    let request = StoreAttestationRequest {
+        task_id: -1,
+        task_type: TaskType::Execute, // Use Execute type for startup
+        tdx_quote,
+        request_id: None,
+        caller_account_id: None,
+        transaction_hash: None,
+        block_height: None,
+        repo_url: Some(format!("worker://{}", config.worker_id)),
+        commit_hash: Some("startup".to_string()),
+        build_target: Some(config.tee_mode.clone()),
+        wasm_hash: None,
+        input_hash: None,
+        output_hash: "worker_startup".to_string(),
+    };
+
+    // Send to coordinator
+    api_client
+        .store_attestation(request)
+        .await
+        .context("Failed to store startup attestation")?;
+
+    Ok(())
+}

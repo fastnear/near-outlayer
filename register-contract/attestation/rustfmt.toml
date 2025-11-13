@@ -1,0 +1,3 @@
+use_small_heuristics = "Default"
+reorder_imports = true
+edition = "2024"

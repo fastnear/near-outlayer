@@ -2,6 +2,7 @@ mod auth;
 mod config;
 mod github;
 mod handlers;
+mod middleware;
 mod models;
 mod near_client;
 mod storage;
@@ -104,6 +105,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         pricing_updated_at: Arc::new(RwLock::new(SystemTime::now())),
     };
 
+    // Initialize rate limiter for API keys
+    let rate_limiter = Arc::new(middleware::rate_limit::RateLimiter::new());
+
     // Build protected routes (require auth)
     let protected = Router::new()
         // Job endpoints (protected)
@@ -128,6 +132,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/workers/task-completion",
             post(handlers::workers::notify_task_completion),
         )
+        // Attestation storage endpoint (worker-protected)
+        .route("/attestations", post(handlers::attestations::store_attestation))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::auth_middleware,
@@ -157,11 +163,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/internal/system-logs", post(handlers::internal::store_system_log))
         .with_state(state.db.clone());
 
-    // Build admin routes (server-side only - NOT exposed via public API)
-    // Access these via ssh/localhost only, not through public endpoint
+    // Build API key protected routes (require API key)
+    let api_key_protected = Router::new()
+        .route("/attestations/:task_id", get(handlers::attestations::get_attestation))
+        .layer(axum::middleware::from_fn_with_state(
+            rate_limiter.clone(),
+            middleware::rate_limit::rate_limit_middleware,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.db.clone(),
+            middleware::api_key_auth::api_key_auth,
+        ))
+        .with_state(state.clone());
+
+    // Build admin routes (require admin bearer token)
     let admin = Router::new()
+        .route("/admin/api-keys", post(handlers::admin::create_api_key))
         .route("/admin/system-logs/:request_id", get(handlers::internal::get_system_logs))
-        .with_state(state.db.clone());
+        .layer(axum::middleware::from_fn_with_state(
+            config.clone(),
+            middleware::admin_auth::admin_auth,
+        ))
+        .with_state(state.clone());
 
     // Configure CORS with allowed origins from config
     let cors = CorsLayer::new()
@@ -178,6 +201,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         .merge(protected)
         .merge(public)
+        .merge(api_key_protected)
         .merge(internal)
         .merge(admin)
         .layer(cors)

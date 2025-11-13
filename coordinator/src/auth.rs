@@ -84,5 +84,14 @@ pub async fn auth_middleware(
     });
 
     debug!("Auth successful");
+
+    // Store token_hash in request extensions for use in handlers
+    let mut req = req;
+    req.extensions_mut().insert(WorkerTokenHash(token_hash));
+
     Ok(next.run(req).await)
 }
+
+/// Worker token hash stored in request extensions
+#[derive(Clone)]
+pub struct WorkerTokenHash(pub String);

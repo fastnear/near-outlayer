@@ -413,3 +413,327 @@ pub struct StoreSystemLogRequest {
     #[serde(default)]
     pub execution_error: Option<String>,
 }
+
+// ============================================================================
+// ATTESTATION MODELS
+// ============================================================================
+
+/// Task type for attestation (unified for both Compile and Execute)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskType {
+    Compile,
+    Execute,
+}
+
+impl TaskType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TaskType::Compile => "compile",
+            TaskType::Execute => "execute",
+        }
+    }
+}
+
+impl std::str::FromStr for TaskType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "compile" => Ok(TaskType::Compile),
+            "execute" => Ok(TaskType::Execute),
+            _ => Err(format!("Invalid task type: {}", s)),
+        }
+    }
+}
+
+/// Task attestation record from database (unified format)
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct TaskAttestation {
+    pub id: i64,
+    pub task_id: i64,
+    pub task_type: String,
+
+    // TDX attestation data
+    pub tdx_quote: Vec<u8>,
+    pub worker_measurement: String,
+
+    // NEAR context
+    pub request_id: Option<i64>,
+    pub caller_account_id: Option<String>,
+    pub transaction_hash: Option<String>,
+    pub block_height: Option<i64>,
+
+    // Code source (both task types have this)
+    pub repo_url: Option<String>,
+    pub commit_hash: Option<String>,
+    pub build_target: Option<String>,
+
+    // Task data hashes (unified)
+    pub wasm_hash: Option<String>,
+    pub input_hash: Option<String>,  // NULL for Compile, present for Execute
+    pub output_hash: String,
+
+    pub created_at: chrono::NaiveDateTime,
+}
+
+/// API response for attestation queries
+#[derive(Debug, Clone, Serialize)]
+pub struct AttestationResponse {
+    pub id: i64,
+    pub task_id: i64,
+    pub task_type: String,
+
+    // TDX attestation data
+    pub tdx_quote: String,  // base64 encoded
+    pub worker_measurement: String,
+
+    // NEAR context
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caller_account_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transaction_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub block_height: Option<i64>,
+
+    // Code source
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build_target: Option<String>,
+
+    // Task data hashes
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wasm_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_hash: Option<String>,
+    pub output_hash: String,
+
+    pub timestamp: i64,  // Unix timestamp
+}
+
+impl From<TaskAttestation> for AttestationResponse {
+    fn from(att: TaskAttestation) -> Self {
+        use base64::Engine;
+
+        Self {
+            id: att.id,
+            task_id: att.task_id,
+            task_type: att.task_type,
+            tdx_quote: base64::engine::general_purpose::STANDARD.encode(&att.tdx_quote),
+            worker_measurement: att.worker_measurement,
+            request_id: att.request_id,
+            caller_account_id: att.caller_account_id,
+            transaction_hash: att.transaction_hash,
+            block_height: att.block_height,
+            repo_url: att.repo_url,
+            commit_hash: att.commit_hash,
+            build_target: att.build_target,
+            wasm_hash: att.wasm_hash,
+            input_hash: att.input_hash,
+            output_hash: att.output_hash,
+            timestamp: att.created_at.and_utc().timestamp(),
+        }
+    }
+}
+
+/// Request to store attestation (from worker - unified format)
+#[derive(Debug, Clone, Deserialize)]
+pub struct StoreAttestationRequest {
+    pub task_id: i64,
+    pub task_type: TaskType,
+
+    // TDX attestation data
+    pub tdx_quote: String,  // base64 encoded
+
+    // NEAR context
+    pub request_id: Option<i64>,
+    pub caller_account_id: Option<String>,
+    pub transaction_hash: Option<String>,
+    pub block_height: Option<u64>,
+
+    // Code source
+    pub repo_url: Option<String>,
+    pub commit_hash: Option<String>,
+    pub build_target: Option<String>,
+
+    // Task data hashes
+    pub wasm_hash: Option<String>,
+    pub input_hash: Option<String>,
+    pub output_hash: String,
+}
+
+impl StoreAttestationRequest {
+    /// Validate the request based on task type
+    pub fn validate(&self) -> Result<(), String> {
+        match self.task_type {
+            TaskType::Execute => {
+                if self.input_hash.is_none() {
+                    return Err("Execute tasks must have input_hash".to_string());
+                }
+            }
+            TaskType::Compile => {
+                // Compile tasks don't need input_hash
+            }
+        }
+
+        // Validate hash lengths if present
+        if let Some(ref hash) = self.commit_hash {
+            if hash.len() != 64 {
+                return Err("commit_hash must be 64 characters (SHA256 hex)".to_string());
+            }
+        }
+
+        if let Some(ref hash) = self.wasm_hash {
+            if hash.len() != 64 {
+                return Err("wasm_hash must be 64 characters (SHA256 hex)".to_string());
+            }
+        }
+
+        if let Some(ref hash) = self.input_hash {
+            if hash.len() != 64 {
+                return Err("input_hash must be 64 characters (SHA256 hex)".to_string());
+            }
+        }
+
+        if self.output_hash.len() != 64 {
+            return Err("output_hash must be 64 characters (SHA256 hex)".to_string());
+        }
+
+        Ok(())
+    }
+}
+
+// ============================================================================
+// API KEY MODELS
+// ============================================================================
+
+/// API key record from database
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ApiKey {
+    pub id: i64,
+    pub api_key: String,  // SHA256 hash of the actual key
+    pub near_account_id: String,
+    pub key_name: Option<String>,
+    pub is_active: bool,
+    pub rate_limit_per_minute: i32,
+    pub created_at: chrono::NaiveDateTime,
+    pub last_used_at: Option<chrono::NaiveDateTime>,
+}
+
+/// Request to create a new API key (admin endpoint)
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateApiKeyRequest {
+    pub near_account_id: String,
+    #[serde(default)]
+    pub key_name: Option<String>,
+    #[serde(default)]
+    pub rate_limit_per_minute: Option<i32>,
+}
+
+impl CreateApiKeyRequest {
+    /// Validate NEAR account ID format
+    pub fn validate(&self) -> Result<(), String> {
+        // Basic NEAR account validation
+        if self.near_account_id.is_empty() {
+            return Err("near_account_id cannot be empty".to_string());
+        }
+
+        if self.near_account_id.len() > 64 {
+            return Err("near_account_id too long (max 64 characters)".to_string());
+        }
+
+        // Check if it's a valid NEAR account format (simplified)
+        let is_valid = self.near_account_id.ends_with(".near")
+            || self.near_account_id.ends_with(".testnet")
+            || (self.near_account_id.len() >= 2
+                && self.near_account_id.len() <= 64
+                && self
+                    .near_account_id
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-'));
+
+        if !is_valid {
+            return Err("Invalid NEAR account ID format".to_string());
+        }
+
+        // Validate rate limit if provided
+        if let Some(limit) = self.rate_limit_per_minute {
+            if limit <= 0 || limit > 600 {
+                return Err("rate_limit_per_minute must be between 1 and 600".to_string());
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Response when creating a new API key
+#[derive(Debug, Clone, Serialize)]
+pub struct CreateApiKeyResponse {
+    pub api_key: String,  // Plaintext key (only shown ONCE!)
+    pub near_account_id: String,
+    pub rate_limit_per_minute: i32,
+    pub created_at: i64,  // Unix timestamp
+}
+
+/// Public API key info (without the actual key)
+#[derive(Debug, Clone, Serialize)]
+pub struct ApiKeyInfo {
+    pub id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_name: Option<String>,
+    pub near_account_id: String,
+    pub is_active: bool,
+    pub rate_limit_per_minute: i32,
+    pub created_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_used_at: Option<i64>,
+}
+
+impl From<ApiKey> for ApiKeyInfo {
+    fn from(key: ApiKey) -> Self {
+        Self {
+            id: key.id,
+            key_name: key.key_name,
+            near_account_id: key.near_account_id,
+            is_active: key.is_active,
+            rate_limit_per_minute: key.rate_limit_per_minute,
+            created_at: key.created_at.and_utc().timestamp(),
+            last_used_at: key.last_used_at.map(|dt| dt.and_utc().timestamp()),
+        }
+    }
+}
+
+/// Request to generate API key from dashboard (with NEAR wallet signature)
+#[derive(Debug, Clone, Deserialize)]
+pub struct GenerateApiKeyRequest {
+    pub near_account_id: String,
+    pub signature: String,  // Signature from NEAR wallet
+    pub message: String,    // Message that was signed
+    pub public_key: String, // Public key that signed the message
+    #[serde(default)]
+    pub key_name: Option<String>,
+}
+
+impl GenerateApiKeyRequest {
+    /// Verify the signature matches the account
+    pub fn verify(&self) -> Result<(), String> {
+        // TODO: Implement NEAR signature verification
+        // For now, just validate the account format
+        if self.near_account_id.is_empty() {
+            return Err("near_account_id cannot be empty".to_string());
+        }
+
+        // Message should contain the account ID
+        if !self.message.contains(&self.near_account_id) {
+            return Err("Message must contain the NEAR account ID".to_string());
+        }
+
+        Ok(())
+    }
+}
