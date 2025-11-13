@@ -3,7 +3,6 @@ use near_crypto::{InMemorySigner, SecretKey};
 use near_primitives::types::AccountId;
 use std::env;
 use std::str::FromStr;
-use tracing::info;
 
 /// Worker configuration loaded from environment variables
 #[derive(Debug, Clone)]
@@ -20,7 +19,7 @@ pub struct Config {
     pub offchainvm_contract_id: AccountId,
     #[allow(dead_code)]
     pub operator_account_id: AccountId,
-    pub operator_signer: InMemorySigner,
+    pub operator_signer: Option<InMemorySigner>,
 
     // Worker settings
     pub worker_id: String,
@@ -45,6 +44,11 @@ pub struct Config {
     pub keystore_base_url: Option<String>,
     pub keystore_auth_token: Option<String>,
     pub tee_mode: String,
+
+    // Worker registration mode
+    // If true - use TEE registration flow (requires REGISTER_CONTRACT_ID and INIT_ACCOUNT_*)
+    // If false - use legacy mode with OPERATOR_PRIVATE_KEY (for testnet without TEE)
+    pub use_tee_registration: bool,
 
     // Worker registration (optional - for TEE key registration)
     pub register_contract_id: Option<AccountId>,
@@ -129,39 +133,29 @@ impl Config {
         let operator_account_id = AccountId::from_str(&operator_account_id)
             .context("Invalid OPERATOR_ACCOUNT_ID format")?;
 
-        // Load operator signer from env or from worker keypair file
-        // If OPERATOR_PRIVATE_KEY is set, use it (backward compatibility)
-        // Otherwise, load from ~/.near-credentials/worker-keypair.json (TEE-generated key)
-        let operator_signer = if let Ok(operator_private_key) = env::var("OPERATOR_PRIVATE_KEY") {
-            info!("📝 Using OPERATOR_PRIVATE_KEY from environment (legacy mode)");
-            let operator_secret_key = SecretKey::from_str(&operator_private_key)
+        // Check if TEE registration is enabled
+        let use_tee_registration = env::var("USE_TEE_REGISTRATION")
+            .unwrap_or_else(|_| "true".to_string()) // Default: true (TEE mode for production)
+            .parse::<bool>()
+            .context("USE_TEE_REGISTRATION must be 'true' or 'false'")?;
+
+        // Load operator_signer based on registration mode
+        let operator_signer = if use_tee_registration {
+            // TEE mode: operator_signer will be set after registration in main.rs
+            None
+        } else {
+            // Legacy mode: load OPERATOR_PRIVATE_KEY from env
+            let operator_private_key = env::var("OPERATOR_PRIVATE_KEY")
+                .context("OPERATOR_PRIVATE_KEY is required when USE_TEE_REGISTRATION=false")?;
+
+            let secret_key: SecretKey = operator_private_key
+                .parse()
                 .context("Invalid OPERATOR_PRIVATE_KEY format (expected ed25519:...)")?;
 
-            InMemorySigner::from_secret_key(
-                operator_account_id.clone(),
-                operator_secret_key,
-            )
-        } else {
-            // Load from worker keypair file (generated during registration)
-            info!("🔑 No OPERATOR_PRIVATE_KEY found - loading worker keypair from file");
-            let keypair_path = Self::get_worker_keypair_path();
-
-            if !keypair_path.exists() {
-                anyhow::bail!(
-                    "Worker keypair not found at {}. Please ensure worker registration has completed successfully.",
-                    keypair_path.display()
-                );
-            }
-
-            let (_, secret_key) = Self::load_worker_keypair(&keypair_path)
-                .context("Failed to load worker keypair")?;
-
-            info!("✅ Loaded worker keypair from {}", keypair_path.display());
-
-            InMemorySigner::from_secret_key(
+            Some(InMemorySigner::from_secret_key(
                 operator_account_id.clone(),
                 secret_key,
-            )
+            ))
         };
 
         // Optional fields with defaults
@@ -296,6 +290,7 @@ impl Config {
             keystore_base_url,
             keystore_auth_token,
             tee_mode,
+            use_tee_registration,
             register_contract_id,
             register_collateral_json,
             init_account_id,
@@ -305,39 +300,14 @@ impl Config {
         })
     }
 
-    /// Get worker keypair file path (same as in registration.rs)
-    fn get_worker_keypair_path() -> std::path::PathBuf {
-        let home = std::env::var("HOME")
-            .unwrap_or_else(|_| "/root".to_string());
-
-        std::path::PathBuf::from(home)
-            .join(".near-credentials")
-            .join("worker-keypair.json")
+    /// Set operator signer after registration
+    pub fn set_operator_signer(&mut self, signer: InMemorySigner) {
+        self.operator_signer = Some(signer);
     }
 
-    /// Load worker keypair from file
-    fn load_worker_keypair(path: &std::path::Path) -> Result<(near_crypto::PublicKey, SecretKey)> {
-        let contents = std::fs::read_to_string(path)
-            .context("Failed to read worker keypair file")?;
-
-        let keypair: serde_json::Value = serde_json::from_str(&contents)
-            .context("Failed to parse keypair JSON")?;
-
-        let public_key_str = keypair["public_key"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Missing public_key field in keypair file"))?;
-
-        let private_key_str = keypair["private_key"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Missing private_key field in keypair file"))?;
-
-        let public_key: near_crypto::PublicKey = public_key_str.parse()
-            .context("Failed to parse public_key from keypair file")?;
-
-        let secret_key: SecretKey = private_key_str.parse()
-            .context("Failed to parse private_key from keypair file")?;
-
-        Ok((public_key, secret_key))
+    /// Get operator signer (panics if not set)
+    pub fn get_operator_signer(&self) -> &InMemorySigner {
+        self.operator_signer.as_ref().expect("Operator signer not set - registration must have failed")
     }
 
     /// Validate configuration
@@ -405,10 +375,10 @@ mod tests {
             start_block_height: 0,
             offchainvm_contract_id: "outlayer.testnet".parse().unwrap(),
             operator_account_id: "worker.testnet".parse().unwrap(),
-            operator_signer: InMemorySigner::from_secret_key(
+            operator_signer: Some(InMemorySigner::from_secret_key(
                 "worker.testnet".parse().unwrap(),
                 "ed25519:3D4YudUahN1nawWvHfEKBGpmJLfbCTbvdXDJKqfLhQ98XewyWK4tEDWvmAYPZqcgz7qfkCEHyWD15m8JVVWJ3LXD".parse().unwrap(),
-            ),
+            )),
             worker_id: "test-worker".to_string(),
             enable_event_monitor: false,
             poll_timeout_seconds: 60,
@@ -423,6 +393,7 @@ mod tests {
             keystore_base_url: None,
             keystore_auth_token: None,
             tee_mode: "none".to_string(),
+            use_tee_registration: false, // Test mode: use legacy with OPERATOR_PRIVATE_KEY
             register_contract_id: None,
             register_collateral_json: None,
             init_account_id: None,

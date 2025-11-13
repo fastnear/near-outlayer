@@ -493,3 +493,66 @@ pub async fn get_popular_repos(
 
     Ok(Json(result))
 }
+
+/// Public endpoint: Create API key for authenticated user
+/// No authentication required - any user can generate their own API key
+pub async fn create_api_key(
+    State(state): State<AppState>,
+    Json(req): Json<crate::models::CreateApiKeyRequest>,
+) -> Result<Json<crate::models::CreateApiKeyResponse>, StatusCode> {
+    use rand::{thread_rng, Rng};
+    use sha2::{Digest, Sha256};
+
+    // Validate request
+    req.validate()
+        .map_err(|e| {
+            tracing::warn!("Invalid API key request: {}", e);
+            StatusCode::BAD_REQUEST
+        })?;
+
+    // Determine rate limit
+    let rate_limit = req
+        .rate_limit_per_minute
+        .unwrap_or(state.config.default_rate_limit as i32)
+        .min(state.config.max_rate_limit as i32);
+
+    // Generate random API key (32 bytes = 64 hex chars)
+    let mut rng = thread_rng();
+    let bytes: [u8; 32] = rng.gen();
+    let api_key_plaintext = hex::encode(bytes);
+    let api_key_hash = format!("{:x}", Sha256::digest(api_key_plaintext.as_bytes()));
+
+    // Store in database
+    let result = sqlx::query!(
+        "INSERT INTO api_keys (api_key, near_account_id, key_name, rate_limit_per_minute)
+         VALUES ($1, $2, $3, $4)
+         RETURNING created_at",
+        api_key_hash,
+        req.near_account_id,
+        req.key_name,
+        rate_limit
+    )
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to create API key: {}", e);
+        if e.to_string().contains("duplicate") {
+            StatusCode::CONFLICT
+        } else {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    })?;
+
+    tracing::info!(
+        "Created API key for NEAR account: {} (rate_limit: {}/min)",
+        req.near_account_id,
+        rate_limit
+    );
+
+    Ok(Json(crate::models::CreateApiKeyResponse {
+        api_key: api_key_plaintext,
+        near_account_id: req.near_account_id,
+        rate_limit_per_minute: rate_limit,
+        created_at: result.created_at.map(|dt| dt.and_utc().timestamp()).unwrap_or(0),
+    }))
+}

@@ -1,0 +1,46 @@
+# Don't include these in Docker build
+.env
+.env.*
+!.env.example
+*.env
+*.env.*
+!*.env.example
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.idea/
+.vscode/
+
+# Build artifacts
+target/
+node_modules/
+.next/
+dist/
+
+# Logs
+*.log
+logs/
+
+# Database
+*.db
+*.sqlite
+
+# Temp files
+tmp/
+/tmp/
+
+# SQLx offline data
+.sqlx/
+
+# Docs (not needed in image)
+*.md
+!README.md
+
+# various notices
+*.txt
+
+# Scripts (not needed in image)
+scripts/

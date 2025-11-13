@@ -72,13 +72,80 @@ async fn main() -> Result<()> {
     // Initialize TDX client for task attestations
     let tdx_client = tdx_attestation::TdxClient::new(config.tee_mode.clone());
 
-    // Initialize NEAR client
+    // IMPORTANT: Worker registration MUST happen BEFORE creating NearClient
+    // because NearClient requires operator_signer which is generated during registration
+    // Make config mutable so we can set operator_signer after registration
+    let mut config = config;
+
+    // Check registration mode: TEE or legacy
+    if config.use_tee_registration {
+        info!("🔐 TEE registration mode enabled (USE_TEE_REGISTRATION=true)");
+
+        // Register worker key with register contract (if configured)
+        // This MUST happen before creating NearClient
+        if let Some(ref register_contract_id) = config.register_contract_id {
+            info!("🔑 Worker registration enabled - attempting to register with {}...", register_contract_id);
+
+            // Use init account for gas payment if configured
+            let (init_account_id, init_secret_key) = if let (Some(init_id), Some(init_signer)) =
+                (&config.init_account_id, &config.init_account_signer) {
+                info!("   Using init account for gas payment: {}", init_id);
+                (init_id.clone(), init_signer.secret_key.clone())
+            } else {
+                error!("❌ REGISTER_CONTRACT_ID is set but init account credentials missing");
+                error!("   When using worker registration, you must provide:");
+                error!("   - INIT_ACCOUNT_ID");
+                error!("   - INIT_ACCOUNT_PRIVATE_KEY");
+                return Err(anyhow::anyhow!("Init account credentials required for worker registration"));
+            };
+
+            // Attempt registration
+            match registration::register_worker_on_startup(
+                config.near_rpc_url.clone(),
+                register_contract_id.clone(),
+                init_account_id.clone(),
+                init_secret_key.clone(),
+                &tdx_client,
+                config.register_collateral_json.clone(),
+            ).await {
+                Ok((public_key, secret_key)) => {
+                    info!("✅ Worker keypair ready: {}", public_key);
+                    info!("   Key registered and ready for signing execution results");
+
+                    // Set operator signer with generated keypair
+                    let operator_signer = near_crypto::InMemorySigner::from_secret_key(
+                        config.operator_account_id.clone(),
+                        secret_key,
+                    );
+                    config.set_operator_signer(operator_signer);
+                    info!("✅ Operator signer configured for account: {}", config.operator_account_id);
+                }
+                Err(e) => {
+                    error!("❌ Worker registration flow failed: {}", e);
+                    error!("   Worker CANNOT start without registered key");
+                    return Err(anyhow::anyhow!("Worker registration failed: {}", e));
+                }
+            };
+        } else {
+            error!("❌ Worker registration disabled - REGISTER_CONTRACT_ID not set");
+            error!("   Worker MUST use registration flow to generate ephemeral keys in TEE");
+            error!("   Set REGISTER_CONTRACT_ID or use USE_TEE_REGISTRATION=false for legacy mode");
+            return Err(anyhow::anyhow!("Worker registration required - REGISTER_CONTRACT_ID must be set"));
+        }
+    } else {
+        info!("🔓 Legacy mode enabled (USE_TEE_REGISTRATION=false)");
+        info!("   Using OPERATOR_PRIVATE_KEY from .env for all transactions");
+        info!("   ⚠️  This mode is for testnet only - use TEE registration for production!");
+    }
+
+    // Create NearClient with operator signer from registration
     let near_client = NearClient::new(
         config.near_rpc_url.clone(),
-        config.operator_signer.clone(),
+        config.get_operator_signer().clone(),
         config.offchainvm_contract_id.clone(),
     )
     .context("Failed to create NEAR client")?;
+    info!("NEAR client initialized");
 
     // Start heartbeat task
     let heartbeat_api_client = api_client.clone();
@@ -124,48 +191,6 @@ async fn main() -> Result<()> {
                 tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
             }
         }
-    }
-
-    // Register worker key with register contract (if configured)
-    if let Some(ref register_contract_id) = config.register_contract_id {
-        info!("🔑 Worker registration enabled - attempting to register with {}...", register_contract_id);
-
-        // Create TDX client for attestation generation
-        let tdx_client = tdx_attestation::TdxClient::new(config.tee_mode.clone());
-
-        // Use init account for gas payment, or fall back to operator account
-        let (init_account_id, init_secret_key) = if let (Some(init_id), Some(init_signer)) =
-            (&config.init_account_id, &config.init_account_signer) {
-            info!("   Using init account for gas payment: {}", init_id);
-            (init_id.clone(), init_signer.secret_key.clone())
-        } else {
-            info!("   No init account configured - using operator account for gas payment");
-            (config.operator_account_id.clone(), config.operator_signer.secret_key.clone())
-        };
-
-        // Attempt registration
-        let (_public_key, _secret_key) = match registration::register_worker_on_startup(
-            config.near_rpc_url.clone(),
-            register_contract_id.clone(),
-            init_account_id.clone(),
-            init_secret_key.clone(),
-            &tdx_client,
-            config.register_collateral_json.clone(),
-        ).await {
-            Ok((public_key, secret_key)) => {
-                info!("✅ Worker keypair ready: {}", public_key);
-                info!("   Key registered and ready for signing execution results");
-                (public_key, secret_key)
-            }
-            Err(e) => {
-                error!("❌ Worker registration flow failed: {}", e);
-                error!("   Worker CANNOT start without registered key");
-                return Err(anyhow::anyhow!("Worker registration failed: {}", e));
-            }
-        };
-    } else {
-        info!("Worker registration disabled (REGISTER_CONTRACT_ID not set)");
-        info!("⚠️  Worker will use OPERATOR_PRIVATE_KEY from .env for all transactions");
     }
 
     // Start event monitor if enabled

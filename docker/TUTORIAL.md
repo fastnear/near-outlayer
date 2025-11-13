@@ -2,7 +2,7 @@
 .phala/config
 
 # build keystore 
-./scripts/build_and_push_keystore.sh zavodil v1.0.3^C
+./scripts/build_and_push_keystore.sh zavodil v1.0.3
 
 # deploy keystore to phala
 cd docker
@@ -28,3 +28,7 @@ near call worker.outlayer.testnet add_approved_rtmr3 \
 
 # check whitelist
 near contract call-function as-read-only worker.outlayer.testnet get_approved_rtmr3 json-args {} network-config testnet now
+
+# check logs
+phala cvms logs outlayer-testnet-worker
+phala cvms logs outlayer-testnet-worker --follow
