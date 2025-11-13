@@ -161,7 +161,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // These endpoints are NOT exposed externally, workers use internal network
     let internal = Router::new()
         .route("/internal/system-logs", post(handlers::internal::store_system_log))
-        .with_state(state.db.clone());
+        .with_state(state.clone());
 
     // Build API key protected routes (require API key)
     let api_key_protected = Router::new()
@@ -181,7 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/admin/api-keys", post(handlers::admin::create_api_key))
         .route("/admin/system-logs/:request_id", get(handlers::internal::get_system_logs))
         .layer(axum::middleware::from_fn_with_state(
-            config.clone(),
+            state.clone(),
             middleware::admin_auth::admin_auth,
         ))
         .with_state(state.clone());

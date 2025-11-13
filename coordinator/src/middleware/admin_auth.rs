@@ -4,11 +4,11 @@ use axum::{
     middleware::Next,
     response::Response,
 };
-use crate::config::Config;
+use crate::AppState;
 
 /// Middleware to verify admin bearer token
 pub async fn admin_auth(
-    State(config): State<Config>,
+    State(state): State<AppState>,
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
@@ -22,7 +22,7 @@ pub async fn admin_auth(
         .strip_prefix("Bearer ")
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
-    if token != config.admin_bearer_token {
+    if token != state.config.admin_bearer_token {
         tracing::warn!("Invalid admin bearer token attempt");
         return Err(StatusCode::FORBIDDEN);
     }

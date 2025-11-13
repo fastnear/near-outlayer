@@ -3,9 +3,9 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Json},
 };
-use sqlx::PgPool;
 
-use crate::models::{SystemHiddenLog, StoreSystemLogRequest};
+use crate::AppState;
+use crate::models::{StoreSystemLogRequest, SystemHiddenLog};
 
 /// POST /internal/system-logs
 ///
@@ -16,7 +16,7 @@ use crate::models::{SystemHiddenLog, StoreSystemLogRequest};
 /// Store raw system logs (compilation/execution) for admin debugging
 /// NO AUTH REQUIRED - internal endpoint for workers only
 pub async fn store_system_log(
-    State(pool): State<PgPool>,
+    State(state): State<AppState>,
     Json(payload): Json<StoreSystemLogRequest>,
 ) -> Result<impl IntoResponse, StatusCode> {
     // Insert system log into database
@@ -34,7 +34,7 @@ pub async fn store_system_log(
         payload.exit_code,
         payload.execution_error
     )
-    .fetch_one(&pool)
+    .fetch_one(&state.db)
     .await
     .map_err(|e| {
         tracing::error!("Failed to store system log: {}", e);
@@ -61,7 +61,7 @@ pub async fn store_system_log(
 /// NO AUTH REQUIRED in dev mode - in production, add proper admin authentication
 /// This endpoint should NOT be accessible from external networks
 pub async fn get_system_logs(
-    State(pool): State<PgPool>,
+    State(state): State<AppState>,
     Path(request_id): Path<i64>,
 ) -> Result<impl IntoResponse, StatusCode> {
     // Fetch all system logs for this request_id
@@ -84,7 +84,7 @@ pub async fn get_system_logs(
         "#,
         request_id
     )
-    .fetch_all(&pool)
+    .fetch_all(&state.db)
     .await
     .map_err(|e| {
         tracing::error!("Failed to fetch system logs: {}", e);

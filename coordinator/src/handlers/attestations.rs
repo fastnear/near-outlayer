@@ -5,7 +5,7 @@ use axum::{
 };
 
 use crate::auth::WorkerTokenHash;
-use crate::models::{AttestationResponse, StoreAttestationRequest};
+use crate::models::{AttestationResponse, StoreAttestationRequest, TaskAttestation};
 use crate::AppState;
 
 /// Public endpoint: Get attestation by task ID

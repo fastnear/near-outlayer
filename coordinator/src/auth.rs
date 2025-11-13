@@ -74,10 +74,11 @@ pub async fn auth_middleware(
 
     // Update last_used_at (fire and forget)
     let db = state.db.clone();
+    let token_hash_for_update = token_hash.clone();
     tokio::spawn(async move {
         let _ = sqlx::query!(
             "UPDATE worker_auth_tokens SET last_used_at = NOW() WHERE token_hash = $1",
-            token_hash
+            token_hash_for_update
         )
         .execute(&db)
         .await;

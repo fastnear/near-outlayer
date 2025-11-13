@@ -37,7 +37,7 @@ pub async fn api_key_auth(
     })?
     .ok_or(StatusCode::UNAUTHORIZED)?;
 
-    if !key_record.is_active {
+    if !key_record.is_active.unwrap_or(false) {
         tracing::warn!("Inactive API key attempted access: id={}", key_record.id);
         return Err(StatusCode::FORBIDDEN);
     }

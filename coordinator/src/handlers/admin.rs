@@ -67,6 +67,6 @@ pub async fn create_api_key(
         api_key: api_key_plaintext,
         near_account_id: req.near_account_id,
         rate_limit_per_minute: rate_limit,
-        created_at: result.created_at.and_utc().timestamp(),
+        created_at: result.created_at.map(|dt| dt.and_utc().timestamp()).unwrap_or(0),
     }))
 }
