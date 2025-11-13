@@ -474,7 +474,7 @@ pub struct TaskAttestation {
     pub input_hash: Option<String>,  // NULL for Compile, present for Execute
     pub output_hash: String,
 
-    pub created_at: chrono::NaiveDateTime,
+    pub created_at: Option<chrono::NaiveDateTime>,
 }
 
 /// API response for attestation queries
@@ -536,7 +536,7 @@ impl From<TaskAttestation> for AttestationResponse {
             wasm_hash: att.wasm_hash,
             input_hash: att.input_hash,
             output_hash: att.output_hash,
-            timestamp: att.created_at.and_utc().timestamp(),
+            timestamp: att.created_at.map(|dt| dt.and_utc().timestamp()).unwrap_or(0),
         }
     }
 }
