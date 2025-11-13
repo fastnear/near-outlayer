@@ -170,27 +170,30 @@ async fn main() -> Result<()> {
     });
     info!("Heartbeat task started (every 30 seconds)");
 
-    // Send startup attestation
-    // Retry every 60 seconds until successful
-    info!("Starting registration loop - will retry every 60 seconds until successful...");
+    // Send startup attestation (only for TEE mode)
+    if config.use_tee_registration {
+        info!("Starting registration loop - will retry every 60 seconds until successful...");
 
-    loop {
-        match send_startup_attestation(&api_client, &tdx_client, &config).await {
-            Ok(_) => {
-                info!("✅ Startup attestation sent successfully - worker registered with coordinator");
-                break;
-            }
-            Err(e) => {
-                warn!("⚠️  Startup attestation failed (will retry in 60 seconds): {}", e);
-                warn!("Common causes:");
-                warn!("  - Coordinator not accessible yet (check API_BASE_URL)");
-                warn!("  - Worker auth token invalid (check API_AUTH_TOKEN)");
-                warn!("  - TEE attestation generation failed (check /var/run/dstack.sock)");
-                warn!("  - Database migration not applied (check coordinator logs)");
+        loop {
+            match send_startup_attestation(&api_client, &tdx_client, &config).await {
+                Ok(_) => {
+                    info!("✅ Startup attestation sent successfully - worker registered with coordinator");
+                    break;
+                }
+                Err(e) => {
+                    warn!("⚠️  Startup attestation failed (will retry in 60 seconds): {}", e);
+                    warn!("Common causes:");
+                    warn!("  - Coordinator not accessible yet (check API_BASE_URL)");
+                    warn!("  - Worker auth token invalid (check API_AUTH_TOKEN)");
+                    warn!("  - TEE attestation generation failed (check /var/run/dstack.sock)");
+                    warn!("  - Database migration not applied (check coordinator logs)");
 
-                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+                    tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+                }
             }
         }
+    } else {
+        info!("Skipping startup attestation (legacy mode - USE_TEE_REGISTRATION=false)");
     }
 
     // Start event monitor if enabled

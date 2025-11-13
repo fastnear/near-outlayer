@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use tracing::error;
 
 use crate::AppState;
+use crate::models::{CreateApiKeyRequest, CreateApiKeyResponse};
 
 /// Public endpoint: List all workers and their status
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -498,8 +499,8 @@ pub async fn get_popular_repos(
 /// No authentication required - any user can generate their own API key
 pub async fn create_api_key(
     State(state): State<AppState>,
-    Json(req): Json<crate::models::CreateApiKeyRequest>,
-) -> Result<Json<crate::models::CreateApiKeyResponse>, StatusCode> {
+    Json(req): Json<CreateApiKeyRequest>,
+) -> Result<Json<CreateApiKeyResponse>, StatusCode> {
     use rand::{thread_rng, Rng};
     use sha2::{Digest, Sha256};
 
@@ -549,7 +550,7 @@ pub async fn create_api_key(
         rate_limit
     );
 
-    Ok(Json(crate::models::CreateApiKeyResponse {
+    Ok(Json(CreateApiKeyResponse {
         api_key: api_key_plaintext,
         near_account_id: req.near_account_id,
         rate_limit_per_minute: rate_limit,
