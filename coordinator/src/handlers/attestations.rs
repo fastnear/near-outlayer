@@ -70,26 +70,15 @@ pub async fn store_attestation(
     );
 
     // Store in database
+    // Note: ON CONFLICT removed because task_attestations doesn't have UNIQUE(task_id)
+    // Multiple attestations can exist for the same task (e.g., retries, different workers)
     sqlx::query!(
         "INSERT INTO task_attestations
          (task_id, task_type, tdx_quote, worker_measurement,
           request_id, caller_account_id, transaction_hash, block_height,
           repo_url, commit_hash, build_target,
           wasm_hash, input_hash, output_hash)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-         ON CONFLICT (task_id) DO UPDATE SET
-            tdx_quote = EXCLUDED.tdx_quote,
-            worker_measurement = EXCLUDED.worker_measurement,
-            request_id = EXCLUDED.request_id,
-            caller_account_id = EXCLUDED.caller_account_id,
-            transaction_hash = EXCLUDED.transaction_hash,
-            block_height = EXCLUDED.block_height,
-            repo_url = EXCLUDED.repo_url,
-            commit_hash = EXCLUDED.commit_hash,
-            build_target = EXCLUDED.build_target,
-            wasm_hash = EXCLUDED.wasm_hash,
-            input_hash = EXCLUDED.input_hash,
-            output_hash = EXCLUDED.output_hash",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
         req.task_id,
         req.task_type.as_str(),
         quote_bytes,
