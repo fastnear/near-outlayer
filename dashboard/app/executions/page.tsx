@@ -222,8 +222,9 @@ export default function JobsPage() {
                               title={job.job_id ? `Job ID: ${job.job_id} - Click to view TEE attestation` : 'Click to view TEE attestation'}
                             >
                               <button
-                                onClick={() => loadAttestation(job.id)}
+                                onClick={() => job.job_id && loadAttestation(job.job_id)}
                                 className="text-blue-600 hover:text-blue-800 hover:underline"
+                                disabled={!job.job_id}
                               >
                                 #{job.id}
                               </button>
