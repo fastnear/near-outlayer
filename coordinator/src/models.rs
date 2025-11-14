@@ -597,20 +597,23 @@ impl StoreAttestationRequest {
             }
         }
 
-        if let Some(ref hash) = self.wasm_hash {
-            if hash.len() != 64 {
-                return Err("wasm_hash must be 64 characters (SHA256 hex)".to_string());
+        // Skip hash length validation for special tasks (task_id = -1) like startup
+        if self.task_id >= 0 {
+            if let Some(ref hash) = self.wasm_hash {
+                if hash.len() != 64 {
+                    return Err("wasm_hash must be 64 characters (SHA256 hex)".to_string());
+                }
             }
-        }
 
-        if let Some(ref hash) = self.input_hash {
-            if hash.len() != 64 {
-                return Err("input_hash must be 64 characters (SHA256 hex)".to_string());
+            if let Some(ref hash) = self.input_hash {
+                if hash.len() != 64 {
+                    return Err("input_hash must be 64 characters (SHA256 hex)".to_string());
+                }
             }
-        }
 
-        if self.output_hash.len() != 64 {
-            return Err("output_hash must be 64 characters (SHA256 hex)".to_string());
+            if self.output_hash.len() != 64 {
+                return Err("output_hash must be 64 characters (SHA256 hex)".to_string());
+            }
         }
 
         Ok(())
