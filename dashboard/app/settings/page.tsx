@@ -240,7 +240,7 @@ export default function SettingsPage() {
                 </button>
               </div>
               <p className="mt-2 text-xs text-gray-500">
-                Keep your API key secure. It's stored locally in your browser.
+                Keep your API key secure. It&apos;s stored locally in your browser.
               </p>
             </div>
           )}
