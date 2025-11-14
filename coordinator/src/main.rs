@@ -169,7 +169,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api_key_protected = Router::new()
         .route("/attestations/:task_id", get(handlers::attestations::get_attestation))
         .layer(axum::middleware::from_fn_with_state(
-            rate_limiter.clone(),
+            (rate_limiter.clone(), config.clone()),
             middleware::rate_limit::rate_limit_middleware,
         ))
         .layer(axum::middleware::from_fn_with_state(

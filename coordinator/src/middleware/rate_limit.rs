@@ -7,6 +7,7 @@ use axum::{
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use crate::config::Config;
 
 /// Simple in-memory rate limiter (per API key)
 #[derive(Clone)]
@@ -56,10 +57,16 @@ impl RateLimiter {
 
 /// Middleware for rate limiting based on API key
 pub async fn rate_limit_middleware(
-    State(rate_limiter): State<Arc<RateLimiter>>,
+    State((rate_limiter, config)): State<(Arc<RateLimiter>, Arc<Config>)>,
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
+    // Skip rate limiting if API key check is disabled
+    if !config.require_attestation_api_key {
+        tracing::debug!("Rate limiting skipped (REQUIRE_ATTESTATION_API_KEY=false)");
+        return Ok(next.run(request).await);
+    }
+
     // Get API key ID from extensions (set by api_key_auth middleware)
     let api_key_id = request
         .extensions()
