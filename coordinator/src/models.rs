@@ -588,9 +588,12 @@ impl StoreAttestationRequest {
         }
 
         // Validate hash lengths if present
-        if let Some(ref hash) = self.commit_hash {
-            if hash.len() != 64 {
-                return Err("commit_hash must be 64 characters (SHA256 hex)".to_string());
+        // Skip validation for special tasks (task_id = -1) like startup attestations
+        if self.task_id >= 0 {
+            if let Some(ref hash) = self.commit_hash {
+                if hash.len() != 64 {
+                    return Err("commit_hash must be 64 characters (SHA256 hex)".to_string());
+                }
             }
         }
 
