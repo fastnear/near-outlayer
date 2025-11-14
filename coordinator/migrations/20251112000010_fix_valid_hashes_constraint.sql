@@ -13,14 +13,16 @@ ALTER TABLE task_attestations DROP CONSTRAINT IF EXISTS valid_hashes;
 
 -- Add new valid_hashes constraint that skips hash length checks for task_id < 0
 ALTER TABLE task_attestations ADD CONSTRAINT valid_hashes CHECK (
-    (task_id < 0) OR  -- Special tasks: skip hash length validation entirely
+    -- worker_measurement must always be 96 chars (RTMR3 from real TDX quote)
+    length(worker_measurement) = 96 AND
     (
-        -- Normal tasks: enforce strict hash lengths
-        (commit_hash IS NULL OR length(commit_hash) = 64) AND
-        (wasm_hash IS NULL OR length(wasm_hash) = 64) AND
-        (input_hash IS NULL OR length(input_hash) = 64) AND
-        length(output_hash) = 64
+        (task_id < 0) OR  -- Special tasks: skip hash length validation entirely
+        (
+            -- Normal tasks: enforce strict hash lengths
+            (commit_hash IS NULL OR length(commit_hash) = 64) AND
+            (wasm_hash IS NULL OR length(wasm_hash) = 64) AND
+            (input_hash IS NULL OR length(input_hash) = 64) AND
+            length(output_hash) = 64
+        )
     )
-) AND
--- worker_measurement must always be 96 chars (RTMR3 from real TDX quote)
-length(worker_measurement) = 96;
+);
