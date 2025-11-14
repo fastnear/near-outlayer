@@ -1,28 +1,9 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { fetchJobs, JobHistoryEntry } from '@/lib/api';
+import { fetchJobs, JobHistoryEntry, AttestationResponse } from '@/lib/api';
 import { getTransactionUrl } from '@/lib/explorer';
 import { useNearWallet } from '@/contexts/NearWalletContext';
-
-interface Attestation {
-  id: number;
-  task_id: number;
-  task_type: string;
-  tdx_quote: string;
-  worker_measurement: string;
-  request_id: number | null;
-  caller_account_id: string | null;
-  transaction_hash: string | null;
-  block_height: number | null;
-  repo_url: string | null;
-  commit_hash: string | null;
-  build_target: string | null;
-  wasm_hash: string | null;
-  input_hash: string | null;
-  output_hash: string | null;
-  created_at: string;
-}
 
 export default function JobsPage() {
   const { network } = useNearWallet();
@@ -30,7 +11,7 @@ export default function JobsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedJobId, setExpandedJobId] = useState<number | null>(null);
-  const [attestationModal, setAttestationModal] = useState<{ jobId: number; attestation: Attestation | null; loading: boolean; error: string | null } | null>(null);
+  const [attestationModal, setAttestationModal] = useState<{ jobId: number; attestation: AttestationResponse | null; loading: boolean; error: string | null } | null>(null);
 
   useEffect(() => {
     loadJobs();
@@ -79,14 +60,19 @@ export default function JobsPage() {
         return;
       }
 
-      setAttestationModal({ jobId: requestId, attestation: data as any, loading: false, error: null });
-    } catch (err: any) {
+      setAttestationModal({ jobId: requestId, attestation: data, loading: false, error: null });
+    } catch (err: unknown) {
       console.error('Failed to load attestation:', err);
+      const errorMessage = err instanceof Error
+        ? err.message
+        : (typeof err === 'object' && err !== null && 'response' in err && typeof err.response === 'object' && err.response !== null && 'data' in err.response && typeof err.response.data === 'object' && err.response.data !== null && 'error' in err.response.data)
+          ? String(err.response.data.error)
+          : 'Failed to load attestation';
       setAttestationModal({
         jobId: requestId,
         attestation: null,
         loading: false,
-        error: err.response?.data?.error || err.message || 'Failed to load attestation'
+        error: errorMessage
       });
     }
   };
