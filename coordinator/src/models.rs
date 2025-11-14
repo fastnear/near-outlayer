@@ -339,6 +339,10 @@ pub struct ClaimJobRequest {
     pub near_payment_yocto: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transaction_hash: Option<String>,
+    /// Worker capabilities - what this worker can do
+    /// Examples: ["compilation", "execution"], ["execution"], ["compilation"]
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
