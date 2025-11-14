@@ -21,6 +21,7 @@ pub struct Config {
 
     // Auth
     pub require_auth: bool,
+    pub require_attestation_api_key: bool,
 
     // Timeouts
     pub task_poll_timeout_seconds: u64,
@@ -77,6 +78,9 @@ impl Config {
                 .parse()?,
 
             require_auth: std::env::var("REQUIRE_AUTH")
+                .unwrap_or_else(|_| "true".to_string())
+                .parse()?,
+            require_attestation_api_key: std::env::var("REQUIRE_ATTESTATION_API_KEY")
                 .unwrap_or_else(|_| "true".to_string())
                 .parse()?,
 

@@ -6,13 +6,21 @@ use axum::{
 };
 use sqlx::PgPool;
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
+use crate::config::Config;
 
 /// Middleware to verify API key and store key ID in request extensions
 pub async fn api_key_auth(
-    State(pool): State<PgPool>,
+    State((pool, config)): State<(PgPool, Arc<Config>)>,
     mut request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
+    // Skip API key check if disabled in config (dev mode)
+    if !config.require_attestation_api_key {
+        tracing::debug!("API key check disabled (REQUIRE_ATTESTATION_API_KEY=false)");
+        return Ok(next.run(request).await);
+    }
+
     let api_key = request
         .headers()
         .get("X-API-Key")

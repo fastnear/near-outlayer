@@ -173,7 +173,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             middleware::rate_limit::rate_limit_middleware,
         ))
         .layer(axum::middleware::from_fn_with_state(
-            state.db.clone(),
+            (state.db.clone(), config.clone()),
             middleware::api_key_auth::api_key_auth,
         ))
         .with_state(state.clone());

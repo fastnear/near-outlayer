@@ -5,12 +5,32 @@ import { fetchJobs, JobHistoryEntry } from '@/lib/api';
 import { getTransactionUrl } from '@/lib/explorer';
 import { useNearWallet } from '@/contexts/NearWalletContext';
 
+interface Attestation {
+  id: number;
+  task_id: number;
+  task_type: string;
+  tdx_quote: string;
+  worker_measurement: string;
+  request_id: number | null;
+  caller_account_id: string | null;
+  transaction_hash: string | null;
+  block_height: number | null;
+  repo_url: string | null;
+  commit_hash: string | null;
+  build_target: string | null;
+  wasm_hash: string | null;
+  input_hash: string | null;
+  output_hash: string | null;
+  created_at: string;
+}
+
 export default function JobsPage() {
   const { network } = useNearWallet();
   const [jobs, setJobs] = useState<JobHistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedJobId, setExpandedJobId] = useState<number | null>(null);
+  const [attestationModal, setAttestationModal] = useState<{ jobId: number; attestation: Attestation | null; loading: boolean; error: string | null } | null>(null);
 
   useEffect(() => {
     loadJobs();
@@ -26,6 +46,48 @@ export default function JobsPage() {
       console.error(err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadAttestation = async (requestId: number) => {
+    const requireApiKey = process.env.NEXT_PUBLIC_REQUIRE_ATTESTATION_API_KEY === 'true';
+    const apiKey = process.env.NEXT_PUBLIC_COORDINATOR_API_KEY || '';
+
+    if (requireApiKey && !apiKey) {
+      setAttestationModal({
+        jobId: requestId,
+        attestation: null,
+        loading: false,
+        error: 'API key not configured. Please set NEXT_PUBLIC_COORDINATOR_API_KEY in .env'
+      });
+      return;
+    }
+
+    setAttestationModal({ jobId: requestId, attestation: null, loading: true, error: null });
+
+    try {
+      const { fetchAttestation } = await import('@/lib/api');
+      const data = await fetchAttestation(requestId, apiKey || 'not-required');
+
+      if (!data) {
+        setAttestationModal({
+          jobId: requestId,
+          attestation: null,
+          loading: false,
+          error: 'No attestation found for this job'
+        });
+        return;
+      }
+
+      setAttestationModal({ jobId: requestId, attestation: data as any, loading: false, error: null });
+    } catch (err: any) {
+      console.error('Failed to load attestation:', err);
+      setAttestationModal({
+        jobId: requestId,
+        attestation: null,
+        loading: false,
+        error: err.response?.data?.error || err.message || 'Failed to load attestation'
+      });
     }
   };
 
@@ -152,12 +214,13 @@ export default function JobsPage() {
                     <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900" title="In NEAR tokens">Payment</th>
                     <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">TX</th>
                     <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Created</th>
+                    <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Attestation</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200 bg-white">
                   {jobs.length === 0 ? (
                     <tr>
-                      <td colSpan={11} className="px-3 py-8 text-center text-sm text-gray-500">
+                      <td colSpan={12} className="px-3 py-8 text-center text-sm text-gray-500">
                         No jobs found
                       </td>
                     </tr>
@@ -261,11 +324,20 @@ export default function JobsPage() {
                             >
                               {formatTimestamp(job.created_at)}
                             </td>
+                            <td className="whitespace-nowrap px-3 py-4 text-sm">
+                              <button
+                                onClick={() => loadAttestation(job.request_id)}
+                                className="text-blue-600 hover:text-blue-800 hover:underline"
+                                title="View TEE attestation"
+                              >
+                                View
+                              </button>
+                            </td>
                           </tr>
                           {/* Error details row - only shown when expanded */}
                           {isExpanded && hasErrorDetails && (
                             <tr key={`${job.id}-details`}>
-                              <td colSpan={11} className="px-3 py-4 bg-gray-50">
+                              <td colSpan={12} className="px-3 py-4 bg-gray-50">
                                 <div className="text-sm">
                                   <span className="font-semibold text-gray-700">Error Details:</span>
                                   <pre className="mt-2 p-3 bg-white border border-gray-200 rounded text-xs overflow-x-auto text-red-600">
@@ -285,6 +357,156 @@ export default function JobsPage() {
           </div>
         </div>
       </div>
+
+      {/* Attestation Modal */}
+      {attestationModal && (
+        <div
+          className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
+          onClick={() => setAttestationModal(null)}
+        >
+          <div
+            className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-6">
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="text-2xl font-bold text-gray-900">
+                  TEE Attestation - Job #{attestationModal.jobId}
+                </h2>
+                <button
+                  onClick={() => setAttestationModal(null)}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              {attestationModal.loading && (
+                <div className="flex justify-center items-center py-12">
+                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+                </div>
+              )}
+
+              {attestationModal.error && (
+                <div className="bg-red-50 border border-red-200 rounded-md p-4 mb-4">
+                  <p className="text-red-800">{attestationModal.error}</p>
+                </div>
+              )}
+
+              {attestationModal.attestation && (
+                <div className="space-y-4">
+                  <div className="bg-green-50 border border-green-200 rounded-md p-4">
+                    <p className="text-green-800 font-semibold">
+                      ✓ This execution was attested by Intel TDX TEE
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-700 mb-1">Task ID</label>
+                      <div className="bg-gray-50 p-2 rounded border font-mono text-sm">
+                        {attestationModal.attestation.task_id}
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-700 mb-1">Task Type</label>
+                      <div className="bg-gray-50 p-2 rounded border font-mono text-sm">
+                        {attestationModal.attestation.task_type}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-1">
+                      Worker Measurement (RTMR3)
+                    </label>
+                    <div className="bg-gray-50 p-2 rounded border font-mono text-xs break-all">
+                      {attestationModal.attestation.worker_measurement}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-1">
+                      This is the cryptographic hash of the TEE environment (RTMR3 from TDX quote)
+                    </p>
+                  </div>
+
+                  {attestationModal.attestation.repo_url && (
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-700 mb-1">Source Code</label>
+                      <div className="bg-gray-50 p-2 rounded border text-sm">
+                        <a
+                          href={`${attestationModal.attestation.repo_url}/tree/${attestationModal.attestation.commit_hash}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-blue-600 hover:underline"
+                        >
+                          {attestationModal.attestation.repo_url} @ {attestationModal.attestation.commit_hash}
+                        </a>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-2 gap-4">
+                    {attestationModal.attestation.wasm_hash && (
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-1">WASM Hash</label>
+                        <div className="bg-gray-50 p-2 rounded border font-mono text-xs break-all">
+                          {attestationModal.attestation.wasm_hash}
+                        </div>
+                      </div>
+                    )}
+                    {attestationModal.attestation.input_hash && (
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-1">Input Hash</label>
+                        <div className="bg-gray-50 p-2 rounded border font-mono text-xs break-all">
+                          {attestationModal.attestation.input_hash}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-1">Output Hash</label>
+                    <div className="bg-gray-50 p-2 rounded border font-mono text-xs break-all">
+                      {attestationModal.attestation.output_hash}
+                    </div>
+                  </div>
+
+                  {attestationModal.attestation.transaction_hash && (
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-700 mb-1">NEAR Transaction</label>
+                      <div className="bg-gray-50 p-2 rounded border">
+                        <a
+                          href={getTransactionUrl(attestationModal.attestation.transaction_hash, network)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-blue-600 hover:underline font-mono text-sm"
+                        >
+                          {attestationModal.attestation.transaction_hash}
+                        </a>
+                      </div>
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-1">
+                      TDX Quote (Raw, Base64)
+                    </label>
+                    <textarea
+                      readOnly
+                      value={attestationModal.attestation.tdx_quote}
+                      className="w-full h-32 bg-gray-50 p-2 rounded border font-mono text-xs"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      This is the full Intel TDX attestation quote. It can be independently verified using Intel DCAP libraries.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
