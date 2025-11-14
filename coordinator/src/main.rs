@@ -191,7 +191,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Configure CORS with allowed origins from config
     let cors = CorsLayer::new()
         .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
-        .allow_headers(tower_http::cors::Any)
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::AUTHORIZATION,
+            axum::http::HeaderName::from_static("x-api-key"),
+        ])
         .allow_origin(
             config.cors_allowed_origins
                 .iter()

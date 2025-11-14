@@ -200,13 +200,12 @@ export default function JobsPage() {
                     <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900" title="In NEAR tokens">Payment</th>
                     <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">TX</th>
                     <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Created</th>
-                    <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Attestation</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200 bg-white">
                   {jobs.length === 0 ? (
                     <tr>
-                      <td colSpan={12} className="px-3 py-8 text-center text-sm text-gray-500">
+                      <td colSpan={11} className="px-3 py-8 text-center text-sm text-gray-500">
                         No jobs found
                       </td>
                     </tr>
@@ -219,10 +218,15 @@ export default function JobsPage() {
                         <>
                           <tr key={job.id}>
                             <td
-                              className="whitespace-nowrap px-3 py-4 text-sm text-gray-900 font-mono"
-                              title={job.job_id ? `Job ID: ${job.job_id}` : undefined}
+                              className="whitespace-nowrap px-3 py-4 text-sm font-mono"
+                              title={job.job_id ? `Job ID: ${job.job_id} - Click to view TEE attestation` : 'Click to view TEE attestation'}
                             >
-                              #{job.request_id}
+                              <button
+                                onClick={() => loadAttestation(job.request_id)}
+                                className="text-blue-600 hover:text-blue-800 hover:underline"
+                              >
+                                #{job.request_id}
+                              </button>
                             </td>
                             <td className="whitespace-nowrap px-3 py-4 text-sm">
                               <span
@@ -310,20 +314,11 @@ export default function JobsPage() {
                             >
                               {formatTimestamp(job.created_at)}
                             </td>
-                            <td className="whitespace-nowrap px-3 py-4 text-sm">
-                              <button
-                                onClick={() => loadAttestation(job.request_id)}
-                                className="text-blue-600 hover:text-blue-800 hover:underline"
-                                title="View TEE attestation"
-                              >
-                                View
-                              </button>
-                            </td>
                           </tr>
                           {/* Error details row - only shown when expanded */}
                           {isExpanded && hasErrorDetails && (
                             <tr key={`${job.id}-details`}>
-                              <td colSpan={12} className="px-3 py-4 bg-gray-50">
+                              <td colSpan={11} className="px-3 py-4 bg-gray-50">
                                 <div className="text-sm">
                                   <span className="font-semibold text-gray-700">Error Details:</span>
                                   <pre className="mt-2 p-3 bg-white border border-gray-200 rounded text-xs overflow-x-auto text-red-600">
