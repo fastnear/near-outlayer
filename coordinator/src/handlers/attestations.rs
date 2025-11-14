@@ -8,26 +8,26 @@ use crate::auth::WorkerTokenHash;
 use crate::models::{AttestationResponse, StoreAttestationRequest, TaskAttestation};
 use crate::AppState;
 
-/// Public endpoint: Get attestation by task ID
+/// Public endpoint: Get attestation by job ID (task ID)
 ///
 /// Requires valid API key in X-API-Key header
 pub async fn get_attestation(
-    Path(task_id): Path<i64>,
+    Path(job_id): Path<i64>,
     State(state): State<AppState>,
 ) -> Result<Json<AttestationResponse>, StatusCode> {
     let attestation = sqlx::query_as!(
         TaskAttestation,
         "SELECT * FROM task_attestations WHERE task_id = $1",
-        task_id
+        job_id
     )
     .fetch_optional(&state.db)
     .await
     .map_err(|e| {
-        tracing::error!("Failed to fetch attestation for task {}: {}", task_id, e);
+        tracing::error!("Failed to fetch attestation for job {}: {}", job_id, e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?
     .ok_or_else(|| {
-        tracing::debug!("Attestation not found for task {}", task_id);
+        tracing::debug!("Attestation not found for job {}", job_id);
         StatusCode::NOT_FOUND
     })?;
 

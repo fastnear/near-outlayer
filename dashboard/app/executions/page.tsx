@@ -30,13 +30,13 @@ export default function JobsPage() {
     }
   };
 
-  const loadAttestation = async (requestId: number) => {
+  const loadAttestation = async (jobId: number) => {
     const requireApiKey = process.env.NEXT_PUBLIC_REQUIRE_ATTESTATION_API_KEY === 'true';
     const apiKey = process.env.NEXT_PUBLIC_COORDINATOR_API_KEY || '';
 
     if (requireApiKey && !apiKey) {
       setAttestationModal({
-        jobId: requestId,
+        jobId: jobId,
         attestation: null,
         loading: false,
         error: 'API key not configured. Please set NEXT_PUBLIC_COORDINATOR_API_KEY in .env'
@@ -44,15 +44,15 @@ export default function JobsPage() {
       return;
     }
 
-    setAttestationModal({ jobId: requestId, attestation: null, loading: true, error: null });
+    setAttestationModal({ jobId: jobId, attestation: null, loading: true, error: null });
 
     try {
       const { fetchAttestation } = await import('@/lib/api');
-      const data = await fetchAttestation(requestId, apiKey || 'not-required');
+      const data = await fetchAttestation(jobId, apiKey || 'not-required');
 
       if (!data) {
         setAttestationModal({
-          jobId: requestId,
+          jobId: jobId,
           attestation: null,
           loading: false,
           error: 'No attestation found for this job'
@@ -60,7 +60,7 @@ export default function JobsPage() {
         return;
       }
 
-      setAttestationModal({ jobId: requestId, attestation: data, loading: false, error: null });
+      setAttestationModal({ jobId: jobId, attestation: data, loading: false, error: null });
     } catch (err: unknown) {
       console.error('Failed to load attestation:', err);
       const errorMessage = err instanceof Error
@@ -69,7 +69,7 @@ export default function JobsPage() {
           ? String(err.response.data.error)
           : 'Failed to load attestation';
       setAttestationModal({
-        jobId: requestId,
+        jobId: jobId,
         attestation: null,
         loading: false,
         error: errorMessage
@@ -222,10 +222,10 @@ export default function JobsPage() {
                               title={job.job_id ? `Job ID: ${job.job_id} - Click to view TEE attestation` : 'Click to view TEE attestation'}
                             >
                               <button
-                                onClick={() => loadAttestation(job.request_id)}
+                                onClick={() => loadAttestation(job.id)}
                                 className="text-blue-600 hover:text-blue-800 hover:underline"
                               >
-                                #{job.request_id}
+                                #{job.id}
                               </button>
                             </td>
                             <td className="whitespace-nowrap px-3 py-4 text-sm">
