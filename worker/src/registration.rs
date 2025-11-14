@@ -1,41 +1,61 @@
 use anyhow::{Context, Result};
-use near_crypto::{PublicKey, SecretKey};
+use near_crypto::{InMemorySigner, PublicKey, SecretKey};
 use near_jsonrpc_client::{methods, JsonRpcClient};
-use near_primitives::transaction::{Action, FunctionCallAction, Transaction, TransactionV0};
+use near_jsonrpc_primitives::types::query::RpcQueryError;
 use near_primitives::types::{AccountId, BlockReference, Finality};
+use near_primitives::views::QueryRequest;
 use serde_json::json;
 use std::fs;
 use std::path::Path;
 use tracing::info;
 
+use crate::near_client::NearClient;
 use crate::tdx_attestation::TdxClient;
 
 /// Worker registration client
 ///
 /// Handles worker keypair generation and registration with the register contract
 pub struct RegistrationClient {
-    rpc_client: JsonRpcClient,
+    near_client: NearClient,
     register_contract_id: AccountId,
-    init_account_id: AccountId,
-    init_secret_key: SecretKey,
+    rpc_client: JsonRpcClient,
+    operator_account_id: AccountId,
 }
 
 impl RegistrationClient {
     /// Create a new registration client
+    ///
+    /// This creates a temporary NearClient configured to call the register contract
+    /// using the init account for gas payment.
     pub fn new(
         near_rpc_url: String,
         register_contract_id: AccountId,
+        operator_account_id: AccountId,
         init_account_id: AccountId,
         init_secret_key: SecretKey,
-    ) -> Self {
-        let rpc_client = JsonRpcClient::connect(&near_rpc_url);
-
-        Self {
-            rpc_client,
-            register_contract_id,
+    ) -> Result<Self> {
+        // Create signer for init account (pays gas for registration)
+        let signer = InMemorySigner::from_secret_key(
             init_account_id,
             init_secret_key,
-        }
+        );
+
+        // Create NearClient pointing to register contract
+        let near_client = NearClient::new(
+            near_rpc_url.clone(),
+            signer,
+            register_contract_id.clone(),
+        )?;
+
+        // Create RPC client for queries (view access keys)
+        let rpc_client = JsonRpcClient::connect(&near_rpc_url);
+
+        Ok(Self {
+            near_client,
+            register_contract_id,
+            rpc_client,
+            operator_account_id,
+        })
     }
 
     /// Load or generate worker keypair
@@ -137,6 +157,57 @@ impl RegistrationClient {
             .join("worker-keypair.json")
     }
 
+    /// Check if an access key exists on the operator account
+    ///
+    /// This queries the NEAR blockchain to check if the given public key
+    /// is already registered as an access key on the operator account.
+    ///
+    /// # Arguments
+    /// * `public_key` - The public key to check
+    ///
+    /// # Returns
+    /// * `Ok(true)` - Key exists
+    /// * `Ok(false)` - Key does not exist
+    /// * `Err(_)` - Failed to query the blockchain
+    pub async fn check_access_key_exists(&self, public_key: &PublicKey) -> Result<bool> {
+        info!("🔍 Checking if key exists on operator account: {}", self.operator_account_id);
+        info!("   Public key: {}", public_key);
+
+        let request = methods::query::RpcQueryRequest {
+            block_reference: BlockReference::Finality(Finality::Final),
+            request: QueryRequest::ViewAccessKey {
+                account_id: self.operator_account_id.clone(),
+                public_key: public_key.clone(),
+            },
+        };
+
+        match self.rpc_client.call(request).await {
+            Ok(_response) => {
+                info!("✅ Access key found on operator account");
+                Ok(true)
+            }
+            Err(e) => {
+                // Check if this is UnknownAccessKey error (key not found - which is OK)
+                if let Some(handler_error) = e.handler_error() {
+                    match handler_error {
+                        RpcQueryError::UnknownAccessKey { public_key, .. } => {
+                            info!("ℹ️  Access key NOT found on operator account: {}", public_key);
+                            info!("   Will need to register via contract");
+                            return Ok(false);
+                        }
+                        _ => {
+                            // Other query errors (e.g., network issues, invalid account, etc.)
+                            anyhow::bail!("Failed to query access key: {:?}", handler_error)
+                        }
+                    }
+                }
+
+                // Non-handler errors (network, parse errors, etc.)
+                anyhow::bail!("Failed to query access key (network/transport error): {:?}", e)
+            }
+        }
+    }
+
     /// Register worker public key with TDX attestation
     ///
     /// This method:
@@ -147,12 +218,10 @@ impl RegistrationClient {
         &self,
         public_key: &PublicKey,
         tdx_client: &TdxClient,
-        collateral_json: Option<String>,
-    ) -> Result<String> {
+    ) -> Result<(String, String)> {
         info!("🔐 Registering worker key with register contract...");
         info!("   Public key: {}", public_key);
         info!("   Register contract: {}", self.register_contract_id);
-        info!("   Init account (gas payer): {}", self.init_account_id);
 
         // Extract raw ed25519 public key bytes (32 bytes, without the 0x00 prefix)
         let public_key_bytes = match public_key {
@@ -166,25 +235,31 @@ impl RegistrationClient {
         // TdxClient will put public_key_bytes into the first 32 bytes of report_data
         let tdx_quote_hex = tdx_client
             .generate_registration_quote(&public_key_bytes)
+            .await
             .context("Failed to generate TDX quote for registration")?;
 
         info!("✅ Generated TDX quote (length: {} bytes)", tdx_quote_hex.len() / 2);
+        info!("   TDX quote hex (first 100 chars): {}...",
+            if tdx_quote_hex.len() > 100 { &tdx_quote_hex[..100] } else { &tdx_quote_hex });
 
         // Call register_worker_key on the register contract
+        // Note: Contract ONLY uses cached collateral (security: prevent bypass)
+        // If registration fails with "Quote collateral required", fetch collateral and cache it via update_collateral
         let args = json!({
             "public_key": public_key.to_string(),
             "tdx_quote_hex": tdx_quote_hex,
-            "collateral_json": collateral_json,
         });
 
         let args_json = serde_json::to_string(&args)
             .context("Failed to serialize register_worker_key args")?;
 
         info!("📤 Calling register_worker_key on {}...", self.register_contract_id);
+        info!("   Args size: {} bytes", args_json.len());
 
-        // Call contract method
+        // Call contract method using NearClient (reuses working transaction logic)
         let outcome = self
-            .call_contract_method(
+            .near_client
+            .call_contract(
                 &self.register_contract_id,
                 "register_worker_key",
                 args_json.into_bytes(),
@@ -194,102 +269,36 @@ impl RegistrationClient {
             .await
             .context("Failed to call register_worker_key")?;
 
-        let tx_hash = format!("{}", outcome.transaction_outcome.id);
-        info!("✅ Worker key registered successfully!");
-        info!("   Transaction: {}", tx_hash);
-
-        Ok(tx_hash)
-    }
-
-
-    /// Call a contract method
-    async fn call_contract_method(
-        &self,
-        contract_id: &AccountId,
-        method_name: &str,
-        args: Vec<u8>,
-        gas: u64,
-        deposit: u128,
-    ) -> Result<near_primitives::views::FinalExecutionOutcomeView> {
-        use near_crypto::InMemorySigner;
-
-        // Create signer from init account credentials (for gas payment)
-        let signer = InMemorySigner::from_secret_key(
-            self.init_account_id.clone(),
-            self.init_secret_key.clone(),
-        );
-
-        // Get account access key for nonce
-        let access_key_query = methods::query::RpcQueryRequest {
-            block_reference: BlockReference::Finality(Finality::Final),
-            request: near_primitives::views::QueryRequest::ViewAccessKey {
-                account_id: signer.account_id.clone(),
-                public_key: signer.public_key(),
-            },
-        };
-
-        let access_key_response = self
-            .rpc_client
-            .call(access_key_query)
-            .await
-            .context("Failed to query access key")?;
-
-        let current_nonce = match access_key_response.kind {
-            near_jsonrpc_primitives::types::query::QueryResponseKind::AccessKey(access_key) => {
-                access_key.nonce
+        info!("📋 Transaction outcome status: {:?}", outcome.status);
+        info!("   Transaction logs: {}", outcome.transaction_outcome.outcome.logs.len());
+        for (i, log) in outcome.transaction_outcome.outcome.logs.iter().enumerate() {
+            info!("      Log #{}: {}", i, log);
+        }
+        for (i, receipt) in outcome.receipts_outcome.iter().enumerate() {
+            info!("   Receipt #{}: executor={}, logs={}",
+                i, receipt.outcome.executor_id, receipt.outcome.logs.len());
+            for (j, log) in receipt.outcome.logs.iter().enumerate() {
+                info!("      Receipt #{} Log #{}: {}", i, j, log);
             }
-            _ => anyhow::bail!("Unexpected query response"),
-        };
+        }
 
-        // Get latest block hash
-        let block_query = methods::block::RpcBlockRequest {
-            block_reference: BlockReference::Finality(Finality::Final),
-        };
+        let tx_hash = format!("{}", outcome.transaction_outcome.id);
 
-        let block = self
-            .rpc_client
-            .call(block_query)
-            .await
-            .context("Failed to query block")?;
-
-        let block_hash = block.header.hash;
-
-        // Create transaction
-        let transaction_v0 = TransactionV0 {
-            signer_id: signer.account_id.clone(),
-            public_key: signer.public_key(),
-            nonce: current_nonce + 1,
-            receiver_id: contract_id.clone(),
-            block_hash,
-            actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
-                method_name: method_name.to_string(),
-                args,
-                gas,
-                deposit,
-            }))],
-        };
-
-        let transaction = Transaction::V0(transaction_v0);
-
-        // Sign transaction
-        let signature = signer.sign(transaction.get_hash_and_size().0.as_ref());
-        let signed_transaction = near_primitives::transaction::SignedTransaction::new(
-            signature,
-            transaction,
-        );
-
-        // Broadcast transaction with commit (wait for finality)
-        let tx_request = methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest {
-            signed_transaction,
-        };
-
-        let outcome = self
-            .rpc_client
-            .call(tx_request)
-            .await
-            .context("Failed to broadcast transaction and wait for commit")?;
-
-        Ok(outcome)
+        // Check if transaction succeeded
+        use near_primitives::views::FinalExecutionStatus;
+        match &outcome.status {
+            FinalExecutionStatus::SuccessValue(_) => {
+                info!("✅ Worker key registered successfully!");
+                info!("   Transaction: {}", tx_hash);
+                Ok((tx_hash, tdx_quote_hex))
+            }
+            FinalExecutionStatus::Failure(err) => {
+                anyhow::bail!("Transaction failed: {:?}", err)
+            }
+            other => {
+                anyhow::bail!("Unexpected transaction status: {:?}", other)
+            }
+        }
     }
 }
 
@@ -298,37 +307,64 @@ impl RegistrationClient {
 /// This function should be called ONCE when the worker starts up.
 /// It will:
 /// 1. Load or generate a worker keypair
-/// 2. Register the public key with the register contract using TDX attestation
-/// 3. Store the keypair for future use
+/// 2. Check if the key is already registered on the operator account
+/// 3. Register the public key with the register contract using TDX attestation (if not already registered)
+/// 4. Store the keypair for future use
 ///
 /// Returns the worker's public key and secret key
 pub async fn register_worker_on_startup(
     near_rpc_url: String,
     register_contract_id: AccountId,
+    operator_account_id: AccountId,
     init_account_id: AccountId,
     init_secret_key: SecretKey,
     tdx_client: &TdxClient,
-    collateral_json: Option<String>,
-) -> Result<(PublicKey, SecretKey)> {
+) -> Result<(PublicKey, SecretKey, String)> {
     info!("🚀 Starting worker registration flow...");
 
     let registration_client = RegistrationClient::new(
         near_rpc_url,
         register_contract_id,
+        operator_account_id,
         init_account_id,
         init_secret_key,
-    );
+    )
+    .context("Failed to create registration client")?;
 
     // Load or generate keypair
     let (public_key, secret_key) = registration_client.load_or_generate_keypair()?;
 
-    // Register worker key - fail fast if registration fails
-    info!("📝 Registering worker key with TDX attestation...");
-
-    registration_client
-        .register_worker_key(&public_key, tdx_client, collateral_json)
+    // Check if key is already registered on the operator account
+    let key_exists = registration_client
+        .check_access_key_exists(&public_key)
         .await
-        .context("Failed to register worker key with register contract")?;
+        .context("Failed to check if access key exists on operator account")?;
 
-    Ok((public_key, secret_key))
+    let tdx_quote_hex = if key_exists {
+        info!("✅ Worker key already registered on operator account - skipping registration");
+        info!("   Using existing key for signing execution results");
+
+        // Generate a TDX quote anyway for coordinator attestation (not sent to contract)
+        let public_key_bytes = match &public_key {
+            PublicKey::ED25519(key) => key.0,
+            _ => anyhow::bail!("Only ed25519 keys are supported"),
+        };
+
+        tdx_client
+            .generate_registration_quote(&public_key_bytes)
+            .await
+            .context("Failed to generate TDX quote for coordinator")?
+    } else {
+        // Register worker key - fail fast if registration fails
+        info!("📝 Registering worker key with TDX attestation...");
+
+        let (_tx_hash, tdx_quote) = registration_client
+            .register_worker_key(&public_key, tdx_client)
+            .await
+            .context("Failed to register worker key with register contract")?;
+
+        tdx_quote
+    };
+
+    Ok((public_key, secret_key, tdx_quote_hex))
 }

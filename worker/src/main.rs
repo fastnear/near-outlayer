@@ -1,4 +1,5 @@
 mod api_client;
+mod collateral_fetcher;
 mod compiler;
 mod config;
 mod event_monitor;
@@ -12,12 +13,38 @@ use anyhow::{Context, Result};
 use tracing::{error, info, warn};
 
 use api_client::{ApiClient, CodeSource, ExecutionResult, JobInfo, JobType};
+use collateral_fetcher::fetch_collateral_from_phala;
 use compiler::Compiler;
 use config::Config;
 use event_monitor::EventMonitor;
 use executor::Executor;
 use keystore_client::KeystoreClient;
 use near_client::NearClient;
+use tdx_attestation::TdxClient;
+
+/// Generate a dummy TDX quote and fetch collateral from Phala Cloud API
+///
+/// This is used when registration fails with "Quote collateral required" error.
+/// We generate a fresh quote (with dummy data) just to get the collateral JSON.
+async fn generate_dummy_quote_and_fetch_collateral(tdx_client: &TdxClient) -> Result<String> {
+    info!("Generating dummy TDX quote for collateral fetching...");
+
+    // Generate quote with dummy 32-byte data
+    let dummy_data = [0u8; 32];
+    let tdx_quote_hex = tdx_client
+        .generate_registration_quote(&dummy_data)
+        .await
+        .context("Failed to generate dummy TDX quote")?;
+
+    info!("   Quote generated: {} bytes", tdx_quote_hex.len() / 2);
+
+    // Fetch collateral from Phala API
+    let collateral_json = fetch_collateral_from_phala(&tdx_quote_hex)
+        .await
+        .context("Failed to fetch collateral from Phala API")?;
+
+    Ok(collateral_json)
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -40,14 +67,21 @@ async fn main() -> Result<()> {
     info!("NEAR RPC: {}", config.near_rpc_url);
     info!("Contract ID: {}", config.offchainvm_contract_id);
     info!("Event monitor enabled: {}", config.enable_event_monitor);
+    info!("Worker capabilities: {:?}", config.capabilities.to_array());
 
     // Initialize API client
     let api_client = ApiClient::new(config.api_base_url.clone(), config.api_auth_token.clone())
         .context("Failed to create API client")?;
 
-    // Initialize compiler
-    let compiler = Compiler::new(api_client.clone(), config.clone())
-        .context("Failed to create compiler")?;
+    // Initialize compiler (only if compilation capability enabled)
+    let compiler = if config.capabilities.can_compile() {
+        info!("✅ Compilation capability enabled - initializing compiler");
+        Some(Compiler::new(api_client.clone(), config.clone())
+            .context("Failed to create compiler")?)
+    } else {
+        info!("⚠️  Compilation capability disabled - will only handle Execute jobs");
+        None
+    };
 
     // Initialize executor
     let executor = Executor::new(config.default_max_instructions, config.print_wasm_stderr);
@@ -99,33 +133,95 @@ async fn main() -> Result<()> {
                 return Err(anyhow::anyhow!("Init account credentials required for worker registration"));
             };
 
-            // Attempt registration
-            match registration::register_worker_on_startup(
+            // Attempt registration (only once - fail fast if it fails)
+            let (_public_key, secret_key, tdx_quote_hex) = match registration::register_worker_on_startup(
                 config.near_rpc_url.clone(),
                 register_contract_id.clone(),
+                config.operator_account_id.clone(),
                 init_account_id.clone(),
                 init_secret_key.clone(),
                 &tdx_client,
-                config.register_collateral_json.clone(),
             ).await {
-                Ok((public_key, secret_key)) => {
-                    info!("✅ Worker keypair ready: {}", public_key);
+                Ok(result) => {
+                    info!("✅ Worker keypair ready: {}", result.0);
                     info!("   Key registered and ready for signing execution results");
-
-                    // Set operator signer with generated keypair
-                    let operator_signer = near_crypto::InMemorySigner::from_secret_key(
-                        config.operator_account_id.clone(),
-                        secret_key,
-                    );
-                    config.set_operator_signer(operator_signer);
-                    info!("✅ Operator signer configured for account: {}", config.operator_account_id);
+                    result
                 }
                 Err(e) => {
-                    error!("❌ Worker registration flow failed: {}", e);
+                    error!("❌ Worker registration flow failed: {:?}", e);
                     error!("   Worker CANNOT start without registered key");
-                    return Err(anyhow::anyhow!("Worker registration failed: {}", e));
+                    error!("   Error chain:");
+                    for (i, cause) in e.chain().enumerate() {
+                        error!("      {}: {}", i, cause);
+                    }
+
+                    // Auto-fetch collateral from Phala Cloud for ANY registration error
+                    // This helps diagnose all issues (missing collateral, wrong RTMR3, etc.)
+                    error!("");
+                    error!("🔍 Fetching collateral from Phala Cloud API for diagnostics...");
+                    error!("");
+
+                    match generate_dummy_quote_and_fetch_collateral(&tdx_client).await {
+                        Ok(collateral_json) => {
+                            error!("✅ Successfully fetched collateral from Phala Cloud!");
+                            error!("");
+                            error!("📋 COLLATERAL JSON (copy this for update_collateral call):");
+                            error!("");
+                            error!("{}", collateral_json);
+                            error!("");
+                            error!("📝 To cache this collateral in the register contract, run:");
+                            error!("");
+                            error!("   COLLATERAL=$(cat <<'EOF'");
+                            error!("{}", collateral_json);
+                            error!("EOF");
+                            error!("   )");
+                            error!("");
+                            error!("   near call {} update_collateral \\", register_contract_id);
+                            error!("     \"{{\\\"collateral\\\":$COLLATERAL}}\" \\");
+                            error!("     --accountId outlayer.testnet \\");
+                            error!("     --gas 300000000000000");
+                            error!("");
+                        }
+                        Err(fetch_err) => {
+                            error!("⚠️  Failed to auto-fetch collateral: {:?}", fetch_err);
+                            error!("   (This is OK if you already have collateral cached)");
+                            error!("");
+                        }
+                    }
+
+                    error!("📝 Common issues:");
+                    error!("   - Missing collateral: Cache collateral JSON above via update_collateral");
+                    error!("   - RTMR3 not approved: Check contract logs for RTMR3 and add via add_approved_rtmr3");
+                    error!("   - Init account balance: Verify init-worker.outlayer.testnet has funds");
+                    error!("");
+                    error!("⏹️  Worker stopped - fix the issue and restart");
+
+                    return Err(anyhow::anyhow!("Worker registration failed: {:?}", e));
                 }
             };
+
+            // Set operator signer with generated keypair
+            let operator_signer = near_crypto::InMemorySigner::from_secret_key(
+                config.operator_account_id.clone(),
+                secret_key,
+            );
+            config.set_operator_signer(operator_signer);
+            info!("✅ Operator signer configured for account: {}", config.operator_account_id);
+
+            // Send startup attestation to coordinator (using TDX quote from registration)
+            info!("📤 Sending startup attestation to coordinator...");
+            if let Err(e) = send_startup_attestation_with_quote(&api_client, &tdx_quote_hex, &config).await {
+                error!("❌ Failed to send startup attestation to coordinator: {}", e);
+                error!("   This is required for coordinator to track worker RTMR3");
+                error!("   Common causes:");
+                error!("   - Coordinator not accessible (check API_BASE_URL)");
+                error!("   - Worker auth token invalid (check API_AUTH_TOKEN)");
+                error!("   - Database migration not applied (check coordinator logs)");
+                error!("");
+                error!("⏹️  Worker stopped - fix the issue and restart");
+                return Err(anyhow::anyhow!("Startup attestation failed: {:?}", e));
+            }
+            info!("✅ Startup attestation sent successfully - worker registered with coordinator");
         } else {
             error!("❌ Worker registration disabled - REGISTER_CONTRACT_ID not set");
             error!("   Worker MUST use registration flow to generate ephemeral keys in TEE");
@@ -170,32 +266,6 @@ async fn main() -> Result<()> {
     });
     info!("Heartbeat task started (every 30 seconds)");
 
-    // Send startup attestation (only for TEE mode)
-    if config.use_tee_registration {
-        info!("Starting registration loop - will retry every 60 seconds until successful...");
-
-        loop {
-            match send_startup_attestation(&api_client, &tdx_client, &config).await {
-                Ok(_) => {
-                    info!("✅ Startup attestation sent successfully - worker registered with coordinator");
-                    break;
-                }
-                Err(e) => {
-                    warn!("⚠️  Startup attestation failed (will retry in 60 seconds): {}", e);
-                    warn!("Common causes:");
-                    warn!("  - Coordinator not accessible yet (check API_BASE_URL)");
-                    warn!("  - Worker auth token invalid (check API_AUTH_TOKEN)");
-                    warn!("  - TEE attestation generation failed (check /var/run/dstack.sock)");
-                    warn!("  - Database migration not applied (check coordinator logs)");
-
-                    tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
-                }
-            }
-        }
-    } else {
-        info!("Skipping startup attestation (legacy mode - USE_TEE_REGISTRATION=false)");
-    }
-
     // Start event monitor if enabled
     if config.enable_event_monitor {
         let event_api_client = api_client.clone();
@@ -234,7 +304,7 @@ async fn main() -> Result<()> {
     loop {
         match worker_iteration(
             &api_client,
-            &compiler,
+            compiler.as_ref(),
             &executor,
             &near_client,
             keystore_client.as_ref(),
@@ -263,7 +333,7 @@ async fn main() -> Result<()> {
 /// Returns Ok(true) if a task was processed, Ok(false) if no task available
 async fn worker_iteration(
     api_client: &ApiClient,
-    compiler: &Compiler,
+    compiler: Option<&Compiler>,
     executor: &Executor,
     near_client: &NearClient,
     keystore_client: Option<&KeystoreClient>,
@@ -296,8 +366,9 @@ async fn worker_iteration(
     let near_payment_yocto = execution_request.near_payment_yocto.clone();
     let transaction_hash = context.transaction_hash.clone();
 
-    // Claim jobs for this task
-    info!("🎯 Claiming jobs for request_id={} data_id={}", request_id, data_id);
+    // Claim jobs for this task with worker capabilities
+    info!("🎯 Claiming jobs for request_id={} data_id={} with capabilities={:?}",
+          request_id, data_id, config.capabilities.to_array());
     let claim_response = match api_client
         .claim_job(
             request_id,
@@ -308,6 +379,7 @@ async fn worker_iteration(
             user_account_id.clone(),
             near_payment_yocto.clone(),
             transaction_hash.clone(),
+            config.capabilities.to_array(),
         )
         .await
     {
@@ -346,9 +418,15 @@ async fn worker_iteration(
 
         match job.job_type {
             JobType::Compile => {
+                // Skip compile jobs if compilation capability is disabled
+                let Some(compiler_ref) = compiler else {
+                    warn!("⚠️ Skipping Compile job {} - compilation capability disabled (COMPILATION_ENABLED=false)", job.job_id);
+                    continue;
+                };
+
                 match handle_compile_job(
                     api_client,
-                    compiler,
+                    compiler_ref,
                     keystore_client,
                     tdx_client,
                     &job,
@@ -630,7 +708,7 @@ async fn handle_compile_job(
                 None, // No input_hash for compile
                 &checksum, // output_hash is the compiled WASM checksum
                 context.block_height,
-            ) {
+            ).await {
                 Ok(tdx_quote) => {
                     // Send attestation to coordinator
                     let attestation_request = api_client::StoreAttestationRequest {
@@ -1017,7 +1095,7 @@ async fn handle_execute_job(
                             Some(&input_hash),
                             &output_hash,
                             context.block_height,
-                        ) {
+                        ).await {
                             Ok(tdx_quote) => {
                                 // Send attestation to coordinator
                                 let attestation_request = api_client::StoreAttestationRequest {
@@ -1137,39 +1215,28 @@ async fn handle_execute_job(
 // Tests moved to coordinator/src/handlers/github.rs
 // Branch resolution is now done via coordinator API with Redis caching
 
-/// Send startup attestation to coordinator
+/// Send startup attestation to coordinator using pre-generated TDX quote
 ///
 /// This registers the worker with the coordinator and updates its RTMR3 measurement.
-/// Called in a retry loop on worker startup, BEFORE event monitor and task polling.
+/// Called ONCE on worker startup after successful key registration.
+/// If this fails, the worker will stop (no retries).
 ///
-/// If this fails, it will be retried every 60 seconds until successful.
-async fn send_startup_attestation(
+/// # Arguments
+/// * `tdx_quote_hex` - Pre-generated TDX quote from registration (hex-encoded)
+async fn send_startup_attestation_with_quote(
     api_client: &ApiClient,
-    tdx_client: &tdx_attestation::TdxClient,
+    tdx_quote_hex: &str,
     config: &Config,
 ) -> Result<()> {
     use api_client::{StoreAttestationRequest, TaskType};
 
-    // Generate TDX quote for startup
-    let tdx_quote = tdx_client
-        .generate_task_attestation(
-            "startup",
-            -1, // task_id = -1 for startup registration
-            None,
-            None,
-            None,
-            None,
-            None,
-            "worker_startup",
-            None,
-        )
-        .context("Failed to generate startup TDX quote")?;
+    info!("Using TDX quote from registration (length: {} bytes)", tdx_quote_hex.len() / 2);
 
-    // Create attestation request
+    // Create attestation request with pre-generated quote
     let request = StoreAttestationRequest {
         task_id: -1,
         task_type: TaskType::Execute, // Use Execute type for startup
-        tdx_quote,
+        tdx_quote: tdx_quote_hex.to_string(),
         request_id: None,
         caller_account_id: None,
         transaction_hash: None,
@@ -1178,11 +1245,11 @@ async fn send_startup_attestation(
         commit_hash: Some("startup".to_string()),
         build_target: Some(config.tee_mode.clone()),
         wasm_hash: None,
-        input_hash: None,
+        input_hash: None, // Not required for startup attestation (task_id = -1)
         output_hash: "worker_startup".to_string(),
     };
 
-    // Send to coordinator
+    // Send to coordinator (fail fast - no retries)
     api_client
         .store_attestation(request)
         .await

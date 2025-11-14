@@ -52,7 +52,6 @@ pub struct Config {
 
     // Worker registration (optional - for TEE key registration)
     pub register_contract_id: Option<AccountId>,
-    pub register_collateral_json: Option<String>,
 
     // Init account (optional - for paying gas on worker registration)
     // If not set, operator_signer will be used for registration
@@ -67,6 +66,40 @@ pub struct Config {
     // Print WASM stderr to worker logs (for debugging WASM execution)
     // Set to false in production to reduce log noise
     pub print_wasm_stderr: bool,
+
+    // Worker capabilities (what this worker can do)
+    pub capabilities: WorkerCapabilities,
+}
+
+/// Worker capabilities - what jobs this worker can handle
+#[derive(Debug, Clone)]
+pub struct WorkerCapabilities {
+    pub compilation: bool, // Can compile GitHub repos to WASM
+    pub execution: bool,   // Can execute WASM code
+}
+
+impl WorkerCapabilities {
+    /// Convert capabilities to string array for API
+    pub fn to_array(&self) -> Vec<String> {
+        let mut result = Vec::new();
+        if self.compilation {
+            result.push("compilation".to_string());
+        }
+        if self.execution {
+            result.push("execution".to_string());
+        }
+        result
+    }
+
+    /// Check if worker can handle compilation
+    pub fn can_compile(&self) -> bool {
+        self.compilation
+    }
+
+    /// Check if worker can handle execution
+    pub fn can_execute(&self) -> bool {
+        self.execution
+    }
 }
 
 impl Config {
@@ -214,12 +247,22 @@ impl Config {
         let keystore_base_url = env::var("KEYSTORE_BASE_URL").ok();
         let keystore_auth_token = env::var("KEYSTORE_AUTH_TOKEN").ok();
 
-        let tee_mode = env::var("TEE_MODE")
+        let tee_mode_raw = env::var("TEE_MODE")
             .unwrap_or_else(|_| "none".to_string());
+        // Remove quotes if present (Phala Cloud may add them)
+        let tee_mode = tee_mode_raw
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_lowercase();
 
-        // Validate TEE mode
-        if !["sgx", "sev", "simulated", "none"].contains(&tee_mode.as_str()) {
-            anyhow::bail!("Invalid TEE_MODE: must be one of: sgx, sev, simulated, none");
+        // Validate TEE mode (case-insensitive, trimmed)
+        if !["tdx", "sgx", "sev", "simulated", "none"].contains(&tee_mode.as_str()) {
+            anyhow::bail!(
+                "Invalid TEE_MODE: received '{}' (raw: '{:?}'), must be one of: tdx, sgx, sev, simulated, none (case-insensitive)",
+                tee_mode,
+                tee_mode_raw
+            );
         }
 
         // Debug logging flag (default: true = enabled)
@@ -236,14 +279,33 @@ impl Config {
             .parse::<bool>()
             .unwrap_or(false);
 
+        // Worker capabilities - what this worker can do
+        let compilation_enabled = env::var("COMPILATION_ENABLED")
+            .unwrap_or_else(|_| "true".to_string())
+            .parse::<bool>()
+            .context("COMPILATION_ENABLED must be 'true' or 'false'")?;
+
+        let execution_enabled = env::var("EXECUTION_ENABLED")
+            .unwrap_or_else(|_| "true".to_string())
+            .parse::<bool>()
+            .context("EXECUTION_ENABLED must be 'true' or 'false'")?;
+
+        // At least one capability must be enabled
+        if !compilation_enabled && !execution_enabled {
+            anyhow::bail!("At least one capability must be enabled (COMPILATION_ENABLED or EXECUTION_ENABLED)");
+        }
+
+        let capabilities = WorkerCapabilities {
+            compilation: compilation_enabled,
+            execution: execution_enabled,
+        };
+
         // Worker registration configuration (optional)
         let register_contract_id = env::var("REGISTER_CONTRACT_ID")
             .ok()
             .map(|id| AccountId::from_str(&id))
             .transpose()
             .context("Invalid REGISTER_CONTRACT_ID format")?;
-
-        let register_collateral_json = env::var("REGISTER_COLLATERAL_JSON").ok();
 
         // Init account (optional - for paying gas on worker registration)
         let (init_account_id, init_account_signer) = if let Ok(init_account_str) = env::var("INIT_ACCOUNT_ID") {
@@ -292,11 +354,11 @@ impl Config {
             tee_mode,
             use_tee_registration,
             register_contract_id,
-            register_collateral_json,
             init_account_id,
             init_account_signer,
             save_system_hidden_logs_to_debug,
             print_wasm_stderr,
+            capabilities,
         })
     }
 
@@ -395,11 +457,14 @@ mod tests {
             tee_mode: "none".to_string(),
             use_tee_registration: false, // Test mode: use legacy with OPERATOR_PRIVATE_KEY
             register_contract_id: None,
-            register_collateral_json: None,
             init_account_id: None,
             init_account_signer: None,
             save_system_hidden_logs_to_debug: true, // Default: enabled for debugging
             print_wasm_stderr: false,
+            capabilities: WorkerCapabilities {
+                compilation: true,
+                execution: true,
+            },
         }
     }
 }

@@ -30,7 +30,7 @@ impl TdxClient {
     ///
     /// # Returns
     /// * Hex-encoded TDX quote (ready to pass to register_worker_key)
-    pub fn generate_registration_quote(&self, public_key_bytes: &[u8; 32]) -> Result<String> {
+    pub async fn generate_registration_quote(&self, public_key_bytes: &[u8; 32]) -> Result<String> {
         tracing::info!("🔐 Generating registration TDX quote with embedded public key");
         tracing::info!("   Public key (hex): {}", hex::encode(public_key_bytes));
 
@@ -45,16 +45,17 @@ impl TdxClient {
 
                 // Call Phala dstack socket to generate TDX quote
                 let tdx_quote = self.call_phala_dstack_socket(&report_data)
+                    .await
                     .context("Failed to generate TDX quote via dstack socket")?;
 
-                tracing::info!("✅ Generated TDX quote (size: {} bytes)", tdx_quote.len());
+                tracing::info!("✅ Generated real TDX quote (size: {} bytes)", tdx_quote.len());
 
                 // Return hex-encoded quote (register contract expects hex string)
                 Ok(hex::encode(&tdx_quote))
             }
             "simulated" => {
                 // Simulated mode: Create fake quote with public key embedded
-                tracing::warn!("Using SIMULATED attestation (dev only!)");
+                tracing::warn!("⚠️  Using SIMULATED attestation (dev only!)");
 
                 // Format: "SIMULATED:pubkey_hex:measurement_hex"
                 let binary_path = std::env::current_exe()
@@ -76,19 +77,21 @@ impl TdxClient {
                     hex::encode(measurement)
                 );
 
-                tracing::info!("✅ Generated simulated quote (size: {} bytes)", fake_quote.len());
+                tracing::info!("✅ Generated SIMULATED quote (hex-encoded, size: {} bytes)", fake_quote.len());
 
                 // Return hex-encoded fake quote
                 Ok(hex::encode(fake_quote.as_bytes()))
             }
             "none" => {
                 // No attestation mode: Create minimal fake quote
-                tracing::warn!("Using NO-ATTESTATION mode (dev only!)");
+                tracing::warn!("⚠️  Using NO-ATTESTATION mode (dev only!)");
 
                 let fake_quote = format!(
                     "NO_ATTESTATION:pubkey={}",
                     hex::encode(public_key_bytes)
                 );
+
+                tracing::info!("✅ Generated NO-ATTESTATION stub (hex-encoded, size: {} bytes)", hex::encode(fake_quote.as_bytes()).len());
 
                 Ok(hex::encode(fake_quote.as_bytes()))
             }
@@ -119,7 +122,7 @@ impl TdxClient {
     ///
     /// # Returns
     /// * Base64-encoded TDX quote
-    pub fn generate_task_attestation(
+    pub async fn generate_task_attestation(
         &self,
         task_type: &str,
         task_id: i64,
@@ -165,6 +168,7 @@ impl TdxClient {
             "tdx" => {
                 // Real TDX attestation
                 let tdx_quote = self.call_phala_dstack_socket(&report_data)
+                    .await
                     .context("Failed to generate TDX quote for task")?;
                 Ok(base64::encode(&tdx_quote))
             }
@@ -197,83 +201,54 @@ impl TdxClient {
         }
     }
 
-    /// Call Phala dstack socket to generate TDX quote
+    /// Call Phala dstack SDK to generate TDX quote
     ///
     /// This is the real TDX attestation generation for production Phala Cloud deployment.
     ///
-    /// Phala dstack socket API:
-    /// - Unix socket: /var/run/dstack.sock
-    /// - HTTP POST with report_data (64 bytes)
-    /// - Returns TDX quote (5-8KB binary)
-    fn call_phala_dstack_socket(&self, report_data: &[u8; 64]) -> Result<Vec<u8>> {
-        #[cfg(unix)]
-        {
-            use std::os::unix::net::UnixStream;
-            use std::io::{Read, Write};
+    /// Uses dstack-sdk library (same as MPC Node) which communicates with:
+    /// - Unix socket: /var/run/dstack.sock (default on Linux)
+    /// - HTTP API: http://localhost:8090 (if DSTACK_SIMULATOR_ENDPOINT is set)
+    ///
+    /// Returns HEX-encoded TDX quote (not base64!)
+    async fn call_phala_dstack_socket(&self, report_data: &[u8; 64]) -> Result<Vec<u8>> {
+        use dstack_sdk::dstack_client::DstackClient;
 
-            tracing::info!("Calling Phala dstack socket for TDX quote generation");
+        tracing::info!("🔌 Calling Phala dstack SDK for TDX quote generation");
+        tracing::debug!("   report_data (hex): {}", hex::encode(report_data));
 
-            // Connect to Unix socket
-            let mut stream = UnixStream::connect("/var/run/dstack.sock")
-                .context("Failed to connect to /var/run/dstack.sock - is Phala dstack running?")?;
+        // Create dstack client (auto-detects Unix socket or HTTP endpoint)
+        let client = DstackClient::new(None); // None = use default /var/run/dstack.sock
 
-            // Prepare HTTP POST request
-            let body = base64::encode(report_data);
-            let request = format!(
-                "POST /tdx/quote HTTP/1.1\r\n\
-                 Host: localhost\r\n\
-                 Content-Type: application/json\r\n\
-                 Content-Length: {}\r\n\
-                 \r\n\
-                 {{\"report_data\":\"{}\"}}",
-                body.len() + 17, // length of JSON with quotes
-                body
-            );
+        // Request TDX quote with report_data
+        let response = client.get_quote(report_data.to_vec())
+            .await
+            .context("Failed to call dstack-sdk get_quote")?;
 
-            // Send request
-            stream.write_all(request.as_bytes())
-                .context("Failed to send request to dstack socket")?;
+        tracing::info!("✅ Received TDX quote from dstack-sdk");
+        tracing::debug!("   quote (hex, first 100 chars): {}",
+            if response.quote.len() > 100 { &response.quote[..100] } else { &response.quote });
 
-            // Read response
-            let mut response = Vec::new();
-            stream.read_to_end(&mut response)
-                .context("Failed to read response from dstack socket")?;
+        // Decode HEX quote to bytes (dstack-sdk returns HEX string, not base64)
+        let tdx_quote = hex::decode(&response.quote)
+            .context("Failed to decode TDX quote from HEX")?;
 
-            // Parse HTTP response
-            let response_str = String::from_utf8_lossy(&response);
+        tracing::info!(
+            quote_size = tdx_quote.len(),
+            "Successfully generated TDX quote via dstack-sdk"
+        );
 
-            // Find JSON body (after \r\n\r\n)
-            let body_start = response_str.find("\r\n\r\n")
-                .context("Invalid HTTP response from dstack socket")?;
-            let body = &response_str[body_start + 4..];
-
-            // Parse JSON response
-            let json: serde_json::Value = serde_json::from_str(body)
-                .context("Failed to parse JSON response from dstack socket")?;
-
-            let quote_base64 = json["quote"]
-                .as_str()
-                .context("Missing 'quote' field in dstack response")?;
-
-            // Decode TDX quote from base64
-            let tdx_quote = base64::decode(quote_base64)
-                .context("Failed to decode TDX quote from base64")?;
-
-            tracing::info!(
-                quote_size = tdx_quote.len(),
-                "Successfully generated TDX quote via dstack socket"
-            );
-
-            Ok(tdx_quote)
+        // Debug: Extract and log RTMR3 from quote
+        const RTMR3_OFFSET: usize = 256;
+        const RTMR3_SIZE: usize = 48;
+        if tdx_quote.len() >= RTMR3_OFFSET + RTMR3_SIZE {
+            let rtmr3_bytes = &tdx_quote[RTMR3_OFFSET..RTMR3_OFFSET + RTMR3_SIZE];
+            let rtmr3_hex = hex::encode(rtmr3_bytes);
+            tracing::info!("📏 RTMR3 extracted from quote (offset {}, {} bytes): {}", RTMR3_OFFSET, RTMR3_SIZE, rtmr3_hex);
+        } else {
+            tracing::warn!("⚠️  Quote too short to extract RTMR3: {} bytes (need {})", tdx_quote.len(), RTMR3_OFFSET + RTMR3_SIZE);
         }
 
-        #[cfg(not(unix))]
-        {
-            anyhow::bail!(
-                "TDX mode requires Unix socket support (Linux/macOS). \
-                 For Windows development, use TEE_MODE=simulated instead."
-            )
-        }
+        Ok(tdx_quote)
     }
 }
 

@@ -487,9 +487,43 @@ impl NearClient {
         Ok(outcome)
     }
 
-    /// Call a contract method
+    /// Call a contract method (public API for registration and other use cases)
+    ///
+    /// # Arguments
+    /// * `contract_id` - Target contract account ID
+    /// * `method_name` - Contract method name
+    /// * `args` - Serialized JSON arguments
+    /// * `gas` - Gas limit in yoctoGas
+    /// * `deposit` - Attached NEAR deposit in yoctoNEAR
+    ///
+    /// # Returns
+    /// * Transaction outcome with logs and receipts
+    pub async fn call_contract(
+        &self,
+        contract_id: &AccountId,
+        method_name: &str,
+        args: Vec<u8>,
+        gas: u64,
+        deposit: u128,
+    ) -> Result<FinalExecutionOutcomeView> {
+        self.call_contract_method_internal(contract_id, method_name, args, gas, deposit).await
+    }
+
+    /// Call a contract method (internal - uses default contract_id)
     async fn call_contract_method(
         &self,
+        method_name: &str,
+        args: Vec<u8>,
+        gas: u64,
+        deposit: u128,
+    ) -> Result<FinalExecutionOutcomeView> {
+        self.call_contract_method_internal(&self.contract_id, method_name, args, gas, deposit).await
+    }
+
+    /// Call a contract method (internal implementation)
+    async fn call_contract_method_internal(
+        &self,
+        contract_id: &AccountId,
         method_name: &str,
         args: Vec<u8>,
         gas: u64,
@@ -535,7 +569,7 @@ impl NearClient {
             signer_id: self.signer.account_id.clone(),
             public_key: self.signer.public_key(),
             nonce: current_nonce + 1,
-            receiver_id: self.contract_id.clone(),
+            receiver_id: contract_id.clone(),
             block_hash,
             actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
                 method_name: method_name.to_string(),
