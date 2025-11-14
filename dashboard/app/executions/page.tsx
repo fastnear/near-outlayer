@@ -30,6 +30,41 @@ export default function JobsPage() {
     }
   };
 
+  // Verify TDX quote by extracting RTMR3 and comparing with worker_measurement
+  const verifyTdxQuote = (tdxQuoteBase64: string, expectedRtmr3: string): { valid: boolean; extractedRtmr3: string | null; error: string | null } => {
+    try {
+      // Decode base64 to bytes
+      const binaryString = atob(tdxQuoteBase64);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+
+      // TDX Quote v4 structure: RTMR3 is at offset 256, 48 bytes
+      const RTMR3_OFFSET = 256;
+      const RTMR3_SIZE = 48;
+
+      if (bytes.length < RTMR3_OFFSET + RTMR3_SIZE) {
+        return { valid: false, extractedRtmr3: null, error: 'Quote too short' };
+      }
+
+      // Extract RTMR3 bytes
+      const rtmr3Bytes = bytes.slice(RTMR3_OFFSET, RTMR3_OFFSET + RTMR3_SIZE);
+
+      // Convert to hex string
+      const extractedRtmr3 = Array.from(rtmr3Bytes)
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join('');
+
+      // Compare with expected value (case-insensitive)
+      const valid = extractedRtmr3.toLowerCase() === expectedRtmr3.toLowerCase();
+
+      return { valid, extractedRtmr3, error: null };
+    } catch (err) {
+      return { valid: false, extractedRtmr3: null, error: err instanceof Error ? err.message : 'Verification failed' };
+    }
+  };
+
   const loadAttestation = async (jobId: number) => {
     const requireApiKey = process.env.NEXT_PUBLIC_REQUIRE_ATTESTATION_API_KEY === 'true';
     const apiKey = process.env.NEXT_PUBLIC_COORDINATOR_API_KEY || '';
@@ -377,13 +412,41 @@ export default function JobsPage() {
                 </div>
               )}
 
-              {attestationModal.attestation && (
+              {attestationModal.attestation && (() => {
+                const verification = verifyTdxQuote(
+                  attestationModal.attestation.tdx_quote,
+                  attestationModal.attestation.worker_measurement
+                );
+                return (
                 <div className="space-y-4">
-                  <div className="bg-green-50 border border-green-200 rounded-md p-4">
-                    <p className="text-green-800 font-semibold">
-                      ✓ This execution was attested by Intel TDX TEE
-                    </p>
-                  </div>
+                  {verification.valid ? (
+                    <div className="bg-green-50 border border-green-200 rounded-md p-4">
+                      <p className="text-green-800 font-semibold">
+                        ✓ TDX Quote Verified: RTMR3 matches worker measurement
+                      </p>
+                      <p className="text-green-700 text-sm mt-1">
+                        This execution was attested by Intel TDX TEE. The quote is cryptographically valid.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="bg-red-50 border border-red-200 rounded-md p-4">
+                      <p className="text-red-800 font-semibold">
+                        ⚠️ TDX Quote Verification Failed
+                      </p>
+                      <p className="text-red-700 text-sm mt-1">
+                        {verification.error || 'RTMR3 mismatch'}
+                      </p>
+                      {verification.extractedRtmr3 && (
+                        <details className="mt-2 text-xs">
+                          <summary className="cursor-pointer text-red-600">Show details</summary>
+                          <div className="mt-2 font-mono">
+                            <div>Expected: {attestationModal.attestation.worker_measurement}</div>
+                            <div>Extracted: {verification.extractedRtmr3}</div>
+                          </div>
+                        </details>
+                      )}
+                    </div>
+                  )}
 
                   <div className="grid grid-cols-2 gap-4">
                     <div>
@@ -484,7 +547,8 @@ export default function JobsPage() {
                     </p>
                   </div>
                 </div>
-              )}
+                );
+              })()}
             </div>
           </div>
         </div>
