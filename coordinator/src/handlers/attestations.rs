@@ -137,19 +137,22 @@ pub async fn store_attestation(
 ///
 /// Returns RTMR3 as 96 hex characters (48 bytes)
 fn parse_tdx_quote_rtmr3(quote_bytes: &[u8]) -> Result<String, String> {
-    use tdx_quote::Quote;
-
-    // Parse TDX quote using tdx-quote library
-    let quote = Quote::from_bytes(quote_bytes)
+    // Parse TDX quote using dcap-qvl library (same as register-contract and MPC Node)
+    // We only parse the structure, without full verification (coordinator doesn't have collateral)
+    let quote = dcap_qvl::quote::Quote::parse(quote_bytes)
         .map_err(|e| format!("Failed to parse TDX quote structure: {:?}", e))?;
 
-    // Extract RTMR3 from quote body (48 bytes)
+    // Extract RTMR3 from TDX 1.0 report (48 bytes)
     // RTMR3 contains application-specific measurements:
-    // - app_id (Docker image hash)
-    // - compose_hash (Docker compose config)
-    // - instance_id (Container instance ID)
-    let rtmr3_bytes = &quote.body.rtmr3;
+    // - Docker image hash
+    // - Docker compose config hash
+    // - Container instance ID
+    let rtmr3_bytes = quote
+        .report
+        .as_td10()
+        .ok_or_else(|| "Quote is not TDX 1.0 format (expected TD10)".to_string())?
+        .rt_mr3;
 
     // Convert to 96 hex characters for storage and comparison
-    Ok(hex::encode(rtmr3_bytes))
+    Ok(hex::encode(rtmr3_bytes.to_vec()))
 }

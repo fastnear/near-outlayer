@@ -28,8 +28,8 @@ hex = "0.4"
 rand = "0.8"
 base64 = "0.21"
 
-# TDX attestation parsing
-tdx-quote = "0.0.4"
+# TDX attestation parsing - using dcap-qvl (same as register-contract and MPC Node)
+dcap-qvl = { version = "0.3.2", default-features = false, features = ["std"] }
 
 # Regex
 regex = "1.10"
