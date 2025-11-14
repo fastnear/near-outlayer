@@ -576,8 +576,10 @@ impl StoreAttestationRequest {
     pub fn validate(&self) -> Result<(), String> {
         match self.task_type {
             TaskType::Execute => {
-                if self.input_hash.is_none() {
-                    return Err("Execute tasks must have input_hash".to_string());
+                // input_hash is optional for startup/special tasks (task_id = -1)
+                // but should be present for normal execution tasks
+                if self.task_id >= 0 && self.input_hash.is_none() {
+                    return Err("Execute tasks must have input_hash (except startup tasks)".to_string());
                 }
             }
             TaskType::Compile => {
