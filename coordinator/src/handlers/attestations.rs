@@ -165,5 +165,14 @@ fn parse_tdx_quote_rtmr3(quote_bytes: &[u8]) -> Result<String, String> {
     let rtmr3_bytes = &quote_bytes[RTMR3_OFFSET..RTMR3_OFFSET + RTMR3_SIZE];
 
     // Convert to 96 hex characters for storage and comparison
-    Ok(hex::encode(rtmr3_bytes))
+    let rtmr3_hex = hex::encode(rtmr3_bytes);
+
+    tracing::info!(
+        "📏 Extracted RTMR3 from TDX quote (offset {}, {} bytes): {}",
+        RTMR3_OFFSET,
+        RTMR3_SIZE,
+        rtmr3_hex
+    );
+
+    Ok(rtmr3_hex)
 }
