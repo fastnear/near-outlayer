@@ -156,7 +156,7 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
             try {
               const errorJson = JSON.parse(errorText);
               throw new Error(errorJson.error || errorText);
-            } catch (parseErr) {
+            } catch {
               throw new Error(errorText);
             }
           }
@@ -200,7 +200,7 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
           try {
             const errorJson = JSON.parse(errorText);
             throw new Error(errorJson.error || errorText);
-          } catch (parseErr) {
+          } catch {
             throw new Error(errorText);
           }
         }
@@ -256,7 +256,7 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
           try {
             const errorJson = JSON.parse(errorText);
             throw new Error(errorJson.error || errorText);
-          } catch (parseErr) {
+          } catch {
             throw new Error(errorText);
           }
         }

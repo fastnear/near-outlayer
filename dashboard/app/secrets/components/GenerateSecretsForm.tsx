@@ -1,8 +1,6 @@
 'use client';
 
 import { useState } from 'react';
-import { ChaCha20Poly1305 } from '@stablelib/chacha20poly1305';
-import { randomBytes } from '@stablelib/random';
 
 interface GenerateSecretsFormProps {
   isConnected: boolean;
@@ -121,7 +119,7 @@ export function GenerateSecretsForm({
         try {
           const errorJson = JSON.parse(errorText);
           throw new Error(errorJson.error || errorText);
-        } catch (parseErr) {
+        } catch {
           throw new Error(errorText);
         }
       }

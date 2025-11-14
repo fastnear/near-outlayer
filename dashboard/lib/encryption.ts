@@ -21,7 +21,7 @@ export async function encryptSecrets(pubkeyHex: string, plaintext: string): Prom
     if (typeof parsed !== 'object' || Array.isArray(parsed)) {
       throw new Error('Secrets must be a JSON object');
     }
-  } catch (e) {
+  } catch {
     throw new Error('Invalid JSON format for secrets');
   }
 

@@ -27,13 +27,6 @@ export default function SettingsPage() {
     }
   }, [shouldReopenModal, isConnected, clearReopenModal]);
 
-  useEffect(() => {
-    if (isConnected && accountId) {
-      loadEarnings();
-      loadApiKey();
-    }
-  }, [isConnected, accountId]);
-
   const loadApiKey = () => {
     if (!accountId) return;
     const stored = localStorage.getItem(`outlayer-api-key-${accountId}`);
@@ -41,6 +34,14 @@ export default function SettingsPage() {
       setApiKey(stored);
     }
   };
+
+  useEffect(() => {
+    if (isConnected && accountId) {
+      loadEarnings();
+      loadApiKey();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isConnected, accountId]);
 
   const handleGenerateApiKey = async () => {
     if (!accountId) return;

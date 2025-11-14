@@ -561,7 +561,7 @@ export default function JobsPage() {
                       className="w-full h-32 bg-gray-50 p-2 rounded border font-mono text-xs"
                     />
                     <p className="text-xs text-gray-500 mt-1">
-                      This is the full Intel TDX attestation quote. Click "Verify Quote" to extract and verify RTMR3.
+                      This is the full Intel TDX attestation quote. Click &quot;Verify Quote&quot; to extract and verify RTMR3.
                     </p>
                   </div>
                 </div>
