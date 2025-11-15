@@ -12,6 +12,7 @@ export default function JobsPage() {
   const [error, setError] = useState<string | null>(null);
   const [expandedJobId, setExpandedJobId] = useState<number | null>(null);
   const [attestationModal, setAttestationModal] = useState<{ jobId: number; attestation: AttestationResponse | null; loading: boolean; error: string | null } | null>(null);
+  const [showAttestationHelp, setShowAttestationHelp] = useState(false);
 
   useEffect(() => {
     loadJobs();
@@ -393,9 +394,18 @@ export default function JobsPage() {
           >
             <div className="p-6">
               <div className="flex justify-between items-center mb-4">
-                <h2 className="text-2xl font-bold text-gray-900">
-                  TEE Attestation - Job #{attestationModal.jobId}
-                </h2>
+                <div className="flex items-center gap-3">
+                  <h2 className="text-2xl font-bold text-gray-900">
+                    TEE Attestation - Job #{attestationModal.jobId}
+                  </h2>
+                  <button
+                    onClick={() => setShowAttestationHelp(!showAttestationHelp)}
+                    className="px-3 py-1 bg-blue-100 hover:bg-blue-200 text-blue-700 text-sm font-medium rounded"
+                    title="Show help about attestation fields"
+                  >
+                    ❓ Help
+                  </button>
+                </div>
                 <button
                   onClick={() => setAttestationModal(null)}
                   className="text-gray-400 hover:text-gray-600"
@@ -405,6 +415,83 @@ export default function JobsPage() {
                   </svg>
                 </button>
               </div>
+
+              {/* Help Section */}
+              {showAttestationHelp && (
+                <div className="mb-6 bg-blue-50 border border-blue-200 rounded-lg p-4">
+                  <h3 className="text-lg font-semibold text-blue-900 mb-3">Understanding TEE Attestations</h3>
+
+                  <div className="space-y-3 text-sm text-blue-900">
+                    <div>
+                      <p className="font-semibold mb-1">🔒 What is a TEE Attestation?</p>
+                      <p className="text-blue-800">
+                        A TEE (Trusted Execution Environment) attestation is cryptographic proof that your code
+                        was executed inside a secure Intel TDX hardware enclave. This guarantees that the execution
+                        happened in isolation and wasn&apos;t tampered with.
+                      </p>
+                    </div>
+
+                    <div>
+                      <p className="font-semibold mb-1">📋 Field Descriptions:</p>
+                      <ul className="list-disc list-inside space-y-1 text-blue-800 ml-2">
+                        <li><strong>Worker Measurement (RTMR3):</strong> SHA384 hash of the TEE worker environment.
+                          This proves the code ran in an approved worker version.</li>
+                        <li><strong>Source Code:</strong> GitHub repository and commit hash used for compilation.
+                          Provides transparency about what code was executed.</li>
+                        <li><strong>WASM Hash:</strong> SHA256 of the compiled WebAssembly binary.
+                          Links the source code to the executed binary.</li>
+                        <li><strong>Input Hash:</strong> SHA256 of execution input data.
+                          You can verify this matches the data you sent by clicking &quot;Verify Input/Output Hashes&quot;.</li>
+                        <li><strong>Output Hash:</strong> SHA256 of execution output.
+                          Verifiable against the blockchain transaction result.</li>
+                        <li><strong>TDX Quote:</strong> Raw cryptographic attestation signed by Intel.
+                          Contains all measurements and is signed with Intel&apos;s private key.</li>
+                      </ul>
+                    </div>
+
+                    <div>
+                      <p className="font-semibold mb-1">✅ What Can You Verify?</p>
+                      <ul className="list-disc list-inside space-y-1 text-blue-800 ml-2">
+                        <li><strong>Worker Identity:</strong> Click &quot;Verify Quote&quot; to extract RTMR3 from the TDX quote
+                          and confirm it matches the stored worker measurement.</li>
+                        <li><strong>Input/Output Correctness:</strong> Click &quot;Verify Input/Output Hashes&quot; to fetch
+                          the transaction from NEAR blockchain and verify SHA256 hashes match.</li>
+                        <li><strong>Code Transparency:</strong> Click the source code link to view the exact GitHub
+                          commit that was compiled and executed.</li>
+                      </ul>
+                    </div>
+
+                    <div>
+                      <p className="font-semibold mb-1">🔐 Security Guarantees:</p>
+                      <ul className="list-disc list-inside space-y-1 text-blue-800 ml-2">
+                        <li><strong>Intel Signature:</strong> TDX quote is signed by Intel&apos;s private key, proving it came
+                          from genuine hardware (not simulated).</li>
+                        <li><strong>Tamper-Proof:</strong> Any modification to the quote invalidates Intel&apos;s signature.</li>
+                        <li><strong>Isolated Execution:</strong> Code runs in hardware-isolated environment, protected
+                          from OS, hypervisor, and other applications.</li>
+                        <li><strong>Verifiable Chain:</strong> Source → WASM → Input → TEE Execution → Output,
+                          with cryptographic proofs at each step.</li>
+                      </ul>
+                    </div>
+
+                    <div>
+                      <p className="font-semibold mb-1">📚 Learn More:</p>
+                      <p className="text-blue-800">
+                        For technical details about the attestation flow, see{' '}
+                        <a
+                          href="https://github.com/near-examples/near-offshore/blob/main/TEE_ATTESTATION_FLOW.md"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="underline hover:text-blue-600"
+                        >
+                          TEE_ATTESTATION_FLOW.md
+                        </a>
+                        {' '}in the documentation.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {attestationModal.loading && (
                 <div className="flex justify-center items-center py-12">
@@ -522,6 +609,67 @@ export default function JobsPage() {
                       {attestationModal.attestation.output_hash}
                     </div>
                   </div>
+
+                  {/* Verify Input/Output Hashes Button */}
+                  {attestationModal.attestation.transaction_hash && (
+                    <div>
+                      <button
+                        onClick={async () => {
+                          try {
+                            const { fetchTransaction, extractInputFromTransaction, extractOutputFromTransaction, sha256 } = await import('@/lib/near-rpc');
+
+                            // Fetch transaction data
+                            const tx = await fetchTransaction(
+                              attestationModal.attestation!.transaction_hash!,
+                              attestationModal.attestation!.caller_account_id || 'unknown',
+                              network
+                            );
+
+                            // Extract input and output
+                            const inputData = extractInputFromTransaction(tx);
+                            const outputData = extractOutputFromTransaction(tx);
+
+                            let results = '';
+
+                            // Verify input hash
+                            if (inputData !== null && attestationModal.attestation!.input_hash) {
+                              const inputHash = await sha256(inputData);
+                              const inputMatch = inputHash === attestationModal.attestation!.input_hash;
+                              results += `Input Data: "${inputData.substring(0, 100)}${inputData.length > 100 ? '...' : ''}"\n`;
+                              results += `Input Hash (calculated): ${inputHash}\n`;
+                              results += `Input Hash (attestation): ${attestationModal.attestation!.input_hash}\n`;
+                              results += `✓ Input Hash Match: ${inputMatch ? 'YES ✓' : 'NO ✗'}\n\n`;
+                            } else {
+                              results += `Input Data: Not found in transaction\n\n`;
+                            }
+
+                            // Verify output hash
+                            if (outputData !== null) {
+                              const outputHash = await sha256(outputData);
+                              const outputMatch = outputHash === attestationModal.attestation!.output_hash;
+                              results += `Output Data: "${outputData.substring(0, 100)}${outputData.length > 100 ? '...' : ''}"\n`;
+                              results += `Output Hash (calculated): ${outputHash}\n`;
+                              results += `Output Hash (attestation): ${attestationModal.attestation!.output_hash}\n`;
+                              results += `✓ Output Hash Match: ${outputMatch ? 'YES ✓' : 'NO ✗'}\n`;
+                            } else {
+                              results += `Output Data: Not found in transaction`;
+                            }
+
+                            alert(results);
+                          } catch (err) {
+                            console.error('Failed to verify hashes:', err);
+                            alert(`Failed to verify hashes: ${err instanceof Error ? err.message : 'Unknown error'}`);
+                          }
+                        }}
+                        className="w-full px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded"
+                      >
+                        🔍 Verify Input/Output Hashes from Transaction
+                      </button>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Fetches transaction data from NEAR blockchain and verifies SHA256 hashes
+                      </p>
+                    </div>
+                  )}
 
                   {attestationModal.attestation.transaction_hash && (
                     <div>
