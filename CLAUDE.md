@@ -580,6 +580,277 @@ near call outlayer.testnet delete_secrets \
 11. **Repo-based secrets** - Store once, use everywhere. Secrets indexed by user for O(1) lookups ✨ **NEW**
 12. **Access control** - Whitelist, NEAR/FT/NFT balance checks, regex patterns, complex Logic conditions ✨ **NEW**
 
+## 🔐 TEE (Trusted Execution Environment) Integration
+
+OutLayer supports **optional TEE mode** using Intel TDX (Trust Domain Extensions) via Phala Cloud. Workers can run in two modes:
+- **Standard mode**: Regular execution without attestation (faster, cheaper)
+- **TEE mode**: Execution inside Intel TDX with cryptographic attestation (verifiable, secure)
+
+### Worker Registration Contract (`register-contract`)
+
+**Deployed at**: `worker.outlayer.testnet` (testnet) / `worker.outlayer.near` (mainnet)
+
+Before a TEE worker can execute code, it must **register on-chain** with proof of its TEE environment:
+
+1. **Worker generates TDX quote** - Calls Intel TDX hardware to get attestation quote
+2. **Submit to register-contract** - Calls `register_worker(tdx_quote, collateral, public_key)`
+3. **On-chain verification** - Contract uses Intel DCAP QVL library to verify quote signature
+4. **Extract RTMR3** - Contract extracts worker measurement (SHA384 hash) from verified quote
+5. **Whitelist worker** - RTMR3 added to whitelist + worker's public key added for `resolve_execution` auth
+
+**Key Point**: The registered public key can ONLY call `resolve_execution` on the main contract to finalize executions. This prevents unauthorized result submission.
+
+**See**: [PHALA_TEE_REGISTRATION_FLOW.md](PHALA_TEE_REGISTRATION_FLOW.md) for detailed registration steps.
+
+### Keystore Worker (TEE-Required)
+
+**Port**: 8081 (isolated, accessed only via coordinator proxy)
+
+The keystore worker MUST run in TEE because it handles secret decryption. It provides:
+
+- `GET /pubkey?repo=X&branch=Y` - Get encryption public key for secrets
+- `POST /decrypt` - Decrypt secrets with TEE attestation + access control validation
+- `GET /health` - Health check
+
+**Architecture**:
+```
+┌─────────────────────┐
+│ Client (Dashboard)  │
+│  or WASM Executor   │
+└──────────┬──────────┘
+           │ Never direct access!
+           ↓
+┌─────────────────────┐
+│  Coordinator Proxy  │ ← All requests go through here
+│  /secrets/pubkey    │
+│  /secrets/decrypt   │
+└──────────┬──────────┘
+           │ host.docker.internal:8081
+           ↓
+┌─────────────────────┐
+│  Keystore Worker    │ ← MUST run in TEE
+│  (Intel TDX)        │
+│  - Decrypt secrets  │
+│  - Validate access  │
+│  - Generate quotes  │
+└─────────────────────┘
+```
+
+**Security**: Keystore worker validates access conditions (AllowAll, Whitelist, NEAR balance, etc.) before decrypting secrets. This ensures users control who can access their secrets.
+
+### TEE Execution Attestation
+
+When a TEE worker executes WASM code, it generates an **attestation** stored in the coordinator database:
+
+**Attested Data**:
+- `worker_measurement` (RTMR3) - SHA384 hash proving worker identity
+- `repo_url` + `commit_hash` - Exact source code compiled
+- `wasm_hash` - SHA256 of compiled WASM binary
+- `input_hash` - SHA256 of input data
+- `output_hash` - SHA256 of output result
+- `tdx_quote` - Full Intel TDX quote (base64) signed by Intel
+- `transaction_hash` - NEAR transaction for blockchain verification
+
+**Verification**:
+1. Extract RTMR3 from TDX quote (offset 256, 48 bytes) → compare to `worker_measurement`
+2. Fetch NEAR transaction → extract input/output → calculate SHA256 → compare to hashes
+3. View source code on GitHub → audit what was executed
+4. Download WASM binary → calculate SHA256 → compare to `wasm_hash`
+
+**Dashboard**: Navigate to `/executions` → click "View Attestation" → interactive verification with live hash calculation.
+
+### Phala Cloud Deployment
+
+OutLayer uses **Phala Cloud** (dstack) to run TEE workers with Intel TDX. We have dedicated Docker configurations for Phala deployment.
+
+#### Docker Compose Files
+
+**Main Worker** - [docker/docker-compose.phala.yml](docker/docker-compose.phala.yml)
+- Builds worker with Phala/TDX dependencies
+- Mounts `/var/run/dstack.sock` for TDX quote generation
+- Uses `.env.phala` for configuration
+- Includes health checks and restart policies
+
+**Keystore Worker** - [keystore-worker/docker-compose.yml](keystore-worker/docker-compose.yml)
+- Runs keystore service in TEE (port 8081)
+- MUST run in Phala TEE environment
+- Handles secret decryption with access control
+- Uses same dstack socket for attestation
+
+**Environment Files**:
+- [docker/.env.phala.example](docker/.env.phala.example) - Template for Phala worker config
+- [keystore-worker/.env.example](keystore-worker/.env.example) - Template for keystore config
+
+#### Full Deployment Process (from scratch)
+
+**Step 1: Prepare Configuration**
+```bash
+# Copy example env files
+cp docker/.env.phala.example docker/.env.phala
+cp keystore-worker/.env.example keystore-worker/.env
+
+# Edit .env.phala with your values:
+# - DSTACK_SIMULATOR_ENDPOINT=/var/run/dstack.sock
+# - NEAR_RPC_URL=https://rpc.testnet.near.org (or with API key)
+# - OFFCHAINVM_CONTRACT_ID=outlayer.testnet
+# - REGISTER_CONTRACT_ID=worker.outlayer.testnet
+# - OPERATOR_ACCOUNT_ID=yourworker.testnet
+# - OPERATOR_PRIVATE_KEY=ed25519:your_private_key
+# - KEYSTORE_BASE_URL=http://keystore:8081 (internal docker network)
+# - TEE_MODE=tdx
+```
+
+**Step 2: Build Docker Images**
+```bash
+cd docker
+
+# Build worker image
+docker-compose -f docker-compose.phala.yml build
+
+# Build and push to Phala registry (if deploying to Phala Cloud)
+./scripts/build_and_push_phala.sh
+```
+
+**Step 3: Deploy to Phala Cloud**
+```bash
+# Using Phala CLI
+phala cvms create --name outlayer-worker --image your-registry/outlayer-worker:latest
+
+# Or deploy via Phala dashboard
+# Upload docker-compose.phala.yml to Phala Cloud UI
+```
+
+**Step 4: Worker Registration (ONE-TIME)**
+
+Once the worker starts in Phala TEE, it must register before executing any tasks:
+
+```bash
+# Worker automatically runs registration on startup if not registered
+# Check worker logs to see registration status:
+docker logs outlayer-worker-1
+
+# Expected log output:
+# [INFO] Connecting to Phala dstack socket: /var/run/dstack.sock
+# [INFO] Generating TDX quote...
+# [INFO] Fetching Intel collateral...
+# [INFO] Submitting registration to worker.outlayer.testnet...
+# [INFO] Registration successful! RTMR3: 2641ff132f21a1e9...
+# [INFO] Worker public key added to main contract
+# [INFO] Worker is now authorized to execute tasks
+```
+
+**Registration happens automatically** via `worker/src/registration.rs`:
+1. Worker generates fresh NEAR key pair (or loads existing from env)
+2. Connects to `/var/run/dstack.sock` (Phala dstack daemon)
+3. Calls `tdx_quote()` API to get Intel TDX quote
+4. Fetches Intel collateral (certificates, TCB info, CRLs) from Intel PCS API
+5. Calls `register_worker(tdx_quote, collateral, public_key)` on `worker.outlayer.testnet`
+6. Contract verifies Intel signature with DCAP QVL library
+7. Contract extracts RTMR3 from quote → adds to whitelist
+8. Contract stores worker's public key for `resolve_execution` authorization
+9. Worker saves registration status locally (skips re-registration on restart)
+
+**Step 5: Start Keystore Worker**
+```bash
+cd keystore-worker
+
+# Deploy keystore to Phala TEE (separate instance)
+docker-compose up -d
+
+# Verify keystore is accessible from worker
+curl http://keystore:8081/health
+# Expected: {"status":"ok"}
+```
+
+**Step 6: Verify Deployment**
+```bash
+# Check worker is polling for tasks
+docker logs outlayer-worker-1 --tail 50
+
+# Expected log output:
+# [INFO] Polling coordinator for tasks...
+# [INFO] No tasks available, waiting...
+# [INFO] Polling coordinator for tasks...
+
+# Check registration on blockchain
+near view worker.outlayer.testnet get_worker '{"rtmr3":"2641ff132f21a1e9..."}'
+# Expected: worker info with public_key and registration timestamp
+```
+
+**Step 7: Monitor Attestations**
+```bash
+# Check coordinator database for attestations
+psql postgres://postgres:postgres@coordinator-db/offchainvm \
+  -c "SELECT job_id, worker_measurement, created_at FROM attestations ORDER BY created_at DESC LIMIT 5;"
+
+# View attestations in dashboard
+# Navigate to: https://dashboard.outlayer.io/executions
+# Click "View Attestation" on any completed execution
+```
+
+#### Configuration Details
+
+**Key Environment Variables** (`.env.phala`):
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `DSTACK_SIMULATOR_ENDPOINT` | Phala dstack socket path | `/var/run/dstack.sock` |
+| `TEE_MODE` | TEE attestation mode | `tdx` (Phala), `sgx`, `sev`, `none` |
+| `REGISTER_CONTRACT_ID` | Worker registration contract | `worker.outlayer.testnet` |
+| `OFFCHAINVM_CONTRACT_ID` | Main execution contract | `outlayer.testnet` |
+| `OPERATOR_ACCOUNT_ID` | Worker's NEAR account | `worker.testnet` |
+| `OPERATOR_PRIVATE_KEY` | Worker's NEAR private key | `ed25519:5J...` |
+| `KEYSTORE_BASE_URL` | Keystore service URL | `http://keystore:8081` |
+| `KEYSTORE_AUTH_TOKEN` | Auth token for keystore | `your-token` |
+| `API_BASE_URL` | Coordinator API URL | `https://coordinator.outlayer.io` |
+| `API_AUTH_TOKEN` | Coordinator auth token | `your-token` |
+| `NEAR_RPC_URL` | NEAR RPC endpoint | `https://rpc.testnet.near.org` |
+
+**Important Notes**:
+- Worker and Keystore MUST both run in Phala TEE for attestation to work
+- Registration only happens once per worker (RTMR3 + public key pair)
+- If you rebuild worker with code changes, RTMR3 changes → must re-register
+- Keystore should be on separate Phala instance for security isolation
+- Use internal Docker networking (`keystore:8081`) for worker ↔ keystore communication
+
+**Troubleshooting**:
+```bash
+# Check dstack socket is accessible
+ls -la /var/run/dstack.sock
+
+# Test TDX quote generation manually
+curl --unix-socket /var/run/dstack.sock http://localhost/tdx_quote
+
+# Check Intel collateral fetching
+curl "https://api.trustedservices.intel.com/sgx/certification/v4/tcb?fmspc=00906ED50000"
+
+# View registration transaction on blockchain
+near tx-status <TRANSACTION_HASH> --accountId worker.testnet
+```
+
+**See Also**:
+- [docker/TUTORIAL.md](docker/TUTORIAL.md) - Detailed Phala deployment guide
+- [PHALA_TEE_REGISTRATION_FLOW.md](PHALA_TEE_REGISTRATION_FLOW.md) - Registration flow documentation
+- [worker/src/registration.rs](worker/src/registration.rs) - Registration implementation code
+- [register-contract/src/lib.rs](register-contract/src/lib.rs) - Registration contract code
+
+### Two-Mode System
+
+OutLayer supports **mixed worker fleet**:
+
+| Feature | Standard Mode | TEE Mode |
+|---------|--------------|----------|
+| Execution Speed | Faster | Slight overhead |
+| Cost | Lower | Higher (TEE infrastructure) |
+| Attestation | No | Yes (Intel TDX) |
+| Secrets Access | Limited | Full (via keystore) |
+| Verification | Trust operator | Cryptographically verifiable |
+| Use Case | Public computations | Private/sensitive data |
+
+**How to Choose**:
+- Use **standard mode** for public data, speed-critical tasks
+- Use **TEE mode** for secrets, verifiable computation, high-security requirements
+
 ## 🔄 Next Actions
 
 1. **Complete Test WASM Project**
@@ -604,6 +875,6 @@ near call outlayer.testnet delete_secrets \
 
 ---
 
-**Current Date**: 2025-10-22
-**Version**: MVP Phase 1 (without TEE)
-**Status**: Contract ✅ | Coordinator ✅ | Worker ✅ | Keystore ✅ | Dashboard ✅ | Repo-Based Secrets ✅ - Ready for integration testing
+**Current Date**: 2025-11-15
+**Version**: Production with TEE Support
+**Status**: Contract ✅ | Coordinator ✅ | Worker ✅ | Keystore ✅ | Dashboard ✅ | TEE Attestation ✅ | Phala Integration ✅ | Register Contract ✅

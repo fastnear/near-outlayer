@@ -506,16 +506,14 @@ export default function JobsPage() {
                     <div>
                       <p className="font-semibold mb-1">📚 Learn More:</p>
                       <p className="text-blue-800">
-                        For technical details about the attestation flow, see{' '}
+                        For a complete guide on TEE attestation, visit the{' '}
                         <a
-                          href="https://github.com/near-examples/near-offshore/blob/main/TEE_ATTESTATION_FLOW.md"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="underline hover:text-blue-600"
+                          href="/docs/tee-attestation"
+                          className="underline hover:text-blue-600 font-semibold"
                         >
-                          TEE_ATTESTATION_FLOW.md
+                          TEE Attestation Documentation
                         </a>
-                        {' '}in the documentation.
+                        {' '}page.
                       </p>
                     </div>
                   </div>
