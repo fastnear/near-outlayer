@@ -51,3 +51,4 @@ logs/
 .env.testnet*
 prod_configs
 docker/.phala
+.tasks

@@ -8,7 +8,7 @@ version: '3.8'
 # - Optional keystore service for encrypted secrets
 #
 # Deploy via Phala Cloud CLI:
-#   phala cvms create --name near-offshore-worker \
+#   phala cvms create --name near-outlayer-worker \
 #     --compose ./docker-compose.phala.yml \
 #     --env-file ./.env.phala \
 #     --vcpu 2 --memory 4096 --disk-size 60
@@ -17,8 +17,9 @@ services:
   # Main worker service
   worker:
     image: ${DOCKER_IMAGE_WORKER}
-    container_name: near-offshore-worker
-    restart: unless-stopped
+    container_name: near-outlayer-worker
+    # restart: no # Mainnet
+    restart: on-failure:5  # Testnet. Will spend gas on startup retries,
 
     environment:
       # Coordinator API (must be publicly accessible)
@@ -29,14 +30,22 @@ services:
       NEAR_RPC_URL: ${NEAR_RPC_URL}
       OFFCHAINVM_CONTRACT_ID: ${OFFCHAINVM_CONTRACT_ID}
       OPERATOR_ACCOUNT_ID: ${OPERATOR_ACCOUNT_ID}
-      OPERATOR_PRIVATE_KEY: ${OPERATOR_PRIVATE_KEY}
+      # OPERATOR_PRIVATE_KEY only needed when USE_TEE_REGISTRATION=false (legacy mode)
+      # In TEE mode, key is generated during registration
+      OPERATOR_PRIVATE_KEY: ${OPERATOR_PRIVATE_KEY:-}
 
       # TEE Configuration (Phala Cloud)
-      TEE_MODE: tdx
+      TEE_MODE: ${TEE_MODE}
+      USE_TEE_REGISTRATION: ${USE_TEE_REGISTRATION}
+      COMPILATION_ENABLED: ${COMPILATION_ENABLED}
+      EXECUTION_ENABLED: ${EXECUTION_ENABLED}
 
       # Worker Registration (optional)
-      REGISTER_CONTRACT_ID: ${REGISTER_CONTRACT_ID:-}
-      REGISTER_COLLATERAL_JSON: ${REGISTER_COLLATERAL_JSON:-}
+      REGISTER_CONTRACT_ID: ${REGISTER_CONTRACT_ID:-}  
+
+      # Init Account (pays gas for worker registration when USE_TEE_REGISTRATION=true)
+      INIT_ACCOUNT_ID: ${INIT_ACCOUNT_ID:-}
+      INIT_ACCOUNT_PRIVATE_KEY: ${INIT_ACCOUNT_PRIVATE_KEY:-}
 
       # Keystore (optional - for encrypted secrets)
       KEYSTORE_BASE_URL: ${KEYSTORE_BASE_URL:-http://keystore:8081}
@@ -44,8 +53,8 @@ services:
 
       # Logging
       RUST_LOG: ${RUST_LOG:-info}
-      SAVE_SYSTEM_HIDDEN_LOGS_TO_DEBUG: "false"
-      PRINT_WASM_STDERR: "false"
+      SAVE_SYSTEM_HIDDEN_LOGS_TO_DEBUG: ${SAVE_SYSTEM_HIDDEN_LOGS_TO_DEBUG:-false}
+      PRINT_WASM_STDERR: ${PRINT_WASM_STDERR:-false}
 
       # Event Monitor (optional)
       ENABLE_EVENT_MONITOR: ${ENABLE_EVENT_MONITOR:-false}
@@ -73,7 +82,7 @@ services:
   # Uncomment if you need secret decryption support
   # keystore:
   #   image: ${DOCKER_IMAGE_KEYSTORE}
-  #   container_name: near-offshore-keystore
+  #   container_name: near-outlayer-keystore
   #   restart: unless-stopped
   #
   #   environment:
@@ -102,4 +111,4 @@ services:
 # Phala Cloud provides Docker bridge network automatically
 networks:
   default:
-    name: near-offshore-network
+    name: near-outlayer-network

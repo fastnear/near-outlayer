@@ -2,7 +2,7 @@
 # Optimized for Intel TDX TEE environment with dstack socket support
 
 # Stage 1: Build Rust worker binary
-FROM rust:1.85-alpine AS builder
+FROM rust:1.90-alpine AS builder
 
 # Install build dependencies (Alpine uses musl instead of glibc)
 RUN apk add --no-cache \
@@ -12,14 +12,23 @@ RUN apk add --no-cache \
     openssl-libs-static \
     git
 
-WORKDIR /build
+WORKDIR /build/worker
 
-# Copy only worker source (no workspace, worker is standalone)
-COPY worker ./worker
+# Copy only Cargo files first (for dependency caching)
+COPY worker/Cargo.toml worker/Cargo.lock ./
 
-# Build worker binary (static linking for Alpine)
-RUN cd worker && \
-    cargo build --release --bin offchainvm-worker
+# Create dummy src to build dependencies
+RUN mkdir src && \
+    echo "fn main() {}" > src/main.rs && \
+    echo "// dummy lib" > src/lib.rs && \
+    cargo build --release --locked && \
+    rm -rf src target/release/deps/offchainvm_worker*
+
+# Now copy actual source code
+COPY worker/src ./src
+
+# Build actual binary (dependencies already cached)
+RUN cargo build --release --locked --bin offchainvm-worker
 
 # Stage 2: Minimal runtime image
 FROM alpine:3.19

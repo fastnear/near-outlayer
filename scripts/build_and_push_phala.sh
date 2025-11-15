@@ -50,9 +50,8 @@ fi
 
 # Build Docker image for AMD64 (Phala Cloud)
 echo -e "${YELLOW}Step 1/3: Building Docker image for linux/amd64...${NC}"
-echo "Using docker buildx with cache for faster builds"
 
-# Enable BuildKit cache
+# Enable BuildKit
 export DOCKER_BUILDKIT=1
 
 docker buildx build \
@@ -60,8 +59,6 @@ docker buildx build \
     -f docker/Dockerfile.worker-phala \
     -t "$FULL_TAG" \
     -t "$LATEST_TAG" \
-    --cache-from type=registry,ref="${DOCKER_USERNAME}/near-outlayer-worker:buildcache" \
-    --cache-to type=registry,ref="${DOCKER_USERNAME}/near-outlayer-worker:buildcache",mode=max \
     --load \
     .
 
@@ -71,7 +68,6 @@ if [ $? -ne 0 ]; then
 fi
 
 echo ""
-echo "💡 Tip: Subsequent builds will be faster thanks to cache"
 echo -e "${GREEN}✅ Build successful!${NC}"
 echo ""
 
@@ -88,6 +84,8 @@ OFFCHAINVM_CONTRACT_ID=outlayer.testnet
 OPERATOR_ACCOUNT_ID=worker.outlayer.testnet
 OPERATOR_PRIVATE_KEY=ed25519:3D4YudUahN1HNj8EFaP7M9zQcL6oBXCVbFzQbZBdQPdx7qfpj1QbP8J6X6qH8F9RqZQF8vN9hKm5PxDqV1PxJ4R8
 TEE_MODE=none
+COMPILATION_ENABLED=false
+EXECUTION_ENABLED=true
 RUST_LOG=info
 ENABLE_EVENT_MONITOR=false
 EOF

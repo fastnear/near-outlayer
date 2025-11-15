@@ -19,6 +19,9 @@ fn randomness_unsupported(_: &mut [u8]) -> Result<(), Error> {
 #[cfg(target_arch = "wasm32")]
 register_custom_getrandom!(randomness_unsupported);
 
+// OffchainVM contract ID where worker will call resolve_execution
+const OFFCHAINVM_CONTRACT_ID: &str = "outlayer.testnet";
+
 #[derive(BorshSerialize, BorshStorageKey)]
 #[borsh(crate = "near_sdk::borsh")]
 enum StorageKey {
@@ -35,7 +38,7 @@ enum StorageKey {
 /// 2. Worker generates TDX quote with public key embedded in report_data
 /// 3. This contract verifies TDX quote signature (Intel cryptographic proof)
 /// 4. This contract extracts RTMR3 and checks it against approved list
-/// 5. This contract adds public key to itself (current_account_id)
+/// 5. This contract adds public key to itself (current_account_id) with permissions for offchainvm_contract_id
 /// 6. Result: Public key is cryptographically proven to be generated in approved TEE
 ///
 /// # Usage
@@ -43,7 +46,7 @@ enum StorageKey {
 /// 2. Initialize: `near call worker.outlayer.testnet new '{"owner_id":"outlayer.testnet","init_worker_account":"init-worker.outlayer.testnet"}' --accountId outlayer.testnet`
 /// 3. Add approved RTMR3: `near call worker.outlayer.testnet add_approved_rtmr3 '{"rtmr3":"..."}' --accountId outlayer.testnet`
 /// 4. Init worker calls: `near call worker.outlayer.testnet register_worker_key '{"public_key":"...","tdx_quote_hex":"..."}' --accountId init-worker.outlayer.testnet`
-/// 5. Contract verifies and adds key to worker.outlayer.testnet itself
+/// 5. Contract verifies and adds key to worker.outlayer.testnet with permissions for outlayer.testnet
 #[near_bindgen]
 #[derive(BorshDeserialize, BorshSerialize)]
 pub struct RegisterContract {
@@ -103,7 +106,6 @@ impl RegisterContract {
     /// # Arguments
     /// * `public_key` - Worker's ed25519 public key (generated in TEE)
     /// * `tdx_quote_hex` - Hex-encoded TDX quote from Phala dstack
-    /// * `quote_collateral` - Optional collateral (if None, uses cached)
     ///
     /// # Returns
     /// Promise to add access key to this account
@@ -112,11 +114,11 @@ impl RegisterContract {
     /// - If TDX quote verification fails
     /// - If RTMR3 not in approved list
     /// - If public key doesn't match quote
+    /// - If collateral not cached (use update_collateral first)
     pub fn register_worker_key(
         &mut self,
         public_key: PublicKey,
         tdx_quote_hex: String,
-        quote_collateral: Option<String>,
     ) -> Promise {
         // Check that caller is init_worker_account
         assert_eq!(
@@ -126,14 +128,23 @@ impl RegisterContract {
             self.init_worker_account
         );
 
-        // Use provided collateral or cached one
-        let collateral = quote_collateral
-            .or_else(|| self.quote_collateral.clone())
-            .expect("Quote collateral required (provide or cache via update_collateral)");
+        // Use ONLY cached collateral (security: prevent custom collateral bypass)
+        let collateral = self.quote_collateral.clone()
+            .expect("Quote collateral required (cache via update_collateral)");
 
         // 1. Verify TDX quote and extract RTMR3 + embedded public key
         let (rtmr3, embedded_pubkey) =
             self.verify_worker_registration(&tdx_quote_hex, &collateral);
+
+        // Log RTMR3 for admin to approve (visible even if check fails)
+        env::log_str(&format!(
+            "📋 Extracted RTMR3 from TDX quote: {}",
+            rtmr3
+        ));
+        env::log_str(&format!(
+            "📋 Extracted public key from quote: {:?}",
+            embedded_pubkey
+        ));
 
         // 2. Check RTMR3 is approved
         assert!(
@@ -154,21 +165,23 @@ impl RegisterContract {
         ));
 
         // 4. Add access key to this contract's account (worker account)
-        // Permission: Function call to outlayer.near::resolve_execution and submit_execution_output_and_resolve
-        let allowance: Allowance = Allowance::limited(NearToken::from_near(10)).unwrap(); // 10 NEAR for gas        
+        // Permission: Function call to offchainvm_contract_id::resolve_execution and submit_execution_output_and_resolve
+        let allowance: Allowance = Allowance::limited(NearToken::from_near(10)).unwrap(); // 10 NEAR for gas
         let method_names = "resolve_execution,submit_execution_output_and_resolve".to_string();
         let current_account = env::current_account_id();
 
+        let offchainvm_contract_id: AccountId = OFFCHAINVM_CONTRACT_ID.parse().unwrap();
+
         env::log_str(&format!(
-            "Adding access key to {}: pubkey={:?}, allowance=10 NEAR, methods={}",
-            current_account.clone(), public_key, method_names
+            "Adding access key to {}: pubkey={:?}, allowance=10 NEAR, methods={}, receiver={}",
+            current_account.clone(), public_key, method_names, offchainvm_contract_id
         ));
 
-        // Add key to this account (self)
+        // Add key to this account (self) with permissions for offchainvm_contract_id
         Promise::new(current_account.clone()).add_access_key_allowance(
             public_key,
             allowance,
-            current_account,
+            offchainvm_contract_id,
             method_names,
         )
     }

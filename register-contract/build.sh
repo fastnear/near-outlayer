@@ -21,4 +21,8 @@ ls -lh res/register_contract.wasm
 echo "✅ Build complete: res/register_contract.wasm"
 echo "Note: Built without wasm-opt due to bulk-memory operations in dcap-qvl/ring dependencies"
 
-# deploy {"owner_id": "owner.outlayer.testnet", "init_worker_account": "init-worker.outlayer.testnet"}
+# near contract deploy worker.outlayer.testnet use-file target/near/register_contract.wasm with-init-call new json-args '{"owner_id": "owner.outlayer.testnet", "init_worker_account": "init-worker.outlayer.testnet"}' prepaid-gas '100.0 Tgas' attached-deposit '0 NEAR' network-config testnet sign-with-keychain send
+# near contract deploy worker.outlayer.testnet use-file target/near/register_contract.wasm without-init-call network-config testnet sign-with-keychain send
+
+# TCB Info from rtmr3
+# near contract call-function as-transaction worker.outlayer.testnet add_approved_rtmr3 json-args '{"rtmr3":"17ee4a45d48ee9e18dbe89e5c18b94e9cc41ae09d649f143c806ce12716f61c12c9e4aa98451ea509ebae8afa3420ae5"}' prepaid-gas '100.0 Tgas' attached-deposit '0 NEAR' sign-as owner.outlayer.testnet network-config testnet sign-with-legacy-keychain send
