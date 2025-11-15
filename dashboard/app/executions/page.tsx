@@ -14,6 +14,27 @@ export default function JobsPage() {
   const [attestationModal, setAttestationModal] = useState<{ jobId: number; attestation: AttestationResponse | null; loading: boolean; error: string | null } | null>(null);
   const [showAttestationHelp, setShowAttestationHelp] = useState(false);
 
+  // State for input/output validation
+  const [ioValidation, setIoValidation] = useState<{
+    inputData: string;
+    outputData: string;
+    inputHash: string;
+    outputHash: string;
+    inputMatch: boolean | null;
+    outputMatch: boolean | null;
+    loading: boolean;
+    error: string | null;
+  } | null>(null);
+
+  // State for quote validation
+  const [quoteValidation, setQuoteValidation] = useState<{
+    quote: string;
+    extractedRtmr3: string;
+    expectedRtmr3: string;
+    match: boolean;
+    error: string | null;
+  } | null>(null);
+
   useEffect(() => {
     loadJobs();
   }, []);
@@ -386,7 +407,11 @@ export default function JobsPage() {
       {attestationModal && (
         <div
           className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
-          onClick={() => setAttestationModal(null)}
+          onClick={() => {
+            setAttestationModal(null);
+            setIoValidation(null);
+            setQuoteValidation(null);
+          }}
         >
           <div
             className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto"
@@ -407,7 +432,11 @@ export default function JobsPage() {
                   </button>
                 </div>
                 <button
-                  onClick={() => setAttestationModal(null)}
+                  onClick={() => {
+                    setAttestationModal(null);
+                    setIoValidation(null);
+                    setQuoteValidation(null);
+                  }}
                   className="text-gray-400 hover:text-gray-600"
                 >
                   <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -610,64 +639,165 @@ export default function JobsPage() {
                     </div>
                   </div>
 
-                  {/* Verify Input/Output Hashes Button */}
+                  {/* Verify Input/Output Hashes Section */}
                   {attestationModal.attestation.transaction_hash && (
-                    <div>
-                      <button
-                        onClick={async () => {
-                          try {
-                            const { fetchTransaction, extractInputFromTransaction, extractOutputFromTransaction, sha256 } = await import('@/lib/near-rpc');
+                    <div className="border-2 border-blue-200 rounded-lg p-4 bg-blue-50">
+                      <div className="flex justify-between items-center mb-3">
+                        <h3 className="text-lg font-semibold text-blue-900">Input/Output Verification</h3>
+                        {!ioValidation && (
+                          <button
+                            onClick={async () => {
+                              setIoValidation({ inputData: '', outputData: '', inputHash: '', outputHash: '', inputMatch: null, outputMatch: null, loading: true, error: null });
+                              try {
+                                const { fetchTransaction, extractInputFromTransaction, extractOutputFromTransaction, sha256 } = await import('@/lib/near-rpc');
 
-                            // Fetch transaction data
-                            const tx = await fetchTransaction(
-                              attestationModal.attestation!.transaction_hash!,
-                              attestationModal.attestation!.caller_account_id || 'unknown',
-                              network
-                            );
+                                // Fetch transaction data
+                                const tx = await fetchTransaction(
+                                  attestationModal.attestation!.transaction_hash!,
+                                  attestationModal.attestation!.caller_account_id || 'unknown',
+                                  network
+                                );
 
-                            // Extract input and output
-                            const inputData = extractInputFromTransaction(tx);
-                            const outputData = extractOutputFromTransaction(tx);
+                                // Extract input and output
+                                const inputData = extractInputFromTransaction(tx) || '';
+                                const outputData = extractOutputFromTransaction(tx) || '';
 
-                            let results = '';
+                                // Calculate hashes
+                                const inputHash = inputData ? await sha256(inputData) : '';
+                                const outputHash = outputData ? await sha256(outputData) : '';
 
-                            // Verify input hash
-                            if (inputData !== null && attestationModal.attestation!.input_hash) {
-                              const inputHash = await sha256(inputData);
-                              const inputMatch = inputHash === attestationModal.attestation!.input_hash;
-                              results += `Input Data: "${inputData.substring(0, 100)}${inputData.length > 100 ? '...' : ''}"\n`;
-                              results += `Input Hash (calculated): ${inputHash}\n`;
-                              results += `Input Hash (attestation): ${attestationModal.attestation!.input_hash}\n`;
-                              results += `✓ Input Hash Match: ${inputMatch ? 'YES ✓' : 'NO ✗'}\n\n`;
-                            } else {
-                              results += `Input Data: Not found in transaction\n\n`;
-                            }
+                                // Check matches
+                                const inputMatch = inputHash === attestationModal.attestation!.input_hash;
+                                const outputMatch = outputHash === attestationModal.attestation!.output_hash;
 
-                            // Verify output hash
-                            if (outputData !== null) {
-                              const outputHash = await sha256(outputData);
-                              const outputMatch = outputHash === attestationModal.attestation!.output_hash;
-                              results += `Output Data: "${outputData.substring(0, 100)}${outputData.length > 100 ? '...' : ''}"\n`;
-                              results += `Output Hash (calculated): ${outputHash}\n`;
-                              results += `Output Hash (attestation): ${attestationModal.attestation!.output_hash}\n`;
-                              results += `✓ Output Hash Match: ${outputMatch ? 'YES ✓' : 'NO ✗'}\n`;
-                            } else {
-                              results += `Output Data: Not found in transaction`;
-                            }
+                                setIoValidation({
+                                  inputData,
+                                  outputData,
+                                  inputHash,
+                                  outputHash,
+                                  inputMatch,
+                                  outputMatch,
+                                  loading: false,
+                                  error: null
+                                });
+                              } catch (err) {
+                                console.error('Failed to verify hashes:', err);
+                                setIoValidation({
+                                  inputData: '',
+                                  outputData: '',
+                                  inputHash: '',
+                                  outputHash: '',
+                                  inputMatch: null,
+                                  outputMatch: null,
+                                  loading: false,
+                                  error: err instanceof Error ? err.message : 'Unknown error'
+                                });
+                              }
+                            }}
+                            className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded"
+                          >
+                            🔍 Load & Verify from Blockchain
+                          </button>
+                        )}
+                        {ioValidation && (
+                          <button
+                            onClick={() => setIoValidation(null)}
+                            className="px-3 py-1 bg-gray-400 hover:bg-gray-500 text-white text-sm font-medium rounded"
+                          >
+                            Close
+                          </button>
+                        )}
+                      </div>
 
-                            alert(results);
-                          } catch (err) {
-                            console.error('Failed to verify hashes:', err);
-                            alert(`Failed to verify hashes: ${err instanceof Error ? err.message : 'Unknown error'}`);
-                          }
-                        }}
-                        className="w-full px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded"
-                      >
-                        🔍 Verify Input/Output Hashes from Transaction
-                      </button>
-                      <p className="text-xs text-gray-500 mt-1">
-                        Fetches transaction data from NEAR blockchain and verifies SHA256 hashes
-                      </p>
+                      {ioValidation && (
+                        <>
+                          {ioValidation.loading && (
+                            <div className="flex justify-center py-4">
+                              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+                            </div>
+                          )}
+
+                          {ioValidation.error && (
+                            <div className="bg-red-50 border border-red-300 rounded p-3 mb-3">
+                              <p className="text-red-800 text-sm">⚠️ Error: {ioValidation.error}</p>
+                            </div>
+                          )}
+
+                          {!ioValidation.loading && !ioValidation.error && (
+                            <div className="space-y-4">
+                              {/* Input Data Section */}
+                              <div>
+                                <label className="block text-sm font-semibold text-gray-800 mb-1">Input Data</label>
+                                <textarea
+                                  value={ioValidation.inputData}
+                                  onChange={async (e) => {
+                                    const newInputData = e.target.value;
+                                    const { sha256 } = await import('@/lib/near-rpc');
+                                    const newInputHash = newInputData ? await sha256(newInputData) : '';
+                                    const newInputMatch = newInputHash === attestationModal.attestation!.input_hash;
+                                    setIoValidation({ ...ioValidation, inputData: newInputData, inputHash: newInputHash, inputMatch: newInputMatch });
+                                  }}
+                                  className="w-full h-20 p-2 border border-gray-300 rounded font-mono text-sm"
+                                  placeholder="Input data from transaction..."
+                                />
+                                <div className="mt-2 space-y-1">
+                                  <div className="flex items-start gap-2">
+                                    <span className="text-xs font-semibold text-gray-600 w-32">Calculated Hash:</span>
+                                    <span className="text-xs font-mono text-gray-800 break-all flex-1">{ioValidation.inputHash || 'N/A'}</span>
+                                  </div>
+                                  <div className="flex items-start gap-2">
+                                    <span className="text-xs font-semibold text-gray-600 w-32">Attestation Hash:</span>
+                                    <span className="text-xs font-mono text-gray-800 break-all flex-1">{attestationModal.attestation!.input_hash || 'N/A'}</span>
+                                  </div>
+                                  <div className={`px-3 py-2 rounded ${ioValidation.inputMatch ? 'bg-green-100 border border-green-300' : 'bg-red-100 border border-red-300'}`}>
+                                    <span className={`text-sm font-semibold ${ioValidation.inputMatch ? 'text-green-800' : 'text-red-800'}`}>
+                                      {ioValidation.inputMatch ? '✓ Input Hash Matches' : '✗ Input Hash Mismatch'}
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Output Data Section */}
+                              <div>
+                                <label className="block text-sm font-semibold text-gray-800 mb-1">Output Data</label>
+                                <textarea
+                                  value={ioValidation.outputData}
+                                  onChange={async (e) => {
+                                    const newOutputData = e.target.value;
+                                    const { sha256 } = await import('@/lib/near-rpc');
+                                    const newOutputHash = newOutputData ? await sha256(newOutputData) : '';
+                                    const newOutputMatch = newOutputHash === attestationModal.attestation!.output_hash;
+                                    setIoValidation({ ...ioValidation, outputData: newOutputData, outputHash: newOutputHash, outputMatch: newOutputMatch });
+                                  }}
+                                  className="w-full h-20 p-2 border border-gray-300 rounded font-mono text-sm"
+                                  placeholder="Output data from transaction..."
+                                />
+                                <div className="mt-2 space-y-1">
+                                  <div className="flex items-start gap-2">
+                                    <span className="text-xs font-semibold text-gray-600 w-32">Calculated Hash:</span>
+                                    <span className="text-xs font-mono text-gray-800 break-all flex-1">{ioValidation.outputHash || 'N/A'}</span>
+                                  </div>
+                                  <div className="flex items-start gap-2">
+                                    <span className="text-xs font-semibold text-gray-600 w-32">Attestation Hash:</span>
+                                    <span className="text-xs font-mono text-gray-800 break-all flex-1">{attestationModal.attestation!.output_hash || 'N/A'}</span>
+                                  </div>
+                                  <div className={`px-3 py-2 rounded ${ioValidation.outputMatch ? 'bg-green-100 border border-green-300' : 'bg-red-100 border border-red-300'}`}>
+                                    <span className={`text-sm font-semibold ${ioValidation.outputMatch ? 'text-green-800' : 'text-red-800'}`}>
+                                      {ioValidation.outputMatch ? '✓ Output Hash Matches' : '✗ Output Hash Mismatch'}
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      )}
+
+                      {!ioValidation && (
+                        <p className="text-sm text-gray-700">
+                          Click the button to fetch transaction data from NEAR blockchain and verify input/output hashes.
+                        </p>
+                      )}
                     </div>
                   )}
 
@@ -687,36 +817,116 @@ export default function JobsPage() {
                     </div>
                   )}
 
-                  <div>
-                    <div className="flex justify-between items-center mb-1">
-                      <label className="block text-sm font-semibold text-gray-700">
-                        TDX Quote (Raw, Base64)
-                      </label>
-                      <button
-                        onClick={() => {
-                          const result = verifyTdxQuote(
-                            attestationModal.attestation!.tdx_quote,
-                            attestationModal.attestation!.worker_measurement
-                          );
-                          alert(
-                            result.valid
-                              ? `✓ Quote Verified!\n\nExtracted RTMR3 from quote (offset 256, 48 bytes):\n${formatRtmr3(result.extractedRtmr3!)}\n\nMatches stored worker_measurement:\n${formatRtmr3(attestationModal.attestation!.worker_measurement)}\n\nThis proves the quote is authentic and was generated by the expected TEE environment.`
-                              : `⚠️ Verification Failed!\n\n${result.error || 'RTMR3 mismatch'}\n\nExpected: ${formatRtmr3(attestationModal.attestation!.worker_measurement)}\nExtracted: ${result.extractedRtmr3 ? formatRtmr3(result.extractedRtmr3) : 'N/A'}`
-                          );
-                        }}
-                        className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded"
-                      >
-                        Verify Quote
-                      </button>
+                  {/* TDX Quote Verification Section */}
+                  <div className="border-2 border-purple-200 rounded-lg p-4 bg-purple-50">
+                    <div className="flex justify-between items-center mb-3">
+                      <h3 className="text-lg font-semibold text-purple-900">TDX Quote Verification</h3>
+                      {!quoteValidation && (
+                        <button
+                          onClick={() => {
+                            const result = verifyTdxQuote(
+                              attestationModal.attestation!.tdx_quote,
+                              attestationModal.attestation!.worker_measurement
+                            );
+                            if (result.valid && result.extractedRtmr3) {
+                              setQuoteValidation({
+                                quote: attestationModal.attestation!.tdx_quote,
+                                extractedRtmr3: result.extractedRtmr3,
+                                expectedRtmr3: attestationModal.attestation!.worker_measurement,
+                                match: true,
+                                error: null
+                              });
+                            } else {
+                              setQuoteValidation({
+                                quote: attestationModal.attestation!.tdx_quote,
+                                extractedRtmr3: result.extractedRtmr3 || '',
+                                expectedRtmr3: attestationModal.attestation!.worker_measurement,
+                                match: false,
+                                error: result.error || 'RTMR3 mismatch'
+                              });
+                            }
+                          }}
+                          className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium rounded"
+                        >
+                          🔐 Verify Quote
+                        </button>
+                      )}
+                      {quoteValidation && (
+                        <button
+                          onClick={() => setQuoteValidation(null)}
+                          className="px-3 py-1 bg-gray-400 hover:bg-gray-500 text-white text-sm font-medium rounded"
+                        >
+                          Close
+                        </button>
+                      )}
                     </div>
-                    <textarea
-                      readOnly
-                      value={attestationModal.attestation.tdx_quote}
-                      className="w-full h-32 bg-gray-50 p-2 rounded border font-mono text-xs"
-                    />
-                    <p className="text-xs text-gray-500 mt-1">
-                      This is the full Intel TDX attestation quote. Click &quot;Verify Quote&quot; to extract and verify RTMR3.
-                    </p>
+
+                    {!quoteValidation && (
+                      <>
+                        <label className="block text-sm font-semibold text-gray-800 mb-1">TDX Quote (Base64)</label>
+                        <textarea
+                          readOnly
+                          value={attestationModal.attestation.tdx_quote}
+                          className="w-full h-24 bg-white p-2 rounded border border-gray-300 font-mono text-xs"
+                        />
+                        <p className="text-sm text-gray-700 mt-2">
+                          Click &quot;Verify Quote&quot; to extract RTMR3 from the TDX quote and verify it matches the worker measurement.
+                        </p>
+                      </>
+                    )}
+
+                    {quoteValidation && (
+                      <div className="space-y-4">
+                        {/* Quote Input */}
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-800 mb-1">TDX Quote (Base64)</label>
+                          <textarea
+                            value={quoteValidation.quote}
+                            onChange={(e) => {
+                              const newQuote = e.target.value;
+                              const result = verifyTdxQuote(newQuote, quoteValidation.expectedRtmr3);
+                              setQuoteValidation({
+                                quote: newQuote,
+                                extractedRtmr3: result.extractedRtmr3 || '',
+                                expectedRtmr3: quoteValidation.expectedRtmr3,
+                                match: result.valid,
+                                error: result.valid ? null : (result.error || 'RTMR3 mismatch')
+                              });
+                            }}
+                            className="w-full h-24 p-2 border border-gray-300 rounded font-mono text-xs"
+                            placeholder="TDX quote in base64..."
+                          />
+                        </div>
+
+                        {/* Extracted RTMR3 */}
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-800 mb-1">Extracted RTMR3 (from quote, offset 256)</label>
+                          <div className="bg-white p-2 border border-gray-300 rounded font-mono text-xs break-all">
+                            {formatRtmr3(quoteValidation.extractedRtmr3) || 'Failed to extract'}
+                          </div>
+                        </div>
+
+                        {/* Expected RTMR3 */}
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-800 mb-1">Expected Worker Measurement</label>
+                          <div className="bg-white p-2 border border-gray-300 rounded font-mono text-xs break-all">
+                            {formatRtmr3(quoteValidation.expectedRtmr3)}
+                          </div>
+                        </div>
+
+                        {/* Validation Result */}
+                        <div className={`px-4 py-3 rounded ${quoteValidation.match ? 'bg-green-100 border border-green-300' : 'bg-red-100 border border-red-300'}`}>
+                          <p className={`font-semibold ${quoteValidation.match ? 'text-green-800' : 'text-red-800'}`}>
+                            {quoteValidation.match ? '✓ Quote Verified! RTMR3 matches worker measurement.' : `✗ Verification Failed: ${quoteValidation.error}`}
+                          </p>
+                          {quoteValidation.match && (
+                            <p className="text-sm text-green-700 mt-1">
+                              This proves the quote is authentic and was generated by the expected TEE environment.
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
                 );
