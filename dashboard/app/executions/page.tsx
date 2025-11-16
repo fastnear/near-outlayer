@@ -119,12 +119,12 @@ export default function JobsPage() {
         bytes[i] = binaryString.charCodeAt(i);
       }
 
-      // TDX Quote v4 structure (Intel spec):
-      // - RTMR3 at offset 612 (48 + 52 + 512), 48 bytes
-      // - REPORTDATA at offset 660 (48 + 52 + 560), 64 bytes
-      const RTMR3_OFFSET = 612;
+      // TDX Quote v4 structure:
+      // - RTMR3 at offset 256, 48 bytes
+      // - REPORTDATA at offset 368, 64 bytes
+      const RTMR3_OFFSET = 256;
       const RTMR3_SIZE = 48;
-      const REPORTDATA_OFFSET = 660;
+      const REPORTDATA_OFFSET = 368;
       const REPORTDATA_SIZE = 64;
 
       if (bytes.length < REPORTDATA_OFFSET + REPORTDATA_SIZE) {
@@ -936,7 +936,7 @@ export default function JobsPage() {
                         {/* Extracted RTMR3 */}
                         <div>
                           <label className="block text-sm font-semibold text-gray-800 mb-1">
-                            Extracted RTMR3 (Worker Measurement, offset 612)
+                            Extracted RTMR3 (Worker Measurement, offset 256)
                           </label>
                           <div className="bg-white p-2 border border-gray-300 rounded font-mono text-xs break-all">
                             {formatRtmr3(quoteValidation.extractedRtmr3) || 'Failed to extract'}
@@ -952,7 +952,7 @@ export default function JobsPage() {
                         {/* Extracted Task Hash */}
                         <div>
                           <label className="block text-sm font-semibold text-gray-800 mb-1">
-                            Extracted Task Hash (REPORTDATA, offset 660)
+                            Extracted Task Hash (REPORTDATA, offset 368)
                           </label>
                           <div className="bg-white p-2 border border-gray-300 rounded font-mono text-xs break-all">
                             {quoteValidation.extractedTaskHash || 'Failed to extract'}
