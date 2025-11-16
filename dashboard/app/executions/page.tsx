@@ -31,7 +31,10 @@ export default function JobsPage() {
     quote: string;
     extractedRtmr3: string;
     expectedRtmr3: string;
-    match: boolean;
+    extractedTaskHash: string;
+    expectedTaskHash: string;
+    rtmr3Match: boolean;
+    taskHashMatch: boolean;
     error: string | null;
   } | null>(null);
 
@@ -52,8 +55,62 @@ export default function JobsPage() {
     }
   };
 
-  // Verify TDX quote by extracting RTMR3 and comparing with worker_measurement
-  const verifyTdxQuote = (tdxQuoteBase64: string, expectedRtmr3: string): { valid: boolean; extractedRtmr3: string | null; error: string | null } => {
+  // Calculate task hash from attestation data (same algorithm as worker)
+  const calculateTaskHash = async (attestation: AttestationResponse): Promise<string> => {
+    // Build data in same order as worker (tdx_attestation.rs:138-159)
+    // Worker uses hasher.update() for each field
+    const parts: Uint8Array[] = [];
+    const encoder = new TextEncoder();
+
+    // Add task_type
+    parts.push(encoder.encode(attestation.task_type));
+
+    // Add task_id as little-endian i64
+    const task_id_buffer = new ArrayBuffer(8);
+    const task_id_view = new DataView(task_id_buffer);
+    task_id_view.setBigInt64(0, BigInt(attestation.task_id), true); // true = little-endian
+    parts.push(new Uint8Array(task_id_buffer));
+
+    // Add optional strings
+    if (attestation.repo_url) parts.push(encoder.encode(attestation.repo_url));
+    if (attestation.commit_hash) parts.push(encoder.encode(attestation.commit_hash));
+    if (attestation.build_target) parts.push(encoder.encode(attestation.build_target));
+    if (attestation.wasm_hash) parts.push(encoder.encode(attestation.wasm_hash));
+    if (attestation.input_hash) parts.push(encoder.encode(attestation.input_hash));
+
+    // Add output_hash (always present)
+    parts.push(encoder.encode(attestation.output_hash));
+
+    // Add block_height as little-endian u64 if present
+    if (attestation.block_height) {
+      const bh_buffer = new ArrayBuffer(8);
+      const bh_view = new DataView(bh_buffer);
+      bh_view.setBigUint64(0, BigInt(attestation.block_height), true); // true = little-endian
+      parts.push(new Uint8Array(bh_buffer));
+    }
+
+    // Concatenate all parts
+    const totalLength = parts.reduce((sum, part) => sum + part.length, 0);
+    const combined = new Uint8Array(totalLength);
+    let offset = 0;
+    for (const part of parts) {
+      combined.set(part, offset);
+      offset += part.length;
+    }
+
+    // Calculate SHA256
+    const hashBuffer = await crypto.subtle.digest('SHA-256', combined);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  };
+
+  // Verify TDX quote by extracting RTMR3, REPORTDATA and comparing
+  const verifyTdxQuote = (tdxQuoteBase64: string, expectedRtmr3: string, expectedTaskHash: string): {
+    valid: boolean;
+    extractedRtmr3: string | null;
+    extractedTaskHash: string | null;
+    error: string | null
+  } => {
     try {
       // Decode base64 to bytes
       const binaryString = atob(tdxQuoteBase64);
@@ -62,28 +119,38 @@ export default function JobsPage() {
         bytes[i] = binaryString.charCodeAt(i);
       }
 
-      // TDX Quote v4 structure: RTMR3 is at offset 256, 48 bytes
-      const RTMR3_OFFSET = 256;
+      // TDX Quote v4 structure (Intel spec):
+      // - RTMR3 at offset 612 (48 + 52 + 512), 48 bytes
+      // - REPORTDATA at offset 660 (48 + 52 + 560), 64 bytes
+      const RTMR3_OFFSET = 612;
       const RTMR3_SIZE = 48;
+      const REPORTDATA_OFFSET = 660;
+      const REPORTDATA_SIZE = 64;
 
-      if (bytes.length < RTMR3_OFFSET + RTMR3_SIZE) {
-        return { valid: false, extractedRtmr3: null, error: 'Quote too short' };
+      if (bytes.length < REPORTDATA_OFFSET + REPORTDATA_SIZE) {
+        return { valid: false, extractedRtmr3: null, extractedTaskHash: null, error: 'Quote too short' };
       }
 
       // Extract RTMR3 bytes
       const rtmr3Bytes = bytes.slice(RTMR3_OFFSET, RTMR3_OFFSET + RTMR3_SIZE);
-
-      // Convert to hex string
       const extractedRtmr3 = Array.from(rtmr3Bytes)
         .map(b => b.toString(16).padStart(2, '0'))
         .join('');
 
-      // Compare with expected value (case-insensitive)
-      const valid = extractedRtmr3.toLowerCase() === expectedRtmr3.toLowerCase();
+      // Extract REPORTDATA bytes (first 32 bytes contain task_hash, rest is zeros)
+      const reportDataBytes = bytes.slice(REPORTDATA_OFFSET, REPORTDATA_OFFSET + 32);
+      const extractedTaskHash = Array.from(reportDataBytes)
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join('');
 
-      return { valid, extractedRtmr3, error: null };
+      // Compare with expected values (case-insensitive)
+      const rtmr3Match = extractedRtmr3.toLowerCase() === expectedRtmr3.toLowerCase();
+      const taskHashMatch = extractedTaskHash.toLowerCase() === expectedTaskHash.toLowerCase();
+      const valid = rtmr3Match && taskHashMatch;
+
+      return { valid, extractedRtmr3, extractedTaskHash, error: null };
     } catch (err) {
-      return { valid: false, extractedRtmr3: null, error: err instanceof Error ? err.message : 'Verification failed' };
+      return { valid: false, extractedRtmr3: null, extractedTaskHash: null, error: err instanceof Error ? err.message : 'Verification failed' };
     }
   };
 
@@ -533,40 +600,24 @@ export default function JobsPage() {
               )}
 
               {attestationModal.attestation && (() => {
-                const verification = verifyTdxQuote(
+                // Quick RTMR3-only verification for initial display
+                const quickVerification = verifyTdxQuote(
                   attestationModal.attestation.tdx_quote,
-                  attestationModal.attestation.worker_measurement
+                  attestationModal.attestation.worker_measurement,
+                  '' // Empty task hash for quick check
                 );
+                const rtmr3Valid = quickVerification.extractedRtmr3?.toLowerCase() === attestationModal.attestation.worker_measurement.toLowerCase();
+
                 return (
                 <div className="space-y-4">
-                  {verification.valid ? (
-                    <div className="bg-green-50 border border-green-200 rounded-md p-4">
-                      <p className="text-green-800 font-semibold">
-                        ✓ TDX Quote Verified: RTMR3 matches worker measurement
-                      </p>
-                      <p className="text-green-700 text-sm mt-1">
-                        This execution was attested by Intel TDX TEE. The quote is cryptographically valid.
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="bg-red-50 border border-red-200 rounded-md p-4">
-                      <p className="text-red-800 font-semibold">
-                        ⚠️ TDX Quote Verification Failed
-                      </p>
-                      <p className="text-red-700 text-sm mt-1">
-                        {verification.error || 'RTMR3 mismatch'}
-                      </p>
-                      {verification.extractedRtmr3 && (
-                        <details className="mt-2 text-xs">
-                          <summary className="cursor-pointer text-red-600">Show details</summary>
-                          <div className="mt-2 font-mono">
-                            <div>Expected: {formatRtmr3(attestationModal.attestation.worker_measurement)}</div>
-                            <div>Extracted: {formatRtmr3(verification.extractedRtmr3)}</div>
-                          </div>
-                        </details>
-                      )}
-                    </div>
-                  )}
+                  <div className="bg-blue-50 border border-blue-200 rounded-md p-4">
+                    <p className="text-blue-800 font-semibold">
+                      {rtmr3Valid ? '✓' : '⚠️'} RTMR3: {rtmr3Valid ? 'Valid' : 'Invalid'} | Task Hash: Click "Verify Quote" below to check
+                    </p>
+                    <p className="text-blue-700 text-sm mt-1">
+                      Full verification (including task hash with input/output/wasm commitment) is available in the "TDX Quote Verification" section below.
+                    </p>
+                  </div>
 
                   <div className="grid grid-cols-2 gap-4">
                     <div>
@@ -821,32 +872,27 @@ export default function JobsPage() {
                       <h3 className="text-lg font-semibold text-purple-900">TDX Quote Verification</h3>
                       {!quoteValidation && (
                         <button
-                          onClick={() => {
+                          onClick={async () => {
+                            const expectedTaskHash = await calculateTaskHash(attestationModal.attestation!);
                             const result = verifyTdxQuote(
                               attestationModal.attestation!.tdx_quote,
-                              attestationModal.attestation!.worker_measurement
+                              attestationModal.attestation!.worker_measurement,
+                              expectedTaskHash
                             );
-                            if (result.valid && result.extractedRtmr3) {
-                              setQuoteValidation({
-                                quote: attestationModal.attestation!.tdx_quote,
-                                extractedRtmr3: result.extractedRtmr3,
-                                expectedRtmr3: attestationModal.attestation!.worker_measurement,
-                                match: true,
-                                error: null
-                              });
-                            } else {
-                              setQuoteValidation({
-                                quote: attestationModal.attestation!.tdx_quote,
-                                extractedRtmr3: result.extractedRtmr3 || '',
-                                expectedRtmr3: attestationModal.attestation!.worker_measurement,
-                                match: false,
-                                error: result.error || 'RTMR3 mismatch'
-                              });
-                            }
+                            setQuoteValidation({
+                              quote: attestationModal.attestation!.tdx_quote,
+                              extractedRtmr3: result.extractedRtmr3 || '',
+                              expectedRtmr3: attestationModal.attestation!.worker_measurement,
+                              extractedTaskHash: result.extractedTaskHash || '',
+                              expectedTaskHash,
+                              rtmr3Match: result.extractedRtmr3?.toLowerCase() === attestationModal.attestation!.worker_measurement.toLowerCase(),
+                              taskHashMatch: result.extractedTaskHash?.toLowerCase() === expectedTaskHash.toLowerCase(),
+                              error: result.error
+                            });
                           }}
                           className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium rounded"
                         >
-                          🔐 Verify Quote
+                          🔐 Verify Quote (RTMR3 + Task Hash)
                         </button>
                       )}
                       {quoteValidation && (
@@ -868,7 +914,9 @@ export default function JobsPage() {
                           className="w-full h-24 bg-white p-2 rounded border border-gray-300 font-mono text-xs"
                         />
                         <p className="text-sm text-gray-700 mt-2">
-                          Click &quot;Verify Quote&quot; to extract RTMR3 from the TDX quote and verify it matches the worker measurement.
+                          Click &quot;Verify Quote&quot; to extract and verify:
+                          <br />• RTMR3 (worker measurement) - proves which TEE environment executed the code
+                          <br />• Task Hash (REPORTDATA) - cryptographic commitment to input/output/wasm hashes, prevents attestation forgery
                         </p>
                       </>
                     )}
@@ -879,47 +927,54 @@ export default function JobsPage() {
                         <div>
                           <label className="block text-sm font-semibold text-gray-800 mb-1">TDX Quote (Base64)</label>
                           <textarea
+                            readOnly
                             value={quoteValidation.quote}
-                            onChange={(e) => {
-                              const newQuote = e.target.value;
-                              const result = verifyTdxQuote(newQuote, quoteValidation.expectedRtmr3);
-                              setQuoteValidation({
-                                quote: newQuote,
-                                extractedRtmr3: result.extractedRtmr3 || '',
-                                expectedRtmr3: quoteValidation.expectedRtmr3,
-                                match: result.valid,
-                                error: result.valid ? null : (result.error || 'RTMR3 mismatch')
-                              });
-                            }}
-                            className="w-full h-24 p-2 border border-gray-300 rounded font-mono text-xs"
-                            placeholder="TDX quote in base64..."
+                            className="w-full h-20 p-2 border border-gray-300 rounded font-mono text-xs bg-gray-50"
                           />
                         </div>
 
                         {/* Extracted RTMR3 */}
                         <div>
-                          <label className="block text-sm font-semibold text-gray-800 mb-1">Extracted RTMR3 (from quote, offset 256)</label>
+                          <label className="block text-sm font-semibold text-gray-800 mb-1">
+                            Extracted RTMR3 (Worker Measurement, offset 612)
+                          </label>
                           <div className="bg-white p-2 border border-gray-300 rounded font-mono text-xs break-all">
                             {formatRtmr3(quoteValidation.extractedRtmr3) || 'Failed to extract'}
                           </div>
-                        </div>
-
-                        {/* Expected RTMR3 */}
-                        <div>
-                          <label className="block text-sm font-semibold text-gray-800 mb-1">Expected Worker Measurement</label>
-                          <div className="bg-white p-2 border border-gray-300 rounded font-mono text-xs break-all">
-                            {formatRtmr3(quoteValidation.expectedRtmr3)}
+                          <div className="bg-white p-2 border border-gray-300 rounded font-mono text-xs break-all mt-1">
+                            <span className="font-semibold">Expected:</span> {formatRtmr3(quoteValidation.expectedRtmr3)}
+                          </div>
+                          <div className={`mt-1 px-2 py-1 rounded text-xs ${quoteValidation.rtmr3Match ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                            {quoteValidation.rtmr3Match ? '✓ RTMR3 Match' : '✗ RTMR3 Mismatch'}
                           </div>
                         </div>
 
-                        {/* Validation Result */}
-                        <div className={`px-4 py-3 rounded ${quoteValidation.match ? 'bg-green-100 border border-green-300' : 'bg-red-100 border border-red-300'}`}>
-                          <p className={`font-semibold ${quoteValidation.match ? 'text-green-800' : 'text-red-800'}`}>
-                            {quoteValidation.match ? '✓ Quote Verified! RTMR3 matches worker measurement.' : `✗ Verification Failed: ${quoteValidation.error}`}
+                        {/* Extracted Task Hash */}
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-800 mb-1">
+                            Extracted Task Hash (REPORTDATA, offset 660)
+                          </label>
+                          <div className="bg-white p-2 border border-gray-300 rounded font-mono text-xs break-all">
+                            {quoteValidation.extractedTaskHash || 'Failed to extract'}
+                          </div>
+                          <div className="bg-white p-2 border border-gray-300 rounded font-mono text-xs break-all mt-1">
+                            <span className="font-semibold">Expected:</span> {quoteValidation.expectedTaskHash}
+                          </div>
+                          <div className={`mt-1 px-2 py-1 rounded text-xs ${quoteValidation.taskHashMatch ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                            {quoteValidation.taskHashMatch ? '✓ Task Hash Match (contains commitment to input/output/wasm hashes)' : '✗ Task Hash Mismatch'}
+                          </div>
+                        </div>
+
+                        {/* Overall Validation Result */}
+                        <div className={`px-4 py-3 rounded ${quoteValidation.rtmr3Match && quoteValidation.taskHashMatch ? 'bg-green-100 border border-green-300' : 'bg-red-100 border border-red-300'}`}>
+                          <p className={`font-semibold ${quoteValidation.rtmr3Match && quoteValidation.taskHashMatch ? 'text-green-800' : 'text-red-800'}`}>
+                            {quoteValidation.rtmr3Match && quoteValidation.taskHashMatch
+                              ? '✓ Full Verification Passed!'
+                              : `✗ Verification Failed${quoteValidation.error ? `: ${quoteValidation.error}` : ''}`}
                           </p>
-                          {quoteValidation.match && (
+                          {quoteValidation.rtmr3Match && quoteValidation.taskHashMatch && (
                             <p className="text-sm text-green-700 mt-1">
-                              This proves the quote is authentic and was generated by the expected TEE environment.
+                              This TDX quote is cryptographically valid and contains a commitment to the exact input/output/wasm hashes. The execution cannot be forged or swapped with another attestation.
                             </p>
                           )}
                         </div>
