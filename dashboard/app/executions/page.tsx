@@ -58,11 +58,26 @@ export default function JobsPage() {
   // Calculate task hash from attestation data (same algorithm as worker)
   const calculateTaskHash = async (attestation: AttestationResponse): Promise<string> => {
     // Build data in same order as worker (tdx_attestation.rs:138-159)
-    // Worker uses hasher.update() for each field
+    // Worker uses hasher.update() for each field with STRINGS (not bytes!)
+    // Important: hashes are passed as HEX STRINGS, not decoded bytes
+
+    // Debug logging
+    console.log('calculateTaskHash input:', {
+      task_type: attestation.task_type,
+      task_id: attestation.task_id,
+      repo_url: attestation.repo_url,
+      commit_hash: attestation.commit_hash,
+      build_target: attestation.build_target,
+      wasm_hash: attestation.wasm_hash,
+      input_hash: attestation.input_hash,
+      output_hash: attestation.output_hash,
+      block_height: attestation.block_height,
+    });
+
     const parts: Uint8Array[] = [];
     const encoder = new TextEncoder();
 
-    // Add task_type
+    // Add task_type (string)
     parts.push(encoder.encode(attestation.task_type));
 
     // Add task_id as little-endian i64
@@ -71,14 +86,18 @@ export default function JobsPage() {
     task_id_view.setBigInt64(0, BigInt(attestation.task_id), true); // true = little-endian
     parts.push(new Uint8Array(task_id_buffer));
 
-    // Add optional strings
+    // Add optional strings (worker uses .as_bytes() which encodes UTF-8 strings)
     if (attestation.repo_url) parts.push(encoder.encode(attestation.repo_url));
     if (attestation.commit_hash) parts.push(encoder.encode(attestation.commit_hash));
     if (attestation.build_target) parts.push(encoder.encode(attestation.build_target));
+
+    // CRITICAL: Worker passes hash STRINGS (hex), not decoded bytes!
+    // Line 150-156 in worker: hasher.update(wasm_hash.as_bytes())
+    // This means "abc123..." string, not [0xab, 0xc1, 0x23, ...] bytes
     if (attestation.wasm_hash) parts.push(encoder.encode(attestation.wasm_hash));
     if (attestation.input_hash) parts.push(encoder.encode(attestation.input_hash));
 
-    // Add output_hash (always present)
+    // Add output_hash (always present, as HEX STRING)
     parts.push(encoder.encode(attestation.output_hash));
 
     // Add block_height as little-endian u64 if present
@@ -101,7 +120,12 @@ export default function JobsPage() {
     // Calculate SHA256
     const hashBuffer = await crypto.subtle.digest('SHA-256', combined);
     const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    const result = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+    console.log('calculateTaskHash result:', result);
+    console.log('calculateTaskHash combined bytes length:', combined.length);
+
+    return result;
   };
 
   // Verify TDX quote by extracting RTMR3, REPORTDATA and comparing
