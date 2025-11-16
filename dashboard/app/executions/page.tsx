@@ -657,15 +657,15 @@ export default function JobsPage() {
                                 );
 
                                 // Extract input and output
-                                const inputData = extractInputFromTransaction(tx) || '';
-                                const outputData = extractOutputFromTransaction(tx) || '';
+                                const inputData = extractInputFromTransaction(tx) ?? '';
+                                const outputData = extractOutputFromTransaction(tx) ?? '';
 
-                                // Calculate hashes
-                                const inputHash = inputData ? await sha256(inputData) : '';
-                                const outputHash = outputData ? await sha256(outputData) : '';
+                                // Calculate hashes (always calculate, even for empty strings)
+                                const inputHash = await sha256(inputData);
+                                const outputHash = await sha256(outputData);
 
-                                // Check matches
-                                const inputMatch = inputHash === attestationModal.attestation!.input_hash;
+                                // Check matches (handle optional input_hash)
+                                const inputMatch = inputHash === (attestationModal.attestation!.input_hash || '');
                                 const outputMatch = outputHash === attestationModal.attestation!.output_hash;
 
                                 setIoValidation({
@@ -793,7 +793,7 @@ export default function JobsPage() {
 
                       {!ioValidation && (
                         <p className="text-sm text-gray-700">
-                          Click the button to fetch transaction data from NEAR blockchain and verify input/output hashes.
+                          Click the button to fetch transaction data from NEAR archival RPC and verify input/output hashes.
                         </p>
                       )}
                     </div>

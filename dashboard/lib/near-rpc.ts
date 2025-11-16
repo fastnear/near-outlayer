@@ -15,6 +15,16 @@ function getNearRpcUrl(network: NetworkType): string {
 }
 
 /**
+ * Get NEAR Archival RPC URL for the given network (for old transactions)
+ */
+function getNearArchivalRpcUrl(network: NetworkType): string {
+  if (network === 'mainnet') {
+    return process.env.NEXT_PUBLIC_MAINNET_ARCHIVAL_RPC_URL || 'https://archival-rpc.mainnet.fastnear.com';
+  }
+  return process.env.NEXT_PUBLIC_TESTNET_ARCHIVAL_RPC_URL || 'https://archival-rpc.testnet.fastnear.com';
+}
+
+/**
  * Transaction outcome structure from NEAR RPC
  */
 interface TransactionOutcome {
@@ -39,13 +49,15 @@ interface TransactionOutcome {
 
 /**
  * Fetch transaction data from NEAR RPC
+ * Uses archival RPC for better reliability with old transactions (>2 epochs)
  */
 export async function fetchTransaction(
   txHash: string,
   accountId: string,
   network: NetworkType = 'testnet'
 ): Promise<TransactionOutcome> {
-  const rpcUrl = getNearRpcUrl(network);
+  // Always use archival RPC for transaction lookups (older than 2 epochs)
+  const rpcUrl = getNearArchivalRpcUrl(network);
 
   const response = await fetch(rpcUrl, {
     method: 'POST',
@@ -65,6 +77,13 @@ export async function fetchTransaction(
   const data = await response.json();
 
   if (data.error) {
+    // TIMEOUT_ERROR means transaction not found
+    if (data.error.cause?.name === 'TIMEOUT_ERROR') {
+      throw new Error(
+        `Transaction not found. Please verify the transaction hash is correct. ` +
+        `View on NEAR Explorer: https://${network === 'mainnet' ? '' : 'testnet.'}nearblocks.io/txns/${txHash}`
+      );
+    }
     throw new Error(`NEAR RPC error: ${data.error.message || JSON.stringify(data.error)}`);
   }
 
