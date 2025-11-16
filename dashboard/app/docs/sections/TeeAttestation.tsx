@@ -263,13 +263,17 @@ export default function TeeAttestationSection() {
 
             <div className="space-y-4">
               <div className="border-l-4 border-blue-500 pl-4">
-                <p className="font-semibold text-gray-900 mb-1">Step 1: Verify TDX Quote</p>
+                <p className="font-semibold text-gray-900 mb-1">Step 1: Verify TDX Quote & Task Hash</p>
                 <p className="text-gray-700 text-sm mb-2">
                   Extract the RTMR3 measurement from the TDX quote (located at byte offset 256, 48 bytes long).
-                  Compare it to the worker_measurement stored in the attestation. If they match, the quote is authentic.
+                  Compare it to the worker_measurement stored in the attestation. Also extract the Task Hash from
+                  REPORTDATA (offset 568, 32 bytes) and compare it to the calculated hash of all execution parameters.
+                  If both match, the quote is authentic and bound to this specific execution.
                 </p>
                 <p className="text-gray-600 text-xs italic">
                   The Dashboard does this automatically when you click &quot;Verify Quote&quot; in the attestation modal.
+                  See the <a href="#task-hash" className="underline hover:text-blue-600">Task Hash section</a> below for
+                  detailed explanation of how this prevents attestation forgery.
                 </p>
               </div>
 
@@ -312,6 +316,162 @@ export default function TeeAttestationSection() {
               <strong>TEE Worker (RTMR3)</strong> → producing → <strong>Output Data</strong>. Every link is
               cryptographically hashed and signed by Intel TDX hardware.
             </p>
+          </div>
+        </section>
+
+        {/* Task Hash (REPORTDATA) */}
+        <section id="task-hash">
+          <AnchorHeading id="task-hash">Task Hash (REPORTDATA) - Preventing Attestation Forgery</AnchorHeading>
+
+          <p className="text-gray-700 mb-3">
+            The <strong>Task Hash</strong> is a critical security feature that prevents attestation forgery. It ensures
+            that a valid TDX quote from one execution cannot be swapped or reused for a different execution.
+          </p>
+
+          <div className="bg-orange-50 border-l-4 border-orange-500 p-4 my-4">
+            <p className="text-orange-900 font-semibold mb-2">The Problem:</p>
+            <p className="text-orange-800 text-sm">
+              Without Task Hash, a malicious worker could execute code honestly (generating a valid TDX quote), but then
+              claim that same quote applies to a <em>different</em> execution with different input/output/WASM hashes.
+              This would allow them to forge results while still presenting a cryptographically valid Intel signature.
+            </p>
+          </div>
+
+          <div className="bg-green-50 border-l-4 border-green-500 p-4 my-4">
+            <p className="text-green-900 font-semibold mb-2">The Solution:</p>
+            <p className="text-green-800 text-sm mb-2">
+              Every TDX quote contains a 64-byte <strong>REPORTDATA</strong> field where custom data can be embedded
+              <em>before</em> Intel signs the quote. OutLayer uses the first 32 bytes of this field to store the
+              <strong> Task Hash</strong> - a SHA256 cryptographic commitment to ALL execution parameters.
+            </p>
+            <p className="text-green-800 text-sm">
+              Because the Task Hash is embedded in the quote <em>before signing</em>, Intel&apos;s signature covers it.
+              This creates an unbreakable cryptographic link between the TDX quote and the specific execution parameters.
+            </p>
+          </div>
+
+          <div className="bg-white border-2 border-purple-300 rounded-lg p-6 my-4">
+            <h4 className="text-lg font-semibold text-purple-900 mb-3">Task Hash Algorithm:</h4>
+
+            <p className="text-gray-700 text-sm mb-3">
+              The Task Hash is calculated using <strong>binary concatenation + SHA256</strong>:
+            </p>
+
+            <div className="bg-gray-50 p-4 rounded border border-gray-300 font-mono text-xs mb-3">
+              <p className="text-gray-900 mb-1">task_hash = SHA256(</p>
+              <div className="pl-4 space-y-1">
+                <p className="text-gray-700">task_type (UTF-8 string) +</p>
+                <p className="text-gray-700">task_id (i64, little-endian) +</p>
+                <p className="text-gray-700">repo_url (UTF-8 string, optional) +</p>
+                <p className="text-gray-700">commit_hash (UTF-8 string, optional) +</p>
+                <p className="text-gray-700">build_target (UTF-8 string, optional) +</p>
+                <p className="text-gray-700">wasm_hash (hex string, optional) +</p>
+                <p className="text-gray-700">input_hash (hex string, optional) +</p>
+                <p className="text-gray-700">output_hash (hex string, always present) +</p>
+                <p className="text-gray-700">block_height (u64, little-endian, optional)</p>
+              </div>
+              <p className="text-gray-900">)</p>
+            </div>
+
+            <div className="bg-yellow-50 border border-yellow-300 rounded p-3 mb-3">
+              <p className="text-yellow-900 text-sm font-semibold mb-1">Important Details:</p>
+              <ul className="list-disc list-inside space-y-1 text-yellow-800 text-xs">
+                <li>Hashes (wasm_hash, input_hash, output_hash) are included as <strong>hex strings</strong> (e.g., &quot;abc123...&quot;), not decoded bytes</li>
+                <li>Strings are UTF-8 encoded bytes</li>
+                <li>Integers (task_id, block_height) are little-endian binary encoding</li>
+                <li>Fields are concatenated in exact order - changing order produces different hash</li>
+                <li>Optional fields are skipped if not present (no null bytes or placeholders)</li>
+              </ul>
+            </div>
+
+            <div className="space-y-3">
+              <div className="border-l-4 border-purple-500 pl-4">
+                <p className="font-semibold text-gray-900 mb-1">Step 1: Worker Calculates Task Hash</p>
+                <p className="text-gray-700 text-sm">
+                  Before requesting a TDX quote from Intel hardware, the worker calculates the Task Hash by concatenating
+                  all execution parameters (task type, repo, commit, wasm hash, input hash, output hash, etc.) and
+                  computing SHA256. This produces a 32-byte hash.
+                </p>
+              </div>
+
+              <div className="border-l-4 border-purple-500 pl-4">
+                <p className="font-semibold text-gray-900 mb-1">Step 2: Embed in REPORTDATA</p>
+                <p className="text-gray-700 text-sm">
+                  The worker creates a 64-byte REPORTDATA buffer. The first 32 bytes are the Task Hash, and the remaining
+                  32 bytes are zeros. This REPORTDATA is passed to Intel TDX hardware when requesting a quote.
+                </p>
+              </div>
+
+              <div className="border-l-4 border-purple-500 pl-4">
+                <p className="font-semibold text-gray-900 mb-1">Step 3: Intel Signs the Quote</p>
+                <p className="text-gray-700 text-sm">
+                  Intel TDX hardware generates the quote with the REPORTDATA embedded inside (at offset 568 in the quote
+                  structure). Intel then signs the entire quote with its private key. This signature covers the REPORTDATA,
+                  so the Task Hash is now cryptographically bound to Intel&apos;s signature.
+                </p>
+              </div>
+
+              <div className="border-l-4 border-purple-500 pl-4">
+                <p className="font-semibold text-gray-900 mb-1">Step 4: Verification</p>
+                <p className="text-gray-700 text-sm">
+                  Anyone can extract bytes [568:600] from the TDX quote (the first 32 bytes of REPORTDATA at offset 568)
+                  to get the embedded Task Hash. They can also independently calculate the expected Task Hash from the
+                  attestation parameters. If the hashes match, the attestation is genuine and cannot have been forged or swapped.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-blue-50 border-l-4 border-blue-500 p-4 my-4">
+            <p className="text-blue-900 font-semibold mb-2">Interactive Verification in Dashboard:</p>
+            <p className="text-blue-800 text-sm mb-2">
+              When you click <strong>&quot;Verify Quote&quot;</strong> in the attestation modal, the Dashboard performs
+              full Task Hash verification:
+            </p>
+            <ol className="list-decimal list-inside space-y-1 text-blue-800 text-sm ml-2">
+              <li>Extracts RTMR3 from TDX quote (offset 256, 48 bytes) - verifies worker identity</li>
+              <li>Extracts Task Hash from REPORTDATA (offset 568, first 32 bytes) - extracts commitment</li>
+              <li>Calculates expected Task Hash from attestation parameters - computes what it should be</li>
+              <li>Compares extracted vs. expected hashes - validates cryptographic binding</li>
+              <li>Shows ✓ green checkmark if both match, ✗ red error if mismatch</li>
+            </ol>
+            <p className="text-blue-800 text-sm mt-2">
+              You can also click <strong>&quot;📊 Show Task Hash Calculation Steps&quot;</strong> to see the exact
+              step-by-step breakdown of how the Task Hash is computed from the attestation data.
+            </p>
+          </div>
+
+          <div className="bg-purple-50 border-l-4 border-purple-500 p-4 my-4">
+            <p className="text-purple-900 font-semibold mb-2">Why This Matters:</p>
+            <p className="text-purple-800 text-sm">
+              Without Task Hash verification, a malicious worker could execute code once honestly (getting a valid TDX
+              quote), then <strong>reuse that same quote</strong> for multiple executions with different inputs/outputs,
+              claiming all of them were executed in TEE. The Task Hash makes this impossible because each execution has
+              a unique Task Hash embedded in its quote. A quote from execution A cannot be used to validate execution B
+              because their Task Hashes will differ.
+            </p>
+          </div>
+
+          <div className="bg-white border-2 border-gray-300 rounded-lg p-4 my-4">
+            <h4 className="text-md font-semibold text-gray-900 mb-2">Example: Preventing Quote Swapping</h4>
+            <div className="space-y-2 text-sm">
+              <div className="bg-red-50 border border-red-200 rounded p-2">
+                <p className="text-red-900 font-semibold">❌ Attack (without Task Hash):</p>
+                <p className="text-red-800 text-xs">
+                  Worker honestly executes Task A (input=&quot;1&quot;, output=&quot;10&quot;) → gets valid TDX Quote A.
+                  Then worker claims Quote A also proves execution of Task B (input=&quot;2&quot;, output=&quot;999&quot;) -
+                  forging result &quot;999&quot; while presenting a cryptographically valid Intel signature.
+                </p>
+              </div>
+              <div className="bg-green-50 border border-green-200 rounded p-2">
+                <p className="text-green-900 font-semibold">✓ Defense (with Task Hash):</p>
+                <p className="text-green-800 text-xs">
+                  Quote A contains Task Hash A = SHA256(&quot;execute&quot; + &quot;1&quot; + ... + hash(&quot;10&quot;)).
+                  Quote B would need Task Hash B = SHA256(&quot;execute&quot; + &quot;2&quot; + ... + hash(&quot;999&quot;)).
+                  Since SHA256(A) ≠ SHA256(B), Quote A cannot be used for Task B. The verification fails immediately.
+                </p>
+              </div>
+            </div>
           </div>
         </section>
 

@@ -571,10 +571,40 @@ export default function JobsPage() {
                     </div>
 
                     <div>
+                      <p className="font-semibold mb-1">🔗 What is Task Hash (REPORTDATA)?</p>
+                      <p className="text-blue-800 mb-2">
+                        Task Hash is a SHA256 cryptographic commitment to ALL execution parameters, embedded in the TDX Quote&apos;s
+                        REPORTDATA field. This prevents attestation forgery - you cannot swap a valid attestation from one execution
+                        to another because the Task Hash binds the quote to specific input/output/wasm hashes.
+                      </p>
+                      <p className="text-blue-800 mb-1"><strong>Task Hash Algorithm (binary concatenation):</strong></p>
+                      <code className="block bg-blue-100 p-2 rounded text-xs font-mono text-blue-900 mb-1">
+                        task_hash = SHA256(<br/>
+                        &nbsp;&nbsp;task_type (string) +<br/>
+                        &nbsp;&nbsp;task_id (i64, little-endian) +<br/>
+                        &nbsp;&nbsp;repo_url (string, optional) +<br/>
+                        &nbsp;&nbsp;commit_hash (string, optional) +<br/>
+                        &nbsp;&nbsp;build_target (string, optional) +<br/>
+                        &nbsp;&nbsp;wasm_hash (hex string, optional) +<br/>
+                        &nbsp;&nbsp;input_hash (hex string, optional) +<br/>
+                        &nbsp;&nbsp;output_hash (hex string, always present) +<br/>
+                        &nbsp;&nbsp;block_height (u64, little-endian, optional)<br/>
+                        )
+                      </code>
+                      <p className="text-blue-800 text-xs">
+                        <strong>Note:</strong> Hashes are included as hex strings (e.g., &quot;abc123...&quot;), not decoded bytes.
+                        This ensures exact reproducibility of the hash calculation.
+                      </p>
+                    </div>
+
+                    <div>
                       <p className="font-semibold mb-1">✅ What Can You Verify?</p>
                       <ul className="list-disc list-inside space-y-1 text-blue-800 ml-2">
-                        <li><strong>Worker Identity:</strong> Click &quot;Verify Quote&quot; to extract RTMR3 from the TDX quote
-                          and confirm it matches the stored worker measurement.</li>
+                        <li><strong>Worker Identity (RTMR3):</strong> Click &quot;Verify Quote&quot; to extract RTMR3 from the TDX quote
+                          (offset 256, 48 bytes) and confirm it matches the stored worker measurement.</li>
+                        <li><strong>Task Hash (REPORTDATA):</strong> Click &quot;Verify Quote&quot; to extract Task Hash from the TDX quote
+                          (offset 568, first 32 bytes of 64-byte REPORTDATA field) and verify it matches the calculated hash
+                          from all execution parameters. This proves the attestation cannot be forged or swapped.</li>
                         <li><strong>Input/Output Correctness:</strong> Click &quot;Verify Input/Output Hashes&quot; to fetch
                           the transaction from NEAR blockchain and verify SHA256 hashes match.</li>
                         <li><strong>Code Transparency:</strong> Click the source code link to view the exact GitHub
@@ -988,6 +1018,100 @@ export default function JobsPage() {
                           <div className={`mt-1 px-2 py-1 rounded text-xs ${quoteValidation.taskHashMatch ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
                             {quoteValidation.taskHashMatch ? '✓ Task Hash Match (contains commitment to input/output/wasm hashes)' : '✗ Task Hash Mismatch'}
                           </div>
+
+                          {/* Expandable: Show how Task Hash is calculated */}
+                          <details className="mt-3 bg-purple-100 border border-purple-300 rounded p-3">
+                            <summary className="cursor-pointer font-semibold text-purple-900 text-sm hover:text-purple-700">
+                              📊 Show Task Hash Calculation Steps
+                            </summary>
+                            <div className="mt-3 space-y-2 text-xs">
+                              <p className="font-semibold text-purple-900">Binary concatenation order (then SHA256):</p>
+                              <div className="space-y-1 font-mono bg-white p-2 rounded border border-purple-200">
+                                <div className="flex items-start gap-2">
+                                  <span className="text-purple-700 font-bold min-w-[20px]">1.</span>
+                                  <div className="flex-1">
+                                    <span className="text-gray-600">task_type (string):</span>
+                                    <div className="text-purple-900 break-all">&quot;{attestationModal.attestation!.task_type}&quot;</div>
+                                  </div>
+                                </div>
+                                <div className="flex items-start gap-2">
+                                  <span className="text-purple-700 font-bold min-w-[20px]">2.</span>
+                                  <div className="flex-1">
+                                    <span className="text-gray-600">task_id (i64, little-endian):</span>
+                                    <div className="text-purple-900">{attestationModal.attestation!.task_id}</div>
+                                  </div>
+                                </div>
+                                {attestationModal.attestation!.repo_url && (
+                                  <div className="flex items-start gap-2">
+                                    <span className="text-purple-700 font-bold min-w-[20px]">3.</span>
+                                    <div className="flex-1">
+                                      <span className="text-gray-600">repo_url (string):</span>
+                                      <div className="text-purple-900 break-all">&quot;{attestationModal.attestation!.repo_url}&quot;</div>
+                                    </div>
+                                  </div>
+                                )}
+                                {attestationModal.attestation!.commit_hash && (
+                                  <div className="flex items-start gap-2">
+                                    <span className="text-purple-700 font-bold min-w-[20px]">4.</span>
+                                    <div className="flex-1">
+                                      <span className="text-gray-600">commit_hash (string):</span>
+                                      <div className="text-purple-900">&quot;{attestationModal.attestation!.commit_hash}&quot;</div>
+                                    </div>
+                                  </div>
+                                )}
+                                {attestationModal.attestation!.build_target && (
+                                  <div className="flex items-start gap-2">
+                                    <span className="text-purple-700 font-bold min-w-[20px]">5.</span>
+                                    <div className="flex-1">
+                                      <span className="text-gray-600">build_target (string):</span>
+                                      <div className="text-purple-900">&quot;{attestationModal.attestation!.build_target}&quot;</div>
+                                    </div>
+                                  </div>
+                                )}
+                                {attestationModal.attestation!.wasm_hash && (
+                                  <div className="flex items-start gap-2">
+                                    <span className="text-purple-700 font-bold min-w-[20px]">6.</span>
+                                    <div className="flex-1">
+                                      <span className="text-gray-600">wasm_hash (hex string):</span>
+                                      <div className="text-purple-900 break-all">&quot;{attestationModal.attestation!.wasm_hash}&quot;</div>
+                                    </div>
+                                  </div>
+                                )}
+                                {attestationModal.attestation!.input_hash && (
+                                  <div className="flex items-start gap-2">
+                                    <span className="text-purple-700 font-bold min-w-[20px]">7.</span>
+                                    <div className="flex-1">
+                                      <span className="text-gray-600">input_hash (hex string):</span>
+                                      <div className="text-purple-900 break-all">&quot;{attestationModal.attestation!.input_hash}&quot;</div>
+                                    </div>
+                                  </div>
+                                )}
+                                <div className="flex items-start gap-2">
+                                  <span className="text-purple-700 font-bold min-w-[20px]">8.</span>
+                                  <div className="flex-1">
+                                    <span className="text-gray-600">output_hash (hex string):</span>
+                                    <div className="text-purple-900 break-all">&quot;{attestationModal.attestation!.output_hash}&quot;</div>
+                                  </div>
+                                </div>
+                                {attestationModal.attestation!.block_height && (
+                                  <div className="flex items-start gap-2">
+                                    <span className="text-purple-700 font-bold min-w-[20px]">9.</span>
+                                    <div className="flex-1">
+                                      <span className="text-gray-600">block_height (u64, little-endian):</span>
+                                      <div className="text-purple-900">{attestationModal.attestation!.block_height}</div>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                              <div className="mt-2 p-2 bg-purple-50 border border-purple-200 rounded">
+                                <div className="text-purple-900 font-semibold">Final Hash (SHA256 of concatenated bytes):</div>
+                                <div className="text-purple-900 font-mono break-all">{quoteValidation.expectedTaskHash}</div>
+                              </div>
+                              <p className="text-purple-800 text-xs italic">
+                                Note: Strings are UTF-8 encoded, integers are little-endian. Hashes are included as hex strings, not decoded bytes.
+                              </p>
+                            </div>
+                          </details>
                         </div>
 
                         {/* Overall Validation Result */}
