@@ -612,10 +612,10 @@ export default function JobsPage() {
                 <div className="space-y-4">
                   <div className="bg-blue-50 border border-blue-200 rounded-md p-4">
                     <p className="text-blue-800 font-semibold">
-                      {rtmr3Valid ? '✓' : '⚠️'} RTMR3: {rtmr3Valid ? 'Valid' : 'Invalid'} | Task Hash: Click "Verify Quote" below to check
+                      {rtmr3Valid ? '✓' : '⚠️'} RTMR3: {rtmr3Valid ? 'Valid' : 'Invalid'} | Task Hash: Click &quot;Verify Quote&quot; below to check
                     </p>
                     <p className="text-blue-700 text-sm mt-1">
-                      Full verification (including task hash with input/output/wasm commitment) is available in the "TDX Quote Verification" section below.
+                      Full verification (including task hash with input/output/wasm commitment) is available in the &quot;TDX Quote Verification&quot; section below.
                     </p>
                   </div>
 
