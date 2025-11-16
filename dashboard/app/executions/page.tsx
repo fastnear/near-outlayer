@@ -143,12 +143,13 @@ export default function JobsPage() {
         bytes[i] = binaryString.charCodeAt(i);
       }
 
-      // TDX Quote v4 structure:
-      // - RTMR3 at offset 256, 48 bytes
-      // - REPORTDATA at offset 368, 64 bytes
+      // TDX Quote v4 structure (Intel spec):
+      // Header (48 bytes) + TD Report Body (584 bytes) + Signature Data
+      // - RTMR3 at offset 256, 48 bytes (verified working ✓)
+      // - REPORTDATA at end of TD Report Body: 48 + 584 - 64 = 568
       const RTMR3_OFFSET = 256;
       const RTMR3_SIZE = 48;
-      const REPORTDATA_OFFSET = 368;
+      const REPORTDATA_OFFSET = 568;
       const REPORTDATA_SIZE = 64;
 
       if (bytes.length < REPORTDATA_OFFSET + REPORTDATA_SIZE) {
@@ -976,7 +977,7 @@ export default function JobsPage() {
                         {/* Extracted Task Hash */}
                         <div>
                           <label className="block text-sm font-semibold text-gray-800 mb-1">
-                            Extracted Task Hash (REPORTDATA, offset 368)
+                            Extracted Task Hash (REPORTDATA, offset 568)
                           </label>
                           <div className="bg-white p-2 border border-gray-300 rounded font-mono text-xs break-all">
                             {quoteValidation.extractedTaskHash || 'Failed to extract'}
