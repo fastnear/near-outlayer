@@ -738,7 +738,7 @@ export default function JobsPage() {
 
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-1">
-                      {attestationModal.attestation.task_type === 'Compile' ? 'Compiled WASM Hash (Output)' : 'Output Hash'}
+                      {attestationModal.attestation.task_type === 'compile' ? 'Compiled WASM Hash (Output)' : 'Output Hash'}
                     </label>
                     <div className="bg-gray-50 p-2 rounded border font-mono text-xs break-all">
                       {attestationModal.attestation.output_hash}
@@ -746,7 +746,7 @@ export default function JobsPage() {
                   </div>
 
                   {/* Verify Input/Output Hashes Section - Only for Execute tasks */}
-                  {attestationModal.attestation.transaction_hash && attestationModal.attestation.task_type === 'Execute' && (
+                  {attestationModal.attestation.transaction_hash && attestationModal.attestation.task_type === 'execute' && (
                     <div className="border-2 border-blue-200 rounded-lg p-4 bg-blue-50">
                       <div className="flex justify-between items-center mb-3">
                         <h3 className="text-lg font-semibold text-blue-900">Input/Output Verification</h3>
