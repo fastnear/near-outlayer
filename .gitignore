@@ -1,5 +1,11 @@
 # Environment files with secrets
 .env
+.env.phala
+*.env.phala
+!.env.phala.example
+.env.keystore-phala
+*.env.keystore-phala
+!.env.keystore-phala.example
 
 # Rust
 target/
@@ -44,3 +50,5 @@ logs/
 # testnet config
 .env.testnet*
 prod_configs
+docker/.phala
+.tasks

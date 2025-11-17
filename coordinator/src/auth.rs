@@ -74,15 +74,25 @@ pub async fn auth_middleware(
 
     // Update last_used_at (fire and forget)
     let db = state.db.clone();
+    let token_hash_for_update = token_hash.clone();
     tokio::spawn(async move {
         let _ = sqlx::query!(
             "UPDATE worker_auth_tokens SET last_used_at = NOW() WHERE token_hash = $1",
-            token_hash
+            token_hash_for_update
         )
         .execute(&db)
         .await;
     });
 
     debug!("Auth successful");
+
+    // Store token_hash in request extensions for use in handlers
+    let mut req = req;
+    req.extensions_mut().insert(WorkerTokenHash(token_hash));
+
     Ok(next.run(req).await)
 }
+
+/// Worker token hash stored in request extensions
+#[derive(Clone)]
+pub struct WorkerTokenHash(pub String);

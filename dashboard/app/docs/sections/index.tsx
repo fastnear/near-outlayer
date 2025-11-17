@@ -5,6 +5,7 @@ import { useEffect } from 'react';
 
 export { default as GettingStartedSection } from './GettingStarted';
 export { default as DeveloperGuideSection } from './DeveloperGuide';
+export { default as TeeAttestationSection } from './TeeAttestation';
 
 // Anchor heading component with clickable link
 function AnchorHeading({ id, children }: { id: string; children: React.ReactNode }) {

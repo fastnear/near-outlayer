@@ -1,3 +1,5 @@
+pub mod admin;
+pub mod attestations;
 pub mod github;
 pub mod internal;
 pub mod jobs;

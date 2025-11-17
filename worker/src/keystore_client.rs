@@ -59,6 +59,28 @@ impl KeystoreClient {
             .as_secs();
 
         match self.tee_mode.as_str() {
+            "tdx" => {
+                // TDX mode: Use simulated attestation for keystore (TDX quote only used for registration)
+                // Keystore doesn't need real TDX quote verification - registration contract handles that
+                tracing::info!("Using simulated attestation for keystore (TDX mode)");
+
+                let binary_path = std::env::current_exe()
+                    .context("Failed to get current executable path")?;
+
+                let binary = std::fs::read(&binary_path)
+                    .context("Failed to read worker binary")?;
+
+                let mut hasher = Sha256::new();
+                hasher.update(&binary);
+                let measurement = hasher.finalize();
+
+                Ok(Attestation {
+                    tee_type: "tdx".to_string(),
+                    quote: base64::encode(measurement),
+                    worker_pubkey: None,
+                    timestamp,
+                })
+            }
             "sgx" => {
                 // TODO: Implement real SGX attestation
                 // Steps:

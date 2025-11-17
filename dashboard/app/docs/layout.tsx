@@ -73,6 +73,14 @@ const pageStructure = {
     { id: 'private-dao-ark', title: 'Private DAO Voting' },
     { id: 'captcha-ark', title: '2FA Verification' },
   ],
+  '/docs/tee-attestation': [
+    { id: 'what-is-tee', title: 'What is TEE Attestation?' },
+    { id: 'worker-registration', title: 'Worker Registration' },
+    { id: 'execution-attestation', title: 'Execution Attestation' },
+    { id: 'verification-process', title: 'Verification Process' },
+    { id: 'security-guarantees', title: 'Security Guarantees' },
+    { id: 'dashboard-verification', title: 'Dashboard Verification' },
+  ],
 };
 
 export default function DocsLayout({
@@ -410,6 +418,44 @@ export default function DocsLayout({
                 {expandedPages['/docs/architecture'] && pageStructure['/docs/architecture'] && (
                   <div className="ml-4 mt-1 space-y-1">
                     {pageStructure['/docs/architecture'].map(section => (
+                      <button
+                        key={section.id}
+                        onClick={() => scrollToSection(section.id)}
+                        className="block w-full text-left px-3 py-1.5 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
+                      >
+                        {section.title}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* TEE Attestation */}
+              <div>
+                <Link
+                  href="/docs/tee-attestation"
+                  className={`flex items-center justify-between w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                    isActive('/docs/tee-attestation')
+                      ? 'bg-[var(--primary-orange)] text-white'
+                      : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                  onClick={(e) => {
+                    if (isActive('/docs/tee-attestation')) {
+                      e.preventDefault();
+                      toggleExpand('/docs/tee-attestation');
+                    }
+                  }}
+                >
+                  <span>TEE Attestation</span>
+                  {pageStructure['/docs/tee-attestation'] && (
+                    <svg className={`w-4 h-4 transition-transform ${expandedPages['/docs/tee-attestation'] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  )}
+                </Link>
+                {expandedPages['/docs/tee-attestation'] && pageStructure['/docs/tee-attestation'] && (
+                  <div className="ml-4 mt-1 space-y-1">
+                    {pageStructure['/docs/tee-attestation'].map(section => (
                       <button
                         key={section.id}
                         onClick={() => scrollToSection(section.id)}

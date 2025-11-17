@@ -19,7 +19,7 @@ pub struct Config {
     pub offchainvm_contract_id: AccountId,
     #[allow(dead_code)]
     pub operator_account_id: AccountId,
-    pub operator_signer: InMemorySigner,
+    pub operator_signer: Option<InMemorySigner>,
 
     // Worker settings
     pub worker_id: String,
@@ -27,7 +27,12 @@ pub struct Config {
     pub poll_timeout_seconds: u64,
     pub scan_interval_ms: u64,
 
-    // Docker for compilation
+    // Compilation mode
+    // "docker" - use Docker containers (requires Docker socket)
+    // "native" - use native Rust toolchain with bubblewrap (for TEE/Phala)
+    pub compilation_mode: String,
+
+    // Docker for compilation (only used in "docker" mode)
     pub docker_image: String,
     pub compile_timeout_seconds: u64,
     pub compile_memory_limit_mb: u64,
@@ -45,6 +50,19 @@ pub struct Config {
     pub keystore_auth_token: Option<String>,
     pub tee_mode: String,
 
+    // Worker registration mode
+    // If true - use TEE registration flow (requires REGISTER_CONTRACT_ID and INIT_ACCOUNT_*)
+    // If false - use legacy mode with OPERATOR_PRIVATE_KEY (for testnet without TEE)
+    pub use_tee_registration: bool,
+
+    // Worker registration (optional - for TEE key registration)
+    pub register_contract_id: Option<AccountId>,
+
+    // Init account (optional - for paying gas on worker registration)
+    // If not set, operator_signer will be used for registration
+    pub init_account_id: Option<AccountId>,
+    pub init_account_signer: Option<InMemorySigner>,
+
     // Debug logging (admin only - stores raw stderr/stdout in system_hidden_logs table)
     // WARNING: These logs should NEVER be exposed via public API for security reasons
     // Set to false in production to disable raw log storage
@@ -53,6 +71,40 @@ pub struct Config {
     // Print WASM stderr to worker logs (for debugging WASM execution)
     // Set to false in production to reduce log noise
     pub print_wasm_stderr: bool,
+
+    // Worker capabilities (what this worker can do)
+    pub capabilities: WorkerCapabilities,
+}
+
+/// Worker capabilities - what jobs this worker can handle
+#[derive(Debug, Clone)]
+pub struct WorkerCapabilities {
+    pub compilation: bool, // Can compile GitHub repos to WASM
+    pub execution: bool,   // Can execute WASM code
+}
+
+impl WorkerCapabilities {
+    /// Convert capabilities to string array for API
+    pub fn to_array(&self) -> Vec<String> {
+        let mut result = Vec::new();
+        if self.compilation {
+            result.push("compilation".to_string());
+        }
+        if self.execution {
+            result.push("execution".to_string());
+        }
+        result
+    }
+
+    /// Check if worker can handle compilation
+    pub fn can_compile(&self) -> bool {
+        self.compilation
+    }
+
+    /// Check if worker can handle execution
+    pub fn can_execute(&self) -> bool {
+        self.execution
+    }
 }
 
 impl Config {
@@ -119,15 +171,30 @@ impl Config {
         let operator_account_id = AccountId::from_str(&operator_account_id)
             .context("Invalid OPERATOR_ACCOUNT_ID format")?;
 
-        let operator_private_key = env::var("OPERATOR_PRIVATE_KEY")
-            .context("OPERATOR_PRIVATE_KEY environment variable is required")?;
-        let operator_secret_key = SecretKey::from_str(&operator_private_key)
-            .context("Invalid OPERATOR_PRIVATE_KEY format (expected ed25519:...)")?;
+        // Check if TEE registration is enabled
+        let use_tee_registration = env::var("USE_TEE_REGISTRATION")
+            .unwrap_or_else(|_| "true".to_string()) // Default: true (TEE mode for production)
+            .parse::<bool>()
+            .context("USE_TEE_REGISTRATION must be 'true' or 'false'")?;
 
-        let operator_signer = InMemorySigner::from_secret_key(
-            operator_account_id.clone(),
-            operator_secret_key,
-        );
+        // Load operator_signer based on registration mode
+        let operator_signer = if use_tee_registration {
+            // TEE mode: operator_signer will be set after registration in main.rs
+            None
+        } else {
+            // Legacy mode: load OPERATOR_PRIVATE_KEY from env
+            let operator_private_key = env::var("OPERATOR_PRIVATE_KEY")
+                .context("OPERATOR_PRIVATE_KEY is required when USE_TEE_REGISTRATION=false")?;
+
+            let secret_key: SecretKey = operator_private_key
+                .parse()
+                .context("Invalid OPERATOR_PRIVATE_KEY format (expected ed25519:...)")?;
+
+            Some(InMemorySigner::from_secret_key(
+                operator_account_id.clone(),
+                secret_key,
+            ))
+        };
 
         // Optional fields with defaults
         let worker_id = env::var("WORKER_ID")
@@ -147,6 +214,16 @@ impl Config {
             .unwrap_or_else(|_| "0".to_string())
             .parse::<u64>()
             .context("SCAN_INTERVAL_MS must be a valid number")?;
+
+        // Compilation mode: docker (default) or native (bubblewrap)
+        let compilation_mode = env::var("COMPILATION_MODE")
+            .unwrap_or_else(|_| "docker".to_string())
+            .to_lowercase();
+
+        // Validate compilation mode
+        if !["docker", "native"].contains(&compilation_mode.as_str()) {
+            anyhow::bail!("Invalid COMPILATION_MODE: '{}'. Must be 'docker' or 'native'", compilation_mode);
+        }
 
         let docker_image = env::var("DOCKER_IMAGE")
             .unwrap_or_else(|_| "zavodil/wasmedge-compiler:latest".to_string());
@@ -185,12 +262,22 @@ impl Config {
         let keystore_base_url = env::var("KEYSTORE_BASE_URL").ok();
         let keystore_auth_token = env::var("KEYSTORE_AUTH_TOKEN").ok();
 
-        let tee_mode = env::var("TEE_MODE")
+        let tee_mode_raw = env::var("TEE_MODE")
             .unwrap_or_else(|_| "none".to_string());
+        // Remove quotes if present (Phala Cloud may add them)
+        let tee_mode = tee_mode_raw
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_lowercase();
 
-        // Validate TEE mode
-        if !["sgx", "sev", "simulated", "none"].contains(&tee_mode.as_str()) {
-            anyhow::bail!("Invalid TEE_MODE: must be one of: sgx, sev, simulated, none");
+        // Validate TEE mode (case-insensitive, trimmed)
+        if !["tdx", "sgx", "sev", "simulated", "none"].contains(&tee_mode.as_str()) {
+            anyhow::bail!(
+                "Invalid TEE_MODE: received '{}' (raw: '{:?}'), must be one of: tdx, sgx, sev, simulated, none (case-insensitive)",
+                tee_mode,
+                tee_mode_raw
+            );
         }
 
         // Debug logging flag (default: true = enabled)
@@ -207,6 +294,55 @@ impl Config {
             .parse::<bool>()
             .unwrap_or(false);
 
+        // Worker capabilities - what this worker can do
+        let compilation_enabled = env::var("COMPILATION_ENABLED")
+            .unwrap_or_else(|_| "true".to_string())
+            .parse::<bool>()
+            .context("COMPILATION_ENABLED must be 'true' or 'false'")?;
+
+        let execution_enabled = env::var("EXECUTION_ENABLED")
+            .unwrap_or_else(|_| "true".to_string())
+            .parse::<bool>()
+            .context("EXECUTION_ENABLED must be 'true' or 'false'")?;
+
+        // At least one capability must be enabled
+        if !compilation_enabled && !execution_enabled {
+            anyhow::bail!("At least one capability must be enabled (COMPILATION_ENABLED or EXECUTION_ENABLED)");
+        }
+
+        let capabilities = WorkerCapabilities {
+            compilation: compilation_enabled,
+            execution: execution_enabled,
+        };
+
+        // Worker registration configuration (optional)
+        let register_contract_id = env::var("REGISTER_CONTRACT_ID")
+            .ok()
+            .map(|id| AccountId::from_str(&id))
+            .transpose()
+            .context("Invalid REGISTER_CONTRACT_ID format")?;
+
+        // Init account (optional - for paying gas on worker registration)
+        let (init_account_id, init_account_signer) = if let Ok(init_account_str) = env::var("INIT_ACCOUNT_ID") {
+            let init_account_id = AccountId::from_str(&init_account_str)
+                .context("Invalid INIT_ACCOUNT_ID format")?;
+
+            let init_private_key_str = env::var("INIT_ACCOUNT_PRIVATE_KEY")
+                .context("INIT_ACCOUNT_PRIVATE_KEY is required when INIT_ACCOUNT_ID is set")?;
+
+            let init_private_key = SecretKey::from_str(&init_private_key_str)
+                .context("Invalid INIT_ACCOUNT_PRIVATE_KEY format")?;
+
+            let init_signer = InMemorySigner::from_secret_key(
+                init_account_id.clone(),
+                init_private_key,
+            );
+
+            (Some(init_account_id), Some(init_signer))
+        } else {
+            (None, None)
+        };
+
         Ok(Self {
             api_base_url,
             api_auth_token,
@@ -221,6 +357,7 @@ impl Config {
             enable_event_monitor,
             poll_timeout_seconds,
             scan_interval_ms,
+            compilation_mode,
             docker_image,
             compile_timeout_seconds,
             compile_memory_limit_mb,
@@ -231,9 +368,24 @@ impl Config {
             keystore_base_url,
             keystore_auth_token,
             tee_mode,
+            use_tee_registration,
+            register_contract_id,
+            init_account_id,
+            init_account_signer,
             save_system_hidden_logs_to_debug,
             print_wasm_stderr,
+            capabilities,
         })
+    }
+
+    /// Set operator signer after registration
+    pub fn set_operator_signer(&mut self, signer: InMemorySigner) {
+        self.operator_signer = Some(signer);
+    }
+
+    /// Get operator signer (panics if not set)
+    pub fn get_operator_signer(&self) -> &InMemorySigner {
+        self.operator_signer.as_ref().expect("Operator signer not set - registration must have failed")
     }
 
     /// Validate configuration
@@ -301,14 +453,15 @@ mod tests {
             start_block_height: 0,
             offchainvm_contract_id: "outlayer.testnet".parse().unwrap(),
             operator_account_id: "worker.testnet".parse().unwrap(),
-            operator_signer: InMemorySigner::from_secret_key(
+            operator_signer: Some(InMemorySigner::from_secret_key(
                 "worker.testnet".parse().unwrap(),
                 "ed25519:3D4YudUahN1nawWvHfEKBGpmJLfbCTbvdXDJKqfLhQ98XewyWK4tEDWvmAYPZqcgz7qfkCEHyWD15m8JVVWJ3LXD".parse().unwrap(),
-            ),
+            )),
             worker_id: "test-worker".to_string(),
             enable_event_monitor: false,
             poll_timeout_seconds: 60,
             scan_interval_ms: 0,
+            compilation_mode: "docker".to_string(),
             docker_image: "rust:1.75".to_string(),
             compile_timeout_seconds: 300,
             compile_memory_limit_mb: 2048,
@@ -319,8 +472,16 @@ mod tests {
             keystore_base_url: None,
             keystore_auth_token: None,
             tee_mode: "none".to_string(),
+            use_tee_registration: false, // Test mode: use legacy with OPERATOR_PRIVATE_KEY
+            register_contract_id: None,
+            init_account_id: None,
+            init_account_signer: None,
             save_system_hidden_logs_to_debug: true, // Default: enabled for debugging
             print_wasm_stderr: false,
+            capabilities: WorkerCapabilities {
+                compilation: true,
+                execution: true,
+            },
         }
     }
 }

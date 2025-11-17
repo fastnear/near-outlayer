@@ -196,3 +196,90 @@ export async function fetchPricing(): Promise<PricingConfig> {
   const response = await axios.get(`${API_BASE_URL}/public/pricing`);
   return response.data;
 }
+
+/**
+ * API Key Management
+ */
+export interface CreateApiKeyResponse {
+  api_key: string;
+  near_account_id: string;
+  rate_limit_per_minute: number;
+  created_at: number;
+}
+
+export interface CreateApiKeyRequest {
+  near_account_id: string;
+  key_name: string;
+  rate_limit_per_minute?: number;
+}
+
+/**
+ * Create API key (public endpoint - no auth required)
+ */
+export async function createApiKey(
+  request: CreateApiKeyRequest
+): Promise<CreateApiKeyResponse> {
+  const baseUrl = getCoordinatorApiUrl();
+  const response = await axios.post(
+    `${baseUrl}/public/api-keys`,
+    request
+  );
+  return response.data;
+}
+
+/**
+ * Attestation data types
+ */
+export interface AttestationResponse {
+  id: number;
+  task_id: number;
+  task_type: string;
+
+  // TDX attestation data
+  tdx_quote: string; // base64 encoded
+  worker_measurement: string;
+
+  // NEAR context
+  request_id?: number;
+  caller_account_id?: string;
+  transaction_hash?: string;
+  block_height?: number;
+
+  // Code source
+  repo_url?: string;
+  commit_hash?: string;
+  build_target?: string;
+
+  // Task data hashes
+  wasm_hash?: string;
+  input_hash?: string;
+  output_hash: string;
+
+  timestamp: number; // Unix timestamp
+}
+
+/**
+ * Fetch attestation for a specific task (requires API key)
+ * Returns null if attestation doesn't exist (backward compatibility)
+ */
+export async function fetchAttestation(
+  taskId: number,
+  apiKey: string
+): Promise<AttestationResponse | null> {
+  try {
+    const response = await axios.get(
+      `${API_BASE_URL}/attestations/${taskId}`,
+      {
+        headers: {
+          'X-API-Key': apiKey,
+        },
+      }
+    );
+    return response.data;
+  } catch (error) {
+    if (axios.isAxiosError(error) && error.response?.status === 404) {
+      return null; // Attestation doesn't exist
+    }
+    throw error;
+  }
+}

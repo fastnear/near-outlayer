@@ -10,9 +10,21 @@ pub async fn claim_job(
     Json(payload): Json<ClaimJobRequest>,
 ) -> Result<Json<ClaimJobResponse>, StatusCode> {
     debug!(
-        "Worker {} claiming task: request_id={} data_id={}",
-        payload.worker_id, payload.request_id, payload.data_id
+        "Worker {} claiming task: request_id={} data_id={} capabilities={:?}",
+        payload.worker_id, payload.request_id, payload.data_id, payload.capabilities
     );
+
+    // Check worker capabilities
+    let can_compile = payload.capabilities.contains(&"compilation".to_string());
+    let can_execute = payload.capabilities.contains(&"execution".to_string());
+
+    if !can_compile && !can_execute {
+        error!(
+            "❌ Worker {} has no capabilities (must have at least 'compilation' or 'execution')",
+            payload.worker_id
+        );
+        return Err(StatusCode::BAD_REQUEST);
+    }
 
     // Check if this task was already claimed/completed by another worker
     // We need to check both compile and execute jobs to see if work is done or in progress
@@ -94,7 +106,17 @@ pub async fn claim_job(
     let mut jobs = Vec::new();
 
     // Create compile job if WASM not in cache (or file missing)
+    // BUT only if worker has compilation capability
     if !wasm_file_exists {
+        if !can_compile {
+            error!(
+                "❌ Worker {} cannot compile (WASM not in cache, but worker has no 'compilation' capability)",
+                payload.worker_id
+            );
+            let pricing = state.pricing.read().await.clone();
+            return Ok(Json(ClaimJobResponse { jobs: vec![], pricing }));
+        }
+
         debug!(
             "🔨 WASM not available, creating compile job for request_id={} checksum={}",
             payload.request_id, wasm_checksum
@@ -150,7 +172,16 @@ pub async fn claim_job(
         );
     }
 
-    // Always create execute job
+    // Create execute job only if worker has execution capability
+    if !can_execute {
+        error!(
+            "❌ Worker {} cannot execute (has no 'execution' capability)",
+            payload.worker_id
+        );
+        let pricing = state.pricing.read().await.clone();
+        return Ok(Json(ClaimJobResponse { jobs: vec![], pricing }));
+    }
+
     let execute_job_result = sqlx::query!(
         r#"
         INSERT INTO jobs (request_id, data_id, job_type, worker_id, status, wasm_checksum, user_account_id, near_payment_yocto, github_repo, github_commit, transaction_hash, created_at, updated_at)

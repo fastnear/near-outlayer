@@ -1,0 +1,28 @@
+# Dockerfile for building register contract on M1/ARM Macs
+# Uses Linux x86_64 environment where ring's C code compiles properly
+
+FROM --platform=linux/amd64 rust:1.85.0
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    clang \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install cargo-near
+RUN cargo install cargo-near
+
+# Install wasm32-unknown-unknown target
+RUN rustup target add wasm32-unknown-unknown
+
+# Set working directory
+WORKDIR /contract
+
+# Copy source files
+COPY . .
+
+# Build the contract
+RUN cargo near build --release
+
+# Output will be in res/local/register_contract.wasm
+CMD ["cat", "res/local/register_contract.wasm"]

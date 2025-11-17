@@ -34,6 +34,8 @@ pub enum TeeMode {
     Sgx,
     /// AMD SEV-SNP
     Sev,
+    /// Intel TDX (Trust Domain Extensions)
+    Tdx,
     /// Simulated TEE for testing
     Simulated,
     /// No TEE (dev mode)
@@ -71,6 +73,7 @@ impl Config {
         let tee_mode = match std::env::var("TEE_MODE").unwrap_or_else(|_| "none".to_string()).as_str() {
             "sgx" => TeeMode::Sgx,
             "sev" => TeeMode::Sev,
+            "tdx" => TeeMode::Tdx,
             "simulated" => TeeMode::Simulated,
             "none" => TeeMode::None,
             other => anyhow::bail!("Invalid TEE_MODE: {}", other),

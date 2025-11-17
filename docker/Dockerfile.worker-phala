@@ -1,0 +1,63 @@
+# Dockerfile for NEAR OutLayer Worker - Phala Cloud Deployment
+# Optimized for Intel TDX TEE environment with dstack socket support
+
+# Stage 1: Build Rust worker binary
+FROM rust:1.90-alpine AS builder
+
+# Install build dependencies (Alpine uses musl instead of glibc)
+RUN apk add --no-cache \
+    musl-dev \
+    pkgconfig \
+    openssl-dev \
+    openssl-libs-static \
+    git
+
+WORKDIR /build/worker
+
+# Copy only Cargo files first (for dependency caching)
+COPY worker/Cargo.toml worker/Cargo.lock ./
+
+# Create dummy src to build dependencies
+RUN mkdir src && \
+    echo "fn main() {}" > src/main.rs && \
+    echo "// dummy lib" > src/lib.rs && \
+    cargo build --release --locked && \
+    rm -rf src target/release/deps/offchainvm_worker*
+
+# Now copy actual source code
+COPY worker/src ./src
+
+# Build actual binary (dependencies already cached)
+RUN cargo build --release --locked --bin offchainvm-worker
+
+# Stage 2: Minimal runtime image
+FROM alpine:3.19
+
+# Install runtime dependencies
+RUN apk add --no-cache \
+    ca-certificates \
+    libgcc \
+    git \
+    curl \
+    && rm -rf /var/cache/apk/*
+
+# Create app directory
+WORKDIR /app
+
+# Copy worker binary from builder
+COPY --from=builder /build/worker/target/release/offchainvm-worker /app/worker
+
+# Make binary executable
+RUN chmod +x /app/worker
+
+# Health check endpoint (worker doesn't expose HTTP, but we can check process)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD ps aux | grep -v grep | grep worker || exit 1
+
+# Run as root (Phala TDX requires access to /var/run/dstack.sock)
+# In Phala environment, the CVM itself provides isolation
+
+# Expose no ports (worker connects outbound to coordinator)
+
+# Start worker
+CMD ["/app/worker"]
