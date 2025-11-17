@@ -27,7 +27,12 @@ pub struct Config {
     pub poll_timeout_seconds: u64,
     pub scan_interval_ms: u64,
 
-    // Docker for compilation
+    // Compilation mode
+    // "docker" - use Docker containers (requires Docker socket)
+    // "native" - use native Rust toolchain with bubblewrap (for TEE/Phala)
+    pub compilation_mode: String,
+
+    // Docker for compilation (only used in "docker" mode)
     pub docker_image: String,
     pub compile_timeout_seconds: u64,
     pub compile_memory_limit_mb: u64,
@@ -210,6 +215,16 @@ impl Config {
             .parse::<u64>()
             .context("SCAN_INTERVAL_MS must be a valid number")?;
 
+        // Compilation mode: docker (default) or native (bubblewrap)
+        let compilation_mode = env::var("COMPILATION_MODE")
+            .unwrap_or_else(|_| "docker".to_string())
+            .to_lowercase();
+
+        // Validate compilation mode
+        if !["docker", "native"].contains(&compilation_mode.as_str()) {
+            anyhow::bail!("Invalid COMPILATION_MODE: '{}'. Must be 'docker' or 'native'", compilation_mode);
+        }
+
         let docker_image = env::var("DOCKER_IMAGE")
             .unwrap_or_else(|_| "zavodil/wasmedge-compiler:latest".to_string());
 
@@ -342,6 +357,7 @@ impl Config {
             enable_event_monitor,
             poll_timeout_seconds,
             scan_interval_ms,
+            compilation_mode,
             docker_image,
             compile_timeout_seconds,
             compile_memory_limit_mb,
@@ -445,6 +461,7 @@ mod tests {
             enable_event_monitor: false,
             poll_timeout_seconds: 60,
             scan_interval_ms: 0,
+            compilation_mode: "docker".to_string(),
             docker_image: "rust:1.75".to_string(),
             compile_timeout_seconds: 300,
             compile_memory_limit_mb: 2048,

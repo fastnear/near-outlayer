@@ -1,13 +1,15 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -e
 
 # Build and push NEAR OutLayer worker Docker image for Phala Cloud
 #
 # Usage:
-#   ./scripts/build_and_push_phala.sh <dockerhub-username> <version>
+#   ./scripts/build_and_push_phala.sh <dockerhub-username> <tag> [dockerfile]
 #
-# Example:
-#   ./scripts/build_and_push_phala.sh myusername v1.0.0
+# Examples:
+#   ./scripts/build_and_push_phala.sh zavodil latest                     # Build worker-compiler (default)
+#   ./scripts/build_and_push_phala.sh zavodil latest worker-compiler    # Build worker-compiler explicitly
+#   ./scripts/build_and_push_phala.sh zavodil latest worker             # Build execution-only worker
 
 # Colors for output
 RED='\033[0;31m'
@@ -16,17 +18,39 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Check arguments
-if [ "$#" -ne 2 ]; then
-    echo -e "${RED}Error: Missing arguments${NC}"
-    echo "Usage: $0 <dockerhub-username> <version>"
-    echo "Example: $0 myusername v1.0.0"
+if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
+    echo -e "${RED}Error: Invalid arguments${NC}"
+    echo "Usage: $0 <dockerhub-username> <tag> [dockerfile]"
+    echo ""
+    echo "Examples:"
+    echo "  $0 zavodil latest                     # Build worker-compiler (default)"
+    echo "  $0 zavodil v1.0.0 worker-compiler     # Build worker-compiler explicitly"
+    echo "  $0 zavodil v1.0.0 worker              # Build execution-only worker"
     exit 1
 fi
 
 DOCKER_USERNAME=$1
-VERSION=$2
-IMAGE_NAME="$DOCKER_USERNAME/near-outlayer-worker"
-FULL_TAG="$IMAGE_NAME:$VERSION"
+TAG=$2
+DOCKERFILE_TYPE="${3:-worker-compiler}"  # Default to worker-compiler
+
+# Determine Docker file and image name
+case "$DOCKERFILE_TYPE" in
+    "worker-compiler")
+        DOCKERFILE="docker/Dockerfile.worker-compiler-phala"
+        IMAGE_NAME="$DOCKER_USERNAME/near-outlayer-worker-compiler"
+        ;;
+    "worker")
+        DOCKERFILE="docker/Dockerfile.worker-phala"
+        IMAGE_NAME="$DOCKER_USERNAME/near-outlayer-worker"
+        ;;
+    *)
+        echo -e "${RED}Error: Invalid dockerfile type: $DOCKERFILE_TYPE${NC}"
+        echo "Valid types: worker-compiler, worker"
+        exit 1
+        ;;
+esac
+
+FULL_TAG="$IMAGE_NAME:$TAG"
 LATEST_TAG="$IMAGE_NAME:latest"
 
 echo -e "${GREEN}Building NEAR OutLayer Worker for Phala Cloud${NC}"
@@ -37,10 +61,15 @@ echo ""
 cd "$(dirname "$0")/.."
 
 # Check if Dockerfile exists
-if [ ! -f "docker/Dockerfile.worker-phala" ]; then
-    echo -e "${RED}Error: docker/Dockerfile.worker-phala not found${NC}"
+if [ ! -f "$DOCKERFILE" ]; then
+    echo -e "${RED}Error: $DOCKERFILE not found${NC}"
     exit 1
 fi
+
+echo -e "${GREEN}Building: $DOCKERFILE_TYPE${NC}"
+echo "Dockerfile: $DOCKERFILE"
+echo "Image: $FULL_TAG"
+echo ""
 
 # Check if worker source exists
 if [ ! -d "worker/src" ]; then
@@ -56,7 +85,7 @@ export DOCKER_BUILDKIT=1
 
 docker buildx build \
     --platform linux/amd64 \
-    -f docker/Dockerfile.worker-phala \
+    -f "$DOCKERFILE" \
     -t "$FULL_TAG" \
     -t "$LATEST_TAG" \
     --load \

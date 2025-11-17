@@ -1,0 +1,141 @@
+# Dockerfile for NEAR OutLayer Worker with Native WASI Compilation
+# Phala Cloud Deployment - Intel TDX TEE with built-in Rust compiler
+#
+# This image includes:
+# - Worker binary for execution + compilation
+# - Full Rust toolchain (rustc, cargo, wasm32-wasip1/wasip2 targets)
+# - WASI SDK for C dependencies (ring, openssl-sys, etc.)
+# - Environment isolation (env -i) + resource limits (ulimit)
+#
+# Size: ~700-800MB (vs ~50MB execution-only worker)
+# Use Case: TEE environments (Phala, Intel TDX) where Docker-in-Docker doesn't work
+
+# ==============================================================================
+# Stage 1: Build Worker Binary
+# ==============================================================================
+FROM rust:1.90-slim AS worker-builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build/worker
+
+# Copy Cargo files for dependency caching
+COPY worker/Cargo.toml worker/Cargo.lock ./
+
+# Create dummy src to build dependencies
+RUN mkdir src && \
+    echo "fn main() {}" > src/main.rs && \
+    echo "// dummy lib" > src/lib.rs && \
+    cargo build --release --locked && \
+    rm -rf src target/release/deps/offchainvm_worker*
+
+# Copy actual source code
+COPY worker/src ./src
+
+# Build actual worker binary
+RUN cargo build --release --locked --bin offchainvm-worker
+
+# ==============================================================================
+# Stage 2: Runtime Image with Rust Toolchain + WASI SDK
+# ==============================================================================
+FROM rust:1.90-slim
+
+LABEL maintainer="NEAR OutLayer Team"
+LABEL description="Worker with native WASI compilation (env isolation)"
+LABEL version="1.0.0"
+
+# Install runtime dependencies + compilation tools
+RUN apt-get update && apt-get install -y \
+    # Runtime essentials
+    ca-certificates \
+    git \
+    curl \
+    wget \
+    bash \
+    # Build tools for WASI SDK
+    clang \
+    llvm \
+    binaryen \
+    # Cleanup
+    && rm -rf /var/lib/apt/lists/*
+
+# ==============================================================================
+# Install WASI SDK for C library compilation (ring, libsodium, etc.)
+# ==============================================================================
+ENV WASI_VERSION=25
+ENV WASI_VERSION_FULL=${WASI_VERSION}.0
+ENV WASI_SDK_PATH=/opt/wasi-sdk
+
+# Detect architecture and install WASI SDK
+RUN ARCH=$(uname -m) && \
+    if [ "$ARCH" = "x86_64" ]; then \
+        WASI_ARCH="x86_64"; \
+    elif [ "$ARCH" = "aarch64" ]; then \
+        WASI_ARCH="arm64"; \
+    else \
+        echo "Unsupported architecture: $ARCH" && exit 1; \
+    fi && \
+    wget -q https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_VERSION}/wasi-sdk-${WASI_VERSION_FULL}-${WASI_ARCH}-linux.tar.gz && \
+    tar xzf wasi-sdk-${WASI_VERSION_FULL}-${WASI_ARCH}-linux.tar.gz && \
+    mv wasi-sdk-${WASI_VERSION_FULL}-${WASI_ARCH}-linux ${WASI_SDK_PATH} && \
+    rm wasi-sdk-${WASI_VERSION_FULL}-${WASI_ARCH}-linux.tar.gz
+
+# Set environment variables for WASI compilation
+ENV CC_wasm32_wasip1=${WASI_SDK_PATH}/bin/clang
+ENV AR_wasm32_wasip1=${WASI_SDK_PATH}/bin/llvm-ar
+ENV CARGO_TARGET_WASM32_WASIP1_LINKER=${WASI_SDK_PATH}/bin/clang
+
+# ==============================================================================
+# Install WASM Targets
+# ==============================================================================
+RUN rustup target add wasm32-wasip1 wasm32-wasip2
+
+# Install wasm-tools for component optimization (WASI Preview 2)
+RUN cargo install wasm-tools --locked
+
+# ==============================================================================
+# Setup Worker
+# ==============================================================================
+WORKDIR /app
+
+# Copy worker binary from builder stage
+COPY --from=worker-builder /build/worker/target/release/offchainvm-worker /app/worker
+
+# Make binary executable
+RUN chmod +x /app/worker
+
+# Create temporary directory for compilations
+# Each compilation will create isolated subdirectory: /tmp/compile-{uuid}
+RUN mkdir -p /tmp/compile && chmod 1777 /tmp/compile
+
+# ==============================================================================
+# Security Notes
+# ==============================================================================
+# 1. Worker runs as root (required for Phala dstack.sock access)
+# 2. Compilations run with environment isolation (env -i)
+# 3. Each compilation uses:
+#    - Environment isolation (env -i clears all worker secrets)
+#    - Process isolation (Linux kernel prevents memory access)
+#    - Resource limits via ulimit (memory, CPU time, processes)
+#    - Intel TDX hardware isolation (TEE protects from host)
+#    - Build.rs validation (rejects projects with build scripts)
+# 4. Temporary directories cleaned after each compilation
+
+# ==============================================================================
+# Health Check
+# ==============================================================================
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD ps aux | grep -v grep | grep worker || exit 1
+
+# ==============================================================================
+# Runtime
+# ==============================================================================
+# No ports exposed (worker connects outbound to coordinator)
+# Expects /var/run/dstack.sock volume mount from Phala
+
+CMD ["/app/worker"]

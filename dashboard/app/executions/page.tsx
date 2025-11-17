@@ -444,7 +444,7 @@ export default function JobsPage() {
                             : 'N/A'}
                         </td>
                         <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-900">
-                          {formatInstructions(job.instructions_used)}
+                          {job.job_type === 'compile' ? '-' : formatInstructions(job.instructions_used)}
                         </td>
                         <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-900">
                           {formatYoctoNEAR(getDisplayPayment(job))}
@@ -737,14 +737,16 @@ export default function JobsPage() {
                   </div>
 
                   <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-1">Output Hash</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-1">
+                      {attestationModal.attestation.task_type === 'Compile' ? 'Compiled WASM Hash (Output)' : 'Output Hash'}
+                    </label>
                     <div className="bg-gray-50 p-2 rounded border font-mono text-xs break-all">
                       {attestationModal.attestation.output_hash}
                     </div>
                   </div>
 
-                  {/* Verify Input/Output Hashes Section */}
-                  {attestationModal.attestation.transaction_hash && (
+                  {/* Verify Input/Output Hashes Section - Only for Execute tasks */}
+                  {attestationModal.attestation.transaction_hash && attestationModal.attestation.task_type === 'Execute' && (
                     <div className="border-2 border-blue-200 rounded-lg p-4 bg-blue-50">
                       <div className="flex justify-between items-center mb-3">
                         <h3 className="text-lg font-semibold text-blue-900">Input/Output Verification</h3>

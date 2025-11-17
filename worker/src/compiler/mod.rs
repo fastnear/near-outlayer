@@ -39,6 +39,7 @@ use crate::api_client::{ApiClient, CodeSource};
 use crate::config::Config;
 
 mod docker;
+mod native; // Native compilation with bubblewrap (for TEE/Phala)
 mod wasm32_wasip1;
 mod wasm32_wasip2;
 
@@ -52,14 +53,19 @@ const COMPILATION_LOCK_TTL_SECONDS: u64 = 300;
 pub struct Compiler {
     api_client: ApiClient,
     config: Config,
-    docker: Docker,
+    docker: Option<Docker>,
 }
 
 impl Compiler {
     /// Create a new compiler instance
     pub fn new(api_client: ApiClient, config: Config) -> Result<Self> {
-        let docker = Docker::connect_with_socket_defaults()
-            .context("Failed to connect to Docker")?;
+        // Only connect to Docker if using docker compilation mode
+        let docker = if config.compilation_mode == "docker" {
+            Some(Docker::connect_with_socket_defaults()
+                .context("Failed to connect to Docker")?)
+        } else {
+            None
+        };
 
         Ok(Self {
             api_client,
@@ -180,7 +186,11 @@ impl Compiler {
         Ok(checksum)
     }
 
-    /// Compile WASM from GitHub repository using Docker
+    /// Compile WASM from GitHub repository
+    ///
+    /// Compilation method depends on config.compilation_mode:
+    /// - "docker": Use Docker containers (requires Docker socket)
+    /// - "native": Use native Rust toolchain with bubblewrap (for TEE/Phala)
     async fn compile_from_github(&self, repo: &str, commit: &str, build_target: &str) -> Result<Vec<u8>> {
         info!("Compiling {} @ {} for target {}", repo, commit, build_target);
 
@@ -188,29 +198,63 @@ impl Compiler {
         let normalized_target = self.validate_build_target(build_target)?;
 
         info!("Using build target: {}", normalized_target);
+        info!("Compilation mode: {}", self.config.compilation_mode);
+
+        // Select compilation method based on config
+        match self.config.compilation_mode.as_str() {
+            "native" => {
+                // Native compilation with bubblewrap (for TEE/Phala)
+                info!("🔒 Using native compilation with bubblewrap sandboxing");
+                native::compile(
+                    self.docker.as_ref(),
+                    repo,
+                    commit,
+                    &normalized_target,
+                    Some(self.config.compile_timeout_seconds),
+                ).await
+            }
+            "docker" => {
+                // Docker-based compilation (traditional method)
+                info!("🐳 Using Docker-based compilation");
+                self.compile_from_github_docker(repo, commit, &normalized_target).await
+            }
+            _ => {
+                anyhow::bail!(
+                    "Invalid compilation mode: '{}'. Must be 'docker' or 'native'",
+                    self.config.compilation_mode
+                )
+            }
+        }
+    }
+
+    /// Compile WASM from GitHub repository using Docker (traditional method)
+    async fn compile_from_github_docker(&self, repo: &str, commit: &str, build_target: &str) -> Result<Vec<u8>> {
+        // Get Docker client (guaranteed to exist in docker mode)
+        let docker = self.docker.as_ref()
+            .context("Docker client not initialized. Set COMPILATION_MODE=docker")?;
 
         // Create unique container name
         let container_name = format!("offchainvm-compile-{}", uuid::Uuid::new_v4());
 
         // Ensure Docker image is available
-        docker::ensure_image(&self.docker, &self.config.docker_image).await?;
+        docker::ensure_image(docker, &self.config.docker_image).await?;
 
         // Create container
         let container_id = docker::create_container(
-            &self.docker,
+            docker,
             &container_name,
             &self.config,
             repo,
             commit,
-            &normalized_target,
+            build_target,
         )
         .await?;
 
         // Execute compilation using target-specific compiler
-        let result = self.compile_in_container(&container_id, &normalized_target).await;
+        let result = self.compile_in_container(&container_id, build_target).await;
 
         // Always cleanup container
-        if let Err(e) = docker::cleanup_container(&self.docker, &container_id).await {
+        if let Err(e) = docker::cleanup_container(docker, &container_id).await {
             warn!("Failed to cleanup container {}: {}", container_id, e);
         }
 
@@ -222,13 +266,17 @@ impl Compiler {
     async fn compile_in_container(&self, container_id: &str, build_target: &str) -> Result<Vec<u8>> {
         info!("Executing compilation in container {} for target {}", container_id, build_target);
 
+        // Get Docker client (guaranteed to exist in docker mode)
+        let docker = self.docker.as_ref()
+            .context("Docker client not initialized")?;
+
         // Select compiler based on build target
         match build_target {
             "wasm32-wasip2" => {
-                wasm32_wasip2::compile(&self.docker, container_id, build_target).await
+                wasm32_wasip2::compile(docker, container_id, build_target).await
             }
             "wasm32-wasip1" | "wasm32-wasi" => {
-                wasm32_wasip1::compile(&self.docker, container_id, build_target).await
+                wasm32_wasip1::compile(docker, container_id, build_target).await
             }
             _ => {
                 anyhow::bail!(
