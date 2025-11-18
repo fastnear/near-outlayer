@@ -358,6 +358,12 @@ pub struct JobInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wasm_checksum: Option<String>,
     pub allowed: bool,
+    /// Compilation cost from compile job (for execute jobs to include in total cost)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compile_cost_yocto: Option<String>,
+    /// Compilation error message (for execute jobs to report failure to contract)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compile_error: Option<String>,
 }
 
 /// Create task request (event monitor)
@@ -618,6 +624,7 @@ impl StoreAttestationRequest {
 // ============================================================================
 
 /// API key record from database
+#[allow(dead_code)]
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ApiKey {
     pub id: i64,
@@ -687,6 +694,7 @@ pub struct CreateApiKeyResponse {
 }
 
 /// Public API key info (without the actual key)
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize)]
 pub struct ApiKeyInfo {
     pub id: i64,
@@ -715,6 +723,7 @@ impl From<ApiKey> for ApiKeyInfo {
 }
 
 /// Request to generate API key from dashboard (with NEAR wallet signature)
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct GenerateApiKeyRequest {
     pub near_account_id: String,
@@ -727,6 +736,7 @@ pub struct GenerateApiKeyRequest {
 
 impl GenerateApiKeyRequest {
     /// Verify the signature matches the account
+    #[allow(dead_code)]
     pub fn verify(&self) -> Result<(), String> {
         // TODO: Implement NEAR signature verification
         // For now, just validate the account format

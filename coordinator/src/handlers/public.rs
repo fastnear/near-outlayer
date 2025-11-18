@@ -497,6 +497,7 @@ pub async fn get_popular_repos(
 
 /// Public endpoint: Create API key for authenticated user
 /// No authentication required - any user can generate their own API key
+#[allow(dead_code)]
 pub async fn create_api_key(
     State(state): State<AppState>,
     Json(req): Json<CreateApiKeyRequest>,

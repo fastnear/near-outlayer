@@ -146,13 +146,18 @@ async fn clone_repo(repo: &str, commit: &str, work_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Validate that project doesn't use build.rs (security requirement)
+/// Validate that project doesn't use build.rs or git dependencies (security requirement)
 ///
 /// Build scripts can execute arbitrary code during compilation, which is a security risk.
 /// We reject projects with build.rs to prevent:
 /// - Reading worker environment variables (secrets, keys)
 /// - Accessing dstack.sock or other sensitive files
 /// - Network exfiltration of data
+///
+/// Git dependencies are also rejected because:
+/// - They bypass crates.io verification
+/// - Can point to malicious or unreviewed code
+/// - Enable typosquatting attacks (git = "https://evil.com/fake-serde")
 fn validate_no_build_scripts(work_dir: &Path) -> Result<()> {
     let cargo_toml_path = work_dir.join("Cargo.toml");
 
@@ -163,11 +168,31 @@ fn validate_no_build_scripts(work_dir: &Path) -> Result<()> {
     let cargo_toml = std::fs::read_to_string(&cargo_toml_path)
         .context("Failed to read Cargo.toml")?;
 
-    // Check for build = "build.rs" or build = 'build.rs'
-    if cargo_toml.contains("build =") || cargo_toml.contains("build=") {
+    // Check for build = "build.rs" or build = 'build.rs' with flexible whitespace
+    // Matches: build = "...", build="...", build  =  "...", etc.
+    let build_patterns = [
+        "build\\s*=",  // build = or build=
+    ];
+
+    for pattern in &build_patterns {
+        let regex = regex::Regex::new(pattern).unwrap();
+        if regex.is_match(&cargo_toml) {
+            return Err(CompilationError {
+                user_message: "Security: build.rs scripts are not allowed. Please remove the build script from your Cargo.toml. Build scripts can execute arbitrary code during compilation and access sensitive data.".to_string(),
+                stderr: "Cargo.toml contains 'build =' directive".to_string(),
+                stdout: String::new(),
+                exit_code: None,
+            }.into());
+        }
+    }
+
+    // Check for git dependencies: git = "https://..." or git = 'https://...'
+    // Matches: git = "https://...", git="https://...", git = "http://...", etc.
+    let git_dep_regex = regex::Regex::new(r#"git\s*=\s*["']https?://"#).unwrap();
+    if git_dep_regex.is_match(&cargo_toml) {
         return Err(CompilationError {
-            user_message: "Security: build.rs scripts are not allowed. Please remove the build script from your Cargo.toml. Build scripts can access sensitive data during compilation.".to_string(),
-            stderr: "Cargo.toml contains 'build =' directive".to_string(),
+            user_message: "Security: Git dependencies are not allowed. Please use published crates from crates.io only. Git dependencies bypass crates.io verification and can point to malicious code. This protects against typosquatting attacks like git = 'https://evil.com/fake-serde'.".to_string(),
+            stderr: "Cargo.toml contains git dependency".to_string(),
             stdout: String::new(),
             exit_code: None,
         }.into());
@@ -189,7 +214,7 @@ fn validate_no_build_scripts(work_dir: &Path) -> Result<()> {
         }
     }
 
-    info!("✅ No build.rs detected");
+    info!("✅ Validation passed: no build.rs, no git dependencies");
     Ok(())
 }
 
@@ -383,7 +408,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_validate_no_build_scripts_rejects_build_rs() {
+    fn test_validate_rejects_build_rs() {
         let temp_dir = std::env::temp_dir().join("test-build-rs");
         std::fs::create_dir_all(&temp_dir).unwrap();
 
@@ -403,7 +428,49 @@ build = "build.rs"
     }
 
     #[test]
-    fn test_validate_no_build_scripts_accepts_clean_project() {
+    fn test_validate_rejects_build_rs_with_extra_spaces() {
+        let temp_dir = std::env::temp_dir().join("test-build-rs-spaces");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let cargo_toml = temp_dir.join("Cargo.toml");
+        std::fs::write(&cargo_toml, r#"
+[package]
+name = "test"
+version = "0.1.0"
+build  =  "build.rs"
+        "#).unwrap();
+
+        let result = validate_no_build_scripts(&temp_dir);
+        assert!(result.is_err(), "Should reject build.rs with extra spaces");
+        assert!(result.unwrap_err().to_string().contains("build.rs"));
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_validate_rejects_git_dependencies() {
+        let temp_dir = std::env::temp_dir().join("test-git-dep");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let cargo_toml = temp_dir.join("Cargo.toml");
+        std::fs::write(&cargo_toml, r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[dependencies]
+serde = { git = "https://evil.com/fake-serde" }
+        "#).unwrap();
+
+        let result = validate_no_build_scripts(&temp_dir);
+        assert!(result.is_err(), "Should reject git dependencies");
+        assert!(result.unwrap_err().to_string().contains("Git dependencies are not allowed"));
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_validate_accepts_clean_project() {
         let temp_dir = std::env::temp_dir().join("test-clean");
         std::fs::create_dir_all(&temp_dir).unwrap();
 
@@ -415,10 +482,11 @@ version = "0.1.0"
 
 [dependencies]
 serde = "1.0"
+serde_json = "1.0"
         "#).unwrap();
 
         let result = validate_no_build_scripts(&temp_dir);
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "Should accept clean project with crates.io deps");
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }

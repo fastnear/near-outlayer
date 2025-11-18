@@ -261,6 +261,7 @@ mod base64 {
         STANDARD.encode(input)
     }
 
+    #[allow(dead_code)]
     pub fn decode<T: AsRef<[u8]>>(input: T) -> Result<Vec<u8>, ::base64::DecodeError> {
         STANDARD.decode(input)
     }
