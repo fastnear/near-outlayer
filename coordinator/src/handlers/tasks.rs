@@ -172,14 +172,21 @@ pub async fn create_task(
     };
 
     // Determine which queue to use
-    let queue_name = if wasm_file_exists {
+    // force_rebuild forces compilation even if WASM exists
+    let needs_compilation = !wasm_file_exists || payload.force_rebuild;
+
+    let queue_name = if needs_compilation {
+        // Needs compilation - push to compile queue
+        if payload.force_rebuild && wasm_file_exists {
+            debug!("WASM {} found but force_rebuild=true, pushing to compile queue", wasm_checksum);
+        } else {
+            debug!("WASM {} not in cache, pushing to compile queue", wasm_checksum);
+        }
+        &state.config.redis_queue_compile
+    } else {
         // WASM exists - go directly to execute queue
         debug!("WASM {} found in cache, pushing to execute queue", wasm_checksum);
         &state.config.redis_queue_execute
-    } else {
-        // WASM not found - needs compilation first
-        debug!("WASM {} not in cache, pushing to compile queue", wasm_checksum);
-        &state.config.redis_queue_compile
     };
 
     // Create execution request and push to Redis queue
