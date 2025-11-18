@@ -11,9 +11,6 @@ use near_primitives::transaction::{Action, FunctionCallAction, Transaction, Tran
 use near_primitives::types::{AccountId, BlockReference, Finality};
 use tracing::{info, warn};
 
-/// FastFS receiver contract (hardcoded for now)
-const FASTFS_RECEIVER: &str = "fastfs.testnet";
-
 /// MIME type for WASM files
 const WASM_MIME_TYPE: &str = "application/wasm";
 
@@ -38,13 +35,18 @@ enum FastfsData {
 pub struct FastFsClient {
     client: JsonRpcClient,
     signer: InMemorySigner,
+    receiver: String,
 }
 
 impl FastFsClient {
     /// Create a new FastFS client
-    pub fn new(rpc_url: &str, signer: InMemorySigner) -> Self {
+    pub fn new(rpc_url: &str, signer: InMemorySigner, receiver: &str) -> Self {
         let client = JsonRpcClient::connect(rpc_url);
-        Self { client, signer }
+        Self {
+            client,
+            signer,
+            receiver: receiver.to_string(),
+        }
     }
 
     /// Upload WASM file to FastFS
@@ -113,7 +115,7 @@ impl FastFsClient {
         let block_hash = block.header.hash;
 
         // Parse receiver account ID
-        let receiver_id: AccountId = FASTFS_RECEIVER
+        let receiver_id: AccountId = self.receiver
             .parse()
             .context("Failed to parse FastFS receiver account ID")?;
 

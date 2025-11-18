@@ -106,6 +106,17 @@ impl Compiler {
         code_source: &CodeSource,
         timeout_seconds: Option<u64>,
     ) -> Result<(String, Vec<u8>, Option<String>)> {
+        // Default: check cache
+        self.compile_local_with_options(code_source, timeout_seconds, false).await
+    }
+
+    /// Compile with force_rebuild option
+    pub async fn compile_local_with_options(
+        &self,
+        code_source: &CodeSource,
+        timeout_seconds: Option<u64>,
+        force_rebuild: bool,
+    ) -> Result<(String, Vec<u8>, Option<String>)> {
         let (repo, commit, build_target) = match code_source {
             CodeSource::GitHub { repo, commit, build_target } => (repo, commit, build_target),
             CodeSource::WasmUrl { hash, .. } => {
@@ -116,13 +127,17 @@ impl Compiler {
         // Generate checksum for this specific compilation
         let checksum = self.compute_checksum(repo, commit, build_target);
 
-        // Check if WASM already exists
-        let (exists, created_at) = self.api_client.wasm_exists(&checksum).await?;
-        if exists {
-            info!("WASM already exists in cache: {} (created: {:?})", checksum, created_at);
-            // Download and return it
-            let wasm_bytes = self.api_client.download_wasm(&checksum).await?;
-            return Ok((checksum, wasm_bytes, created_at));
+        // Check if WASM already exists (skip if force_rebuild)
+        if !force_rebuild {
+            let (exists, created_at) = self.api_client.wasm_exists(&checksum).await?;
+            if exists {
+                info!("WASM already exists in cache: {} (created: {:?})", checksum, created_at);
+                // Download and return it
+                let wasm_bytes = self.api_client.download_wasm(&checksum).await?;
+                return Ok((checksum, wasm_bytes, created_at));
+            }
+        } else {
+            info!("🔄 force_rebuild=true, skipping cache check");
         }
 
         // Try to acquire distributed lock to prevent duplicate compilations

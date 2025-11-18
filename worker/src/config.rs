@@ -74,6 +74,9 @@ pub struct Config {
 
     // Worker capabilities (what this worker can do)
     pub capabilities: WorkerCapabilities,
+
+    // FastFS receiver contract (optional - for storing compiled WASM)
+    pub fastfs_receiver: Option<String>,
 }
 
 /// Worker capabilities - what jobs this worker can handle
@@ -316,6 +319,9 @@ impl Config {
             execution: execution_enabled,
         };
 
+        // FastFS receiver contract (optional)
+        let fastfs_receiver = env::var("FASTFS_RECEIVER").ok();
+
         // Worker registration configuration (optional)
         let register_contract_id = env::var("REGISTER_CONTRACT_ID")
             .ok()
@@ -376,6 +382,7 @@ impl Config {
             save_system_hidden_logs_to_debug,
             print_wasm_stderr,
             capabilities,
+            fastfs_receiver,
         })
     }
 
@@ -513,6 +520,7 @@ mod tests {
                 compilation: true,
                 execution: true,
             },
+            fastfs_receiver: None,
         }
     }
 }

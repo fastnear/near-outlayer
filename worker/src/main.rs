@@ -445,6 +445,7 @@ async fn worker_iteration(
                     request_id,
                     config,
                     store_on_fastfs,
+                    force_rebuild,
                 )
                 .await {
                     Ok((checksum, wasm_bytes, compile_time_ms, created_at)) => {
@@ -568,6 +569,7 @@ async fn handle_compile_job(
     request_id: u64,
     config: &Config,
     store_on_fastfs: bool,
+    force_rebuild: bool,
 ) -> Result<(String, Vec<u8>, u64, Option<String>)> {
     info!("🔨 Starting compilation job_id={} request_id={}", job.job_id, request_id);
 
@@ -705,7 +707,7 @@ async fn handle_compile_job(
     };
 
     // Compile the code with timeout (returns checksum and bytes, does NOT upload yet)
-    let compile_result = compiler.compile_local(code_source, timeout_seconds).await;
+    let compile_result = compiler.compile_local_with_options(code_source, timeout_seconds, force_rebuild).await;
     let compile_time_ms = start_time.elapsed().as_millis() as u64;
 
     match compile_result {
@@ -771,19 +773,24 @@ async fn handle_compile_job(
 
             // Upload to FastFS if requested
             if store_on_fastfs {
-                info!("📦 Uploading compiled WASM to FastFS...");
-                let fastfs_client = fastfs::FastFsClient::new(
-                    &config.near_rpc_url,
-                    config.get_operator_signer().clone(),
-                );
-                match fastfs_client.upload_wasm(&wasm_bytes, &checksum).await {
-                    Ok(url) => {
-                        info!("✅ FastFS upload successful: {}", url);
+                if let Some(ref fastfs_receiver) = config.fastfs_receiver {
+                    info!("📦 Uploading compiled WASM to FastFS...");
+                    let fastfs_client = fastfs::FastFsClient::new(
+                        &config.near_rpc_url,
+                        config.get_operator_signer().clone(),
+                        fastfs_receiver,
+                    );
+                    match fastfs_client.upload_wasm(&wasm_bytes, &checksum).await {
+                        Ok(url) => {
+                            info!("✅ FastFS upload successful: {}", url);
+                        }
+                        Err(e) => {
+                            warn!("⚠️ FastFS upload failed: {}", e);
+                            // Non-critical - continue anyway
+                        }
                     }
-                    Err(e) => {
-                        warn!("⚠️ FastFS upload failed: {}", e);
-                        // Non-critical - continue anyway
-                    }
+                } else {
+                    warn!("⚠️ store_on_fastfs=true but FASTFS_RECEIVER not configured, skipping upload");
                 }
             }
 
