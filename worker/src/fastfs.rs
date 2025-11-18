@@ -12,7 +12,7 @@ use near_primitives::types::{AccountId, BlockReference, Finality};
 use tracing::{info, warn};
 
 /// FastFS receiver contract (hardcoded for now)
-const FASTFS_RECEIVER: &str = "outlayer.testnet";
+const FASTFS_RECEIVER: &str = "fastfs.testnet";
 
 /// MIME type for WASM files
 const WASM_MIME_TYPE: &str = "application/wasm";
