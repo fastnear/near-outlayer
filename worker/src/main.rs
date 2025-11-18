@@ -445,31 +445,9 @@ async fn worker_iteration(
                         compiled_wasm = Some((checksum, wasm_bytes, compile_time_ms, created_at));
                     }
                     Err(e) => {
-                        // Compilation failed - notify contract
-                        error!("❌ Compilation failed, notifying contract: {}", e);
-
-                        // e.to_string() already includes "Compilation failed: " prefix from CompilationError::Display
-                        let error_message = e.to_string();
-                        let execution_result = ExecutionResult {
-                            success: false,
-                            output: None,
-                            error: Some(error_message),
-                            execution_time_ms: 0,
-                            instructions: 0,
-                            compile_time_ms: None,
-                            compilation_note: None,
-                        };
-
-                        if let Err(submit_err) = near_client
-                            .submit_execution_result(request_id, &execution_result)
-                            .await
-                        {
-                            error!("❌ Failed to submit compilation error to contract: {}", submit_err);
-                        } else {
-                            info!("✅ Compilation error submitted to contract");
-                        }
-
-                        // Don't process execute job - compilation failed
+                        // Compilation failed - complete_job already called in handle_compile_job
+                        // Coordinator will create execute task with compile_error for executor to report
+                        error!("❌ Compilation failed: {}", e);
                         return Err(e);
                     }
                 }

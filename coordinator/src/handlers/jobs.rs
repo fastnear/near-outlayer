@@ -147,8 +147,38 @@ pub async fn claim_job(
                 return Err(StatusCode::INTERNAL_SERVER_ERROR);
             }
         }
-    } else if wasm_file_exists && can_execute {
-        // WASM exists - create execute job
+    } else if can_execute {
+        // Executor claiming job - either WASM exists or compilation failed
+
+        // Check if compile job failed (executor needs to report error to contract)
+        let compile_job = sqlx::query!(
+            "SELECT compile_cost_yocto, compile_error, status FROM jobs WHERE request_id = $1 AND data_id = $2 AND job_type = 'compile'",
+            payload.request_id as i64,
+            payload.data_id
+        )
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| {
+            error!("Failed to fetch compile job: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+        let (compile_cost_yocto, compile_error) = compile_job
+            .as_ref()
+            .map(|j| (j.compile_cost_yocto.clone(), j.compile_error.clone()))
+            .unwrap_or((None, None));
+
+        // If WASM doesn't exist and no compile error, executor can't do anything
+        if !wasm_file_exists && compile_error.is_none() {
+            debug!(
+                "❌ WASM not available and no compile error for request_id={}, executor cannot proceed",
+                payload.request_id
+            );
+            let pricing = state.pricing.read().await.clone();
+            return Ok(Json(ClaimJobResponse { jobs: vec![], pricing }));
+        }
+
+        // Check if execute job already exists
         let existing_execute = sqlx::query!(
             "SELECT job_id FROM jobs WHERE request_id = $1 AND data_id = $2 AND job_type = 'execute'",
             payload.request_id as i64,
@@ -167,27 +197,17 @@ pub async fn claim_job(
             return Ok(Json(ClaimJobResponse { jobs: vec![], pricing }));
         }
 
-        debug!(
-            "⚡ Creating execute job for request_id={} checksum={}",
-            payload.request_id, wasm_checksum
-        );
-
-        // Get compile cost from the compile job (if exists)
-        let compile_job = sqlx::query!(
-            "SELECT compile_cost_yocto, compile_error FROM jobs WHERE request_id = $1 AND data_id = $2 AND job_type = 'compile'",
-            payload.request_id as i64,
-            payload.data_id
-        )
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|e| {
-            error!("Failed to fetch compile job: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
-        let (compile_cost_yocto, compile_error) = compile_job
-            .map(|j| (j.compile_cost_yocto, j.compile_error))
-            .unwrap_or((None, None));
+        if compile_error.is_some() {
+            debug!(
+                "⚡ Creating execute job for request_id={} to report compile error",
+                payload.request_id
+            );
+        } else {
+            debug!(
+                "⚡ Creating execute job for request_id={} checksum={}",
+                payload.request_id, wasm_checksum
+            );
+        }
 
         let execute_job_result = sqlx::query!(
             r#"
