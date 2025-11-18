@@ -242,9 +242,10 @@ pub async fn create_task(
             secrets_profile, secrets_account_id, response_format,
             context_sender_id, context_block_height, context_block_timestamp,
             context_contract_id, context_transaction_hash, context_receipt_id,
-            context_predecessor_id, context_signer_public_key, context_gas_burnt
+            context_predecessor_id, context_signer_public_key, context_gas_burnt,
+            compile_only, force_rebuild, store_on_fastfs
         ) VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
         )
         ON CONFLICT (request_id) DO NOTHING
         "#,
@@ -265,7 +266,10 @@ pub async fn create_task(
         execution_request.context.receipt_id,
         execution_request.context.predecessor_id,
         execution_request.context.signer_public_key,
-        execution_request.context.gas_burnt.map(|g| g as i64)
+        execution_request.context.gas_burnt.map(|g| g as i64),
+        execution_request.compile_only,
+        execution_request.force_rebuild,
+        execution_request.store_on_fastfs
     )
     .execute(&state.db)
     .await

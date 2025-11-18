@@ -416,7 +416,8 @@ pub async fn complete_job(
                    secrets_profile, secrets_account_id, response_format,
                    context_sender_id, context_block_height, context_block_timestamp,
                    context_contract_id, context_transaction_hash, context_receipt_id,
-                   context_predecessor_id, context_signer_public_key, context_gas_burnt
+                   context_predecessor_id, context_signer_public_key, context_gas_burnt,
+                   compile_only, force_rebuild, store_on_fastfs
             FROM execution_requests
             WHERE request_id = $1
             "#,
@@ -427,6 +428,15 @@ pub async fn complete_job(
 
         let execution_request = match original_request {
             Ok(Some(req)) => {
+                // Check if this was compile-only request - don't create execute task
+                if req.compile_only {
+                    info!(
+                        "✅ Compile-only request completed for request_id={}, skipping execute task",
+                        job.request_id
+                    );
+                    return StatusCode::OK;
+                }
+
                 ExecutionRequest {
                     request_id: job.request_id as u64,
                     data_id: job.data_id.clone(),
@@ -461,9 +471,9 @@ pub async fn complete_job(
                     user_account_id: job.user_account_id.clone(),
                     near_payment_yocto: job.near_payment_yocto.clone(),
                     transaction_hash: job.transaction_hash.clone(),
-                    compile_only: false,
-                    force_rebuild: false,
-                    store_on_fastfs: false,
+                    compile_only: req.compile_only,
+                    force_rebuild: req.force_rebuild,
+                    store_on_fastfs: req.store_on_fastfs,
                 }
             }
             Ok(None) => {

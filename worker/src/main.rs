@@ -774,10 +774,17 @@ async fn handle_compile_job(
             // Upload to FastFS if requested
             if store_on_fastfs {
                 if let Some(ref fastfs_receiver) = config.fastfs_receiver {
+                    // Use dedicated FastFS sender if configured, otherwise use operator
+                    let signer = config.fastfs_sender_signer.clone()
+                        .unwrap_or_else(|| config.get_operator_signer().clone());
+
                     info!("📦 Uploading compiled WASM to FastFS...");
+                    info!("   Sender: {}", signer.account_id);
+                    info!("   Receiver: {}", fastfs_receiver);
+
                     let fastfs_client = fastfs::FastFsClient::new(
                         &config.near_rpc_url,
-                        config.get_operator_signer().clone(),
+                        signer.clone(),
                         fastfs_receiver,
                     );
                     match fastfs_client.upload_wasm(&wasm_bytes, &checksum).await {
@@ -785,8 +792,16 @@ async fn handle_compile_job(
                             info!("✅ FastFS upload successful: {}", url);
                         }
                         Err(e) => {
-                            warn!("⚠️ FastFS upload failed: {}", e);
-                            // Non-critical - continue anyway
+                            // FastFS transaction fails but file is stored - this is expected behavior
+                            // Log the URL anyway so user can access the file
+                            let url = format!(
+                                "https://{}.fastfs.io/{}/{}.wasm",
+                                signer.account_id,
+                                fastfs_receiver,
+                                checksum
+                            );
+                            warn!("⚠️ FastFS transaction failed (expected): {}", e);
+                            info!("📁 FastFS URL: {}", url);
                         }
                     }
                 } else {

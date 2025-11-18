@@ -119,15 +119,7 @@ impl FastFsClient {
             .parse()
             .context("Failed to parse FastFS receiver account ID")?;
 
-        // Create transaction
-        // Calculate deposit: data + storage overhead
-        // FastFS charges ~0.00001 NEAR per byte stored
-        let deposit = (wasm_bytes.len() as u128 + 1000) * 100_000_000_000_000_000_000 / 100_000;
-
-        info!("   Deposit: {} yoctoNEAR ({:.6} NEAR)",
-            deposit,
-            deposit as f64 / 1e24
-        );
+        // Create transaction (no deposit needed for FastFS)
 
         let transaction_v0 = TransactionV0 {
             signer_id: self.signer.account_id.clone(),
@@ -139,7 +131,7 @@ impl FastFsClient {
                 method_name: FASTFS_METHOD.to_string(),
                 args,
                 gas: 300_000_000_000_000, // 300 TGas
-                deposit,
+                deposit: 0,
             }))],
         };
 

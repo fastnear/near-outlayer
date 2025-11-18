@@ -77,6 +77,9 @@ pub struct Config {
 
     // FastFS receiver contract (optional - for storing compiled WASM)
     pub fastfs_receiver: Option<String>,
+
+    // FastFS sender account (optional - separate account for paying FastFS storage)
+    pub fastfs_sender_signer: Option<InMemorySigner>,
 }
 
 /// Worker capabilities - what jobs this worker can handle
@@ -322,6 +325,23 @@ impl Config {
         // FastFS receiver contract (optional)
         let fastfs_receiver = env::var("FASTFS_RECEIVER").ok();
 
+        // FastFS sender account (optional - separate account for paying storage)
+        let fastfs_sender_signer = if let Ok(sender_account_id) = env::var("FASTFS_SENDER_ACCOUNT_ID") {
+            let sender_private_key = env::var("FASTFS_SENDER_PRIVATE_KEY")
+                .context("FASTFS_SENDER_PRIVATE_KEY is required when FASTFS_SENDER_ACCOUNT_ID is set")?;
+
+            let sender_account = AccountId::from_str(&sender_account_id)
+                .context("Invalid FASTFS_SENDER_ACCOUNT_ID format")?;
+
+            let secret_key: SecretKey = sender_private_key
+                .parse()
+                .context("Invalid FASTFS_SENDER_PRIVATE_KEY format (expected ed25519:...)")?;
+
+            Some(InMemorySigner::from_secret_key(sender_account, secret_key))
+        } else {
+            None
+        };
+
         // Worker registration configuration (optional)
         let register_contract_id = env::var("REGISTER_CONTRACT_ID")
             .ok()
@@ -383,6 +403,7 @@ impl Config {
             print_wasm_stderr,
             capabilities,
             fastfs_receiver,
+            fastfs_sender_signer,
         })
     }
 
@@ -521,6 +542,7 @@ mod tests {
                 execution: true,
             },
             fastfs_receiver: None,
+            fastfs_sender_signer: None,
         }
     }
 }
