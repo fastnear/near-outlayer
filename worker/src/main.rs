@@ -500,15 +500,8 @@ async fn worker_iteration(
         }
     }
 
-    // Upload WASM to coordinator after all work is done (non-critical)
-    if let Some((checksum, wasm_bytes, _compile_time_ms, _created_at)) = compiled_wasm {
-        info!("📤 Uploading compiled WASM to coordinator (background)");
-        let build_target = code_source.build_target();
-        if let Err(e) = api_client.upload_wasm(checksum, code_source.repo().to_string(), code_source.commit().to_string(), build_target.to_string(), wasm_bytes).await {
-            warn!("⚠️ Failed to upload WASM to coordinator: {}", e);
-            // Not critical - execution already completed and submitted to NEAR
-        }
-    }
+    // Note: WASM upload now happens inside handle_compile_job BEFORE complete_job
+    // This ensures WASM exists on coordinator when execute task is created
 
     Ok(true)
 }
@@ -678,6 +671,25 @@ async fn handle_compile_job(
                 );
             }
 
+            // Upload WASM to coordinator BEFORE complete_job
+            // This ensures WASM exists when coordinator creates execute task
+            info!("📤 Uploading compiled WASM to coordinator...");
+            if let Err(e) = api_client
+                .upload_wasm(
+                    checksum.clone(),
+                    code_source.repo().to_string(),
+                    code_source.commit().to_string(),
+                    code_source.build_target().to_string(),
+                    wasm_bytes.clone(),
+                )
+                .await
+            {
+                warn!("⚠️ Failed to upload WASM to coordinator: {}", e);
+                // Continue anyway - complete_job will still work, but execute task may fail
+            } else {
+                info!("✅ WASM uploaded successfully");
+            }
+
             // Report completion to coordinator (non-critical)
             if let Err(e) = api_client
                 .complete_job(
@@ -816,6 +828,91 @@ async fn handle_execute_job(
     compiled_wasm: Option<(&String, &Vec<u8>, &u64, Option<&str>)>, // Local cache from compile job (checksum, bytes, compile_time_ms, created_at)
 ) -> Result<()> {
     info!("⚙️ Starting execution job_id={}", job.job_id);
+
+    // Check if compilation failed - if so, just report the error to contract
+    if let Some(compile_error) = &job.compile_error {
+        info!("❌ Compilation failed, reporting error to contract: {}", compile_error);
+
+        // Calculate compile cost (from job info)
+        let compile_cost: u128 = job.compile_cost_yocto
+            .as_ref()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
+        // Create execution result with compilation error
+        let error_result = api_client::ExecutionResult {
+            success: false,
+            output: None,
+            error: Some(compile_error.clone()),
+            execution_time_ms: 0,
+            instructions: 0,
+            compile_time_ms: None,
+            compilation_note: Some("Compilation failed".to_string()),
+        };
+
+        let near_result = near_client
+            .submit_execution_result(request_id, &error_result)
+            .await;
+
+        match near_result {
+            Ok((tx_hash, _outcome)) => {
+                info!("✅ Compilation error submitted to NEAR successfully: tx_hash={}", tx_hash);
+
+                // Report to coordinator
+                if let Err(e) = api_client
+                    .complete_job(
+                        job.job_id,
+                        false,
+                        None,
+                        Some(compile_error.clone()),
+                        0,
+                        0,
+                        None,
+                        Some(compile_cost.to_string()),
+                        None, // compile_cost already included in actual_cost
+                        Some(api_client::JobStatus::CompilationFailed),
+                    )
+                    .await
+                {
+                    warn!("⚠️ Failed to report job completion: {}", e);
+                }
+            }
+            Err(e) => {
+                error!("❌ Failed to submit compilation error to contract: {}", e);
+                // Report failure to coordinator
+                if let Err(report_err) = api_client
+                    .complete_job(
+                        job.job_id,
+                        false,
+                        None,
+                        Some(format!("Failed to submit to contract: {}", e)),
+                        0,
+                        0,
+                        None,
+                        None,
+                        None,
+                        Some(api_client::JobStatus::Failed),
+                    )
+                    .await
+                {
+                    warn!("⚠️ Failed to report job failure: {}", report_err);
+                }
+            }
+        }
+
+        return Ok(());
+    }
+
+    // Extract compile_cost from job (if compilation was done)
+    let compile_cost: u128 = job.compile_cost_yocto
+        .as_ref()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+
+    if compile_cost > 0 {
+        info!("💰 Compile cost from compiler: {} yoctoNEAR ({:.6} NEAR)",
+            compile_cost, compile_cost as f64 / 1e24);
+    }
 
     // Get WASM checksum from job
     let wasm_checksum = job.wasm_checksum.as_ref()
@@ -1056,7 +1153,7 @@ async fn handle_execute_job(
                             execution_result.instructions,
                             None,
                             if actual_cost > 0 { Some(actual_cost.to_string()) } else { None },
-                            None, // No compile_cost for execute jobs
+                            if compile_cost > 0 { Some(compile_cost.to_string()) } else { None },
                             None, // No error category for success
                         )
                         .await

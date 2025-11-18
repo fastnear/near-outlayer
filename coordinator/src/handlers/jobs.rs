@@ -131,6 +131,8 @@ pub async fn claim_job(
                     job_type: JobType::Compile,
                     wasm_checksum: Some(wasm_checksum.clone()),
                     allowed: true,
+                    compile_cost_yocto: None, // Not applicable for compile jobs
+                    compile_error: None,
                 });
             }
             Err(e) => {
@@ -170,6 +172,23 @@ pub async fn claim_job(
             payload.request_id, wasm_checksum
         );
 
+        // Get compile cost from the compile job (if exists)
+        let compile_job = sqlx::query!(
+            "SELECT compile_cost_yocto, compile_error FROM jobs WHERE request_id = $1 AND data_id = $2 AND job_type = 'compile'",
+            payload.request_id as i64,
+            payload.data_id
+        )
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| {
+            error!("Failed to fetch compile job: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+        let (compile_cost_yocto, compile_error) = compile_job
+            .map(|j| (j.compile_cost_yocto, j.compile_error))
+            .unwrap_or((None, None));
+
         let execute_job_result = sqlx::query!(
             r#"
             INSERT INTO jobs (request_id, data_id, job_type, worker_id, status, wasm_checksum, user_account_id, near_payment_yocto, github_repo, github_commit, transaction_hash, created_at, updated_at)
@@ -196,6 +215,8 @@ pub async fn claim_job(
                     job_type: JobType::Execute,
                     wasm_checksum: Some(wasm_checksum.clone()),
                     allowed: true,
+                    compile_cost_yocto,
+                    compile_error,
                 });
             }
             Err(e) => {
@@ -272,20 +293,26 @@ pub async fn complete_job(
         None
     };
 
-    // Update job status with error details
+    // Update job status with error details and compile cost
     let update_result = sqlx::query!(
         r#"
         UPDATE jobs
         SET status = $1,
             wasm_checksum = $2,
             error_details = $3,
+            compile_cost_yocto = $4,
+            compile_time_ms = $5,
+            compile_error = $6,
             completed_at = NOW(),
             updated_at = NOW()
-        WHERE job_id = $4
+        WHERE job_id = $7
         "#,
         status,
         payload.wasm_checksum,
         error_details,
+        payload.compile_cost_yocto,
+        if payload.success { Some(payload.time_ms as i64) } else { None },
+        if !payload.success { payload.error.as_deref() } else { None },
         payload.job_id
     )
     .execute(&state.db)
@@ -471,6 +498,69 @@ pub async fn complete_job(
 
         info!(
             "✅ Execute task created for request_id={} in queue '{}'",
+            job.request_id, state.config.redis_queue_execute
+        );
+    } else if job.job_type == "compile" && !payload.success {
+        // Compilation failed - still need to create execute task so executor can send error to contract
+        info!(
+            "❌ Compile job {} failed, creating execute task to report error for request_id={}",
+            payload.job_id, job.request_id
+        );
+
+        // Build minimal code source for the execute task
+        let code_source = if let (Some(repo), Some(commit)) = (&job.github_repo, &job.github_commit) {
+            CodeSource::GitHub {
+                repo: repo.clone(),
+                commit: commit.clone(),
+                build_target: "wasm32-wasip1".to_string(),
+            }
+        } else {
+            error!("Missing github_repo or github_commit for failed compile job {}", payload.job_id);
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        };
+
+        // Create minimal execution request - executor will see compile_error and just report it
+        let execution_request = ExecutionRequest {
+            request_id: job.request_id as u64,
+            data_id: job.data_id.clone(),
+            code_source,
+            resource_limits: ResourceLimits {
+                max_instructions: 0, // Not used
+                max_memory_mb: 0,
+                max_execution_seconds: 0,
+            },
+            input_data: String::new(),
+            secrets_ref: None,
+            response_format: ResponseFormat::Text,
+            context: ExecutionContext::default(),
+            user_account_id: job.user_account_id.clone(),
+            near_payment_yocto: job.near_payment_yocto.clone(),
+            transaction_hash: job.transaction_hash.clone(),
+        };
+
+        let request_json = match serde_json::to_string(&execution_request) {
+            Ok(json) => json,
+            Err(e) => {
+                error!("Failed to serialize execution request: {}", e);
+                return StatusCode::INTERNAL_SERVER_ERROR;
+            }
+        };
+
+        let mut conn = match state.redis.get_multiplexed_async_connection().await {
+            Ok(c) => c,
+            Err(e) => {
+                error!("Failed to get Redis connection: {}", e);
+                return StatusCode::INTERNAL_SERVER_ERROR;
+            }
+        };
+
+        if let Err(e) = conn.lpush::<_, _, ()>(&state.config.redis_queue_execute, request_json).await {
+            error!("Failed to push execute task to Redis: {}", e);
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
+
+        info!(
+            "✅ Execute task (with compile error) created for request_id={} in queue '{}'",
             job.request_id, state.config.redis_queue_execute
         );
     }

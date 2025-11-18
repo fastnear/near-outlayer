@@ -358,6 +358,12 @@ pub struct JobInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wasm_checksum: Option<String>,
     pub allowed: bool,
+    /// Compilation cost from compile job (for execute jobs to include in total cost)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compile_cost_yocto: Option<String>,
+    /// Compilation error message (for execute jobs to report failure to contract)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compile_error: Option<String>,
 }
 
 /// Create task request (event monitor)
