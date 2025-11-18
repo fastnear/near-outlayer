@@ -6,3 +6,4 @@ pub mod near_client;
 pub mod config;
 pub mod keystore_client;
 pub mod collateral_fetcher;
+pub mod fastfs;

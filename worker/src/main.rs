@@ -4,6 +4,7 @@ mod compiler;
 mod config;
 mod event_monitor;
 mod executor;
+mod fastfs;
 mod keystore_client;
 mod near_client;
 mod registration;
@@ -366,6 +367,7 @@ async fn worker_iteration(
     let user_account_id = execution_request.user_account_id.clone();
     let near_payment_yocto = execution_request.near_payment_yocto.clone();
     let transaction_hash = context.transaction_hash.clone();
+    let store_on_fastfs = execution_request.store_on_fastfs;
 
     // Claim jobs for this task with worker capabilities
     info!("🎯 Claiming jobs for request_id={} data_id={} with capabilities={:?}",
@@ -438,6 +440,7 @@ async fn worker_iteration(
                     near_payment_yocto.as_ref(),
                     request_id,
                     config,
+                    store_on_fastfs,
                 )
                 .await {
                     Ok((checksum, wasm_bytes, compile_time_ms, created_at)) => {
@@ -560,6 +563,7 @@ async fn handle_compile_job(
     user_payment: Option<&String>,
     request_id: u64,
     config: &Config,
+    store_on_fastfs: bool,
 ) -> Result<(String, Vec<u8>, u64, Option<String>)> {
     info!("🔨 Starting compilation job_id={} request_id={}", job.job_id, request_id);
 
@@ -759,6 +763,24 @@ async fn handle_compile_job(
             {
                 warn!("⚠️ Failed to report compile job completion: {}", e);
                 // Continue anyway - will upload later
+            }
+
+            // Upload to FastFS if requested
+            if store_on_fastfs {
+                info!("📦 Uploading compiled WASM to FastFS...");
+                let fastfs_client = fastfs::FastFsClient::new(
+                    &config.near_rpc_url,
+                    config.get_operator_signer().clone(),
+                );
+                match fastfs_client.upload_wasm(&wasm_bytes, &checksum).await {
+                    Ok(url) => {
+                        info!("✅ FastFS upload successful: {}", url);
+                    }
+                    Err(e) => {
+                        warn!("⚠️ FastFS upload failed: {}", e);
+                        // Non-critical - continue anyway
+                    }
+                }
             }
 
             // Generate and store TDX attestation

@@ -453,9 +453,11 @@ function PlaygroundContent() {
         // Prepare transaction arguments
         const transactionArgs = {
           code_source: {
-            repo,
-            commit,
-            build_target: buildTarget,
+            GitHub: {
+              repo,
+              commit,
+              build_target: buildTarget,
+            },
           },
           resource_limits: {
             max_instructions: 10000000000, // 10B instructions
