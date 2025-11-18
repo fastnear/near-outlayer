@@ -434,6 +434,7 @@ async fn worker_iteration(
                 match handle_compile_job(
                     api_client,
                     compiler_ref,
+                    near_client,
                     keystore_client,
                     tdx_client,
                     &job,
@@ -446,6 +447,7 @@ async fn worker_iteration(
                     config,
                     store_on_fastfs,
                     force_rebuild,
+                    compile_only,
                 )
                 .await {
                     Ok((checksum, wasm_bytes, compile_time_ms, created_at)) => {
@@ -558,6 +560,7 @@ fn merge_env_vars(
 async fn handle_compile_job(
     api_client: &ApiClient,
     compiler: &Compiler,
+    near_client: &NearClient,
     _keystore_client: Option<&KeystoreClient>,
     tdx_client: &tdx_attestation::TdxClient,
     job: &JobInfo,
@@ -570,6 +573,7 @@ async fn handle_compile_job(
     config: &Config,
     store_on_fastfs: bool,
     force_rebuild: bool,
+    compile_only: bool,
 ) -> Result<(String, Vec<u8>, u64, Option<String>)> {
     info!("🔨 Starting compilation job_id={} request_id={}", job.job_id, request_id);
 
@@ -787,21 +791,56 @@ async fn handle_compile_job(
                         signer.clone(),
                         fastfs_receiver,
                     );
+
+                    // Build the FastFS URL (same format regardless of transaction success)
+                    let fastfs_url = format!(
+                        "https://{}.fastfs.io/{}/{}.wasm",
+                        signer.account_id,
+                        fastfs_receiver,
+                        checksum
+                    );
+
                     match fastfs_client.upload_wasm(&wasm_bytes, &checksum).await {
                         Ok(url) => {
                             info!("✅ FastFS upload successful: {}", url);
                         }
                         Err(e) => {
                             // FastFS transaction fails but file is stored - this is expected behavior
-                            // Log the URL anyway so user can access the file
-                            let url = format!(
-                                "https://{}.fastfs.io/{}/{}.wasm",
-                                signer.account_id,
-                                fastfs_receiver,
-                                checksum
-                            );
                             warn!("⚠️ FastFS transaction failed (expected): {}", e);
-                            info!("📁 FastFS URL: {}", url);
+                            info!("📁 FastFS URL: {}", fastfs_url);
+                        }
+                    }
+
+                    // If compile_only=true, send the FastFS URL back to contract as result
+                    if compile_only {
+                        info!("📤 Sending FastFS URL to contract (compile_only + store_on_fastfs)...");
+
+                        let result = api_client::ExecutionResult {
+                            success: true,
+                            output: Some(api_client::ExecutionOutput::Text(fastfs_url.clone())),
+                            error: None,
+                            execution_time_ms: 0, // No execution
+                            instructions: 0, // No execution
+                            compile_time_ms: Some(compile_time_ms),
+                            compilation_note: Some(format!("Compiled and stored on FastFS: {}", fastfs_url)),
+                        };
+
+                        match near_client.submit_execution_result(request_id, &result).await {
+                            Ok((tx_hash, outcome)) => {
+                                info!("✅ FastFS URL submitted to NEAR successfully: tx_hash={}", tx_hash);
+
+                                // Extract actual cost from contract logs
+                                let actual_cost = NearClient::extract_payment_from_logs(&outcome);
+                                if actual_cost > 0 {
+                                    info!("💰 Extracted cost from contract: {} yoctoNEAR ({:.6} NEAR)",
+                                        actual_cost, actual_cost as f64 / 1e24);
+                                }
+                            }
+                            Err(e) => {
+                                error!("❌ Failed to submit FastFS URL to contract: {}", e);
+                                // Don't fail the compilation - the WASM is already on FastFS
+                                // User can still access it via the URL
+                            }
                         }
                     }
                 } else {

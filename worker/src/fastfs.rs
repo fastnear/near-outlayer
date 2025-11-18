@@ -17,12 +17,18 @@ const WASM_MIME_TYPE: &str = "application/wasm";
 /// Method name for FastFS upload
 const FASTFS_METHOD: &str = "__fastdata_fastfs";
 
+/// FastFS file content structure
+#[derive(BorshSerialize, BorshDeserialize)]
+struct FastfsFileContent {
+    mime_type: String,
+    content: Vec<u8>,
+}
+
 /// SimpleFastfs structure for Borsh serialization
 #[derive(BorshSerialize, BorshDeserialize)]
 struct SimpleFastfs {
     relative_path: String,
-    mime_type: String,
-    content: Vec<u8>,
+    content: Option<FastfsFileContent>,
 }
 
 /// FastfsData enum wrapper
@@ -69,8 +75,10 @@ impl FastFsClient {
         // Create FastFS data structure
         let fastfs_data = FastfsData::Simple(SimpleFastfs {
             relative_path: relative_path.clone(),
-            mime_type: WASM_MIME_TYPE.to_string(),
-            content: wasm_bytes.to_vec(),
+            content: Some(FastfsFileContent {
+                mime_type: WASM_MIME_TYPE.to_string(),
+                content: wasm_bytes.to_vec(),
+            }),
         });
 
         // Serialize with Borsh
@@ -191,8 +199,10 @@ mod tests {
     fn test_fastfs_data_serialization() {
         let data = FastfsData::Simple(SimpleFastfs {
             relative_path: "test.wasm".to_string(),
-            mime_type: "application/wasm".to_string(),
-            content: vec![0, 1, 2, 3],
+            content: Some(FastfsFileContent {
+                mime_type: "application/wasm".to_string(),
+                content: vec![0, 1, 2, 3],
+            }),
         });
 
         let serialized = borsh::to_vec(&data).unwrap();
