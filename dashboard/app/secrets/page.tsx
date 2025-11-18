@@ -6,7 +6,7 @@ import { actionCreators } from '@near-js/transactions';
 import WalletConnectionModal from '@/components/WalletConnectionModal';
 import { SecretsForm } from './components/SecretsForm';
 import { SecretsList } from './components/SecretsList';
-import { UserSecret, FormData, isRepoAccessor, isWasmHashAccessor } from './components/types';
+import { UserSecret, FormData, isRepoAccessor } from './components/types';
 import { getCoordinatorApiUrl } from '@/lib/api';
 
 export default function SecretsPage() {
@@ -78,26 +78,21 @@ export default function SecretsPage() {
       // Convert encrypted array to base64 for contract
       const encryptedBase64 = Buffer.from(encryptedArray).toString('base64');
 
-      let method: string;
-      let estimateMethod: string;
-      let transactionArgs: Record<string, unknown>;
-      let estimateArgs: Record<string, unknown>;
-
       // Build accessor based on source type
       const accessor = formData.sourceType === 'wasm_hash'
         ? { WasmHash: { hash: formData.wasmHash } }
         : { Repo: { repo: formData.repo, branch: formData.branch || null } };
 
       // Unified API - same method for both types
-      method = 'store_secrets';
-      estimateMethod = 'estimate_storage_cost';
-      transactionArgs = {
+      const method = 'store_secrets';
+      const estimateMethod = 'estimate_storage_cost';
+      const transactionArgs = {
         accessor,
         profile: formData.profile,
         encrypted_secrets_base64: encryptedBase64,
         access: formData.access,
       };
-      estimateArgs = {
+      const estimateArgs = {
         accessor,
         profile: formData.profile,
         owner: accountId,
