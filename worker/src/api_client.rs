@@ -162,6 +162,26 @@ pub struct ResourceLimits {
     pub max_execution_seconds: u64,
 }
 
+/// Parameters for creating a new task in coordinator
+#[derive(Debug, Clone)]
+pub struct CreateTaskParams {
+    pub request_id: u64,
+    pub data_id: String,
+    pub repo: String,
+    pub commit: String,
+    pub build_target: String,
+    pub resource_limits: ResourceLimits,
+    pub input_data: String,
+    pub secrets_ref: Option<SecretsReference>,
+    pub response_format: ResponseFormat,
+    pub context: ExecutionContext,
+    pub user_account_id: Option<String>,
+    pub near_payment_yocto: Option<String>,
+    pub compile_only: bool,
+    pub force_rebuild: bool,
+    pub store_on_fastfs: bool,
+}
+
 /// Execution output - can be bytes, text, or parsed JSON
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ExecutionOutput {
@@ -873,23 +893,7 @@ impl ApiClient {
     /// * `near_payment_yocto` - Payment amount in yoctoNEAR
     ///
     /// Returns `Ok(Some(request_id))` if request was created, `Ok(None)` if duplicate
-    pub async fn create_task(
-        &self,
-        request_id: u64,
-        data_id: String,
-        repo: String,
-        commit: String,
-        build_target: String,
-        max_instructions: u64,
-        max_memory_mb: u32,
-        max_execution_seconds: u64,
-        input_data: String,
-        secrets_ref: Option<SecretsReference>,
-        response_format: ResponseFormat,
-        context: ExecutionContext,
-        user_account_id: Option<String>,
-        near_payment_yocto: Option<String>,
-    ) -> Result<Option<u64>> {
+    pub async fn create_task(&self, params: CreateTaskParams) -> Result<Option<u64>> {
         let url = format!("{}/executions/create", self.base_url);
 
         #[derive(Serialize)]
@@ -907,6 +911,9 @@ impl ApiClient {
             user_account_id: Option<String>,
             #[serde(skip_serializing_if = "Option::is_none")]
             near_payment_yocto: Option<String>,
+            compile_only: bool,
+            force_rebuild: bool,
+            store_on_fastfs: bool,
         }
 
         #[derive(Deserialize)]
@@ -916,24 +923,23 @@ impl ApiClient {
         }
 
         let request = CreateRequest {
-            request_id,
-            data_id,
+            request_id: params.request_id,
+            data_id: params.data_id,
             code_source: CodeSource::GitHub {
-                repo,
-                commit,
-                build_target,
+                repo: params.repo,
+                commit: params.commit,
+                build_target: params.build_target,
             },
-            resource_limits: ResourceLimits {
-                max_instructions,
-                max_memory_mb,
-                max_execution_seconds,
-            },
-            input_data,
-            secrets_ref,
-            response_format,
-            context,
-            user_account_id,
-            near_payment_yocto,
+            resource_limits: params.resource_limits,
+            input_data: params.input_data,
+            secrets_ref: params.secrets_ref,
+            response_format: params.response_format,
+            context: params.context,
+            user_account_id: params.user_account_id,
+            near_payment_yocto: params.near_payment_yocto,
+            compile_only: params.compile_only,
+            force_rebuild: params.force_rebuild,
+            store_on_fastfs: params.store_on_fastfs,
         };
 
         let response = self

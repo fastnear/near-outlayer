@@ -7,7 +7,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{error, info, warn};
 
-use crate::api_client::ApiClient;
+use crate::api_client::{ApiClient, CreateTaskParams, ResourceLimits as ApiResourceLimits};
 
 /// ExecutionRequested event data from contract (matches contract's event structure)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -632,24 +632,29 @@ impl EventMonitor {
         };
 
         // Create task in coordinator API
-        match self.api_client
-            .create_task(
-                request_data.request_id,              // request_id from contract
-                data_id_hex.clone(),
-                repo.clone(),
-                commit.clone(),
-                build_target,
-                request_data.resource_limits.max_instructions,
-                request_data.resource_limits.max_memory_mb,
-                request_data.resource_limits.max_execution_seconds,
-                request_data.input_data.clone(),
-                request_data.secrets_ref.clone(),
-                request_data.response_format.clone(),
-                context,
-                Some(request_data.sender_id.clone()), // user_account_id
-                Some(request_data.payment.clone()),   // near_payment_yocto
-            )
-            .await
+        let params = CreateTaskParams {
+            request_id: request_data.request_id,
+            data_id: data_id_hex.clone(),
+            repo: repo.clone(),
+            commit: commit.clone(),
+            build_target,
+            resource_limits: ApiResourceLimits {
+                max_instructions: request_data.resource_limits.max_instructions,
+                max_memory_mb: request_data.resource_limits.max_memory_mb,
+                max_execution_seconds: request_data.resource_limits.max_execution_seconds,
+            },
+            input_data: request_data.input_data.clone(),
+            secrets_ref: request_data.secrets_ref.clone(),
+            response_format: request_data.response_format.clone(),
+            context,
+            user_account_id: Some(request_data.sender_id.clone()),
+            near_payment_yocto: Some(request_data.payment.clone()),
+            compile_only: request_data.compile_only,
+            force_rebuild: request_data.force_rebuild,
+            store_on_fastfs: request_data.store_on_fastfs,
+        };
+
+        match self.api_client.create_task(params).await
         {
             Ok(Some(request_id)) => {
                 info!("✅ Task created in coordinator: request_id={} data_id={}",
