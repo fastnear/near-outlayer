@@ -52,7 +52,7 @@ services:
       # === Compilation Mode (CRITICAL!) ===
       # "native" - use bubblewrap (recommended for TEE/Phala)
       # "docker" - use Docker-in-Docker (doesn't work in most TEE environments)
-      COMPILATION_MODE: native
+      COMPILATION_MODE: ${COMPILATION_MODE}
 
       # Compilation settings (for native mode)
       COMPILE_TIMEOUT_SECONDS: ${COMPILE_TIMEOUT_SECONDS:-300}

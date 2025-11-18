@@ -340,9 +340,10 @@ async fn worker_iteration(
     tdx_client: &tdx_attestation::TdxClient,
     config: &Config,
 ) -> Result<bool> {
-    // Poll for a task (with long-polling)
+    // Poll for a task (with long-polling) - specify capabilities to poll correct queue
+    let capabilities = config.capabilities.to_array();
     let task = api_client
-        .poll_task(config.poll_timeout_seconds)
+        .poll_task(config.poll_timeout_seconds, &capabilities)
         .await
         .context("Failed to poll for task")?;
 

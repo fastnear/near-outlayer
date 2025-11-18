@@ -12,7 +12,10 @@ pub struct Config {
 
     // Redis
     pub redis_url: String,
-    pub redis_task_queue: String,
+    /// Queue for compilation tasks
+    pub redis_queue_compile: String,
+    /// Queue for execution tasks
+    pub redis_queue_execute: String,
 
     // WASM cache
     pub wasm_cache_dir: PathBuf,
@@ -63,8 +66,10 @@ impl Config {
 
             redis_url: std::env::var("REDIS_URL")
                 .unwrap_or_else(|_| "redis://localhost:6379".to_string()),
-            redis_task_queue: std::env::var("REDIS_TASK_QUEUE")
-                .unwrap_or_else(|_| "offchainvm:tasks".to_string()),
+            redis_queue_compile: std::env::var("REDIS_QUEUE_COMPILE")
+                .unwrap_or_else(|_| "outlayer:compile".to_string()),
+            redis_queue_execute: std::env::var("REDIS_QUEUE_EXECUTE")
+                .unwrap_or_else(|_| "outlayer:execute".to_string()),
 
             wasm_cache_dir: PathBuf::from(
                 std::env::var("WASM_CACHE_DIR")

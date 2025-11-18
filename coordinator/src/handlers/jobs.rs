@@ -1,10 +1,16 @@
 use axum::{extract::State, http::StatusCode, Json};
+use redis::AsyncCommands;
 use tracing::{debug, error, info};
 
-use crate::models::{ClaimJobRequest, ClaimJobResponse, CompleteJobRequest, JobInfo, JobType, CodeSource};
+use crate::models::{ClaimJobRequest, ClaimJobResponse, CompleteJobRequest, ExecutionRequest, JobInfo, JobType, CodeSource, ResourceLimits, SecretsReference, ResponseFormat, ExecutionContext};
 use crate::AppState;
 
-/// Claim jobs for a task - coordinator decides what jobs are needed
+/// Claim jobs for a task - worker claims a single job from its queue
+///
+/// With separate queues:
+/// - Compile workers poll compile queue → claim compile job
+/// - Execute workers poll execute queue → claim execute job
+/// - Full workers poll compile queue first → claim compile OR execute job
 pub async fn claim_job(
     State(state): State<AppState>,
     Json(payload): Json<ClaimJobRequest>,
@@ -26,37 +32,6 @@ pub async fn claim_job(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    // Check if this task was already claimed/completed by another worker
-    // We need to check both compile and execute jobs to see if work is done or in progress
-    let existing = sqlx::query!(
-        r#"
-        SELECT
-            job_type,
-            status
-        FROM jobs
-        WHERE request_id = $1 AND data_id = $2
-        "#,
-        payload.request_id as i64,
-        payload.data_id
-    )
-    .fetch_all(&state.db)
-    .await
-    .map_err(|e| {
-        error!("Failed to check existing jobs: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    // If any jobs exist for this request_id+data_id, another worker already claimed it
-    // This prevents race conditions when multiple workers pull the same task from Redis
-    if !existing.is_empty() {
-        debug!(
-            "❌ Task already claimed by another worker: request_id={} data_id={} (found {} existing jobs)",
-            payload.request_id, payload.data_id, existing.len()
-        );
-        let pricing = state.pricing.read().await.clone();
-        return Ok(Json(ClaimJobResponse { jobs: vec![], pricing }));
-    }
-
     // Calculate WASM checksum from code_source
     let wasm_checksum = calculate_wasm_checksum(&payload.code_source);
 
@@ -65,7 +40,7 @@ pub async fn claim_job(
         CodeSource::GitHub { repo, commit, .. } => (Some(repo.clone()), Some(commit.clone())),
     };
 
-    // Check if WASM exists in cache (both DB record and physical file)
+    // Check if WASM exists in cache
     let wasm_exists = sqlx::query!(
         "SELECT checksum FROM wasm_cache WHERE checksum = $1",
         wasm_checksum
@@ -77,7 +52,6 @@ pub async fn claim_job(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    // Verify physical file exists if DB record exists
     let wasm_file_exists = if wasm_exists.is_some() {
         let wasm_path = state.config.wasm_cache_dir.join(&format!("{}.wasm", wasm_checksum));
         let file_exists = wasm_path.exists();
@@ -105,20 +79,29 @@ pub async fn claim_job(
 
     let mut jobs = Vec::new();
 
-    // Create compile job if WASM not in cache (or file missing)
-    // BUT only if worker has compilation capability
-    if !wasm_file_exists {
-        if !can_compile {
-            error!(
-                "❌ Worker {} cannot compile (WASM not in cache, but worker has no 'compilation' capability)",
-                payload.worker_id
-            );
+    // Determine job type based on WASM availability and worker capabilities
+    if !wasm_file_exists && can_compile {
+        // Need compilation - check if compile job already exists
+        let existing_compile = sqlx::query!(
+            "SELECT job_id FROM jobs WHERE request_id = $1 AND data_id = $2 AND job_type = 'compile'",
+            payload.request_id as i64,
+            payload.data_id
+        )
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| {
+            error!("Failed to check existing compile job: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+        if existing_compile.is_some() {
+            debug!("❌ Compile job already exists for request_id={}", payload.request_id);
             let pricing = state.pricing.read().await.clone();
             return Ok(Json(ClaimJobResponse { jobs: vec![], pricing }));
         }
 
         debug!(
-            "🔨 WASM not available, creating compile job for request_id={} checksum={}",
+            "🔨 Creating compile job for request_id={} checksum={}",
             payload.request_id, wasm_checksum
         );
 
@@ -146,97 +129,106 @@ pub async fn claim_job(
                 jobs.push(JobInfo {
                     job_id: compile_job.job_id,
                     job_type: JobType::Compile,
-                    wasm_checksum: None,
+                    wasm_checksum: Some(wasm_checksum.clone()),
                     allowed: true,
                 });
             }
             Err(e) => {
-                // Check if this is a duplicate key error (another worker already claimed it)
                 if let Some(db_err) = e.as_database_error() {
                     if db_err.is_unique_violation() {
                         info!("⚠️ Compile job already claimed by another worker for request_id={}", payload.request_id);
-                        // Return empty jobs array - another worker is already handling this
                         let pricing = state.pricing.read().await.clone();
                         return Ok(Json(ClaimJobResponse { jobs: vec![], pricing }));
                     }
                 }
-                // Other database errors are still internal errors
                 error!("Failed to create compile job: {}", e);
                 return Err(StatusCode::INTERNAL_SERVER_ERROR);
             }
         }
-    } else {
-        info!(
-            "✅ WASM found in cache, skipping compilation for request_id={} checksum={}",
+    } else if wasm_file_exists && can_execute {
+        // WASM exists - create execute job
+        let existing_execute = sqlx::query!(
+            "SELECT job_id FROM jobs WHERE request_id = $1 AND data_id = $2 AND job_type = 'execute'",
+            payload.request_id as i64,
+            payload.data_id
+        )
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| {
+            error!("Failed to check existing execute job: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+        if existing_execute.is_some() {
+            debug!("❌ Execute job already exists for request_id={}", payload.request_id);
+            let pricing = state.pricing.read().await.clone();
+            return Ok(Json(ClaimJobResponse { jobs: vec![], pricing }));
+        }
+
+        debug!(
+            "⚡ Creating execute job for request_id={} checksum={}",
             payload.request_id, wasm_checksum
         );
-    }
 
-    // Create execute job only if worker has execution capability
-    if !can_execute {
-        error!(
-            "❌ Worker {} cannot execute (has no 'execution' capability)",
-            payload.worker_id
+        let execute_job_result = sqlx::query!(
+            r#"
+            INSERT INTO jobs (request_id, data_id, job_type, worker_id, status, wasm_checksum, user_account_id, near_payment_yocto, github_repo, github_commit, transaction_hash, created_at, updated_at)
+            VALUES ($1, $2, 'execute', $3, 'in_progress', $4, $5, $6, $7, $8, $9, NOW(), NOW())
+            RETURNING job_id
+            "#,
+            payload.request_id as i64,
+            payload.data_id,
+            payload.worker_id,
+            wasm_checksum,
+            payload.user_account_id.as_deref(),
+            payload.near_payment_yocto.as_deref(),
+            github_repo.as_deref(),
+            github_commit.as_deref(),
+            payload.transaction_hash.as_deref()
+        )
+        .fetch_one(&state.db)
+        .await;
+
+        match execute_job_result {
+            Ok(execute_job) => {
+                jobs.push(JobInfo {
+                    job_id: execute_job.job_id,
+                    job_type: JobType::Execute,
+                    wasm_checksum: Some(wasm_checksum.clone()),
+                    allowed: true,
+                });
+            }
+            Err(e) => {
+                if let Some(db_err) = e.as_database_error() {
+                    if db_err.is_unique_violation() {
+                        info!("⚠️ Execute job already claimed by another worker for request_id={}", payload.request_id);
+                        let pricing = state.pricing.read().await.clone();
+                        return Ok(Json(ClaimJobResponse { jobs: vec![], pricing }));
+                    }
+                }
+                error!("Failed to create execute job: {}", e);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    } else {
+        // Worker cannot handle this task (wrong capabilities for current state)
+        debug!(
+            "❌ Worker {} cannot handle task: wasm_exists={} can_compile={} can_execute={}",
+            payload.worker_id, wasm_file_exists, can_compile, can_execute
         );
         let pricing = state.pricing.read().await.clone();
         return Ok(Json(ClaimJobResponse { jobs: vec![], pricing }));
     }
 
-    let execute_job_result = sqlx::query!(
-        r#"
-        INSERT INTO jobs (request_id, data_id, job_type, worker_id, status, wasm_checksum, user_account_id, near_payment_yocto, github_repo, github_commit, transaction_hash, created_at, updated_at)
-        VALUES ($1, $2, 'execute', $3, 'in_progress', $4, $5, $6, $7, $8, $9, NOW(), NOW())
-        RETURNING job_id
-        "#,
-        payload.request_id as i64,
-        payload.data_id,
-        payload.worker_id,
-        wasm_checksum,
-        payload.user_account_id.as_deref(),
-        payload.near_payment_yocto.as_deref(),
-        github_repo.as_deref(),
-        github_commit.as_deref(),
-        payload.transaction_hash.as_deref()
-    )
-    .fetch_one(&state.db)
-    .await;
-
-    match execute_job_result {
-        Ok(execute_job) => {
-            jobs.push(JobInfo {
-                job_id: execute_job.job_id,
-                job_type: JobType::Execute,
-                wasm_checksum: Some(wasm_checksum.clone()),  // Always provide checksum, even if WASM not yet compiled
-                allowed: true,
-            });
-        }
-        Err(e) => {
-            // Check if this is a duplicate key error (another worker already claimed it)
-            if let Some(db_err) = e.as_database_error() {
-                if db_err.is_unique_violation() {
-                    info!("⚠️ Execute job already claimed by another worker for request_id={}", payload.request_id);
-                    // Return empty jobs array - another worker is already handling this
-                    let pricing = state.pricing.read().await.clone();
-                    return Ok(Json(ClaimJobResponse { jobs: vec![], pricing }));
-                }
-            }
-            // Other database errors are still internal errors
-            error!("Failed to create execute job: {}", e);
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
-    }
-
     debug!(
-        "✅ Task claimed: request_id={} data_id={} worker={} jobs_count={}",
+        "✅ Task claimed: request_id={} data_id={} worker={} jobs={:?}",
         payload.request_id,
         payload.data_id,
         payload.worker_id,
-        jobs.len()
+        jobs.iter().map(|j| format!("{:?}", j.job_type)).collect::<Vec<_>>()
     );
 
-    // Get current pricing to send to worker
     let pricing = state.pricing.read().await.clone();
-
     Ok(Json(ClaimJobResponse { jobs, pricing }))
 }
 
@@ -304,10 +296,10 @@ pub async fn complete_job(
         return StatusCode::INTERNAL_SERVER_ERROR;
     }
 
-    // Get job details for history
+    // Get job details for history and to create execute task after compile
     let job = sqlx::query!(
         r#"
-        SELECT request_id, data_id, job_type, worker_id, user_account_id, near_payment_yocto, github_repo, github_commit, transaction_hash
+        SELECT request_id, data_id, job_type, worker_id, wasm_checksum, user_account_id, near_payment_yocto, github_repo, github_commit, transaction_hash
         FROM jobs
         WHERE job_id = $1
         "#,
@@ -327,6 +319,161 @@ pub async fn complete_job(
             return StatusCode::INTERNAL_SERVER_ERROR;
         }
     };
+
+    // If compile job completed successfully, create execute task in execute queue
+    if job.job_type == "compile" && payload.success {
+        info!(
+            "📦 Compile job {} completed, creating execute task for request_id={}",
+            payload.job_id, job.request_id
+        );
+
+        // Get full execution request data to create execute task
+        // We need to fetch the original request data (input_data, resource_limits, secrets_ref, etc.)
+        // For now, we'll create a minimal execute request - the worker will need to handle this
+
+        // Build code source from stored data
+        let code_source = if let (Some(repo), Some(commit)) = (&job.github_repo, &job.github_commit) {
+            CodeSource::GitHub {
+                repo: repo.clone(),
+                commit: commit.clone(),
+                build_target: "wasm32-wasip1".to_string(), // Default, could be stored in DB
+            }
+        } else {
+            error!("Missing github_repo or github_commit for compile job {}", payload.job_id);
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        };
+
+        // Create execution request for execute queue
+        // Note: We're missing some fields (input_data, resource_limits, secrets_ref, context)
+        // These should be stored when the original task is created
+        // For now, fetch from a pending execute task or store in a separate table
+
+        // Try to get the original execution request from pending execute jobs or a task table
+        let original_request = sqlx::query!(
+            r#"
+            SELECT input_data, max_instructions, max_memory_mb, max_execution_seconds,
+                   secrets_profile, secrets_account_id, response_format,
+                   context_sender_id, context_block_height, context_block_timestamp,
+                   context_contract_id, context_transaction_hash, context_receipt_id,
+                   context_predecessor_id, context_signer_public_key, context_gas_burnt
+            FROM execution_requests
+            WHERE request_id = $1
+            "#,
+            job.request_id
+        )
+        .fetch_optional(&state.db)
+        .await;
+
+        let execution_request = match original_request {
+            Ok(Some(req)) => {
+                ExecutionRequest {
+                    request_id: job.request_id as u64,
+                    data_id: job.data_id.clone(),
+                    code_source,
+                    resource_limits: ResourceLimits {
+                        max_instructions: req.max_instructions.unwrap_or(1_000_000_000) as u64,
+                        max_memory_mb: req.max_memory_mb.unwrap_or(128) as u32,
+                        max_execution_seconds: req.max_execution_seconds.unwrap_or(60) as u64,
+                    },
+                    input_data: req.input_data.unwrap_or_default(),
+                    secrets_ref: if let (Some(profile), Some(account_id)) = (req.secrets_profile, req.secrets_account_id) {
+                        Some(SecretsReference { profile, account_id })
+                    } else {
+                        None
+                    },
+                    response_format: match req.response_format.as_deref() {
+                        Some("bytes") => ResponseFormat::Bytes,
+                        Some("json") => ResponseFormat::Json,
+                        _ => ResponseFormat::Text,
+                    },
+                    context: ExecutionContext {
+                        sender_id: req.context_sender_id,
+                        block_height: req.context_block_height.map(|h| h as u64),
+                        block_timestamp: req.context_block_timestamp.map(|t| t as u64),
+                        contract_id: req.context_contract_id,
+                        transaction_hash: req.context_transaction_hash,
+                        receipt_id: req.context_receipt_id,
+                        predecessor_id: req.context_predecessor_id,
+                        signer_public_key: req.context_signer_public_key,
+                        gas_burnt: req.context_gas_burnt.map(|g| g as u64),
+                    },
+                    user_account_id: job.user_account_id.clone(),
+                    near_payment_yocto: job.near_payment_yocto.clone(),
+                    transaction_hash: job.transaction_hash.clone(),
+                }
+            }
+            Ok(None) => {
+                // Fallback: create minimal request with defaults
+                // This happens if execution_requests table doesn't have the data
+                info!("⚠️ No execution_requests record for request_id={}, using defaults", job.request_id);
+                ExecutionRequest {
+                    request_id: job.request_id as u64,
+                    data_id: job.data_id.clone(),
+                    code_source,
+                    resource_limits: ResourceLimits {
+                        max_instructions: 1_000_000_000,
+                        max_memory_mb: 128,
+                        max_execution_seconds: 60,
+                    },
+                    input_data: String::new(),
+                    secrets_ref: None,
+                    response_format: ResponseFormat::Text,
+                    context: ExecutionContext::default(),
+                    user_account_id: job.user_account_id.clone(),
+                    near_payment_yocto: job.near_payment_yocto.clone(),
+                    transaction_hash: job.transaction_hash.clone(),
+                }
+            }
+            Err(e) => {
+                error!("Failed to fetch original execution request: {}", e);
+                // Continue with defaults rather than failing
+                ExecutionRequest {
+                    request_id: job.request_id as u64,
+                    data_id: job.data_id.clone(),
+                    code_source,
+                    resource_limits: ResourceLimits {
+                        max_instructions: 1_000_000_000,
+                        max_memory_mb: 128,
+                        max_execution_seconds: 60,
+                    },
+                    input_data: String::new(),
+                    secrets_ref: None,
+                    response_format: ResponseFormat::Text,
+                    context: ExecutionContext::default(),
+                    user_account_id: job.user_account_id.clone(),
+                    near_payment_yocto: job.near_payment_yocto.clone(),
+                    transaction_hash: job.transaction_hash.clone(),
+                }
+            }
+        };
+
+        // Serialize and push to execute queue
+        let request_json = match serde_json::to_string(&execution_request) {
+            Ok(json) => json,
+            Err(e) => {
+                error!("Failed to serialize execution request: {}", e);
+                return StatusCode::INTERNAL_SERVER_ERROR;
+            }
+        };
+
+        let mut conn = match state.redis.get_multiplexed_async_connection().await {
+            Ok(c) => c,
+            Err(e) => {
+                error!("Failed to get Redis connection: {}", e);
+                return StatusCode::INTERNAL_SERVER_ERROR;
+            }
+        };
+
+        if let Err(e) = conn.lpush::<_, _, ()>(&state.config.redis_queue_execute, request_json).await {
+            error!("Failed to push execute task to Redis: {}", e);
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
+
+        info!(
+            "✅ Execute task created for request_id={} in queue '{}'",
+            job.request_id, state.config.redis_queue_execute
+        );
+    }
 
     // Save to execution history
     let history_result = sqlx::query!(

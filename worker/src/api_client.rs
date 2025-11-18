@@ -204,13 +204,19 @@ impl ApiClient {
     ///
     /// # Arguments
     /// * `timeout` - Timeout in seconds for long-polling (max 60)
+    /// * `capabilities` - Worker capabilities (e.g., ["compilation", "execution"])
     ///
     /// # Returns
     /// * `Ok(Some(request))` - New execution request received
     /// * `Ok(None)` - No request available (timeout reached)
     /// * `Err(_)` - Request failed
-    pub async fn poll_task(&self, timeout: u64) -> Result<Option<ExecutionRequest>> {
-        let url = format!("{}/executions/poll?timeout={}", self.base_url, timeout);
+    pub async fn poll_task(&self, timeout: u64, capabilities: &[String]) -> Result<Option<ExecutionRequest>> {
+        // Build URL with query parameters
+        let capabilities_param = capabilities.join(",");
+        let url = format!(
+            "{}/executions/poll?timeout={}&capabilities={}",
+            self.base_url, timeout, capabilities_param
+        );
 
         tracing::debug!("🔍 Polling for execution request: {}", url);
 

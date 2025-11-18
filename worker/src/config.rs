@@ -102,6 +102,7 @@ impl WorkerCapabilities {
     }
 
     /// Check if worker can handle execution
+    #[allow(dead_code)]
     pub fn can_execute(&self) -> bool {
         self.execution
     }
@@ -416,6 +417,36 @@ impl Config {
 
         if self.compile_cpu_limit <= 0.0 {
             anyhow::bail!("Compile CPU limit must be positive");
+        }
+
+        // Security check: native compilation mode must be isolated
+        // because malicious build scripts can steal secrets via environment variables
+        if self.compilation_mode == "native" {
+            // Native compilation requires strict isolation
+            if self.capabilities.execution {
+                anyhow::bail!(
+                    "Security error: Native compilation mode (COMPILATION_MODE=native) \
+                     must NOT have EXECUTION_ENABLED=true. \
+                     Malicious build scripts can steal secrets from environment variables. \
+                     Set EXECUTION_ENABLED=false for native compiler workers."
+                );
+            }
+            if self.init_account_signer.is_some() {
+                anyhow::bail!(
+                    "Security error: Native compilation mode (COMPILATION_MODE=native) \
+                     must NOT have INIT_ACCOUNT_PRIVATE_KEY set. \
+                     Malicious build scripts can steal secrets from environment variables. \
+                     Remove INIT_ACCOUNT_PRIVATE_KEY from .env for native compiler workers."
+                );
+            }
+            if self.operator_signer.is_some() {
+                anyhow::bail!(
+                    "Security error: Native compilation mode (COMPILATION_MODE=native) \
+                     must NOT have OPERATOR_PRIVATE_KEY set. \
+                     Malicious build scripts can steal secrets from environment variables. \
+                     Remove OPERATOR_PRIVATE_KEY from .env for native compiler workers."
+                );
+            }
         }
 
         Ok(())
