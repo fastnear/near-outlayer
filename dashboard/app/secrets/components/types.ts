@@ -13,9 +13,13 @@ export type AccessCondition =
   | { type: 'Logic'; operator: LogicOperator; conditions: AccessCondition[] }
   | { type: 'Not'; condition: AccessCondition };
 
+// Secret accessor - defines what code can access/decrypt the secret
+export type SecretAccessor =
+  | { Repo: { repo: string; branch: string | null } }
+  | { WasmHash: { hash: string } };
+
 export interface UserSecret {
-  repo: string;
-  branch: string | null;
+  accessor: SecretAccessor;
   profile: string;
   created_at: number;
   updated_at: number;
@@ -23,9 +27,37 @@ export interface UserSecret {
   access: unknown; // Contract format (PascalCase)
 }
 
+// Form data for creating secrets
+export type SecretSourceType = 'repo' | 'wasm_hash';
+
 export interface FormData {
+  sourceType: SecretSourceType;
+  // Repo-based fields
   repo: string;
   branch: string | null;
+  // WasmHash-based fields
+  wasmHash: string;
+  // Common fields
   profile: string;
   access: unknown; // Contract format
+}
+
+// Helper functions for SecretAccessor
+export function isRepoAccessor(accessor: SecretAccessor): accessor is { Repo: { repo: string; branch: string | null } } {
+  return 'Repo' in accessor;
+}
+
+export function isWasmHashAccessor(accessor: SecretAccessor): accessor is { WasmHash: { hash: string } } {
+  return 'WasmHash' in accessor;
+}
+
+export function getAccessorLabel(accessor: SecretAccessor): string {
+  if (isRepoAccessor(accessor)) {
+    const { repo, branch } = accessor.Repo;
+    return branch ? `${repo}@${branch}` : repo;
+  } else if (isWasmHashAccessor(accessor)) {
+    const hash = accessor.WasmHash.hash;
+    return `WASM: ${hash.substring(0, 8)}...${hash.substring(hash.length - 8)}`;
+  }
+  return 'Unknown';
 }

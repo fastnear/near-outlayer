@@ -195,6 +195,9 @@ pub async fn create_task(
         user_account_id: payload.user_account_id,
         near_payment_yocto: payload.near_payment_yocto,
         transaction_hash: payload.transaction_hash,
+        compile_only: payload.compile_only,
+        force_rebuild: payload.force_rebuild,
+        store_on_fastfs: payload.store_on_fastfs,
     };
 
     let request_json = serde_json::to_string(&execution_request).map_err(|e| {
@@ -279,6 +282,10 @@ fn calculate_wasm_checksum(code_source: &crate::models::CodeSource) -> String {
             let input = format!("{}:{}:{}", repo, commit, build_target);
             let hash = Sha256::digest(input.as_bytes());
             hex::encode(hash)
+        }
+        crate::models::CodeSource::WasmUrl { hash, .. } => {
+            // For WasmUrl, use the provided hash as checksum
+            hash.clone()
         }
     }
 }

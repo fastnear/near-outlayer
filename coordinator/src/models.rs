@@ -119,6 +119,15 @@ pub struct ExecutionRequest {
     pub near_payment_yocto: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transaction_hash: Option<String>,
+    /// If true, only compile the code without executing
+    #[serde(default)]
+    pub compile_only: bool,
+    /// Force recompilation even if WASM exists in cache
+    #[serde(default)]
+    pub force_rebuild: bool,
+    /// Store compiled WASM to FastFS after compilation
+    #[serde(default)]
+    pub store_on_fastfs: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,6 +136,14 @@ pub enum CodeSource {
     GitHub {
         repo: String,
         commit: String,
+        #[serde(default = "default_build_target")]
+        build_target: String,
+    },
+    /// Pre-compiled WASM file accessible via URL
+    /// Worker downloads from URL, verifies SHA256 hash, then executes without compilation
+    WasmUrl {
+        url: String,           // URL for downloading (https://, ipfs://, ar://)
+        hash: String,          // SHA256 hash for verification (hex encoded)
         #[serde(default = "default_build_target")]
         build_target: String,
     },
@@ -159,7 +176,24 @@ impl CodeSource {
 
                 self
             }
+            CodeSource::WasmUrl { .. } => {
+                // WasmUrl already has full URL, no normalization needed
+                self
+            }
         }
+    }
+
+    /// Get the hash for WasmUrl sources
+    pub fn hash(&self) -> Option<&str> {
+        match self {
+            CodeSource::GitHub { .. } => None,
+            CodeSource::WasmUrl { hash, .. } => Some(hash),
+        }
+    }
+
+    /// Check if this is a WasmUrl source (pre-compiled, no compilation needed)
+    pub fn is_wasm_url(&self) -> bool {
+        matches!(self, CodeSource::WasmUrl { .. })
     }
 }
 
@@ -179,8 +213,10 @@ mod tests {
             build_target: "wasm32-wasip1".to_string(),
         };
         let normalized = source.normalize();
-        let CodeSource::GitHub { repo, .. } = normalized;
-        assert_eq!(repo, "https://github.com/alice/project");
+        match normalized {
+            CodeSource::GitHub { repo, .. } => assert_eq!(repo, "https://github.com/alice/project"),
+            _ => panic!("Expected GitHub variant"),
+        }
     }
 
     #[test]
@@ -191,8 +227,10 @@ mod tests {
             build_target: "wasm32-wasip1".to_string(),
         };
         let normalized = source.normalize();
-        let CodeSource::GitHub { repo, .. } = normalized;
-        assert_eq!(repo, "http://github.com/alice/project");
+        match normalized {
+            CodeSource::GitHub { repo, .. } => assert_eq!(repo, "http://github.com/alice/project"),
+            _ => panic!("Expected GitHub variant"),
+        }
     }
 
     #[test]
@@ -203,8 +241,10 @@ mod tests {
             build_target: "wasm32-wasip1".to_string(),
         };
         let normalized = source.normalize();
-        let CodeSource::GitHub { repo, .. } = normalized;
-        assert_eq!(repo, "https://github.com/alice/project");
+        match normalized {
+            CodeSource::GitHub { repo, .. } => assert_eq!(repo, "https://github.com/alice/project"),
+            _ => panic!("Expected GitHub variant"),
+        }
     }
 
     #[test]
@@ -215,8 +255,10 @@ mod tests {
             build_target: "wasm32-wasip1".to_string(),
         };
         let normalized = source.normalize();
-        let CodeSource::GitHub { repo, .. } = normalized;
-        assert_eq!(repo, "https://github.com/alice/project");
+        match normalized {
+            CodeSource::GitHub { repo, .. } => assert_eq!(repo, "https://github.com/alice/project"),
+            _ => panic!("Expected GitHub variant"),
+        }
     }
 
     #[test]
@@ -227,9 +269,28 @@ mod tests {
             build_target: "wasm32-wasip1".to_string(),
         };
         let normalized = source.normalize();
-        let CodeSource::GitHub { repo, .. } = normalized;
-        // Invalid format should remain unchanged
-        assert_eq!(repo, "invalid");
+        match normalized {
+            // Invalid format should remain unchanged
+            CodeSource::GitHub { repo, .. } => assert_eq!(repo, "invalid"),
+            _ => panic!("Expected GitHub variant"),
+        }
+    }
+
+    #[test]
+    fn test_normalize_wasm_url_source() {
+        let source = CodeSource::WasmUrl {
+            url: "https://example.com/my.wasm".to_string(),
+            hash: "abc123def456".to_string(),
+            build_target: "wasm32-wasip1".to_string(),
+        };
+        let normalized = source.normalize();
+        match normalized {
+            CodeSource::WasmUrl { url, hash, .. } => {
+                assert_eq!(url, "https://example.com/my.wasm");
+                assert_eq!(hash, "abc123def456");
+            }
+            _ => panic!("Expected WasmUrl variant"),
+        }
     }
 }
 
@@ -386,6 +447,15 @@ pub struct CreateTaskRequest {
     pub near_payment_yocto: Option<String>,
     #[serde(default)]
     pub transaction_hash: Option<String>,
+    /// If true, only compile the code without executing
+    #[serde(default)]
+    pub compile_only: bool,
+    /// Force recompilation even if WASM exists in cache
+    #[serde(default)]
+    pub force_rebuild: bool,
+    /// Store compiled WASM to FastFS after compilation
+    #[serde(default)]
+    pub store_on_fastfs: bool,
 }
 
 #[derive(Debug, Serialize)]

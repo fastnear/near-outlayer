@@ -38,6 +38,12 @@ use tracing::{info, warn};
 use crate::api_client::{ApiClient, CodeSource};
 use crate::config::Config;
 
+/// Maximum WASM file size for URL downloads (10 MB)
+const MAX_WASM_SIZE_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Timeout for WASM file downloads (30 seconds)
+const DOWNLOAD_TIMEOUT_SECONDS: u64 = 30;
+
 mod docker;
 mod native; // Native compilation with bubblewrap (for TEE/Phala)
 mod wasm32_wasip1;
@@ -100,11 +106,12 @@ impl Compiler {
         code_source: &CodeSource,
         timeout_seconds: Option<u64>,
     ) -> Result<(String, Vec<u8>, Option<String>)> {
-        let CodeSource::GitHub {
-            repo,
-            commit,
-            build_target,
-        } = code_source;
+        let (repo, commit, build_target) = match code_source {
+            CodeSource::GitHub { repo, commit, build_target } => (repo, commit, build_target),
+            CodeSource::WasmUrl { hash, .. } => {
+                anyhow::bail!("Cannot compile a WasmUrl source (hash: {}). WasmUrl provides pre-compiled WASM.", hash);
+            }
+        };
 
         // Generate checksum for this specific compilation
         let checksum = self.compute_checksum(repo, commit, build_target);
@@ -177,9 +184,14 @@ impl Compiler {
 
         // Upload to coordinator
         info!("Uploading compiled WASM to coordinator");
-        let build_target = code_source.build_target();
+        let (repo, commit, build_target) = match code_source {
+            CodeSource::GitHub { repo, commit, build_target } => (repo.as_str(), commit.as_str(), build_target.as_str()),
+            CodeSource::WasmUrl { .. } => {
+                anyhow::bail!("Cannot upload a WasmUrl source - it's already compiled");
+            }
+        };
         self.api_client
-            .upload_wasm(checksum.clone(), code_source.repo().to_string(), code_source.commit().to_string(), build_target.to_string(), wasm_bytes)
+            .upload_wasm(checksum.clone(), repo.to_string(), commit.to_string(), build_target.to_string(), wasm_bytes)
             .await?;
 
         info!("✅ WASM compilation and upload complete: {}", checksum);
@@ -313,6 +325,155 @@ impl Compiler {
         hasher.update(build_target.as_bytes());
         let result = hasher.finalize();
         hex::encode(result)
+    }
+
+    /// Download WASM from URL and verify hash
+    ///
+    /// Downloads pre-compiled WASM from URL (https://, ipfs://, ar://)
+    /// with security protections:
+    /// - 10 MB size limit
+    /// - 30 second timeout
+    /// - SHA256 hash verification
+    ///
+    /// # Arguments
+    /// * `url` - URL to download from
+    /// * `expected_hash` - Expected SHA256 hash (hex-encoded)
+    ///
+    /// # Returns
+    /// * `Ok(bytes)` - Downloaded and verified WASM bytes
+    /// * `Err(_)` - Download failed or hash mismatch
+    pub async fn download_wasm_from_url(
+        &self,
+        url: &str,
+        expected_hash: &str,
+    ) -> Result<Vec<u8>> {
+        info!("📥 Downloading WASM from URL: {}", url);
+        info!("   Expected hash: {}", expected_hash);
+        info!("   Size limit: {} MB, timeout: {}s",
+            MAX_WASM_SIZE_BYTES / 1024 / 1024,
+            DOWNLOAD_TIMEOUT_SECONDS
+        );
+
+        // Create HTTP client with timeout
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(DOWNLOAD_TIMEOUT_SECONDS))
+            .build()
+            .context("Failed to create HTTP client")?;
+
+        // Send request
+        let response = client
+            .get(url)
+            .send()
+            .await
+            .context("Failed to send request")?;
+
+        // Check status
+        if !response.status().is_success() {
+            anyhow::bail!("HTTP error: {} - {}", response.status(), url);
+        }
+
+        // Check Content-Length header before downloading
+        if let Some(content_length) = response.content_length() {
+            if content_length > MAX_WASM_SIZE_BYTES {
+                anyhow::bail!(
+                    "File too large: {} MB (max {} MB)",
+                    content_length / 1024 / 1024,
+                    MAX_WASM_SIZE_BYTES / 1024 / 1024
+                );
+            }
+            info!("   Content-Length: {} bytes", content_length);
+        } else {
+            warn!("   Content-Length header missing, will check during download");
+        }
+
+        // Download entire response (reqwest handles chunking internally)
+        let downloaded_bytes = response
+            .bytes()
+            .await
+            .context("Failed to read response body")?
+            .to_vec();
+
+        // Check size limit after download
+        if downloaded_bytes.len() as u64 > MAX_WASM_SIZE_BYTES {
+            anyhow::bail!(
+                "File too large: {} MB (max {} MB)",
+                downloaded_bytes.len() / 1024 / 1024,
+                MAX_WASM_SIZE_BYTES / 1024 / 1024
+            );
+        }
+
+        info!("   Downloaded: {} bytes", downloaded_bytes.len());
+
+        // Verify SHA256 hash
+        let mut hasher = Sha256::new();
+        hasher.update(&downloaded_bytes);
+        let actual_hash = hex::encode(hasher.finalize());
+
+        if actual_hash != expected_hash {
+            anyhow::bail!(
+                "Hash mismatch!\n  Expected: {}\n  Actual:   {}\n  URL: {}",
+                expected_hash,
+                actual_hash,
+                url
+            );
+        }
+
+        info!("✅ WASM downloaded and verified: {} bytes, hash matches", downloaded_bytes.len());
+        Ok(downloaded_bytes)
+    }
+
+    /// Download WASM from URL and upload to coordinator cache
+    ///
+    /// This function:
+    /// 1. Checks if WASM already exists in cache
+    /// 2. If not, downloads from URL with security protections
+    /// 3. Verifies SHA256 hash
+    /// 4. Uploads to coordinator cache
+    ///
+    /// # Arguments
+    /// * `url` - URL to download from
+    /// * `hash` - SHA256 hash for verification and cache key
+    /// * `build_target` - Build target (for metadata)
+    ///
+    /// # Returns
+    /// * `Ok((checksum, bytes, created_at))` - Downloaded WASM info
+    pub async fn download_and_cache_wasm(
+        &self,
+        url: &str,
+        hash: &str,
+        build_target: &str,
+    ) -> Result<(String, Vec<u8>, Option<String>)> {
+        // For WasmUrl, the hash IS the checksum
+        let checksum = hash.to_string();
+
+        // Check if WASM already exists in cache
+        let (exists, created_at) = self.api_client.wasm_exists(&checksum).await?;
+        if exists {
+            info!("WASM already exists in cache: {} (created: {:?})", checksum, created_at);
+            // Download and return it
+            let wasm_bytes = self.api_client.download_wasm(&checksum).await?;
+            return Ok((checksum, wasm_bytes, created_at));
+        }
+
+        // Download from URL and verify hash
+        let wasm_bytes = self.download_wasm_from_url(url, hash).await?;
+
+        // Upload to coordinator cache
+        // Note: For WasmUrl, repo="url:<url>", commit="hash:<hash>"
+        info!("📤 Uploading downloaded WASM to coordinator cache...");
+        self.api_client
+            .upload_wasm(
+                checksum.clone(),
+                format!("url:{}", url),
+                format!("hash:{}", hash),
+                build_target.to_string(),
+                wasm_bytes.clone(),
+            )
+            .await
+            .context("Failed to upload WASM to coordinator")?;
+
+        info!("✅ WASM downloaded and cached: {}", checksum);
+        Ok((checksum, wasm_bytes, None)) // Fresh download, no created_at yet
     }
 }
 

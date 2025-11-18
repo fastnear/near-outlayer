@@ -11,6 +11,7 @@ use std::convert::TryInto;
 mod admin;
 mod events;
 mod execution;
+mod migration;
 mod secrets;
 mod types;
 mod views;
@@ -39,13 +40,37 @@ enum StorageKey {
     UserSecretsList { account_id: AccountId },
 }
 
-/// Code source specification
+/// Code source specification - either GitHub repo or pre-compiled WASM URL
 #[derive(Clone, Debug)]
 #[near(serializers = [borsh, json])]
-pub struct CodeSource {
-    pub repo: String,
-    pub commit: String,
-    pub build_target: Option<String>, // e.g., "wasm32-wasi"
+pub enum CodeSource {
+    /// GitHub repository with source code to compile
+    GitHub {
+        repo: String,
+        commit: String,
+        build_target: Option<String>, // e.g., "wasm32-wasip1"
+    },
+    /// Pre-compiled WASM file accessible via URL
+    /// Worker downloads from URL, verifies SHA256 hash, then executes without compilation
+    WasmUrl {
+        url: String,           // URL for downloading (https://, ipfs://, ar://)
+        hash: String,          // SHA256 hash for verification (hex encoded)
+        build_target: Option<String>, // e.g., "wasm32-wasip1", "wasm32-wasip2"
+    },
+}
+
+/// Optional request parameters for additional options
+#[derive(Clone, Debug, Default)]
+#[near(serializers = [borsh, json])]
+pub struct RequestParams {
+    /// Force recompilation even if WASM exists in cache
+    #[serde(default)]
+    pub force_rebuild: bool,
+
+    /// Store compiled WASM to FastFS after compilation
+    /// Path will be: /{checksum}.wasm
+    #[serde(default)]
+    pub store_on_fastfs: bool,
 }
 
 /// Response format for execution output
@@ -203,18 +228,32 @@ pub struct SecretProfileView {
     pub created_at: u64,                // Timestamp when created
     pub updated_at: u64,                // Timestamp when last updated
     pub storage_deposit: U128,          // Storage staking amount (U128 for JSON)
-    pub branch: Option<String>,         // Branch name (None = wildcard for all branches)
+    pub accessor: SecretAccessor,       // What code can access this secret (Repo or WasmHash)
 }
 
 
-/// Composite key for secrets storage: (repo, branch, profile, owner)
+/// Secret accessor - defines what code can access/decrypt the secret
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[near(serializers = [borsh, json])]
+pub enum SecretAccessor {
+    /// Secrets bound to a GitHub repository and optional branch
+    Repo {
+        repo: String,           // Normalized repo path: "github.com/owner/repo"
+        branch: Option<String>, // Branch name or None for all branches
+    },
+    /// Secrets bound to a specific WASM hash (for WasmUrl sources)
+    WasmHash {
+        hash: String,           // SHA256 hash of the WASM binary
+    },
+}
+
+/// Composite key for secrets storage
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[near(serializers = [borsh])]
 pub struct SecretKey {
-    pub repo: String,           // Normalized repo path: "github.com/owner/repo"
-    pub branch: Option<String>, // Branch name or None for all branches
-    pub profile: String,        // Profile name: "default", "premium", etc.
-    pub owner: AccountId,       // Account that created these secrets
+    pub accessor: SecretAccessor, // What code can access this secret (Repo or WasmHash)
+    pub profile: String,          // Profile name: "default", "premium", etc.
+    pub owner: AccountId,         // Account that created these secrets
 }
 
 #[derive(BorshDeserialize, BorshSerialize, PanicOnDefault)]

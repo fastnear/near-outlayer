@@ -6,7 +6,7 @@ import { actionCreators } from '@near-js/transactions';
 import WalletConnectionModal from '@/components/WalletConnectionModal';
 import { SecretsForm } from './components/SecretsForm';
 import { SecretsList } from './components/SecretsList';
-import { UserSecret, FormData } from './components/types';
+import { UserSecret, FormData, isRepoAccessor, isWasmHashAccessor } from './components/types';
 import { getCoordinatorApiUrl } from '@/lib/api';
 
 export default function SecretsPage() {
@@ -78,11 +78,29 @@ export default function SecretsPage() {
       // Convert encrypted array to base64 for contract
       const encryptedBase64 = Buffer.from(encryptedArray).toString('base64');
 
-      // Prepare transaction
-      const transactionArgs = {
-        repo: formData.repo,
-        branch: formData.branch,
+      let method: string;
+      let estimateMethod: string;
+      let transactionArgs: Record<string, unknown>;
+      let estimateArgs: Record<string, unknown>;
+
+      // Build accessor based on source type
+      const accessor = formData.sourceType === 'wasm_hash'
+        ? { WasmHash: { hash: formData.wasmHash } }
+        : { Repo: { repo: formData.repo, branch: formData.branch || null } };
+
+      // Unified API - same method for both types
+      method = 'store_secrets';
+      estimateMethod = 'estimate_storage_cost';
+      transactionArgs = {
+        accessor,
         profile: formData.profile,
+        encrypted_secrets_base64: encryptedBase64,
+        access: formData.access,
+      };
+      estimateArgs = {
+        accessor,
+        profile: formData.profile,
+        owner: accountId,
         encrypted_secrets_base64: encryptedBase64,
         access: formData.access,
       };
@@ -90,15 +108,8 @@ export default function SecretsPage() {
       // Estimate storage cost via viewMethod
       const estimatedCost = await viewMethod({
         contractId,
-        method: 'estimate_storage_cost',
-        args: {
-          repo: transactionArgs.repo,
-          branch: transactionArgs.branch,
-          profile: transactionArgs.profile,
-          owner: accountId,
-          encrypted_secrets_base64: transactionArgs.encrypted_secrets_base64,
-          access: transactionArgs.access,
-        },
+        method: estimateMethod,
+        args: estimateArgs,
       });
 
       console.log('Estimated cost result:', estimatedCost, typeof estimatedCost);
@@ -112,7 +123,7 @@ export default function SecretsPage() {
 
       // Create function call action with exact deposit
       const action = actionCreators.functionCall(
-        'store_secrets',
+        method,
         transactionArgs,
         BigInt('50000000000000'), // 50 TGas
         BigInt(costString) // Exact storage cost
@@ -138,7 +149,12 @@ export default function SecretsPage() {
   };
 
   const handleEditSecret = (secret: UserSecret) => {
-    if (!confirm(`⚠️ Replace secrets for ${secret.repo}:${secret.profile}?\n\nNote: You cannot decrypt/view existing secrets - only workers can decrypt them.\nThis will completely replace the encrypted secrets with new ones.`)) {
+    // Build label for confirmation
+    const label = isRepoAccessor(secret.accessor)
+      ? `${secret.accessor.Repo.repo}:${secret.profile}`
+      : `WASM(${secret.accessor.WasmHash.hash.substring(0, 8)}...):${secret.profile}`;
+
+    if (!confirm(`⚠️ Replace secrets for ${label}?\n\nNote: You cannot decrypt/view existing secrets - only workers can decrypt them.\nThis will completely replace the encrypted secrets with new ones.`)) {
       return;
     }
     setEditingSecret(secret);
@@ -147,18 +163,25 @@ export default function SecretsPage() {
   };
 
   const handleDeleteSecret = async (secret: UserSecret) => {
-    if (!confirm(`Delete secrets for ${secret.repo}:${secret.profile}? Storage deposit will be refunded automatically.`)) {
+    // Build label for confirmation
+    const label = isRepoAccessor(secret.accessor)
+      ? `${secret.accessor.Repo.repo}:${secret.profile}`
+      : `WASM(${secret.accessor.WasmHash.hash.substring(0, 8)}...):${secret.profile}`;
+
+    if (!confirm(`Delete secrets for ${label}? Storage deposit will be refunded automatically.`)) {
       return;
     }
 
     try {
+      // Unified API - same method for both types
+      const args = {
+        accessor: secret.accessor,
+        profile: secret.profile,
+      };
+
       const action = actionCreators.functionCall(
         'delete_secrets',
-        {
-          repo: secret.repo,
-          branch: secret.branch,
-          profile: secret.profile,
-        },
+        args,
         BigInt('30000000000000'), // 30 TGas
         BigInt('0') // No deposit needed - storage deposit will be refunded automatically
       );
@@ -229,11 +252,21 @@ export default function SecretsPage() {
           coordinatorUrl={coordinatorUrl}
           initialData={
             editingSecret
-              ? {
-                  repo: editingSecret.repo,
-                  branch: editingSecret.branch || '',
-                  profile: editingSecret.profile,
-                }
+              ? isRepoAccessor(editingSecret.accessor)
+                ? {
+                    sourceType: 'repo' as const,
+                    repo: editingSecret.accessor.Repo.repo,
+                    branch: editingSecret.accessor.Repo.branch || '',
+                    wasmHash: '',
+                    profile: editingSecret.profile,
+                  }
+                : {
+                    sourceType: 'wasm_hash' as const,
+                    repo: '',
+                    branch: '',
+                    wasmHash: editingSecret.accessor.WasmHash.hash,
+                    profile: editingSecret.profile,
+                  }
               : undefined
           }
         />

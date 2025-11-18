@@ -38,6 +38,7 @@ pub async fn claim_job(
     // Extract GitHub repo and commit for database
     let (github_repo, github_commit) = match &payload.code_source {
         CodeSource::GitHub { repo, commit, .. } => (Some(repo.clone()), Some(commit.clone())),
+        CodeSource::WasmUrl { .. } => (None, None),
     };
 
     // Check if WASM exists in cache
@@ -282,6 +283,10 @@ fn calculate_wasm_checksum(code_source: &CodeSource) -> String {
             let hash = Sha256::digest(input.as_bytes());
             hex::encode(hash)
         }
+        CodeSource::WasmUrl { hash, .. } => {
+            // For WasmUrl, use the provided hash as checksum
+            hash.clone()
+        }
     }
 }
 
@@ -447,6 +452,9 @@ pub async fn complete_job(
                     user_account_id: job.user_account_id.clone(),
                     near_payment_yocto: job.near_payment_yocto.clone(),
                     transaction_hash: job.transaction_hash.clone(),
+                    compile_only: false,
+                    force_rebuild: false,
+                    store_on_fastfs: false,
                 }
             }
             Ok(None) => {
@@ -469,6 +477,9 @@ pub async fn complete_job(
                     user_account_id: job.user_account_id.clone(),
                     near_payment_yocto: job.near_payment_yocto.clone(),
                     transaction_hash: job.transaction_hash.clone(),
+                    compile_only: false,
+                    force_rebuild: false,
+                    store_on_fastfs: false,
                 }
             }
             Err(e) => {
@@ -490,6 +501,9 @@ pub async fn complete_job(
                     user_account_id: job.user_account_id.clone(),
                     near_payment_yocto: job.near_payment_yocto.clone(),
                     transaction_hash: job.transaction_hash.clone(),
+                    compile_only: false,
+                    force_rebuild: false,
+                    store_on_fastfs: false,
                 }
             }
         };
@@ -556,6 +570,9 @@ pub async fn complete_job(
             user_account_id: job.user_account_id.clone(),
             near_payment_yocto: job.near_payment_yocto.clone(),
             transaction_hash: job.transaction_hash.clone(),
+            compile_only: false,
+            force_rebuild: false,
+            store_on_fastfs: false,
         };
 
         let request_json = match serde_json::to_string(&execution_request) {

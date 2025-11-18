@@ -35,7 +35,7 @@ This ensures consistency and reduces bugs by reusing proven patterns.
 See `wasi-examples/WASI_TUTORIAL.md` section "WASI vs NEAR Smart Contracts" for details.
 </CRITICAL>
 
-# NEAR OutLayer MVP Development - Context
+# NEAR OutLayer Production Development - Context
 
 ## 📍 Project Overview
 
@@ -43,9 +43,9 @@ See `wasi-examples/WASI_TUTORIAL.md` section "WASI vs NEAR Smart Contracts" for 
 
 **Metaphor**: "OutLayer for computation" - move heavy computation off-chain for efficiency while maintaining security and final settlement on NEAR L1.
 
-## 🎯 Main Goal
+## 🎯 Current Phase
 
-Build a production-ready MVP without TEE (Trusted Execution Environment), with architecture that allows easy TEE integration via Phala Network in Phase 2.
+Production version with full TEE (Trusted Execution Environment) support via Phala Network / Intel TDX.
 
 ## 📊 Current Progress (Updated: 2025-10-22)
 

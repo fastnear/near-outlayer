@@ -76,6 +76,15 @@ pub struct ExecutionRequest {
     pub user_account_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub near_payment_yocto: Option<String>,
+    /// If true, only compile the code without executing
+    #[serde(default)]
+    pub compile_only: bool,
+    /// Force recompilation even if WASM exists in cache
+    #[serde(default)]
+    pub force_rebuild: bool,
+    /// Store compiled WASM to FastFS after compilation
+    #[serde(default)]
+    pub store_on_fastfs: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,6 +93,13 @@ pub enum CodeSource {
     GitHub {
         repo: String,
         commit: String,
+        build_target: String,
+    },
+    /// Pre-compiled WASM file accessible via URL
+    /// Worker downloads from URL, verifies SHA256 hash, then executes without compilation
+    WasmUrl {
+        url: String,           // URL for downloading (https://, ipfs://, ar://)
+        hash: String,          // SHA256 hash for verification (hex encoded)
         build_target: String,
     },
 }
@@ -96,22 +112,46 @@ pub struct SecretsReference {
 }
 
 impl CodeSource {
-    pub fn repo(&self) -> &str {
+    pub fn repo(&self) -> Option<&str> {
         match self {
-            CodeSource::GitHub { repo, .. } => repo,
+            CodeSource::GitHub { repo, .. } => Some(repo),
+            CodeSource::WasmUrl { .. } => None,
         }
     }
 
-    pub fn commit(&self) -> &str {
+    pub fn commit(&self) -> Option<&str> {
         match self {
-            CodeSource::GitHub { commit, .. } => commit,
+            CodeSource::GitHub { commit, .. } => Some(commit),
+            CodeSource::WasmUrl { .. } => None,
         }
     }
 
-    pub fn build_target(&self) -> &str {
+    pub fn build_target(&self) -> Option<&str> {
         match self {
-            CodeSource::GitHub { build_target, .. } => build_target,
+            CodeSource::GitHub { build_target, .. } => Some(build_target),
+            CodeSource::WasmUrl { build_target, .. } => Some(build_target),
         }
+    }
+
+    /// Get the hash for WasmUrl sources (used for verification)
+    pub fn hash(&self) -> Option<&str> {
+        match self {
+            CodeSource::GitHub { .. } => None,
+            CodeSource::WasmUrl { hash, .. } => Some(hash),
+        }
+    }
+
+    /// Get the URL for WasmUrl sources
+    pub fn url(&self) -> Option<&str> {
+        match self {
+            CodeSource::GitHub { .. } => None,
+            CodeSource::WasmUrl { url, .. } => Some(url),
+        }
+    }
+
+    /// Check if this is a WasmUrl source (pre-compiled, no compilation needed)
+    pub fn is_wasm_url(&self) -> bool {
+        matches!(self, CodeSource::WasmUrl { .. })
     }
 }
 

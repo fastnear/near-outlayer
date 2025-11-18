@@ -17,7 +17,7 @@ mod tests {
             request_id: 0,
             data_id: [0; 32],
             sender_id: sender.clone(),
-            code_source: CodeSource {
+            code_source: CodeSource::GitHub {
                 repo: "https://github.com/test/repo".to_string(),
                 commit: "abc123".to_string(),
                 build_target: Some("wasm32-wasi".to_string()),
@@ -65,7 +65,7 @@ mod tests {
             request_id: 0,
             data_id: [0; 32],
             sender_id: sender.clone(),
-            code_source: CodeSource {
+            code_source: CodeSource::GitHub {
                 repo: "https://github.com/test/repo".to_string(),
                 commit: "abc123".to_string(),
                 build_target: Some("wasm32-wasi".to_string()),
@@ -96,7 +96,7 @@ mod tests {
     #[test]
     fn test_response_format_default() {
         let mut contract = setup_contract();
-        let code_source = CodeSource {
+        let code_source = CodeSource::GitHub {
             repo: "https://github.com/test/repo".to_string(),
             commit: "main".to_string(),
             build_target: Some("wasm32-wasi".to_string()),
@@ -105,7 +105,7 @@ mod tests {
         let context = get_context(accounts(1), NearToken::from_near(1));
         testing_env!(context.build());
 
-        contract.request_execution(code_source.clone(), None, None, None, None, None);
+        contract.request_execution(code_source.clone(), None, None, None, None, None, None);
 
         // Check that response_format defaults to Text
         let request = contract.get_request(0).expect("Request should exist");
@@ -115,7 +115,7 @@ mod tests {
     #[test]
     fn test_response_format_json() {
         let mut contract = setup_contract();
-        let code_source = CodeSource {
+        let code_source = CodeSource::GitHub {
             repo: "https://github.com/test/repo".to_string(),
             commit: "main".to_string(),
             build_target: Some("wasm32-wasi".to_string()),
@@ -124,7 +124,7 @@ mod tests {
         let context = get_context(accounts(1), NearToken::from_near(1));
         testing_env!(context.build());
 
-        contract.request_execution(code_source.clone(), None, None, None, Some(ResponseFormat::Json), None);
+        contract.request_execution(code_source.clone(), None, None, None, Some(ResponseFormat::Json), None, None);
 
         // Check that response_format is Json
         let request = contract.get_request(0).expect("Request should exist");
@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn test_response_format_bytes() {
         let mut contract = setup_contract();
-        let code_source = CodeSource {
+        let code_source = CodeSource::GitHub {
             repo: "https://github.com/test/repo".to_string(),
             commit: "main".to_string(),
             build_target: Some("wasm32-wasi".to_string()),
@@ -143,7 +143,7 @@ mod tests {
         let context = get_context(accounts(1), NearToken::from_near(1));
         testing_env!(context.build());
 
-        contract.request_execution(code_source.clone(), None, None, None, Some(ResponseFormat::Bytes), None);
+        contract.request_execution(code_source.clone(), None, None, None, Some(ResponseFormat::Bytes), None, None);
 
         // Check that response_format is Bytes
         let request = contract.get_request(0).expect("Request should exist");
@@ -162,7 +162,7 @@ mod tests {
             request_id: 0,
             data_id: [0; 32],
             sender_id: sender.clone(),
-            code_source: CodeSource {
+            code_source: CodeSource::GitHub {
                 repo: "https://github.com/test/repo".to_string(),
                 commit: "abc123".to_string(),
                 build_target: Some("wasm32-wasi".to_string()),
@@ -283,13 +283,13 @@ mod tests {
         let context = get_context(accounts(2), NearToken::from_millinear(100));
         testing_env!(context.build());
 
-        let code_source = CodeSource {
+        let code_source = CodeSource::GitHub {
             repo: "https://github.com/test/repo".to_string(),
             commit: "abc123".to_string(),
             build_target: Some("wasm32-wasi".to_string()),
         };
 
-        contract.request_execution(code_source, None, None, None, None, None);
+        contract.request_execution(code_source, None, None, None, None, None, None);
     }
 
     #[test]
@@ -301,13 +301,13 @@ mod tests {
         let context = get_context(accounts(2), NearToken::from_yoctonear(1000));
         testing_env!(context.build());
 
-        let code_source = CodeSource {
+        let code_source = CodeSource::GitHub {
             repo: "https://github.com/test/repo".to_string(),
             commit: "abc123".to_string(),
             build_target: Some("wasm32-wasi".to_string()),
         };
 
-        contract.request_execution(code_source, None, None, None, None, None);
+        contract.request_execution(code_source, None, None, None, None, None, None);
     }
 
     #[test]
@@ -321,7 +321,7 @@ mod tests {
             request_id: 0,
             data_id: [1; 32],
             sender_id: sender.clone(),
-            code_source: CodeSource {
+            code_source: CodeSource::GitHub {
                 repo: "https://github.com/test/repo".to_string(),
                 commit: "abc123".to_string(),
                 build_target: Some("wasm32-wasi".to_string()),
@@ -369,7 +369,7 @@ mod tests {
             request_id: 0,
             data_id: [1; 32],
             sender_id: sender.clone(),
-            code_source: CodeSource {
+            code_source: CodeSource::GitHub {
                 repo: "https://github.com/test/repo".to_string(),
                 commit: "abc123".to_string(),
                 build_target: Some("wasm32-wasi".to_string()),
@@ -405,7 +405,7 @@ mod tests {
             request_id: 0,
             data_id: [1; 32],
             sender_id: sender.clone(),
-            code_source: CodeSource {
+            code_source: CodeSource::GitHub {
                 repo: "https://github.com/test/repo".to_string(),
                 commit: "abc123".to_string(),
                 build_target: Some("wasm32-wasi".to_string()),
@@ -441,7 +441,7 @@ mod tests {
             request_id: 0,
             data_id: [1; 32],
             sender_id: sender.clone(),
-            code_source: CodeSource {
+            code_source: CodeSource::GitHub {
                 repo: "https://github.com/test/repo".to_string(),
                 commit: "abc123".to_string(),
                 build_target: Some("wasm32-wasi".to_string()),
@@ -531,7 +531,7 @@ mod tests {
             request_id: 0,
             data_id: [1; 32],
             sender_id: sender.clone(),
-            code_source: CodeSource {
+            code_source: CodeSource::GitHub {
                 repo: "https://github.com/test/repo".to_string(),
                 commit: "abc123".to_string(),
                 build_target: Some("wasm32-wasi".to_string()),
@@ -582,7 +582,7 @@ mod tests {
             request_id: 0,
             data_id: [1; 32],
             sender_id: sender.clone(),
-            code_source: CodeSource {
+            code_source: CodeSource::GitHub {
                 repo: "https://github.com/test/repo".to_string(),
                 commit: "abc123".to_string(),
                 build_target: Some("wasm32-wasi".to_string()),

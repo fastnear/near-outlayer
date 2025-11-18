@@ -563,6 +563,79 @@ async fn handle_compile_job(
 ) -> Result<(String, Vec<u8>, u64, Option<String>)> {
     info!("🔨 Starting compilation job_id={} request_id={}", job.job_id, request_id);
 
+    // Check if this is a WasmUrl source - if so, download instead of compile
+    if let CodeSource::WasmUrl { url, hash, build_target } = code_source {
+        info!("📥 WasmUrl source detected - downloading from URL instead of compiling");
+        info!("   URL: {}", url);
+        info!("   Hash: {}", hash);
+
+        let start_time = std::time::Instant::now();
+
+        // Download and cache WASM
+        let result = compiler.download_and_cache_wasm(url, hash, build_target).await;
+        let download_time_ms = start_time.elapsed().as_millis() as u64;
+
+        match result {
+            Ok((checksum, wasm_bytes, created_at)) => {
+                info!("✅ WASM downloaded: checksum={} size={} bytes time={}ms cached={:?}",
+                    checksum, wasm_bytes.len(), download_time_ms, created_at.is_some());
+
+                // Report completion to coordinator
+                // Note: For downloads, we report 0 compile_cost (no compilation happened)
+                if let Err(e) = api_client
+                    .complete_job(
+                        job.job_id,
+                        true,
+                        None,
+                        None,
+                        download_time_ms,
+                        0, // No instructions for download
+                        Some(checksum.clone()),
+                        None, // No actual_cost for download jobs
+                        Some("0".to_string()), // Zero compile cost - just download
+                        None, // No error category for success
+                    )
+                    .await
+                {
+                    warn!("⚠️ Failed to report download job completion: {}", e);
+                }
+
+                return Ok((checksum, wasm_bytes, download_time_ms, created_at));
+            }
+            Err(e) => {
+                let error_msg = e.to_string();
+                warn!("❌ WASM download failed: {}", error_msg);
+
+                // Report failure to coordinator
+                if let Err(report_err) = api_client
+                    .complete_job(
+                        job.job_id,
+                        false,
+                        None,
+                        Some(error_msg.clone()),
+                        download_time_ms,
+                        0,
+                        None,
+                        None,
+                        None,
+                        Some(api_client::JobStatus::CompilationFailed), // Reuse status for download failures
+                    )
+                    .await
+                {
+                    warn!("⚠️ Failed to report download job failure: {}", report_err);
+                }
+
+                return Err(e);
+            }
+        }
+    }
+
+    // Extract GitHub fields - compile jobs for GitHub source
+    let (repo, commit, build_target) = match code_source {
+        CodeSource::GitHub { repo, commit, build_target } => (repo.as_str(), commit.as_str(), build_target.as_str()),
+        CodeSource::WasmUrl { .. } => unreachable!("WasmUrl handled above"),
+    };
+
     // Validate compilation budget
     if let Some(payment_str) = user_payment {
         // Parse pricing and payment
@@ -655,9 +728,9 @@ async fn handle_compile_job(
             if let Err(e) = api_client
                 .upload_wasm(
                     checksum.clone(),
-                    code_source.repo().to_string(),
-                    code_source.commit().to_string(),
-                    code_source.build_target().to_string(),
+                    repo.to_string(),
+                    commit.to_string(),
+                    build_target.to_string(),
                     wasm_bytes.clone(),
                 )
                 .await
@@ -692,9 +765,9 @@ async fn handle_compile_job(
             match tdx_client.generate_task_attestation(
                 "compile",
                 job.job_id,
-                Some(code_source.repo()),
-                Some(code_source.commit()),
-                Some(code_source.build_target()),
+                Some(repo),
+                Some(commit),
+                Some(build_target),
                 None, // No wasm_hash for compile (we produce it)
                 None, // No input_hash for compile
                 &checksum, // output_hash is the compiled WASM checksum
@@ -710,9 +783,9 @@ async fn handle_compile_job(
                         caller_account_id: user_account_id.clone(),
                         transaction_hash: context.transaction_hash.clone(),
                         block_height: context.block_height,
-                        repo_url: Some(code_source.repo().to_string()),
-                        commit_hash: Some(code_source.commit().to_string()),
-                        build_target: Some(code_source.build_target().to_string()),
+                        repo_url: Some(repo.to_string()),
+                        commit_hash: Some(commit.to_string()),
+                        build_target: Some(build_target.to_string()),
                         wasm_hash: None,
                         input_hash: None,
                         output_hash: checksum.clone(),
@@ -957,32 +1030,44 @@ async fn handle_execute_job(
     info!("🔍 DEBUG keystore_client: {}", if keystore_client.is_some() { "Some" } else { "None" });
 
     let user_secrets = if let (Some(secrets_ref), Some(keystore)) = (secrets_ref, keystore_client) {
-        info!("🔐 Decrypting repo-based secrets: profile={}, owner={}", secrets_ref.profile, secrets_ref.account_id);
+        info!("🔐 Decrypting secrets: profile={}, owner={}", secrets_ref.profile, secrets_ref.account_id);
 
-        // Get repo from code_source
-        let repo = code_source.repo();
+        // user_account_id is the account that requested execution (used for access control)
+        let caller = user_account_id.map(|s| s.as_str()).unwrap_or(&secrets_ref.account_id);
 
-        // Resolve branch from commit via coordinator API (with caching)
-        let commit = code_source.commit();
-        let branch = match api_client.resolve_branch(repo, commit).await {
-            Ok(b) => {
-                if let Some(ref branch_name) = b {
-                    info!("✅ Coordinator resolved '{}' → branch '{}'", commit, branch_name);
-                } else {
-                    info!("⚠️  Coordinator: commit '{}' not found, using wildcard (branch=None)", commit);
-                }
-                b
+        // Decrypt secrets based on code_source type
+        let secrets_result = match code_source {
+            CodeSource::GitHub { repo, commit, .. } => {
+                info!("📦 Decrypting repo-based secrets for GitHub source");
+
+                // Resolve branch from commit via coordinator API (with caching)
+                let branch = match api_client.resolve_branch(repo, commit).await {
+                    Ok(b) => {
+                        if let Some(ref branch_name) = b {
+                            info!("✅ Coordinator resolved '{}' → branch '{}'", commit, branch_name);
+                        } else {
+                            info!("⚠️  Coordinator: commit '{}' not found, using wildcard (branch=None)", commit);
+                        }
+                        b
+                    }
+                    Err(e) => {
+                        warn!("⚠️  Coordinator API failed: {}, using wildcard (branch=None)", e);
+                        None
+                    }
+                };
+
+                // Call keystore to decrypt secrets by repo
+                keystore.decrypt_secrets_from_contract(repo, branch.as_deref(), &secrets_ref.profile, &secrets_ref.account_id, caller, Some(data_id)).await
             }
-            Err(e) => {
-                warn!("⚠️  Coordinator API failed: {}, using wildcard (branch=None)", e);
-                None
+            CodeSource::WasmUrl { hash, .. } => {
+                info!("📦 Decrypting wasm_hash-based secrets for WasmUrl source: {}", hash);
+
+                // Call keystore to decrypt secrets by wasm_hash
+                keystore.decrypt_secrets_by_wasm_hash(hash, &secrets_ref.profile, &secrets_ref.account_id, caller, Some(data_id)).await
             }
         };
 
-        // Call keystore to decrypt secrets from contract
-        // user_account_id is the account that requested execution (used for access control)
-        let caller = user_account_id.map(|s| s.as_str()).unwrap_or(&secrets_ref.account_id);
-        match keystore.decrypt_secrets_from_contract(repo, branch.as_deref(), &secrets_ref.profile, &secrets_ref.account_id, caller, Some(data_id)).await {
+        match secrets_result {
             Ok(secrets) => {
                 info!("✅ Secrets decrypted successfully: {} environment variables", secrets.len());
                 Some(secrets)
@@ -1057,6 +1142,7 @@ async fn handle_execute_job(
     // Get build target from code source
     let build_target = match code_source {
         CodeSource::GitHub { build_target, .. } => Some(build_target.as_str()),
+        CodeSource::WasmUrl { build_target, .. } => Some(build_target.as_str()),
     };
 
     // Execute WASM
@@ -1164,9 +1250,9 @@ async fn handle_execute_job(
                         match tdx_client.generate_task_attestation(
                             "execute",
                             job.job_id,
-                            Some(code_source.repo()),
-                            Some(code_source.commit()),
-                            Some(code_source.build_target()),
+                            code_source.repo(),
+                            code_source.commit(),
+                            code_source.build_target(),
                             Some(wasm_checksum),
                             Some(&input_hash),
                             &output_hash,
@@ -1182,9 +1268,9 @@ async fn handle_execute_job(
                                     caller_account_id: user_account_id.cloned(),
                                     transaction_hash: transaction_hash.cloned(),
                                     block_height: context.block_height,
-                                    repo_url: Some(code_source.repo().to_string()),
-                                    commit_hash: Some(code_source.commit().to_string()),
-                                    build_target: Some(code_source.build_target().to_string()),
+                                    repo_url: code_source.repo().map(|s| s.to_string()),
+                                    commit_hash: code_source.commit().map(|s| s.to_string()),
+                                    build_target: code_source.build_target().map(|s| s.to_string()),
                                     wasm_hash: Some(wasm_checksum.clone()),
                                     input_hash: Some(input_hash),
                                     output_hash,

@@ -309,6 +309,138 @@ impl KeystoreClient {
 
         Ok(env_vars)
     }
+
+    /// Decrypt secrets from contract by WASM hash (for WasmUrl sources)
+    ///
+    /// This method:
+    /// 1. Calls keystore with wasm_hash, profile, owner, user_account_id
+    /// 2. Keystore reads secrets from NEAR contract (get_secrets_by_wasm_hash)
+    /// 3. Keystore validates access conditions (using user_account_id as caller)
+    /// 4. Keystore decrypts using derived key for seed (wasm_hash:owner)
+    /// 5. Returns HashMap of environment variables
+    pub async fn decrypt_secrets_by_wasm_hash(
+        &self,
+        wasm_hash: &str,
+        profile: &str,
+        owner: &str,
+        user_account_id: &str,
+        task_id: Option<&str>,
+    ) -> Result<std::collections::HashMap<String, String>> {
+        tracing::info!(
+            "🔑 decrypt_secrets_by_wasm_hash called: wasm_hash={}, profile={}, owner={}, task_id={:?}",
+            wasm_hash, profile, owner, task_id
+        );
+
+        // Generate attestation
+        let attestation = self.generate_attestation()
+            .context("Failed to generate attestation")?;
+
+        // Prepare request with wasm_hash field
+        #[derive(Debug, Serialize)]
+        struct DecryptByWasmHashRequest {
+            wasm_hash: String,
+            profile: String,
+            owner: String,
+            user_account_id: String,
+            attestation: Attestation,
+            task_id: Option<String>,
+        }
+
+        let request = DecryptByWasmHashRequest {
+            wasm_hash: wasm_hash.to_string(),
+            profile: profile.to_string(),
+            owner: owner.to_string(),
+            user_account_id: user_account_id.to_string(),
+            attestation,
+            task_id: task_id.map(|s| s.to_string()),
+        };
+
+        // Send request to keystore (using /decrypt-by-hash endpoint)
+        let url = format!("{}/decrypt-by-hash", self.base_url);
+
+        tracing::debug!(
+            url = %url,
+            wasm_hash = %wasm_hash,
+            profile = %profile,
+            owner = %owner,
+            task_id = ?task_id,
+            "Requesting secret decryption by wasm_hash via keystore"
+        );
+
+        let response = self
+            .http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.auth_token))
+            .json(&request)
+            .send()
+            .await
+            .context("Failed to send decrypt request")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+
+            // Parse user-friendly error message
+            let user_message = if status == 400 {
+                if error_text.contains("not found") {
+                    "Secrets not found for this WASM hash. Please check that secrets exist for this WASM binary and profile.".to_string()
+                } else {
+                    "Invalid secrets request. Please check your secrets configuration.".to_string()
+                }
+            } else if status == 401 {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&error_text) {
+                    if let Some(error) = json.get("error").and_then(|e| e.as_str()) {
+                        if error.contains("Access denied") {
+                            "Access to secrets denied. You do not have permission to use these secrets.".to_string()
+                        } else {
+                            format!("Secret access error: {}", error)
+                        }
+                    } else {
+                        "Access to secrets denied. Check access conditions.".to_string()
+                    }
+                } else {
+                    "Access to secrets denied. Check access conditions.".to_string()
+                }
+            } else if status == 404 {
+                "Secrets not found for this WASM hash.".to_string()
+            } else {
+                "Failed to decrypt secrets. Please check your secrets configuration.".to_string()
+            };
+
+            anyhow::bail!("{}", user_message);
+        }
+
+        let decrypt_response: DecryptResponse = response
+            .json()
+            .await
+            .context("Failed to parse decrypt response")?;
+
+        // Decode plaintext from base64
+        let plaintext = base64::decode(&decrypt_response.plaintext_secrets)
+            .context("Failed to decode plaintext secrets")?;
+
+        tracing::info!(
+            wasm_hash = %wasm_hash,
+            profile = %profile,
+            plaintext_size = plaintext.len(),
+            "Successfully decrypted secrets by wasm_hash"
+        );
+
+        // Parse JSON to HashMap
+        let plaintext_str = String::from_utf8(plaintext)
+            .context("Invalid secrets format: not valid UTF-8 text")?;
+
+        let env_vars: std::collections::HashMap<String, String> = serde_json::from_str(&plaintext_str)
+            .context("Invalid secrets format: must be a JSON object with string key-value pairs")?;
+
+        tracing::debug!(
+            wasm_hash = %wasm_hash,
+            env_count = env_vars.len(),
+            "Parsed environment variables from decrypted secrets"
+        );
+
+        Ok(env_vars)
+    }
 }
 
 // Base64 encoding/decoding helpers
