@@ -458,6 +458,8 @@ impl ApiClient {
         near_payment_yocto: Option<String>,
         transaction_hash: Option<String>,
         capabilities: Vec<String>,
+        compile_only: bool,
+        force_rebuild: bool,
     ) -> Result<ClaimJobResponse> {
         let url = format!("{}/jobs/claim", self.base_url);
 
@@ -475,6 +477,8 @@ impl ApiClient {
             #[serde(skip_serializing_if = "Option::is_none")]
             transaction_hash: Option<String>,
             capabilities: Vec<String>,
+            compile_only: bool,
+            force_rebuild: bool,
         }
 
         let request = ClaimRequest {
@@ -487,6 +491,8 @@ impl ApiClient {
             near_payment_yocto,
             transaction_hash,
             capabilities,
+            compile_only,
+            force_rebuild,
         };
 
         tracing::debug!("🎯 Claiming job for request_id={}", request_id);

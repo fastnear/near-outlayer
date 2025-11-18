@@ -44,14 +44,15 @@ impl Contract {
     ) {
         self.assert_not_paused();
 
-        // Determine if this is compile-only mode
-        let compile_only = resource_limits.is_none();
 
         // Use provided limits or defaults (for execute mode)
-        let limits = resource_limits.unwrap_or_default();
+        let limits = resource_limits.clone().unwrap_or_default();
 
         // Get params or defaults
         let request_params = params.unwrap_or_default();
+
+        // Determine if this is compile-only mode
+        let compile_only = request_params.compile_only || resource_limits.is_none();
 
         // Validate: WasmUrl source cannot have force_rebuild
         if matches!(code_source, CodeSource::WasmUrl { .. }) && request_params.force_rebuild {

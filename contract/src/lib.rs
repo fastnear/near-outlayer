@@ -65,12 +65,17 @@ pub enum CodeSource {
 pub struct RequestParams {
     /// Force recompilation even if WASM exists in cache
     #[serde(default)]
-    pub force_rebuild: bool,
+    pub force_rebuild: bool,    
 
     /// Store compiled WASM to FastFS after compilation
     /// Path will be: /{checksum}.wasm
     #[serde(default)]
     pub store_on_fastfs: bool,
+
+    /// Compile only flag. Also set = true if resource_limits is none
+    #[serde(default)]
+    pub compile_only: bool,    
+
 }
 
 /// Response format for execution output

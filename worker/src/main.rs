@@ -368,10 +368,12 @@ async fn worker_iteration(
     let near_payment_yocto = execution_request.near_payment_yocto.clone();
     let transaction_hash = context.transaction_hash.clone();
     let store_on_fastfs = execution_request.store_on_fastfs;
+    let compile_only = execution_request.compile_only;
+    let force_rebuild = execution_request.force_rebuild;
 
     // Claim jobs for this task with worker capabilities
-    info!("🎯 Claiming jobs for request_id={} data_id={} with capabilities={:?}",
-          request_id, data_id, config.capabilities.to_array());
+    info!("🎯 Claiming jobs for request_id={} data_id={} with capabilities={:?} compile_only={} force_rebuild={}",
+          request_id, data_id, config.capabilities.to_array(), compile_only, force_rebuild);
     let claim_response = match api_client
         .claim_job(
             request_id,
@@ -383,6 +385,8 @@ async fn worker_iteration(
             near_payment_yocto.clone(),
             transaction_hash.clone(),
             config.capabilities.to_array(),
+            compile_only,
+            force_rebuild,
         )
         .await
     {

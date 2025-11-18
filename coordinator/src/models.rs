@@ -404,6 +404,12 @@ pub struct ClaimJobRequest {
     /// Examples: ["compilation", "execution"], ["execution"], ["compilation"]
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// Only compile, don't execute
+    #[serde(default)]
+    pub compile_only: bool,
+    /// Force recompilation even if WASM exists in cache
+    #[serde(default)]
+    pub force_rebuild: bool,
 }
 
 #[derive(Debug, Serialize)]
