@@ -179,7 +179,7 @@ pub async fn claim_job(
 
         let (compile_cost_yocto, compile_error, compile_status) = compile_job
             .as_ref()
-            .map(|j| (j.compile_cost_yocto.clone(), j.compile_error.clone(), j.status.clone()))
+            .map(|j| (j.compile_cost_yocto.clone(), j.compile_error.clone(), Some(j.status.clone())))
             .unwrap_or((None, None, None));
 
         // If WASM doesn't exist, no compile error, and no compile_result, executor can't do anything
