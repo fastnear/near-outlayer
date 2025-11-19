@@ -152,19 +152,27 @@ impl Compiler {
             .await?;
 
         if !acquired {
-            // Another worker is compiling, wait and check again
-            info!("Another worker is compiling {}, waiting...", repo);
-            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            // Another worker is compiling
+            info!("Another worker is compiling {}", repo);
 
-            // Check if compilation completed
-            let (exists, created_at) = self.api_client.wasm_exists(&checksum).await?;
-            if exists {
-                info!("WASM compilation completed by another worker (created: {:?})", created_at);
-                let wasm_bytes = self.api_client.download_wasm(&checksum).await?;
-                return Ok((checksum, wasm_bytes, created_at));
+            if force_rebuild {
+                // force_rebuild=true - we need fresh compilation, can't use any cache
+                // Just fail immediately - the other worker will complete and we can retry
+                anyhow::bail!(
+                    "Another worker is compiling {} (force_rebuild=true). Wait for it to complete.",
+                    checksum
+                );
+            } else {
+                // Check if compilation already completed
+                let (exists, created_at) = self.api_client.wasm_exists(&checksum).await?;
+                if exists {
+                    info!("WASM compilation completed by another worker (created: {:?})", created_at);
+                    let wasm_bytes = self.api_client.download_wasm(&checksum).await?;
+                    return Ok((checksum, wasm_bytes, created_at));
+                }
+
+                anyhow::bail!("Failed to acquire compilation lock and WASM not available");
             }
-
-            anyhow::bail!("Failed to acquire compilation lock and WASM not available");
         }
 
         info!("Acquired compilation lock for {}", repo);

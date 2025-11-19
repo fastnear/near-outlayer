@@ -70,6 +70,7 @@ ed25519-dalek = "2.1"
 uuid = { version = "1.0", features = ["v4"] }
 regex = "1.10"
 rand = "0.8"
+urlencoding = "2.1"
 
 # Phala dstack SDK for TDX attestation
 dstack-sdk = "0.1"

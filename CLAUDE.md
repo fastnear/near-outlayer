@@ -33,6 +33,13 @@ This ensures consistency and reduces bugs by reusing proven patterns.
 6. For AccountId fields in structs with JsonSchema, use `#[schemars(with = "String")]`
 7. Update near-sdk to version 5.9.0 (not 5.5.0)
 See `wasi-examples/WASI_TUTORIAL.md` section "WASI vs NEAR Smart Contracts" for details.
+
+**CRITICAL - LATENCY**: NEVER introduce arbitrary delays (sleep, wait) without strong justification:
+- Avoid `tokio::time::sleep()` for retry logic when there are better alternatives
+- If you must add a delay, it should be the last resort
+- Always consider: what will change during this delay? If nothing - don't delay
+- Better alternatives: exponential backoff, lock TTL, event-driven waiting
+- If you add latency, document WHY in comments and discuss with human first
 </CRITICAL>
 
 # NEAR OutLayer Production Development - Context

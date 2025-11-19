@@ -874,7 +874,9 @@ impl ApiClient {
     /// # Arguments
     /// * `lock_key` - Key of the lock to release
     pub async fn release_lock(&self, lock_key: &str) -> Result<()> {
-        let url = format!("{}/locks/release/{}", self.base_url, lock_key);
+        // URL-encode the lock key to handle special characters like : and /
+        let encoded_key = urlencoding::encode(lock_key);
+        let url = format!("{}/locks/release/{}", self.base_url, encoded_key);
 
         let response = self
             .client
