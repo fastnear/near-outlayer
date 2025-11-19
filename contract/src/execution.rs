@@ -59,6 +59,11 @@ impl Contract {
             env::panic_str("force_rebuild is not applicable for WasmUrl code source");
         }
 
+        // Validate: compile_only mode should not have input_data
+        if compile_only && input_data.is_some() && !input_data.as_ref().unwrap().is_empty() {
+            env::panic_str("input_data must be empty for compile_only mode - compilation does not use input_data");
+        }
+
         // Validate resource limits against hard caps (only in execute mode)
         if !compile_only {
             let max_instructions = limits.max_instructions.unwrap_or_default();
