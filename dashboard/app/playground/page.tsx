@@ -143,7 +143,7 @@ const DIRECT_PRESETS: DirectPreset[] = [
   {
     type: 'direct',
     name: 'Publish to FastFS',
-    description: '📦 Compile code and publish WASM to FastFS for permanent storage. Returns FastFS URL instead of executing. Uses compile_only + store_on_fastfs params.',
+    description: '📦 Compile code and publish WASM to FastFS for permanent storage. Returns FastFS URL instead of executing. Requires force_rebuild to ensure fresh compilation.',
     repo: 'https://github.com/zavodil/random-ark',
     commit: 'main',
     buildTarget: 'wasm32-wasip1',
@@ -152,6 +152,7 @@ const DIRECT_PRESETS: DirectPreset[] = [
     networks: ['testnet', 'mainnet'],
     docsLink: '/docs/contract-integration#params',
     compileOnly: true,
+    forceRebuild: true,
     storeOnFastfs: true,
   },
 ];
@@ -221,6 +222,7 @@ function PlaygroundContent() {
   const [repo, setRepo] = useState(initialPreset?.type === 'direct' ? initialPreset.repo : '');
   const [commit, setCommit] = useState(initialPreset?.type === 'direct' ? initialPreset.commit : '');
   const [wasmUrl, setWasmUrl] = useState('');
+  const [wasmHash, setWasmHash] = useState('');
   const [buildTarget, setBuildTarget] = useState(initialPreset?.type === 'direct' ? initialPreset.buildTarget : 'wasm32-wasip1');
   const [args, setArgs] = useState(initialPreset?.args || '');
   const [responseFormat, setResponseFormat] = useState(initialPreset?.type === 'direct' ? initialPreset.responseFormat : 'Json');
@@ -498,6 +500,8 @@ function PlaygroundContent() {
           : {
               WasmUrl: {
                 url: wasmUrl,
+                hash: wasmHash,
+                build_target: buildTarget || null,
               },
             };
 
@@ -797,70 +801,84 @@ function PlaygroundContent() {
                       />
                     </div>
 
-                    {/* Build Target */}
-                    <div className="mb-6">
-                      <label htmlFor="buildTarget" className="block text-sm font-medium text-gray-700">
-                        Build Target
-                      </label>
-                      <select
-                        id="buildTarget"
-                        value={buildTarget}
-                        onChange={(e) => setBuildTarget(e.target.value)}
-                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm px-3 py-2"
-                      >
-                        <option value="wasm32-wasip1">wasm32-wasip1</option>
-                        <option value="wasm32-wasip2">wasm32-wasip2</option>
-                      </select>
-                    </div>
                   </>
                 ) : (
-                  /* WASM URL input */
-                  <div className="mb-6">
-                    <label htmlFor="wasmUrl" className="block text-sm font-medium text-gray-700">
-                      WASM URL
-                    </label>
-                    <input
-                      type="text"
-                      id="wasmUrl"
-                      value={wasmUrl}
-                      onChange={(e) => setWasmUrl(e.target.value)}
-                      placeholder="https://example.com/compiled.wasm or ipfs://..."
-                      className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm px-3 py-2"
-                    />
-                    <p className="mt-1 text-xs text-gray-500">
-                      Direct URL to pre-compiled WASM file (HTTP/HTTPS or IPFS)
-                    </p>
-                  </div>
+                  /* WASM URL inputs */
+                  <>
+                    <div className="mb-6">
+                      <label htmlFor="wasmUrl" className="block text-sm font-medium text-gray-700">
+                        WASM URL
+                      </label>
+                      <input
+                        type="text"
+                        id="wasmUrl"
+                        value={wasmUrl}
+                        onChange={(e) => setWasmUrl(e.target.value)}
+                        placeholder="https://example.com/compiled.wasm or ipfs://..."
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm px-3 py-2"
+                      />
+                      <p className="mt-1 text-xs text-gray-500">
+                        Direct URL to pre-compiled WASM file (HTTP/HTTPS or IPFS)
+                      </p>
+                    </div>
+                    <div className="mb-6">
+                      <label htmlFor="wasmHash" className="block text-sm font-medium text-gray-700">
+                        WASM Hash (SHA256)
+                      </label>
+                      <input
+                        type="text"
+                        id="wasmHash"
+                        value={wasmHash}
+                        onChange={(e) => setWasmHash(e.target.value)}
+                        placeholder="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm font-mono px-3 py-2"
+                      />
+                      <p className="mt-1 text-xs text-gray-500">
+                        SHA256 hash for verification (hex encoded, 64 characters)
+                      </p>
+                    </div>
+                  </>
                 )}
 
-                {/* Response Format */}
-                <div className="mb-6">
-                  <label htmlFor="responseFormat" className="block text-sm font-medium text-gray-700">
-                    Response Format
-                  </label>
-                  <select
-                    id="responseFormat"
-                    value={responseFormat}
-                    onChange={(e) => setResponseFormat(e.target.value)}
-                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm px-3 py-2"
-                  >
-                    <option value="Json">JSON (parse output as JSON)</option>
-                    <option value="Text">Text (UTF-8 string)</option>
-                    <option value="Bytes">Bytes (raw binary)</option>
-                  </select>
-                  <p className="mt-1 text-xs text-gray-500">
-                    {responseFormat === 'Json' && 'Contract will receive parsed JSON object instead of string'}
-                    {responseFormat === 'Text' && 'Contract will receive UTF-8 text string'}
-                    {responseFormat === 'Bytes' && 'Contract will receive raw bytes array'}
-                  </p>
+                {/* Build Target and Response Format in columns */}
+                <div className="mb-6 grid grid-cols-2 gap-4">
+                  <div>
+                    <label htmlFor="buildTarget" className="block text-sm font-medium text-gray-700">
+                      Build Target
+                    </label>
+                    <select
+                      id="buildTarget"
+                      value={buildTarget}
+                      onChange={(e) => setBuildTarget(e.target.value)}
+                      className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm px-3 py-2"
+                    >
+                      <option value="wasm32-wasip1">wasm32-wasip1</option>
+                      <option value="wasm32-wasip2">wasm32-wasip2</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label htmlFor="responseFormat" className="block text-sm font-medium text-gray-700">
+                      Response Format
+                    </label>
+                    <select
+                      id="responseFormat"
+                      value={responseFormat}
+                      onChange={(e) => setResponseFormat(e.target.value)}
+                      className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm px-3 py-2"
+                    >
+                      <option value="Json">JSON</option>
+                      <option value="Text">Text</option>
+                      <option value="Bytes">Bytes</option>
+                    </select>
+                  </div>
                 </div>
 
-                {/* Execution Parameters */}
-                <div className="mb-6">
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Execution Parameters
-                  </label>
-                  <div className="space-y-2">
+                {/* Execution Parameters - collapsible */}
+                <details className="mb-6" open={compileOnly || forceRebuild || storeOnFastfs}>
+                  <summary className="cursor-pointer text-sm font-medium text-gray-700 hover:text-gray-900">
+                    Execution Parameters {(compileOnly || forceRebuild || storeOnFastfs) && <span className="text-blue-600">(modified)</span>}
+                  </summary>
+                  <div className="mt-3 space-y-2 pl-4">
                     <label className="inline-flex items-center">
                       <input
                         type="checkbox"
@@ -869,7 +887,7 @@ function PlaygroundContent() {
                         className="form-checkbox h-4 w-4 text-blue-600 rounded"
                       />
                       <span className="ml-2 text-sm text-gray-700">
-                        Compile Only <span className="text-gray-500">(compile without executing, returns checksum)</span>
+                        Compile Only <span className="text-gray-500">(returns checksum)</span>
                       </span>
                     </label>
                     <br />
@@ -893,11 +911,11 @@ function PlaygroundContent() {
                         className="form-checkbox h-4 w-4 text-blue-600 rounded"
                       />
                       <span className="ml-2 text-sm text-gray-700">
-                        Store on FastFS <span className="text-gray-500">(publish WASM to permanent storage)</span>
+                        Store on FastFS <span className="text-gray-500">(publish to permanent storage)</span>
                       </span>
                     </label>
                   </div>
-                </div>
+                </details>
               </>
             ) : null;
           })()}
@@ -1034,36 +1052,6 @@ function PlaygroundContent() {
             ) : null;
           })()}
 
-          {/* Check WASM Button - for direct execution and proxy with wasmRepo */}
-          {(() => {
-            const currentPreset = PRESETS.find(p => p.name === selectedPreset);
-            const shouldShowButton = currentPreset?.type === 'direct' ||
-                                     (currentPreset?.type === 'proxy' && currentPreset.wasmRepo);
-            return shouldShowButton ? (
-              <div className="mb-6">
-                <button
-                  onClick={handleCheckWasm}
-                  className="inline-flex items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
-                >
-                  Check WASM Cache
-                </button>
-                {wasmInfo && (
-                  <div className="mt-2 text-sm">
-                    {wasmInfo.exists ? (
-                      <span className="text-green-600">
-                        ✓ WASM exists (checksum: {wasmInfo.checksum?.substring(0, 12)}...)
-                      </span>
-                    ) : (
-                      <span className="text-yellow-600">
-                        ⚠ WASM not cached - will be compiled on first execution{currentPreset?.type === 'proxy' && currentPreset.increaseDepositIfNoCache ? ' (+0.1 NEAR added to deposit)' : ''}
-                      </span>
-                    )}
-                  </div>
-                )}
-              </div>
-            ) : null;
-          })()}
-
           {/* Execute Button */}
           <div className="mt-6">
             {/* Deposit info for direct execution */}
@@ -1116,6 +1104,36 @@ function PlaygroundContent() {
                 'Execute'
               )}
             </button>
+
+            {/* Check WASM Button - for direct execution and proxy with wasmRepo */}
+            {(() => {
+              const currentPreset = PRESETS.find(p => p.name === selectedPreset);
+              const shouldShowButton = currentPreset?.type === 'direct' ||
+                                       (currentPreset?.type === 'proxy' && currentPreset.wasmRepo);
+              return shouldShowButton ? (
+                <div className="mt-3 text-center">
+                  <button
+                    onClick={handleCheckWasm}
+                    className="text-sm text-gray-500 hover:text-gray-700 underline"
+                  >
+                    Check WASM Cache
+                  </button>
+                  {wasmInfo && (
+                    <div className="mt-1 text-xs">
+                      {wasmInfo.exists ? (
+                        <span className="text-green-600">
+                          ✓ Cached (checksum: {wasmInfo.checksum?.substring(0, 12)}...)
+                        </span>
+                      ) : (
+                        <span className="text-yellow-600">
+                          ⚠ Not cached - will compile{currentPreset?.type === 'proxy' && currentPreset.increaseDepositIfNoCache ? ' (+0.1 NEAR)' : ''}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ) : null;
+            })()}
           </div>
 
           {/* Wallet Connection Modal */}

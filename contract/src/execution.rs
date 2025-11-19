@@ -59,6 +59,11 @@ impl Contract {
             env::panic_str("force_rebuild is not applicable for WasmUrl code source");
         }
 
+        // Validate: store_on_fastfs requires force_rebuild (to ensure fresh compilation)
+        if request_params.store_on_fastfs && !request_params.force_rebuild {
+            env::panic_str("store_on_fastfs requires force_rebuild to ensure fresh compilation and upload");
+        }
+
         // Validate: compile_only mode should not have input_data
         if compile_only && input_data.is_some() && !input_data.as_ref().unwrap().is_empty() {
             env::panic_str("input_data must be empty for compile_only mode - compilation does not use input_data");
