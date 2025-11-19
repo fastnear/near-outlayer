@@ -161,14 +161,18 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
         let encryptedSecretsBase64: string | null = null;
 
         if (hasManualSecrets) {
+          // Build accessor based on source type
+          const accessor = sourceType === 'wasm_hash'
+            ? { type: 'WasmHash', hash: wasmHash.trim() }
+            : { type: 'Repo', repo: repo.trim(), branch: branch.trim() || null };
+
           // Get public key and encrypt
           const pubkeyResp = await fetch(`${coordinatorUrl}/secrets/pubkey`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              repo: repo.trim(),
+              accessor,
               owner: accountId,
-              branch: branch.trim() || null,
               secrets_json: plaintextSecrets,
             }),
           });
@@ -202,13 +206,17 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
         }
 
         // Step 2: Call /secrets/add_generated_secret
+        // Build accessor for generated secrets endpoint
+        const generatedAccessor = sourceType === 'wasm_hash'
+          ? { type: 'WasmHash', hash: wasmHash.trim() }
+          : { type: 'Repo', repo: repo.trim(), branch: branch.trim() || null };
+
         const response = await fetch(`${coordinatorUrl}/secrets/add_generated_secret`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            repo: repo.trim(),
+            accessor: generatedAccessor,
             owner: accountId,
-            branch: branch.trim() || null,
             encrypted_secrets_base64: encryptedSecretsBase64,
             new_secrets: validSecretsToGenerate.map(s => ({
               name: s.name.trim(),
@@ -266,13 +274,17 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
         setError(null);
       } else {
         // Only manual secrets - use original flow
+        // Build accessor based on source type
+        const accessor = sourceType === 'wasm_hash'
+          ? { type: 'WasmHash', hash: wasmHash.trim() }
+          : { type: 'Repo', repo: repo.trim(), branch: branch.trim() || null };
+
         const pubkeyResp = await fetch(`${coordinatorUrl}/secrets/pubkey`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            repo: repo.trim(),
+            accessor,
             owner: accountId,
-            branch: branch.trim() || null,
             secrets_json: plaintextSecrets,
           }),
         });
@@ -289,7 +301,8 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
 
         const pubkeyData = await pubkeyResp.json();
         const pubkeyHex = pubkeyData.pubkey;
-        const repoNormalized = pubkeyData.repo_normalized;
+        // Extract normalized values from response accessor
+        const repoNormalized = pubkeyData.accessor?.repo_normalized || repo.trim();
 
         const keyMaterial = hexToBytes(pubkeyHex);
         const encoder = new TextEncoder();

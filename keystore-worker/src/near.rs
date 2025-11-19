@@ -54,7 +54,7 @@ impl NearClient {
 
     /// Read secrets from contract
     ///
-    /// Calls: contract.get_secrets(repo, branch, profile, owner)
+    /// Calls: contract.get_secrets(accessor: Repo { repo, branch }, profile, owner)
     /// Returns: SecretProfile { encrypted_secrets, access, created_at, updated_at, storage_deposit }
     ///
     /// Note: The contract's get_secrets method automatically falls back to branch=null
@@ -80,8 +80,12 @@ impl NearClient {
         );
 
         let args = json!({
-            "repo": repo_normalized,
-            "branch": branch,
+            "accessor": {
+                "Repo": {
+                    "repo": repo_normalized,
+                    "branch": branch,
+                }
+            },
             "profile": profile,
             "owner": owner,
         });
@@ -260,6 +264,61 @@ impl NearClient {
 
             Ok(!tokens.is_empty())
         }
+    }
+
+    /// Read secrets from contract by WASM hash
+    ///
+    /// Calls: contract.get_secrets(accessor: WasmHash { hash }, profile, owner)
+    /// Returns: SecretProfile { encrypted_secrets, access, ... }
+    pub async fn get_secrets_by_wasm_hash(
+        &self,
+        wasm_hash: &str,
+        profile: &str,
+        owner: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        tracing::debug!(
+            contract = %self.contract_id,
+            wasm_hash = %wasm_hash,
+            profile = %profile,
+            owner = %owner,
+            "Reading secrets by wasm_hash from contract"
+        );
+
+        let args = json!({
+            "accessor": {
+                "WasmHash": {
+                    "hash": wasm_hash
+                }
+            },
+            "profile": profile,
+            "owner": owner,
+        });
+
+        let query = methods::query::RpcQueryRequest {
+            block_reference: BlockReference::latest(),
+            request: near_primitives::views::QueryRequest::CallFunction {
+                account_id: self.contract_id.clone(),
+                method_name: "get_secrets".to_string(),
+                args: args.to_string().into_bytes().into(),
+            },
+        };
+
+        let response = self
+            .rpc_client
+            .call(query)
+            .await
+            .context("Failed to query contract")?;
+
+        let result = match response.kind {
+            QueryResponseKind::CallResult(result) => result.result,
+            _ => anyhow::bail!("Unexpected query response"),
+        };
+
+        // Parse response (Option<SecretProfile>)
+        let secret_profile: Option<serde_json::Value> = serde_json::from_slice(&result)
+            .context("Failed to parse contract response")?;
+
+        Ok(secret_profile)
     }
 
     /// Check if account is member of DAO role (Sputnik v2 compatible)
