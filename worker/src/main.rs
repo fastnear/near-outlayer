@@ -1171,7 +1171,8 @@ async fn handle_execute_job(
                 }
             };
             info!("✅ Downloaded WASM: {} bytes", bytes.len());
-            (bytes, None, created_at, None) // No published_url when downloading from coordinator
+            // Use compile_time_ms from job info (if compiled by separate worker)
+            (bytes, job.compile_time_ms, created_at, None) // No published_url when downloading from coordinator
         }
     } else {
         // No local cache - download from coordinator
@@ -1196,7 +1197,8 @@ async fn handle_execute_job(
             }
         };
         info!("✅ Downloaded WASM: {} bytes, created_at={:?}", bytes.len(), &created_at);
-        (bytes, None, created_at, None) // No published_url when downloading from coordinator
+        // Use compile_time_ms from job info (if compiled by separate worker)
+        (bytes, job.compile_time_ms, created_at, None) // No published_url when downloading from coordinator
     };
 
     // Decrypt secrets from contract if provided (new repo-based system)

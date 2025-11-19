@@ -443,6 +443,9 @@ pub struct JobInfo {
     /// Compilation error message (for execute jobs to report failure to contract)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compile_error: Option<String>,
+    /// Compilation time in milliseconds from compile job
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compile_time_ms: Option<u64>,
 }
 
 /// Create task request (event monitor)

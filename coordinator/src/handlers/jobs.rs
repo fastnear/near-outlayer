@@ -146,6 +146,7 @@ pub async fn claim_job(
                     allowed: true,
                     compile_cost_yocto: None, // Not applicable for compile jobs
                     compile_error: None,
+                    compile_time_ms: None, // Will be set after compilation
                 });
             }
             Err(e) => {
@@ -166,7 +167,7 @@ pub async fn claim_job(
 
         // Check if compile job failed (executor needs to report error to contract)
         let compile_job = sqlx::query!(
-            "SELECT compile_cost_yocto, compile_error, status FROM jobs WHERE request_id = $1 AND data_id = $2 AND job_type = 'compile'",
+            "SELECT compile_cost_yocto, compile_error, status, compile_time_ms FROM jobs WHERE request_id = $1 AND data_id = $2 AND job_type = 'compile'",
             payload.request_id as i64,
             payload.data_id
         )
@@ -177,10 +178,10 @@ pub async fn claim_job(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-        let (compile_cost_yocto, compile_error, compile_status) = compile_job
+        let (compile_cost_yocto, compile_error, compile_status, compile_time_ms) = compile_job
             .as_ref()
-            .map(|j| (j.compile_cost_yocto.clone(), j.compile_error.clone(), Some(j.status.clone())))
-            .unwrap_or((None, None, None));
+            .map(|j| (j.compile_cost_yocto.clone(), j.compile_error.clone(), Some(j.status.clone()), j.compile_time_ms.map(|t| t as u64)))
+            .unwrap_or((None, None, None, None));
 
         // If WASM doesn't exist, no compile error, and no compile_result, executor can't do anything
         // Note: use wasm_file_exists (real state), not needs_compilation (force_rebuild affects only compiler)
@@ -264,6 +265,7 @@ pub async fn claim_job(
                     allowed: true,
                     compile_cost_yocto,
                     compile_error,
+                    compile_time_ms,
                 });
             }
             Err(e) => {
