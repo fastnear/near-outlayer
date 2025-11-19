@@ -177,27 +177,32 @@ path = "src/main.rs"`}
             execute your code off-chain, and send the result back into the blockchain transaction:
           </p>
           <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
-{`near contract call-function as-transaction outlayer.testnet request_execution \\
-  json-args '{
-    "code_source": {
-      "repo": "https://github.com/zavodil/random-ark",
-      "commit": "main",
-      "build_target": "wasm32-wasip1"
-    },
-    "input_data": "{\\"min\\": 1, \\"max\\": 100}",
-    "resource_limits": {
-      "max_instructions": 10000000000,
-      "max_memory_mb": 128,
-      "max_execution_seconds": 60
-    },
-    "response_format": "Json"
-  }' \\
-  prepaid-gas '300.0 Tgas' \\
-  attached-deposit '0.1 NEAR' \\
-  sign-as alice.testnet \\
-  network-config testnet \\
-  sign-with-keychain \\
-  send`}
+{`# Option 1: GitHub source (compiles from source code)
+near call outlayer.testnet request_execution '{
+  "code_source": {
+    "repo": "https://github.com/zavodil/random-ark",
+    "commit": "main",
+    "build_target": "wasm32-wasip1"
+  },
+  "input_data": "{\\"min\\": 1, \\"max\\": 100}",
+  "resource_limits": {
+    "max_instructions": 10000000000,
+    "max_memory_mb": 128,
+    "max_execution_seconds": 60
+  },
+  "response_format": "Json"
+}' --accountId alice.testnet --deposit 0.1 --gas 300000000000000
+
+# Option 2: WasmUrl source (pre-compiled WASM, instant execution)
+near call outlayer.testnet request_execution '{
+  "code_source": {
+    "url": "https://wasmhub.testnet.fastfs.io/fastfs.testnet/abc123...wasm",
+    "hash": "41c1c7b3528565f3fd139943f439d61c0768e9abdb9b579bd0921ecbfcabeded",
+    "build_target": "wasm32-wasip1"
+  },
+  "input_data": "{\\"min\\": 1, \\"max\\": 100}",
+  "response_format": "Json"
+}' --accountId alice.testnet --deposit 0.1 --gas 300000000000000`}
           </SyntaxHighlighter>
           <div className="bg-blue-50 border-l-4 border-blue-500 p-4 my-4">
             <p className="text-sm text-blue-800 mb-2">
@@ -283,6 +288,10 @@ impl CoinFlipContract {
         assert!(attached >= MIN_DEPOSIT, "Attach 0.01 NEAR");
 
         // Request random number from OutLayer
+        // Option 1: GitHub source (compiles from source)
+        // Option 2: WasmUrl for pre-compiled WASM:
+        //   json!({"url": "https://fastfs.io/.../random.wasm",
+        //          "hash": "abc123...", "build_target": "wasm32-wasip1"})
         ext_outlayer::ext(OUTLAYER_CONTRACT_ID.parse().unwrap())
             .with_attached_deposit(NearToken::from_yoctonear(attached))
             .with_unused_gas_weight(1)
