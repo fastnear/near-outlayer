@@ -223,6 +223,8 @@ function PlaygroundContent() {
   const [commit, setCommit] = useState(initialPreset?.type === 'direct' ? initialPreset.commit : '');
   const [wasmUrl, setWasmUrl] = useState('');
   const [wasmHash, setWasmHash] = useState('');
+  const [hashLoading, setHashLoading] = useState(false);
+  const [hashError, setHashError] = useState<string | null>(null);
   const [buildTarget, setBuildTarget] = useState(initialPreset?.type === 'direct' ? initialPreset.buildTarget : 'wasm32-wasip1');
   const [args, setArgs] = useState(initialPreset?.args || '');
   const [responseFormat, setResponseFormat] = useState(initialPreset?.type === 'direct' ? initialPreset.responseFormat : 'Json');
@@ -413,6 +415,42 @@ function PlaygroundContent() {
     }
   };
 
+  // Calculate SHA256 hash from WASM URL
+  const calculateWasmHash = async () => {
+    if (!wasmUrl) {
+      setHashError('Please enter a WASM URL first');
+      return;
+    }
+
+    setHashLoading(true);
+    setHashError(null);
+
+    try {
+      // Fetch the WASM file
+      const response = await fetch(wasmUrl);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch: ${response.status} ${response.statusText}`);
+      }
+
+      // Get the binary data
+      const arrayBuffer = await response.arrayBuffer();
+
+      // Calculate SHA256 using Web Crypto API
+      const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
+
+      // Convert to hex string
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+      setWasmHash(hashHex);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to calculate hash';
+      setHashError(message);
+      console.error('Hash calculation error:', err);
+    } finally {
+      setHashLoading(false);
+    }
+  };
 
   const handleExecute = async () => {
     if (!isConnected) {
@@ -825,16 +863,39 @@ function PlaygroundContent() {
                       <label htmlFor="wasmHash" className="block text-sm font-medium text-gray-700">
                         WASM Hash (SHA256)
                       </label>
-                      <input
-                        type="text"
-                        id="wasmHash"
-                        value={wasmHash}
-                        onChange={(e) => setWasmHash(e.target.value)}
-                        placeholder="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm font-mono px-3 py-2"
-                      />
+                      <div className="mt-1 flex gap-2">
+                        <input
+                          type="text"
+                          id="wasmHash"
+                          value={wasmHash}
+                          onChange={(e) => setWasmHash(e.target.value)}
+                          placeholder="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                          className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm font-mono px-3 py-2"
+                        />
+                        <button
+                          type="button"
+                          onClick={calculateWasmHash}
+                          disabled={hashLoading || !wasmUrl}
+                          className="inline-flex items-center px-3 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+                        >
+                          {hashLoading ? (
+                            <>
+                              <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-gray-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                              </svg>
+                              Calculating...
+                            </>
+                          ) : (
+                            'Calculate'
+                          )}
+                        </button>
+                      </div>
+                      {hashError && (
+                        <p className="mt-1 text-xs text-red-600">{hashError}</p>
+                      )}
                       <p className="mt-1 text-xs text-gray-500">
-                        SHA256 hash for verification (hex encoded, 64 characters)
+                        SHA256 hash for verification (hex encoded, 64 characters). Click &quot;Calculate&quot; to auto-fill from URL.
                       </p>
                     </div>
                   </>
@@ -873,7 +934,8 @@ function PlaygroundContent() {
                   </div>
                 </div>
 
-                {/* Execution Parameters - collapsible */}
+                {/* Execution Parameters - collapsible, only for GitHub sources */}
+                {codeSourceType === 'github' && (
                 <details className="mb-6" open={compileOnly || forceRebuild || storeOnFastfs}>
                   <summary className="cursor-pointer text-sm font-medium text-gray-700 hover:text-gray-900">
                     Execution Parameters {(compileOnly || forceRebuild || storeOnFastfs) && <span className="text-blue-600">(modified)</span>}
@@ -916,6 +978,7 @@ function PlaygroundContent() {
                     </label>
                   </div>
                 </details>
+                )}
               </>
             ) : null;
           })()}

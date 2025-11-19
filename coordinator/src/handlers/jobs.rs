@@ -35,10 +35,22 @@ pub async fn claim_job(
     // Calculate WASM checksum from code_source
     let wasm_checksum = calculate_wasm_checksum(&payload.code_source);
 
-    // Extract GitHub repo and commit for database
-    let (github_repo, github_commit) = match &payload.code_source {
-        CodeSource::GitHub { repo, commit, .. } => (Some(repo.clone()), Some(commit.clone())),
-        CodeSource::WasmUrl { .. } => (None, None),
+    // Extract code source fields for database
+    let (github_repo, github_commit, wasm_url, wasm_content_hash, build_target) = match &payload.code_source {
+        CodeSource::GitHub { repo, commit, build_target } => (
+            Some(repo.clone()),
+            Some(commit.clone()),
+            None,
+            None,
+            Some(build_target.clone())
+        ),
+        CodeSource::WasmUrl { url, hash, build_target } => (
+            None,
+            None,
+            Some(url.clone()),
+            Some(hash.clone()),
+            Some(build_target.clone())
+        ),
     };
 
     // Check if WASM exists in cache
@@ -120,8 +132,8 @@ pub async fn claim_job(
 
         let compile_job_result = sqlx::query!(
             r#"
-            INSERT INTO jobs (request_id, data_id, job_type, worker_id, status, wasm_checksum, user_account_id, near_payment_yocto, github_repo, github_commit, transaction_hash, created_at, updated_at)
-            VALUES ($1, $2, 'compile', $3, 'in_progress', $4, $5, $6, $7, $8, $9, NOW(), NOW())
+            INSERT INTO jobs (request_id, data_id, job_type, worker_id, status, wasm_checksum, user_account_id, near_payment_yocto, github_repo, github_commit, transaction_hash, wasm_url, wasm_content_hash, build_target, created_at, updated_at)
+            VALUES ($1, $2, 'compile', $3, 'in_progress', $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())
             RETURNING job_id
             "#,
             payload.request_id as i64,
@@ -132,7 +144,10 @@ pub async fn claim_job(
             payload.near_payment_yocto.as_deref(),
             github_repo.as_deref(),
             github_commit.as_deref(),
-            payload.transaction_hash.as_deref()
+            payload.transaction_hash.as_deref(),
+            wasm_url.as_deref(),
+            wasm_content_hash.as_deref(),
+            build_target.as_deref()
         )
         .fetch_one(&state.db)
         .await;
@@ -239,8 +254,8 @@ pub async fn claim_job(
 
         let execute_job_result = sqlx::query!(
             r#"
-            INSERT INTO jobs (request_id, data_id, job_type, worker_id, status, wasm_checksum, user_account_id, near_payment_yocto, github_repo, github_commit, transaction_hash, created_at, updated_at)
-            VALUES ($1, $2, 'execute', $3, 'in_progress', $4, $5, $6, $7, $8, $9, NOW(), NOW())
+            INSERT INTO jobs (request_id, data_id, job_type, worker_id, status, wasm_checksum, user_account_id, near_payment_yocto, github_repo, github_commit, transaction_hash, wasm_url, wasm_content_hash, build_target, created_at, updated_at)
+            VALUES ($1, $2, 'execute', $3, 'in_progress', $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())
             RETURNING job_id
             "#,
             payload.request_id as i64,
@@ -251,7 +266,10 @@ pub async fn claim_job(
             payload.near_payment_yocto.as_deref(),
             github_repo.as_deref(),
             github_commit.as_deref(),
-            payload.transaction_hash.as_deref()
+            payload.transaction_hash.as_deref(),
+            wasm_url.as_deref(),
+            wasm_content_hash.as_deref(),
+            build_target.as_deref()
         )
         .fetch_one(&state.db)
         .await;
@@ -379,7 +397,7 @@ pub async fn complete_job(
     // Get job details for history and to create execute task after compile
     let job = sqlx::query!(
         r#"
-        SELECT request_id, data_id, job_type, worker_id, wasm_checksum, user_account_id, near_payment_yocto, github_repo, github_commit, transaction_hash
+        SELECT request_id, data_id, job_type, worker_id, wasm_checksum, user_account_id, near_payment_yocto, github_repo, github_commit, transaction_hash, wasm_url, wasm_content_hash, build_target
         FROM jobs
         WHERE job_id = $1
         "#,
@@ -412,14 +430,21 @@ pub async fn complete_job(
         // For now, we'll create a minimal execute request - the worker will need to handle this
 
         // Build code source from stored data
+        let build_target = job.build_target.clone().unwrap_or_else(|| "wasm32-wasip1".to_string());
         let code_source = if let (Some(repo), Some(commit)) = (&job.github_repo, &job.github_commit) {
             CodeSource::GitHub {
                 repo: repo.clone(),
                 commit: commit.clone(),
-                build_target: "wasm32-wasip1".to_string(), // Default, could be stored in DB
+                build_target,
+            }
+        } else if let (Some(url), Some(hash)) = (&job.wasm_url, &job.wasm_content_hash) {
+            CodeSource::WasmUrl {
+                url: url.clone(),
+                hash: hash.clone(),
+                build_target,
             }
         } else {
-            error!("Missing github_repo or github_commit for compile job {}", payload.job_id);
+            error!("Missing code source fields for compile job {}", payload.job_id);
             return StatusCode::INTERNAL_SERVER_ERROR;
         };
 
@@ -602,14 +627,21 @@ pub async fn complete_job(
         );
 
         // Build minimal code source for the execute task
+        let build_target = job.build_target.clone().unwrap_or_else(|| "wasm32-wasip1".to_string());
         let code_source = if let (Some(repo), Some(commit)) = (&job.github_repo, &job.github_commit) {
             CodeSource::GitHub {
                 repo: repo.clone(),
                 commit: commit.clone(),
-                build_target: "wasm32-wasip1".to_string(),
+                build_target,
+            }
+        } else if let (Some(url), Some(hash)) = (&job.wasm_url, &job.wasm_content_hash) {
+            CodeSource::WasmUrl {
+                url: url.clone(),
+                hash: hash.clone(),
+                build_target,
             }
         } else {
-            error!("Missing github_repo or github_commit for failed compile job {}", payload.job_id);
+            error!("Missing code source fields for failed compile job {}", payload.job_id);
             return StatusCode::INTERNAL_SERVER_ERROR;
         };
 
