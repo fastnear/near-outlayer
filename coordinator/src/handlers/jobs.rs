@@ -177,10 +177,10 @@ pub async fn claim_job(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-        let (compile_cost_yocto, compile_error) = compile_job
+        let (compile_cost_yocto, compile_error, compile_status) = compile_job
             .as_ref()
-            .map(|j| (j.compile_cost_yocto.clone(), j.compile_error.clone()))
-            .unwrap_or((None, None));
+            .map(|j| (j.compile_cost_yocto.clone(), j.compile_error.clone(), j.status.clone()))
+            .unwrap_or((None, None, None));
 
         // If WASM doesn't exist, no compile error, and no compile_result, executor can't do anything
         // Note: use wasm_file_exists (real state), not needs_compilation (force_rebuild affects only compiler)
@@ -188,6 +188,18 @@ pub async fn claim_job(
             debug!(
                 "❌ WASM not available and no compile error/result for request_id={}, executor cannot proceed",
                 payload.request_id
+            );
+            let pricing = state.pricing.read().await.clone();
+            return Ok(Json(ClaimJobResponse { jobs: vec![], pricing }));
+        }
+
+        // If force_rebuild=true, executor must wait for compile job to complete
+        // Otherwise it will use old cached WASM instead of freshly compiled one
+        // Only wait if compile job exists (compile_job.is_some()) - otherwise compiler hasn't picked it up yet
+        if payload.force_rebuild && compile_job.is_some() && compile_status.as_deref() != Some("completed") && compile_error.is_none() {
+            debug!(
+                "⏳ force_rebuild=true but compile job not completed yet (status={:?}) for request_id={}, executor waiting",
+                compile_status, payload.request_id
             );
             let pricing = state.pricing.read().await.clone();
             return Ok(Json(ClaimJobResponse { jobs: vec![], pricing }));

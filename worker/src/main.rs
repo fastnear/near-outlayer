@@ -976,6 +976,13 @@ async fn handle_execute_job(
         let result_to_send = compile_result.unwrap();
         info!("📤 Result-only execute task: sending compile_result to contract: {}", result_to_send);
 
+        // Use consistent "Published to" format for URLs
+        let compilation_note = if result_to_send.starts_with("http") {
+            format!("Published to {}", result_to_send)
+        } else {
+            format!("Result from compilation: {}", result_to_send)
+        };
+
         let result = api_client::ExecutionResult {
             success: true,
             output: Some(api_client::ExecutionOutput::Text(result_to_send.clone())),
@@ -983,7 +990,7 @@ async fn handle_execute_job(
             execution_time_ms: 0, // No execution
             instructions: 0, // No execution
             compile_time_ms: None, // Already counted in compile job
-            compilation_note: Some(format!("Result from compilation: {}", result_to_send)),
+            compilation_note: Some(compilation_note),
         };
 
         match near_client.submit_execution_result(request_id, &result).await {
@@ -1337,9 +1344,12 @@ async fn handle_execute_job(
 
             execution_result.compilation_note = if let Some(url) = &effective_published_url {
                 // WASM was published to FastFS/IPFS
-                Some(url.clone())
+                Some(format!("Published to {}", url))
             } else if compile_time_ms.is_some() {
                 // Freshly compiled in this task (no published_url)
+                Some("Freshly compiled".to_string())
+            } else if compile_cost > 0 {
+                // Compiled by separate compiler worker (compile_cost indicates compilation happened)
                 Some("Freshly compiled".to_string())
             } else if let Some(timestamp) = &created_at {
                 // Downloaded from cache
@@ -1348,8 +1358,8 @@ async fn handle_execute_job(
                 None
             };
 
-            info!("🔍 DEBUG: effective_published_url={:?}, compile_time_ms={:?}, created_at={:?}, compilation_note={:?}",
-                &effective_published_url, &compile_time_ms, &created_at, &execution_result.compilation_note);
+            info!("🔍 DEBUG: effective_published_url={:?}, compile_time_ms={:?}, compile_cost={}, created_at={:?}, compilation_note={:?}",
+                &effective_published_url, &compile_time_ms, compile_cost, &created_at, &execution_result.compilation_note);
 
             if let Some(ct) = compile_time_ms {
                 info!(
