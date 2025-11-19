@@ -421,7 +421,7 @@ async fn worker_iteration(
     );
 
     // Local WASM cache - if we compile, we keep it in memory for execute job
-    let mut compiled_wasm: Option<(String, Vec<u8>, u64, Option<String>)> = None; // (checksum, bytes, compile_time_ms, created_at)
+    let mut compiled_wasm: Option<(String, Vec<u8>, u64, Option<String>, Option<String>)> = None; // (checksum, bytes, compile_time_ms, created_at, published_url)
 
     // Process each job in order
     for job in claim_response.jobs {
@@ -459,9 +459,9 @@ async fn worker_iteration(
                     compile_only,
                 )
                 .await {
-                    Ok((checksum, wasm_bytes, compile_time_ms, created_at)) => {
-                        // Store in local cache for execute job (including compile time and created_at)
-                        compiled_wasm = Some((checksum, wasm_bytes, compile_time_ms, created_at));
+                    Ok((checksum, wasm_bytes, compile_time_ms, created_at, published_url)) => {
+                        // Store in local cache for execute job (including compile time, created_at, and published_url)
+                        compiled_wasm = Some((checksum, wasm_bytes, compile_time_ms, created_at, published_url));
                     }
                     Err(e) => {
                         // Compilation failed - complete_job already called in handle_compile_job
@@ -490,7 +490,7 @@ async fn worker_iteration(
                     transaction_hash.as_ref(),
                     request_id,
                     &data_id,
-                    compiled_wasm.as_ref().map(|(cs, b, ct, ca)| (cs, b, ct, ca.as_deref())), // Pass local WASM cache
+                    compiled_wasm.as_ref().map(|(cs, b, ct, ca, pu)| (cs, b, ct, ca.as_deref(), pu.as_deref())), // Pass local WASM cache with published_url
                     compile_result.as_ref(), // Pass compile_result for result-only tasks
                 )
                 .await?;
@@ -584,7 +584,8 @@ async fn handle_compile_job(
     store_on_fastfs: bool,
     force_rebuild: bool,
     compile_only: bool,
-) -> Result<(String, Vec<u8>, u64, Option<String>)> {
+) -> Result<(String, Vec<u8>, u64, Option<String>, Option<String>)> {
+    // Returns (checksum, wasm_bytes, compile_time_ms, created_at, published_url)
     info!("🔨 Starting compilation job_id={} request_id={}", job.job_id, request_id);
 
     // Check if this is a WasmUrl source - if so, download instead of compile
@@ -625,7 +626,7 @@ async fn handle_compile_job(
                     warn!("⚠️ Failed to report download job completion: {}", e);
                 }
 
-                return Ok((checksum, wasm_bytes, download_time_ms, created_at));
+                return Ok((checksum, wasm_bytes, download_time_ms, created_at, None)); // No FastFS for WasmUrl downloads
             }
             Err(e) => {
                 let error_msg = e.to_string();
@@ -769,6 +770,7 @@ async fn handle_compile_job(
 
             // Upload to FastFS if requested (before complete_job to include result)
             let mut compile_result_for_executor: Option<String> = None;
+            let mut published_url: Option<String> = None;
 
             if store_on_fastfs {
                 if let Some(ref fastfs_receiver) = config.fastfs_receiver {
@@ -805,7 +807,10 @@ async fn handle_compile_job(
                         }
                     }
 
-                    // If compile_only=true, pass the FastFS URL to executor via compile_result
+                    // Always save published URL for compilation_note
+                    published_url = Some(fastfs_url.clone());
+
+                    // If compile_only=true, pass the URL to executor via compile_result
                     // Executor will call resolve_execution with this value
                     if compile_only {
                         info!("📤 Setting compile_result for executor: {}", fastfs_url);
@@ -881,7 +886,7 @@ async fn handle_compile_job(
                 }
             }
 
-            Ok((checksum, wasm_bytes, compile_time_ms, created_at))
+            Ok((checksum, wasm_bytes, compile_time_ms, created_at, published_url))
         }
         Err(e) => {
             let error_msg = e.to_string();
@@ -955,7 +960,7 @@ async fn handle_execute_job(
     transaction_hash: Option<&String>,
     request_id: u64,
     data_id: &str,
-    compiled_wasm: Option<(&String, &Vec<u8>, &u64, Option<&str>)>, // Local cache from compile job (checksum, bytes, compile_time_ms, created_at)
+    compiled_wasm: Option<(&String, &Vec<u8>, &u64, Option<&str>, Option<&str>)>, // Local cache from compile job (checksum, bytes, compile_time_ms, created_at, published_url)
     compile_result: Option<&String>, // Result from compile job to send to contract (e.g., FastFS URL)
 ) -> Result<()> {
     info!("⚙️ Starting execution job_id={}", job.job_id);
@@ -1125,11 +1130,11 @@ async fn handle_execute_job(
     let wasm_checksum = job.wasm_checksum.as_ref()
         .ok_or_else(|| anyhow::anyhow!("Execute job missing wasm_checksum"))?;
 
-    // Get WASM bytes, compile time, and creation timestamp - use local cache if available, otherwise download
-    let (wasm_bytes, compile_time_ms, created_at) = if let Some((cached_checksum, cached_bytes, cached_compile_time, cached_created_at)) = compiled_wasm {
+    // Get WASM bytes, compile time, creation timestamp, and published URL - use local cache if available, otherwise download
+    let (wasm_bytes, compile_time_ms, created_at, published_url) = if let Some((cached_checksum, cached_bytes, cached_compile_time, cached_created_at, cached_published_url)) = compiled_wasm {
         if cached_checksum == wasm_checksum {
-            info!("✅ Using locally compiled WASM: {} bytes (cache hit!) compiled in {}ms", cached_bytes.len(), cached_compile_time);
-            (cached_bytes.clone(), Some(*cached_compile_time), cached_created_at.map(|s| s.to_string()))
+            info!("✅ Using locally compiled WASM: {} bytes (freshly compiled!) compiled in {}ms", cached_bytes.len(), cached_compile_time);
+            (cached_bytes.clone(), Some(*cached_compile_time), cached_created_at.map(|s| s.to_string()), cached_published_url.map(|s| s.to_string()))
         } else {
             warn!("⚠️ Checksum mismatch - downloading from coordinator");
             // Check cache metadata to get created_at timestamp
@@ -1153,7 +1158,7 @@ async fn handle_execute_job(
                 }
             };
             info!("✅ Downloaded WASM: {} bytes", bytes.len());
-            (bytes, None, created_at)
+            (bytes, None, created_at, None) // No published_url when downloading from coordinator
         }
     } else {
         // No local cache - download from coordinator
@@ -1178,7 +1183,7 @@ async fn handle_execute_job(
             }
         };
         info!("✅ Downloaded WASM: {} bytes, created_at={:?}", bytes.len(), &created_at);
-        (bytes, None, created_at)
+        (bytes, None, created_at, None) // No published_url when downloading from coordinator
     };
 
     // Decrypt secrets from contract if provided (new repo-based system)
@@ -1320,17 +1325,28 @@ async fn handle_execute_job(
             // Add compilation time if WASM was compiled in this execution
             execution_result.compile_time_ms = compile_time_ms;
 
-            // Add compilation note if WASM was from cache
-            execution_result.compilation_note = created_at.as_ref().map(|timestamp| {
-                format!("Cached WASM from {}", timestamp)
-            });
+            // Add compilation note - prioritize published_url, then check if freshly compiled or cached
+            execution_result.compilation_note = if let Some(url) = &published_url {
+                // WASM was published to FastFS/IPFS
+                Some(url.clone())
+            } else if compile_time_ms.is_some() {
+                // Freshly compiled in this task (no published_url)
+                Some("Freshly compiled".to_string())
+            } else if let Some(timestamp) = &created_at {
+                // Downloaded from cache
+                Some(format!("Cached WASM from {}", timestamp))
+            } else {
+                None
+            };
 
-            info!("🔍 DEBUG: created_at={:?}, compilation_note={:?}", &created_at, &execution_result.compilation_note);
+            info!("🔍 DEBUG: published_url={:?}, compile_time_ms={:?}, created_at={:?}, compilation_note={:?}",
+                &published_url, &compile_time_ms, &created_at, &execution_result.compilation_note);
 
             if let Some(ct) = compile_time_ms {
                 info!(
-                    "✅ Execution successful: compile={}ms execute={}ms instructions={}",
-                    ct, execution_result.execution_time_ms, execution_result.instructions
+                    "✅ Execution successful: compile={}ms execute={}ms instructions={}{}",
+                    ct, execution_result.execution_time_ms, execution_result.instructions,
+                    published_url.as_ref().map(|u| format!(" published: {}", u)).unwrap_or_default()
                 );
             } else {
                 info!(
