@@ -85,6 +85,10 @@ pub struct ExecutionRequest {
     /// Store compiled WASM to FastFS after compilation
     #[serde(default)]
     pub store_on_fastfs: bool,
+    /// Result from compile job to pass to executor (e.g., FastFS URL or compilation error)
+    /// When set, executor should call resolve_execution with this value without running WASM
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compile_result: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -545,6 +549,8 @@ impl ApiClient {
     /// * `wasm_checksum` - WASM checksum (for compile jobs)
     /// * `actual_cost_yocto` - Total cost from contract (for execute jobs)
     /// * `compile_cost_yocto` - Compilation cost calculated by worker (for compile jobs)
+    /// * `compile_result` - Result to pass to executor (e.g., FastFS URL)
+    #[allow(clippy::too_many_arguments)]
     pub async fn complete_job(
         &self,
         job_id: i64,
@@ -557,6 +563,7 @@ impl ApiClient {
         actual_cost_yocto: Option<String>,
         compile_cost_yocto: Option<String>,
         error_category: Option<JobStatus>,
+        compile_result: Option<String>,
     ) -> Result<()> {
         let url = format!("{}/jobs/complete", self.base_url);
 
@@ -573,6 +580,8 @@ impl ApiClient {
             compile_cost_yocto: Option<String>,
             #[serde(skip_serializing_if = "Option::is_none")]
             error_category: Option<JobStatus>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            compile_result: Option<String>,
         }
 
         let request = CompleteJobRequest {
@@ -586,6 +595,7 @@ impl ApiClient {
             actual_cost_yocto,
             compile_cost_yocto,
             error_category,
+            compile_result,
         };
 
         tracing::debug!(

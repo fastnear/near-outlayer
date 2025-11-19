@@ -128,6 +128,10 @@ pub struct ExecutionRequest {
     /// Store compiled WASM to FastFS after compilation
     #[serde(default)]
     pub store_on_fastfs: bool,
+    /// Result from compile job to pass to executor (e.g., FastFS URL or compilation error)
+    /// When set, executor should call resolve_execution with this value without running WASM
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compile_result: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -349,6 +353,10 @@ pub struct CompleteJobRequest {
     /// Error category for better failure classification (optional, only when success=false)
     #[serde(default)]
     pub error_category: Option<JobStatus>,
+    /// Result from compile job to pass to executor (e.g., FastFS URL or compilation error)
+    /// When set, executor should call resolve_execution with this value without running WASM
+    #[serde(default)]
+    pub compile_result: Option<String>,
 }
 
 /// Legacy: Complete task request

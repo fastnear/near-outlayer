@@ -205,6 +205,7 @@ pub async fn create_task(
         compile_only: payload.compile_only,
         force_rebuild: payload.force_rebuild,
         store_on_fastfs: payload.store_on_fastfs,
+        compile_result: None, // No compile result yet - set after compilation
     };
 
     let request_json = serde_json::to_string(&execution_request).map_err(|e| {

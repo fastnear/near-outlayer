@@ -5,6 +5,7 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, Utc};
+use sha2::{Digest, Sha256};
 use tracing::{debug, error, info, warn};
 
 use crate::models::WasmExistsResponse;
@@ -44,13 +45,36 @@ pub async fn get_wasm(
     .execute(&state.db)
     .await;
 
-    // Read and return file
+    // Read file
     let bytes = tokio::fs::read(&wasm_path).await.map_err(|e| {
         error!("Failed to read WASM file {}: {}", checksum, e);
         StatusCode::NOT_FOUND
     })?;
 
-    debug!("WASM {} sent ({} bytes)", checksum, bytes.len());
+    // Verify file hash matches checksum (security check against tampering)
+    let actual_hash = hex::encode(Sha256::digest(&bytes));
+    if actual_hash != checksum {
+        error!(
+            "🚨 WASM file hash mismatch! Expected: {}, actual: {}. File may have been tampered with.",
+            checksum, actual_hash
+        );
+
+        // Delete corrupted/tampered file
+        if let Err(e) = tokio::fs::remove_file(&wasm_path).await {
+            warn!("Failed to delete corrupted WASM file: {}", e);
+        }
+
+        // Clean up metadata
+        let _ = sqlx::query("DELETE FROM wasm_cache WHERE checksum = $1")
+            .bind(&checksum)
+            .execute(&state.db)
+            .await;
+
+        info!("🧹 Deleted corrupted WASM and metadata: {}", checksum);
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    debug!("WASM {} verified and sent ({} bytes)", checksum, bytes.len());
     Ok(Bytes::from(bytes))
 }
 

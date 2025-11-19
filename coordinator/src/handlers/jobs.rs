@@ -428,13 +428,32 @@ pub async fn complete_job(
 
         let execution_request = match original_request {
             Ok(Some(req)) => {
-                // Check if this was compile-only request - don't create execute task
+                // Check if this was compile-only request
                 if req.compile_only {
-                    info!(
-                        "✅ Compile-only request completed for request_id={}, skipping execute task",
-                        job.request_id
-                    );
-                    return StatusCode::OK;
+                    // If compile_result is provided, create execute task for executor to send result to contract
+                    if let Some(ref compile_result) = payload.compile_result {
+                        info!(
+                            "📤 Compile-only request with result for request_id={}, creating execute task to send result: {}",
+                            job.request_id, compile_result
+                        );
+                        // Save compile_result to execution_requests for executor to pick up
+                        if let Err(e) = sqlx::query!(
+                            "UPDATE execution_requests SET compile_result = $1 WHERE request_id = $2",
+                            compile_result,
+                            job.request_id
+                        )
+                        .execute(&state.db)
+                        .await {
+                            error!("Failed to save compile_result: {}", e);
+                        }
+                    } else {
+                        // No compile_result - nothing to send to contract
+                        info!(
+                            "✅ Compile-only request completed for request_id={}, no result to send",
+                            job.request_id
+                        );
+                        return StatusCode::OK;
+                    }
                 }
 
                 ExecutionRequest {
@@ -447,7 +466,7 @@ pub async fn complete_job(
                         max_execution_seconds: req.max_execution_seconds.unwrap_or(60) as u64,
                     },
                     input_data: req.input_data.unwrap_or_default(),
-                    secrets_ref: if let (Some(profile), Some(account_id)) = (req.secrets_profile, req.secrets_account_id) {
+                    secrets_ref: if let (Some(profile), Some(account_id)) = (req.secrets_profile.clone(), req.secrets_account_id.clone()) {
                         Some(SecretsReference { profile, account_id })
                     } else {
                         None
@@ -474,6 +493,7 @@ pub async fn complete_job(
                     compile_only: req.compile_only,
                     force_rebuild: req.force_rebuild,
                     store_on_fastfs: req.store_on_fastfs,
+                    compile_result: payload.compile_result.clone(),
                 }
             }
             Ok(None) => {
@@ -499,6 +519,7 @@ pub async fn complete_job(
                     compile_only: false,
                     force_rebuild: false,
                     store_on_fastfs: false,
+                    compile_result: None,
                 }
             }
             Err(e) => {
@@ -523,6 +544,7 @@ pub async fn complete_job(
                     compile_only: false,
                     force_rebuild: false,
                     store_on_fastfs: false,
+                    compile_result: None,
                 }
             }
         };
@@ -592,6 +614,7 @@ pub async fn complete_job(
             compile_only: false,
             force_rebuild: false,
             store_on_fastfs: false,
+            compile_result: None,
         };
 
         let request_json = match serde_json::to_string(&execution_request) {
