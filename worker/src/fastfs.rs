@@ -9,7 +9,7 @@ use near_crypto::InMemorySigner;
 use near_jsonrpc_client::{methods, JsonRpcClient};
 use near_primitives::transaction::{Action, FunctionCallAction, Transaction, TransactionV0};
 use near_primitives::types::{AccountId, BlockReference, Finality};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 /// MIME type for WASM files
 const WASM_MIME_TYPE: &str = "application/wasm";
@@ -180,8 +180,12 @@ impl FastFsClient {
                 Ok(url)
             }
             near_primitives::views::FinalExecutionStatus::Failure(err) => {
-                warn!("❌ FastFS upload failed: {:?}", err);
-                anyhow::bail!("FastFS transaction failed: {:?}", err)
+                // Note: This is expected behavior! FastFS transaction "fails" because there's
+                // no contract deployed at fastfs.testnet/fastfs.near, but the indexer still
+                // picks up the data from the transaction and stores it.
+                info!("📁 FastFS transaction completed (indexer will pick up the file)");
+                debug!("   Transaction status: {:?}", err);
+                anyhow::bail!("FastFS transaction status: {:?}", err)
             }
             status => {
                 warn!("⚠️ FastFS upload unexpected status: {:?}", status);

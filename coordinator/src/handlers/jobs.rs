@@ -86,10 +86,13 @@ pub async fn claim_job(
         wasm_file_exists
     };
 
+    // Use has_compile_result from payload (passed by worker from ExecutionRequest)
+    let has_compile_result = payload.has_compile_result;
+
     let mut jobs = Vec::new();
 
     // Determine job type based on WASM availability and worker capabilities
-    if !effective_wasm_exists && can_compile {
+    if !effective_wasm_exists && can_compile && !has_compile_result {
         // Need compilation - check if compile job already exists
         let existing_compile = sqlx::query!(
             "SELECT job_id FROM jobs WHERE request_id = $1 AND data_id = $2 AND job_type = 'compile'",
@@ -156,9 +159,9 @@ pub async fn claim_job(
                 return Err(StatusCode::INTERNAL_SERVER_ERROR);
             }
         }
-    } else if can_execute && !payload.compile_only {
-        // Executor claiming job - either WASM exists or compilation failed
-        // Skip if compile_only=true (only compilation was requested)
+    } else if can_execute && (!payload.compile_only || has_compile_result) {
+        // Executor claiming job - either WASM exists, compilation failed, or has compile_result to send
+        // Allow if compile_only=true but compile_result exists (need to send result to contract)
 
         // Check if compile job failed (executor needs to report error to contract)
         let compile_job = sqlx::query!(
@@ -178,10 +181,10 @@ pub async fn claim_job(
             .map(|j| (j.compile_cost_yocto.clone(), j.compile_error.clone()))
             .unwrap_or((None, None));
 
-        // If WASM doesn't exist and no compile error, executor can't do anything
-        if !effective_wasm_exists && compile_error.is_none() {
+        // If WASM doesn't exist, no compile error, and no compile_result, executor can't do anything
+        if !effective_wasm_exists && compile_error.is_none() && !has_compile_result {
             debug!(
-                "❌ WASM not available and no compile error for request_id={}, executor cannot proceed",
+                "❌ WASM not available and no compile error/result for request_id={}, executor cannot proceed",
                 payload.request_id
             );
             let pricing = state.pricing.read().await.clone();

@@ -418,6 +418,10 @@ pub struct ClaimJobRequest {
     /// Force recompilation even if WASM exists in cache
     #[serde(default)]
     pub force_rebuild: bool,
+    /// Whether compile_result exists (from ExecutionRequest)
+    /// When true, executor should accept the task even with compile_only=true
+    #[serde(default)]
+    pub has_compile_result: bool,
 }
 
 #[derive(Debug, Serialize)]

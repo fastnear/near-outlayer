@@ -373,8 +373,9 @@ async fn worker_iteration(
     let compile_result = execution_request.compile_result.clone();
 
     // Claim jobs for this task with worker capabilities
-    info!("🎯 Claiming jobs for request_id={} data_id={} with capabilities={:?} compile_only={} force_rebuild={}",
-          request_id, data_id, config.capabilities.to_array(), compile_only, force_rebuild);
+    let has_compile_result = compile_result.is_some();
+    info!("🎯 Claiming jobs for request_id={} data_id={} with capabilities={:?} compile_only={} force_rebuild={} has_compile_result={}",
+          request_id, data_id, config.capabilities.to_array(), compile_only, force_rebuild, has_compile_result);
     let claim_response = match api_client
         .claim_job(
             request_id,
@@ -388,6 +389,7 @@ async fn worker_iteration(
             config.capabilities.to_array(),
             compile_only,
             force_rebuild,
+            has_compile_result,
         )
         .await
     {
@@ -790,9 +792,9 @@ async fn handle_compile_job(
                         Ok(url) => {
                             info!("✅ FastFS upload successful: {}", url);
                         }
-                        Err(e) => {
-                            // FastFS transaction fails but file is stored - this is expected behavior
-                            warn!("⚠️ FastFS transaction failed (expected): {}", e);
+                        Err(_) => {
+                            // FastFS transaction "fails" but indexer picks up the file - this is expected
+                            // The info message was already logged in fastfs.rs
                             info!("📁 FastFS URL: {}", fastfs_url);
                         }
                     }
