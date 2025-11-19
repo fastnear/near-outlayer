@@ -171,9 +171,7 @@ pub struct ResourceLimits {
 pub struct CreateTaskParams {
     pub request_id: u64,
     pub data_id: String,
-    pub repo: String,
-    pub commit: String,
-    pub build_target: String,
+    pub code_source: CodeSource,
     pub resource_limits: ResourceLimits,
     pub input_data: String,
     pub secrets_ref: Option<SecretsReference>,
@@ -949,11 +947,7 @@ impl ApiClient {
         let request = CreateRequest {
             request_id: params.request_id,
             data_id: params.data_id,
-            code_source: CodeSource::GitHub {
-                repo: params.repo,
-                commit: params.commit,
-                build_target: params.build_target,
-            },
+            code_source: params.code_source,
             resource_limits: params.resource_limits,
             input_data: params.input_data,
             secrets_ref: params.secrets_ref,

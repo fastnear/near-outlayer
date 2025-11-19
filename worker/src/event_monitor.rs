@@ -617,27 +617,14 @@ impl EventMonitor {
             gas_burnt: event.gas_burnt,
         };
 
-        // Extract repo/commit/build_target or url/hash based on source type
-        let (repo, commit, build_target) = match &request_data.code_source {
-            CodeSource::GitHub { github } => (
-                github.repo.clone(),
-                github.commit.clone(),
-                github.build_target.clone().unwrap_or_else(|| "wasm32-wasi".to_string()),
-            ),
-            CodeSource::WasmUrl { wasm_url } => (
-                format!("url:{}", wasm_url.url),
-                format!("hash:{}", wasm_url.hash),
-                wasm_url.build_target.clone().unwrap_or_else(|| "wasm32-wasi".to_string()),
-            ),
-        };
+        // Convert code_source to api_client format
+        let api_code_source = request_data.code_source.to_api_code_source();
 
         // Create task in coordinator API
         let params = CreateTaskParams {
             request_id: request_data.request_id,
             data_id: data_id_hex.clone(),
-            repo: repo.clone(),
-            commit: commit.clone(),
-            build_target,
+            code_source: api_code_source,
             resource_limits: ApiResourceLimits {
                 max_instructions: request_data.resource_limits.max_instructions,
                 max_memory_mb: request_data.resource_limits.max_memory_mb,
