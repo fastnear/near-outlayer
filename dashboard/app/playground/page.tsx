@@ -76,7 +76,7 @@ const DIRECT_PRESETS: DirectPreset[] = [
   {
     type: 'direct',
     name: 'AI Completions',
-    description: '🤖 Get AI inference with system prompt stored in encrypted secrets and user prompt coming from on-chain. Example system prompt: start sentences with "O". Build AI agents, chatbots, content generation. Using pre-compiled WASM from FastFS. Faster execution since no compilation needed.',
+    description: '🤖 AI inference with system prompt from encrypted secrets. Demo: AI responds with all sentences starting with "O" - you can set any custom rules like language restrictions, personality, response format. Using pre-compiled WASM from FastFS for faster execution.',
     codeSourceType: 'wasmurl',
     wasmUrl: 'https://wasmhub.testnet.fastfs.io/fastfs.testnet/cbf80ed0080dd62f2041745cdc958ec0fbd192f33aeaa756f7873d742204b2f8.wasm',
     wasmHash: '41c1c7b3528565f3fd139943f439d61c0768e9abdb9b579bd0921ecbfcabeded',
