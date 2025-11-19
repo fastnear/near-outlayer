@@ -491,7 +491,8 @@ async fn worker_iteration(
                     request_id,
                     &data_id,
                     compiled_wasm.as_ref().map(|(cs, b, ct, ca, pu)| (cs, b, ct, ca.as_deref(), pu.as_deref())), // Pass local WASM cache with published_url
-                    compile_result.as_ref(), // Pass compile_result for result-only tasks
+                    compile_result.as_ref(), // Pass compile_result (published_url or result for compile_only)
+                    compile_only,
                 )
                 .await?;
             }
@@ -810,12 +811,11 @@ async fn handle_compile_job(
                     // Always save published URL for compilation_note
                     published_url = Some(fastfs_url.clone());
 
-                    // If compile_only=true, pass the URL to executor via compile_result
-                    // Executor will call resolve_execution with this value
-                    if compile_only {
-                        info!("📤 Setting compile_result for executor: {}", fastfs_url);
-                        compile_result_for_executor = Some(fastfs_url);
-                    }
+                    // Always pass the URL to executor via compile_result
+                    // For compile_only: executor sends URL to contract as result
+                    // For normal: executor uses URL in compilation_note
+                    info!("📤 Setting compile_result for executor: {}", fastfs_url);
+                    compile_result_for_executor = Some(fastfs_url);
                 } else {
                     warn!("⚠️ store_on_fastfs=true but FASTFS_RECEIVER not configured, skipping upload");
                 }
@@ -961,13 +961,19 @@ async fn handle_execute_job(
     request_id: u64,
     data_id: &str,
     compiled_wasm: Option<(&String, &Vec<u8>, &u64, Option<&str>, Option<&str>)>, // Local cache from compile job (checksum, bytes, compile_time_ms, created_at, published_url)
-    compile_result: Option<&String>, // Result from compile job to send to contract (e.g., FastFS URL)
+    compile_result: Option<&String>, // Result from compile job (published_url or result for compile_only)
+    compile_only: bool,
 ) -> Result<()> {
     info!("⚙️ Starting execution job_id={}", job.job_id);
 
-    // Check if this is a result-only task (no actual execution needed)
+    // Extract published_url from compile_result (if set by compiler)
+    // For compile_only=true: send as result, for compile_only=false: use in compilation_note
+    let published_url_from_compile_result = compile_result.cloned();
+
+    // Check if this is a result-only task (compile_only=true)
     // Compiler passed the result (e.g., FastFS URL) for executor to send to contract
-    if let Some(result_to_send) = compile_result {
+    if compile_only && compile_result.is_some() {
+        let result_to_send = compile_result.unwrap();
         info!("📤 Result-only execute task: sending compile_result to contract: {}", result_to_send);
 
         let result = api_client::ExecutionResult {
@@ -1326,7 +1332,10 @@ async fn handle_execute_job(
             execution_result.compile_time_ms = compile_time_ms;
 
             // Add compilation note - prioritize published_url, then check if freshly compiled or cached
-            execution_result.compilation_note = if let Some(url) = &published_url {
+            // published_url can come from local cache (compiled_wasm) or from compile_result (separate executor)
+            let effective_published_url = published_url.or(published_url_from_compile_result.clone());
+
+            execution_result.compilation_note = if let Some(url) = &effective_published_url {
                 // WASM was published to FastFS/IPFS
                 Some(url.clone())
             } else if compile_time_ms.is_some() {
@@ -1339,14 +1348,14 @@ async fn handle_execute_job(
                 None
             };
 
-            info!("🔍 DEBUG: published_url={:?}, compile_time_ms={:?}, created_at={:?}, compilation_note={:?}",
-                &published_url, &compile_time_ms, &created_at, &execution_result.compilation_note);
+            info!("🔍 DEBUG: effective_published_url={:?}, compile_time_ms={:?}, created_at={:?}, compilation_note={:?}",
+                &effective_published_url, &compile_time_ms, &created_at, &execution_result.compilation_note);
 
             if let Some(ct) = compile_time_ms {
                 info!(
                     "✅ Execution successful: compile={}ms execute={}ms instructions={}{}",
                     ct, execution_result.execution_time_ms, execution_result.instructions,
-                    published_url.as_ref().map(|u| format!(" published: {}", u)).unwrap_or_default()
+                    effective_published_url.as_ref().map(|u| format!(" published: {}", u)).unwrap_or_default()
                 );
             } else {
                 info!(
