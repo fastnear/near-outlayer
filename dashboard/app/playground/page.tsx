@@ -3,7 +3,7 @@
 import { useState, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useNearWallet } from '@/contexts/NearWalletContext';
-import { checkWasmExists } from '@/lib/api';
+import { checkWasmExists, checkWasmExistsByChecksum } from '@/lib/api';
 import { getTransactionUrl } from '@/lib/explorer';
 import { actionCreators } from '@near-js/transactions';
 import WalletConnectionModal from '@/components/WalletConnectionModal';
@@ -388,12 +388,24 @@ function PlaygroundContent() {
       setError(null);
       const currentPreset = PRESETS.find(p => p.name === selectedPreset);
 
+      // Check if we're using WasmUrl for direct preset
+      if (currentPreset?.type === 'direct' && codeSourceType === 'wasmurl') {
+        // WasmUrl - check by hash
+        if (!wasmHash) {
+          setError('Please enter or calculate WASM hash first');
+          return;
+        }
+        const info = await checkWasmExistsByChecksum(wasmHash);
+        setWasmInfo(info);
+        return;
+      }
+
       let checkRepo: string;
       let checkCommit: string;
       let checkBuildTarget: string;
 
       if (currentPreset?.type === 'direct') {
-        // Direct preset - use form values
+        // Direct preset with GitHub - use form values
         checkRepo = repo;
         checkCommit = commit;
         checkBuildTarget = buildTarget;

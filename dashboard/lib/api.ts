@@ -174,6 +174,31 @@ export async function checkWasmExists(
 }
 
 /**
+ * Check if WASM exists by checksum (SHA256 hash)
+ */
+export async function checkWasmExistsByChecksum(
+  checksum: string
+): Promise<WasmInfo> {
+  try {
+    const response = await axios.get(`${API_BASE_URL}/wasm/exists/${checksum}`);
+    return {
+      exists: response.data.exists,
+      checksum: checksum,
+      file_size: response.data.file_size || null,
+      created_at: response.data.created_at || null,
+    };
+  } catch (error) {
+    // If 404 or other error, WASM doesn't exist
+    return {
+      exists: false,
+      checksum: checksum,
+      file_size: null,
+      created_at: null,
+    };
+  }
+}
+
+/**
  * Fetch user earnings
  */
 export async function fetchUserEarnings(userAccountId: string): Promise<UserEarnings> {
