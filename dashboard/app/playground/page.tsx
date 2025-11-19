@@ -20,8 +20,13 @@ interface BasePreset {
 interface DirectPreset extends BasePreset {
   type: 'direct';
   codeSourceType?: 'github' | 'wasmurl'; // default: 'github'
-  repo: string;
-  commit: string;
+  // GitHub source fields
+  repo?: string;
+  commit?: string;
+  // WasmUrl source fields
+  wasmUrl?: string;
+  wasmHash?: string;
+  // Common fields
   buildTarget: string;
   args: string;
   responseFormat: string;
@@ -81,6 +86,22 @@ const DIRECT_PRESETS: DirectPreset[] = [
     secretsOwnerTestnet: 'zavodil2.testnet',
     secretsOwnerMainnet: 'zavodil.near',
     networks: ['testnet', 'mainnet'],
+    docsLink: '/docs/examples#ai-ark',
+  },
+  {
+    type: 'direct',
+    name: 'AI Completions (FastFS)',
+    description: '🤖 Same as AI Completions but using pre-compiled WASM from FastFS. Faster execution since no compilation needed.',
+    codeSourceType: 'wasmurl',
+    wasmUrl: 'https://wasmhub.testnet.fastfs.io/fastfs.testnet/cbf80ed0080dd62f2041745cdc958ec0fbd192f33aeaa756f7873d742204b2f8.wasm',
+    wasmHash: 'cbf80ed0080dd62f2041745cdc958ec0fbd192f33aeaa756f7873d742204b2f8',
+    buildTarget: 'wasm32-wasip2',
+    args: '{"prompt":"What could the NEAR OutLayer project do?","history":[{"role":"user","content":"Tell me about NEAR"},{"role":"assistant","content":"NEAR is the most scalable Layer 1 blockchain."}],"model_name":"accounts/fireworks/models/gpt-oss-20b","openai_endpoint":"https://api.fireworks.ai/inference/v1/chat/completions","max_tokens":16384}',
+    responseFormat: 'Text',
+    secretsProfile: 'secret-system-prompt',
+    secretsOwnerTestnet: 'zavodil2.testnet',
+    secretsOwnerMainnet: 'zavodil.near',
+    networks: ['testnet'],
     docsLink: '/docs/examples#ai-ark',
   },
   {
@@ -342,12 +363,13 @@ function PlaygroundContent() {
 
       if (preset.type === 'direct') {
         setCodeSourceType(preset.codeSourceType || 'github');
-        setRepo(preset.repo);
-        setCommit(preset.commit);
+        setRepo(preset.repo || '');
+        setCommit(preset.commit || '');
+        setWasmUrl(preset.wasmUrl || '');
+        setWasmHash(preset.wasmHash || '');
         setBuildTarget(preset.buildTarget);
         setResponseFormat(preset.responseFormat);
         setSecretsProfile(preset.secretsProfile || '');
-        setWasmUrl('');
         // Execution params
         setCompileOnly(preset.compileOnly || false);
         setForceRebuild(preset.forceRebuild || false);
@@ -406,6 +428,10 @@ function PlaygroundContent() {
 
       if (currentPreset?.type === 'direct') {
         // Direct preset with GitHub - use form values
+        if (!repo || !commit) {
+          setError('Repository and commit are required for GitHub source');
+          return;
+        }
         checkRepo = repo;
         checkCommit = commit;
         checkBuildTarget = buildTarget;

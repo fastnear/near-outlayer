@@ -180,7 +180,7 @@ export async function checkWasmExistsByChecksum(
   checksum: string
 ): Promise<WasmInfo> {
   try {
-    const response = await axios.get(`${API_BASE_URL}/wasm/exists/${checksum}`);
+    const response = await axios.get(`${API_BASE_URL}/public/wasm/exists/${checksum}`);
     return {
       exists: response.data.exists,
       checksum: checksum,
