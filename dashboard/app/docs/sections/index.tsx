@@ -123,6 +123,17 @@ export function ContractIntegrationSection() {
                 </ul>
                 <p className="text-xs text-gray-500 mt-2">💡 Useful for contracts that want users to pay for their own executions</p>
               </div>
+
+              <div className="border-l-4 border-purple-400 pl-4">
+                <p className="font-mono text-sm text-gray-800 mb-1"><strong>params</strong>: ExecutionParams <span className="text-gray-500">(optional)</span></p>
+                <p className="text-sm text-gray-600 mb-2">Advanced execution control parameters:</p>
+                <ul className="list-disc list-inside text-sm text-gray-700 ml-4 space-y-1">
+                  <li><code className="bg-gray-100 px-2 py-1 rounded">force_rebuild</code>: bool (default: false) - Force recompilation even if WASM exists in cache. Useful when you updated code but kept the same commit hash, or need a fresh build for debugging.</li>
+                  <li><code className="bg-gray-100 px-2 py-1 rounded">compile_only</code>: bool (default: false) - Only compile, don&apos;t execute. Returns checksum of compiled WASM. Useful for pre-warming cache or verifying compilation.</li>
+                  <li><code className="bg-gray-100 px-2 py-1 rounded">store_on_fastfs</code>: bool (default: false) - Store compiled WASM on FastFS after compilation. Returns FastFS URL instead of execution result. Useful for permanent storage and sharing.</li>
+                </ul>
+                <p className="text-xs text-gray-500 mt-2">💡 Example: <code className="bg-gray-100 px-1 rounded">{`"params": {"force_rebuild": true, "compile_only": false, "store_on_fastfs": false}`}</code></p>
+              </div>
             </div>
           </div>
         </section>
