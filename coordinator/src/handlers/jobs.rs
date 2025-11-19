@@ -78,12 +78,13 @@ pub async fn claim_job(
         false
     };
 
-    // Handle force_rebuild - treat as if WASM doesn't exist
-    let effective_wasm_exists = if payload.force_rebuild {
-        info!("🔄 force_rebuild=true, ignoring cached WASM");
-        false
+    // Handle force_rebuild - for COMPILER: treat as if WASM doesn't exist
+    // For EXECUTOR: use real wasm_file_exists (after compilation, WASM exists)
+    let needs_compilation = if payload.force_rebuild {
+        info!("🔄 force_rebuild=true, compiler will recompile");
+        true
     } else {
-        wasm_file_exists
+        !wasm_file_exists
     };
 
     // Use has_compile_result from payload (passed by worker from ExecutionRequest)
@@ -92,7 +93,7 @@ pub async fn claim_job(
     let mut jobs = Vec::new();
 
     // Determine job type based on WASM availability and worker capabilities
-    if !effective_wasm_exists && can_compile && !has_compile_result {
+    if needs_compilation && can_compile && !has_compile_result {
         // Need compilation - check if compile job already exists
         let existing_compile = sqlx::query!(
             "SELECT job_id FROM jobs WHERE request_id = $1 AND data_id = $2 AND job_type = 'compile'",
@@ -182,7 +183,8 @@ pub async fn claim_job(
             .unwrap_or((None, None));
 
         // If WASM doesn't exist, no compile error, and no compile_result, executor can't do anything
-        if !effective_wasm_exists && compile_error.is_none() && !has_compile_result {
+        // Note: use wasm_file_exists (real state), not needs_compilation (force_rebuild affects only compiler)
+        if !wasm_file_exists && compile_error.is_none() && !has_compile_result {
             debug!(
                 "❌ WASM not available and no compile error/result for request_id={}, executor cannot proceed",
                 payload.request_id
