@@ -374,6 +374,12 @@ async fn worker_iteration(
 
     // Claim jobs for this task with worker capabilities
     let has_compile_result = compile_result.is_some();
+
+    // Log if task appears to be misrouted (useful for debugging)
+    if force_rebuild && !has_compile_result && !config.capabilities.can_compile() {
+        warn!("⚠️ Task with force_rebuild=true but no compile_result routed to executor - may be waiting for compiler");
+    }
+
     info!("🎯 Claiming jobs for request_id={} data_id={} with capabilities={:?} compile_only={} force_rebuild={} has_compile_result={}",
           request_id, data_id, config.capabilities.to_array(), compile_only, force_rebuild, has_compile_result);
     let claim_response = match api_client

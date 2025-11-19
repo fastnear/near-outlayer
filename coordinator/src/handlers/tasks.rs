@@ -5,7 +5,7 @@ use axum::{
 };
 use redis::AsyncCommands;
 use serde::Deserialize;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 use crate::models::{CreateTaskRequest, CreateTaskResponse, ExecutionRequest};
 use crate::AppState;
@@ -120,7 +120,8 @@ pub async fn create_task(
     State(state): State<AppState>,
     Json(payload): Json<CreateTaskRequest>,
 ) -> Result<(StatusCode, Json<CreateTaskResponse>), StatusCode> {
-    debug!("Creating task for request_id={} data_id={}", payload.request_id, payload.data_id);
+    info!("📥 Creating task for request_id={} data_id={} compile_only={} force_rebuild={} store_on_fastfs={}",
+        payload.request_id, payload.data_id, payload.compile_only, payload.force_rebuild, payload.store_on_fastfs);
 
     let request_id = payload.request_id;
 
@@ -175,17 +176,22 @@ pub async fn create_task(
     // force_rebuild forces compilation even if WASM exists
     let needs_compilation = !wasm_file_exists || payload.force_rebuild;
 
+    debug!(
+        "Queue decision: wasm_file_exists={} force_rebuild={} → needs_compilation={}",
+        wasm_file_exists, payload.force_rebuild, needs_compilation
+    );
+
     let queue_name = if needs_compilation {
         // Needs compilation - push to compile queue
         if payload.force_rebuild && wasm_file_exists {
-            debug!("WASM {} found but force_rebuild=true, pushing to compile queue", wasm_checksum);
+            info!("🔄 WASM {} found but force_rebuild=true → compile queue", wasm_checksum);
         } else {
-            debug!("WASM {} not in cache, pushing to compile queue", wasm_checksum);
+            info!("📦 WASM {} not in cache → compile queue", wasm_checksum);
         }
         &state.config.redis_queue_compile
     } else {
         // WASM exists - go directly to execute queue
-        debug!("WASM {} found in cache, pushing to execute queue", wasm_checksum);
+        info!("✅ WASM {} found in cache → execute queue", wasm_checksum);
         &state.config.redis_queue_execute
     };
 
