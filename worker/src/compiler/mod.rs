@@ -178,22 +178,28 @@ impl Compiler {
         info!("Acquired compilation lock for {}", repo);
 
         // Compile WASM from GitHub repository with timeout
-        let wasm_bytes = if let Some(timeout) = timeout_seconds {
+        // IMPORTANT: Always release lock on success or failure!
+        let compile_result = if let Some(timeout) = timeout_seconds {
             info!("⏱️  Compiling with timeout: {}s", timeout);
             tokio::time::timeout(
                 std::time::Duration::from_secs(timeout),
                 self.compile_from_github(repo, commit, build_target)
             )
             .await
-            .map_err(|_| anyhow::anyhow!("Compilation timeout exceeded: {}s", timeout))??
+            .map_err(|_| anyhow::anyhow!("Compilation timeout exceeded: {}s", timeout))
+            .and_then(|r| r)
         } else {
-            self.compile_from_github(repo, commit, build_target).await?
+            self.compile_from_github(repo, commit, build_target).await
         };
 
-        // Release lock
+        // Always release lock - regardless of compilation result
+        info!("🔓 Releasing compilation lock for {}", repo);
         if let Err(e) = self.api_client.release_lock(&lock_key).await {
             warn!("Failed to release lock {}: {}", lock_key, e);
         }
+
+        // Now handle the result
+        let wasm_bytes = compile_result?;
 
         info!("✅ WASM compilation complete: {} ({} bytes)", checksum, wasm_bytes.len());
         Ok((checksum, wasm_bytes, None)) // Fresh compilation, no created_at yet
