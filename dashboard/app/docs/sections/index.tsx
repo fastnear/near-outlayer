@@ -70,12 +70,26 @@ export function ContractIntegrationSection() {
             <div className="space-y-4">
               <div className="border-l-4 border-blue-400 pl-4">
                 <p className="font-mono text-sm text-gray-800 mb-1"><strong>code_source</strong>: CodeSource <span className="text-red-600">(required)</span></p>
-                <p className="text-sm text-gray-600 mb-2">Specifies where to get WASM code</p>
-                <ul className="list-disc list-inside text-sm text-gray-700 ml-4 space-y-1">
-                  <li><code className="bg-gray-100 px-2 py-1 rounded">repo</code>: GitHub repository URL (e.g., &quot;https://github.com/user/project&quot;)</li>
-                  <li><code className="bg-gray-100 px-2 py-1 rounded">commit</code>: Branch name (&quot;main&quot;) or commit hash (40-char SHA)</li>
-                  <li><code className="bg-gray-100 px-2 py-1 rounded">build_target</code>: Optional. &quot;wasm32-wasip1&quot; or &quot;wasm32-wasip2&quot; (default: wasip1)</li>
-                </ul>
+                <p className="text-sm text-gray-600 mb-2">Specifies where to get WASM code. Two variants available:</p>
+
+                <div className="mt-2 mb-2">
+                  <p className="text-sm font-semibold text-gray-800 mb-1">Variant 1: GitHub (compile from source)</p>
+                  <ul className="list-disc list-inside text-sm text-gray-700 ml-4 space-y-1">
+                    <li><code className="bg-gray-100 px-2 py-1 rounded">repo</code>: GitHub repository URL (e.g., &quot;https://github.com/user/project&quot;)</li>
+                    <li><code className="bg-gray-100 px-2 py-1 rounded">commit</code>: Branch name (&quot;main&quot;) or commit hash (40-char SHA)</li>
+                    <li><code className="bg-gray-100 px-2 py-1 rounded">build_target</code>: Optional. &quot;wasm32-wasip1&quot; or &quot;wasm32-wasip2&quot; (default: wasip1)</li>
+                  </ul>
+                </div>
+
+                <div className="mt-2">
+                  <p className="text-sm font-semibold text-gray-800 mb-1">Variant 2: WasmUrl (pre-compiled WASM)</p>
+                  <ul className="list-disc list-inside text-sm text-gray-700 ml-4 space-y-1">
+                    <li><code className="bg-gray-100 px-2 py-1 rounded">url</code>: URL to pre-compiled WASM file (FastFS, IPFS, etc.)</li>
+                    <li><code className="bg-gray-100 px-2 py-1 rounded">hash</code>: SHA256 hash of WASM file for verification</li>
+                    <li><code className="bg-gray-100 px-2 py-1 rounded">build_target</code>: &quot;wasm32-wasip1&quot; or &quot;wasm32-wasip2&quot;</li>
+                  </ul>
+                  <p className="text-xs text-gray-500 mt-1">Use WasmUrl for instant execution without compilation. Ideal for closed-source WASM or permanent deployments on FastFS/IPFS.</p>
+                </div>
               </div>
 
               <div className="border-l-4 border-gray-400 pl-4">
@@ -102,6 +116,7 @@ export function ContractIntegrationSection() {
                   <li><code className="bg-gray-100 px-2 py-1 rounded">account_id</code>: Account that owns the secrets</li>
                 </ul>
                 <p className="text-xs text-gray-500 mt-2">Worker decrypts secrets and injects as environment variables accessible via <code className="bg-gray-100 px-1 rounded">std::env::var()</code></p>
+                <p className="text-xs text-gray-500 mt-1">Secrets can be bound to GitHub repo+branch OR to a WASM hash. When using WasmUrl, secrets bound to the hash are automatically matched.</p>
               </div>
 
               <div className="border-l-4 border-gray-400 pl-4">
@@ -180,7 +195,24 @@ export function ContractIntegrationSection() {
               <strong>Execution time:</strong> Depends on your code - from milliseconds to minutes based on complexity and resource limits
             </p>
             <p className="text-sm text-gray-700">
-              <strong>On-chain WASM storage (coming soon):</strong> Skip compilation entirely. Store pre-compiled WASM on-chain for instant execution, no GitHub dependency, and DAO-governed updates.
+              <strong>Pre-compiled WASM:</strong> Skip compilation entirely. Use WasmUrl with FastFS/IPFS for instant ~1s execution.
+            </p>
+          </div>
+        </section>
+
+        <section id="fastfs-workflow">
+          <AnchorHeading id="fastfs-workflow">FastFS Workflow</AnchorHeading>
+          <p className="text-gray-700 mb-3">
+            For production deployments, use FastFS to store pre-compiled WASM for instant execution:
+          </p>
+          <ol className="list-decimal list-inside space-y-2 text-gray-700 ml-4">
+            <li><strong>Compile with store_on_fastfs:</strong> Set <code className="bg-gray-100 px-1 rounded">{`"params": {"store_on_fastfs": true, "compile_only": true}`}</code></li>
+            <li><strong>Get FastFS URL:</strong> Response contains <code className="bg-gray-100 px-1 rounded">fastfs_url</code> and <code className="bg-gray-100 px-1 rounded">wasm_hash</code></li>
+            <li><strong>Execute via WasmUrl:</strong> Use the URL and hash in <code className="bg-gray-100 px-1 rounded">code_source</code> for instant execution</li>
+          </ol>
+          <div className="bg-green-50 border-l-4 border-green-400 p-3 mt-3">
+            <p className="text-sm text-gray-700">
+              <strong>Benefits:</strong> Instant execution (no compilation), immutable code (hash-verified), works with closed-source WASM, permanent storage on-chain.
             </p>
           </div>
         </section>
@@ -557,6 +589,45 @@ export function SecretsSection() {
                 Manual secrets cannot use this prefix - enforced by keystore validation.
               </p>
             </div>
+          </div>
+        </section>
+
+        <section id="secrets-binding">
+          <AnchorHeading id="secrets-binding">Secrets Binding Types</AnchorHeading>
+          <p className="text-gray-700 mb-3">
+            Secrets can be bound to different identifiers depending on your use case:
+          </p>
+
+          <div className="space-y-3">
+            <div className="border-l-4 border-blue-400 pl-3">
+              <p className="font-semibold text-gray-800 mb-1">Repository-based (GitHub)</p>
+              <p className="text-sm text-gray-700 mb-2">Bind secrets to a GitHub repository and optional branch</p>
+              <ul className="list-disc list-inside text-sm text-gray-700 ml-4">
+                <li>Key: <code className="bg-gray-100 px-1 rounded">repo + branch + profile + owner</code></li>
+                <li>Example: <code className="bg-gray-100 px-1 rounded">github.com/user/repo:main:production</code></li>
+                <li>Best for: Development, CI/CD workflows, version-specific secrets</li>
+              </ul>
+            </div>
+
+            <div className="border-l-4 border-purple-400 pl-3">
+              <p className="font-semibold text-gray-800 mb-1">WASM Hash-based</p>
+              <p className="text-sm text-gray-700 mb-2">Bind secrets to a specific compiled WASM binary (SHA256 hash)</p>
+              <ul className="list-disc list-inside text-sm text-gray-700 ml-4">
+                <li>Key: <code className="bg-gray-100 px-1 rounded">wasm_hash + profile + owner</code></li>
+                <li>Example: <code className="bg-gray-100 px-1 rounded">cbf80ed0...2f8:production</code></li>
+                <li>Best for: Pre-compiled WASM from FastFS/IPFS, immutable deployments</li>
+                <li>Guarantees: Only this exact binary can access the secrets</li>
+              </ul>
+            </div>
+          </div>
+
+          <div className="mt-3 p-3 bg-purple-50 border border-purple-200 rounded">
+            <p className="text-sm text-purple-900 font-medium mb-1">🔒 WASM Hash Binding Security</p>
+            <p className="text-xs text-purple-800">
+              When using WASM hash binding, secrets are cryptographically tied to the exact binary.
+              Any modification to the code produces a different hash, preventing unauthorized access.
+              This is ideal for production deployments where code immutability is required.
+            </p>
           </div>
         </section>
 

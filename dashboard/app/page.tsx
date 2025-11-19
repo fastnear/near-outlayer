@@ -269,16 +269,16 @@ export default function Home() {
               </p>
             </div>
 
-            {/* Immutable Storage */}
+            {/* Pre-compiled WASM */}
             <div className="feature-card rounded-lg px-6 py-8 transform transition-all">
               <div className="feature-icon inline-flex items-center justify-center p-4 rounded-lg mb-6">
                 <svg className="h-8 w-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
                 </svg>
               </div>
-              <h4 className="text-xl font-bold text-[var(--primary-orange)] mb-3">Immutable WASM Storage</h4>
+              <h4 className="text-xl font-bold text-[var(--primary-orange)] mb-3">Pre-compiled WASM</h4>
               <p className="text-gray-600">
-                Store compiled WASM on-chain for instant 1-second execution. DAO-governed updates. No GitHub dependency or compilation delays.
+                Run pre-compiled WASM files without source code. Store immutable binaries on FastFS/IPFS - no middlemen, no compilation dependencies. Perfect for closed-source or proprietary code.
               </p>
             </div>
 

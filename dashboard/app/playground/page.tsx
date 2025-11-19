@@ -1191,32 +1191,32 @@ function PlaygroundContent() {
               )}
             </button>
 
-            {/* Check WASM Button - for direct execution and proxy with wasmRepo */}
+            {/* Check WASM Cache - for direct execution and proxy with wasmRepo */}
             {(() => {
               const currentPreset = PRESETS.find(p => p.name === selectedPreset);
               const shouldShowButton = currentPreset?.type === 'direct' ||
                                        (currentPreset?.type === 'proxy' && currentPreset.wasmRepo);
               return shouldShowButton ? (
-                <div className="mt-3 text-center">
-                  <button
-                    onClick={handleCheckWasm}
-                    className="text-sm text-gray-500 hover:text-gray-700 underline"
-                  >
-                    Check WASM Cache
-                  </button>
-                  {wasmInfo && (
-                    <div className="mt-1 text-xs">
-                      {wasmInfo.exists ? (
+                <div className="mt-3 flex items-center justify-between">
+                  <div className="text-xs">
+                    {wasmInfo && (
+                      wasmInfo.exists ? (
                         <span className="text-green-600">
-                          ✓ Cached (checksum: {wasmInfo.checksum?.substring(0, 12)}...)
+                          ✓ Cached ({wasmInfo.checksum?.substring(0, 8)}...)
                         </span>
                       ) : (
                         <span className="text-yellow-600">
-                          ⚠ Not cached - will compile{currentPreset?.type === 'proxy' && currentPreset.increaseDepositIfNoCache ? ' (+0.1 NEAR)' : ''}
+                          ⚠ Not cached{currentPreset?.type === 'proxy' && currentPreset.increaseDepositIfNoCache ? ' (+0.1 NEAR)' : ''}
                         </span>
-                      )}
-                    </div>
-                  )}
+                      )
+                    )}
+                  </div>
+                  <button
+                    onClick={handleCheckWasm}
+                    className="text-sm text-blue-600 hover:text-blue-800 font-medium"
+                  >
+                    📦 Check WASM Cache →
+                  </button>
                 </div>
               ) : null;
             })()}
