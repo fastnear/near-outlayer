@@ -248,14 +248,22 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
           encrypted_data_length: data.encrypted_data_base64.length,
         });
 
+        // Extract normalized values from response accessor
+        const repoNormalized = data.accessor?.type === 'Repo'
+          ? data.accessor.repo_normalized
+          : repo.trim();
+        const wasmHashNormalized = data.accessor?.type === 'WasmHash'
+          ? data.accessor.hash
+          : wasmHash.trim();
+
         // Convert base64 to array and submit to contract
         const encryptedArray = Array.from(atob(data.encrypted_data_base64), c => c.charCodeAt(0));
         const contractAccess = convertAccessToContractFormat(accessCondition);
         const formData: FormData = {
           sourceType,
-          repo: repo.trim(),
+          repo: repoNormalized,
           branch: branch.trim() || null,
-          wasmHash: wasmHash.trim(),
+          wasmHash: wasmHashNormalized,
           profile: profile.trim(),
           access: contractAccess,
         };

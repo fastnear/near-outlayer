@@ -579,6 +579,7 @@ pub struct GeneratedSecretSpec {
 pub struct AddGeneratedSecretResponse {
     pub encrypted_data_base64: String,
     pub all_keys: Vec<String>,
+    pub accessor: PubkeyResponseAccessor,
 }
 
 pub async fn add_generated_secret(
@@ -611,8 +612,8 @@ pub async fn add_generated_secret(
         ));
     }
 
-    // Build seed based on accessor type (same logic as get_pubkey)
-    let seed = match &req.accessor {
+    // Build seed and response accessor based on accessor type (same logic as get_pubkey)
+    let (seed, response_accessor) = match &req.accessor {
         SecretAccessor::Repo { repo, branch } => {
             // Normalize repo URL
             let normalized_repo = parse_github_repo(repo)
@@ -633,7 +634,12 @@ pub async fn add_generated_secret(
                 req.new_secrets.len()
             );
 
-            seed
+            let accessor = PubkeyResponseAccessor::Repo {
+                repo_normalized: normalized_repo,
+                branch: branch.clone(),
+            };
+
+            (seed, accessor)
         }
         SecretAccessor::WasmHash { hash } => {
             // Validate hash format
@@ -654,7 +660,11 @@ pub async fn add_generated_secret(
                 req.new_secrets.len()
             );
 
-            seed
+            let accessor = PubkeyResponseAccessor::WasmHash {
+                hash: hash.clone(),
+            };
+
+            (seed, accessor)
         }
     };
 
@@ -720,6 +730,7 @@ pub async fn add_generated_secret(
         Json(AddGeneratedSecretResponse {
             encrypted_data_base64: keystore_data.encrypted_data_base64,
             all_keys: keystore_data.all_keys,
+            accessor: response_accessor,
         }),
     ))
 }
