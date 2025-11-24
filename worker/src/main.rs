@@ -19,7 +19,7 @@ use collateral_fetcher::fetch_collateral_from_phala;
 use compiler::Compiler;
 use config::Config;
 use event_monitor::EventMonitor;
-use executor::Executor;
+use executor::{Executor, ExecutionContext};
 use keystore_client::KeystoreClient;
 use near_client::NearClient;
 use tdx_attestation::TdxClient;
@@ -85,8 +85,31 @@ async fn main() -> Result<()> {
         None
     };
 
-    // Initialize executor
-    let executor = Executor::new(config.default_max_instructions, config.print_wasm_stderr);
+    // Initialize RPC proxy if enabled
+    let rpc_proxy = if config.rpc_proxy.enabled {
+        info!("🔧 Initializing NEAR RPC proxy...");
+        let proxy = outlayer_rpc::RpcProxy::new(
+            config.rpc_proxy.clone(),
+            &config.near_rpc_url,
+        )?;
+        info!("✅ RPC proxy initialized: {}", proxy.get_rpc_url_masked());
+        Some(proxy)
+    } else {
+        info!("⚠️  RPC proxy disabled - WASM modules cannot make NEAR RPC calls");
+        None
+    };
+
+    // Initialize executor with RPC proxy context
+    let executor = if let Some(proxy) = rpc_proxy {
+        let runtime_handle = tokio::runtime::Handle::current();
+        let exec_context = ExecutionContext::new(runtime_handle.clone())
+            .with_outlayer_rpc(proxy);
+
+        Executor::new(config.default_max_instructions, config.print_wasm_stderr)
+            .with_context(exec_context)
+    } else {
+        Executor::new(config.default_max_instructions, config.print_wasm_stderr)
+    };
 
     // Initialize keystore client (optional)
     let keystore_client = if let (Some(keystore_url), Some(keystore_token)) = (
