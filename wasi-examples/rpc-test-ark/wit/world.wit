@@ -1,0 +1,29 @@
+package near:rpc;
+
+interface api {
+    view: func(contract-id: string, method-name: string, args-json: string) -> tuple<string, string>;
+    view-account: func(account-id: string) -> tuple<string, string>;
+    view-access-key: func(account-id: string, public-key: string) -> tuple<string, string>;
+    block: func(finality-or-block-id: string) -> tuple<string, string>;
+    gas-price: func() -> tuple<string, string>;
+    send-tx: func(signed-tx-base64: string, wait-until: string) -> tuple<string, string>;
+    raw: func(method: string, params-json: string) -> tuple<string, string>;
+
+    /// Call a contract method with explicit signer (WASM provides private key)
+    /// CRITICAL: Worker NEVER signs with its own key. WASM MUST provide signer credentials.
+    /// signer-id: the account to sign as
+    /// signer-key: the private key in NEAR format (ed25519:base58...)
+    /// Returns (tx_hash, error)
+    call: func(signer-id: string, signer-key: string, receiver-id: string, method-name: string, args-json: string, deposit-yocto: string, gas: string) -> tuple<string, string>;
+
+    /// Transfer NEAR tokens with explicit signer (WASM provides private key)
+    /// CRITICAL: Worker NEVER signs with its own key. WASM MUST provide signer credentials.
+    /// signer-id: the account to sign as
+    /// signer-key: the private key in NEAR format (ed25519:base58...)
+    /// Returns (tx_hash, error)
+    transfer: func(signer-id: string, signer-key: string, receiver-id: string, amount-yocto: string) -> tuple<string, string>;
+}
+
+world rpc-test {
+    import api;
+}

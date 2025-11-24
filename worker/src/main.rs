@@ -8,6 +8,7 @@ mod fastfs;
 mod keystore_client;
 mod near_client;
 mod registration;
+mod outlayer_rpc;
 mod tdx_attestation;
 
 use anyhow::{Context, Result};
@@ -571,7 +572,7 @@ fn merge_env_vars(
 async fn handle_compile_job(
     api_client: &ApiClient,
     compiler: &Compiler,
-    near_client: &NearClient,
+    _near_client: &NearClient,
     _keystore_client: Option<&KeystoreClient>,
     tdx_client: &tdx_attestation::TdxClient,
     job: &JobInfo,
@@ -584,7 +585,7 @@ async fn handle_compile_job(
     config: &Config,
     store_on_fastfs: bool,
     force_rebuild: bool,
-    compile_only: bool,
+    _compile_only: bool,
 ) -> Result<(String, Vec<u8>, u64, Option<String>, Option<String>)> {
     // Returns (checksum, wasm_bytes, compile_time_ms, created_at, published_url)
     info!("🔨 Starting compilation job_id={} request_id={}", job.job_id, request_id);

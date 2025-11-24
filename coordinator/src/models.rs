@@ -188,6 +188,7 @@ impl CodeSource {
     }
 
     /// Get the hash for WasmUrl sources
+    #[allow(dead_code)]
     pub fn hash(&self) -> Option<&str> {
         match self {
             CodeSource::GitHub { .. } => None,
@@ -196,6 +197,7 @@ impl CodeSource {
     }
 
     /// Check if this is a WasmUrl source (pre-compiled, no compilation needed)
+    #[allow(dead_code)]
     pub fn is_wasm_url(&self) -> bool {
         matches!(self, CodeSource::WasmUrl { .. })
     }

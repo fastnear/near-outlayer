@@ -81,6 +81,7 @@ pub struct WasmUrlSource {
 
 impl CodeSource {
     /// Get repo URL (for GitHub sources)
+    #[allow(dead_code)]
     pub fn repo(&self) -> Option<&str> {
         match self {
             CodeSource::GitHub { github } => Some(&github.repo),
@@ -89,6 +90,7 @@ impl CodeSource {
     }
 
     /// Get commit (for GitHub sources)
+    #[allow(dead_code)]
     pub fn commit(&self) -> Option<&str> {
         match self {
             CodeSource::GitHub { github } => Some(&github.commit),

@@ -11,6 +11,7 @@ Universal test tool to validate WASM modules for NEAR OutLayer compatibility.
 ✅ JSON validation
 ✅ Output size limits
 ✅ Compatibility with wasmtime 28+
+✅ NEAR RPC host functions (view calls and transactions)
 
 ## Installation
 
@@ -66,6 +67,61 @@ cargo build --release
 ./target/release/wasi-test \
   --wasm ../oracle-ark/target/wasm32-wasip2/release/oracle-ark.wasm \
   --input '{"tokens":[{"token_id":"bitcoin","sources":[{"name":"coingecko","token_id":null}],"aggregation_method":"average","min_sources_num":1}],"max_price_deviation_percent":10.0}' \
+  --max-instructions 50000000000
+```
+
+### Test with NEAR RPC (View Calls Only)
+
+```bash
+# Test rpc-test-ark with view calls
+./target/release/wasi-test \
+  --wasm ../rpc-test-ark/target/wasm32-wasip2/release/rpc-test-ark.wasm \
+  --input '{"test":"view_account","account_id":"outlayer.testnet"}' \
+  --rpc \
+  --max-instructions 50000000000
+
+# Test with custom RPC endpoint
+./target/release/wasi-test \
+  --wasm ../rpc-test-ark/target/wasm32-wasip2/release/rpc-test-ark.wasm \
+  --input '{"test":"all","account_id":"outlayer.testnet"}' \
+  --rpc \
+  --rpc-url "https://rpc.testnet.near.org" \
+  --max-instructions 50000000000
+```
+
+### Test with NEAR RPC (Transactions)
+
+```bash
+# Test botfather-ark - create accounts (requires credentials via env)
+./target/release/wasi-test \
+  --wasm ../botfather-ark/target/wasm32-wasip2/release/bot-father.wasm \
+  --input '{"action":"create_accounts","prompt":"space theme","count":3,"deposit_per_account":"1000000000000000000000000"}' \
+  --env OPENAI_API_KEY=sk-... \
+  --env BOT_FATHER_MASTER_KEY=ed25519:... \
+  --env NEAR_SENDER_ID=alice.testnet \
+  --env NEAR_SENDER_PRIVATE_KEY=ed25519:... \
+  --rpc \
+  --rpc-allow-transactions \
+  --max-instructions 50000000000
+
+# Test botfather-ark - list accounts (no credentials needed)
+./target/release/wasi-test \
+  --wasm ../botfather-ark/target/wasm32-wasip2/release/bot-father.wasm \
+  --input '{"action":"list_accounts","indices":[]}' \
+  --env BOT_FATHER_MASTER_KEY=ed25519:... \
+  --env NEAR_SENDER_ID=alice.testnet \
+  --rpc \
+  --max-instructions 50000000000
+
+# Test botfather-ark - fund specific accounts
+./target/release/wasi-test \
+  --wasm ../botfather-ark/target/wasm32-wasip2/release/bot-father.wasm \
+  --input '{"action":"fund_accounts","total_amount":"30000000000000000000000000","indices":[0,2]}' \
+  --env BOT_FATHER_MASTER_KEY=ed25519:... \
+  --env NEAR_SENDER_ID=alice.testnet \
+  --env NEAR_SENDER_PRIVATE_KEY=ed25519:... \
+  --rpc \
+  --rpc-allow-transactions \
   --max-instructions 50000000000
 ```
 
@@ -288,6 +344,23 @@ Options:
           Maximum memory in MB
           [default: 128]
 
+  -e, --env <ENV>
+          Environment variables (format: KEY=value, can be specified multiple times)
+
+      --rpc
+          Enable NEAR RPC proxy (provides near:rpc/api host functions)
+
+      --rpc-url <RPC_URL>
+          NEAR RPC URL for proxy
+          [default: https://rpc.testnet.near.org]
+
+      --rpc-max-calls <RPC_MAX_CALLS>
+          Maximum RPC calls per execution
+          [default: 100]
+
+      --rpc-allow-transactions
+          Allow transaction methods (call, transfer)
+
   -v, --verbose
           Verbose output
 
@@ -296,6 +369,79 @@ Options:
 
   -V, --version
           Print version
+```
+
+## NEAR RPC Host Functions
+
+When `--rpc` flag is enabled, the test runner provides `near:rpc/api` host functions that WASM modules can use to interact with NEAR blockchain.
+
+### Available Functions
+
+**View Functions** (read-only, no credentials required):
+- `view(contract_id, method_name, args_json)` - Call view function on contract
+- `view_account(account_id)` - Get account information (balance, storage, etc.)
+- `view_access_key(account_id, public_key)` - Get access key information
+- `block(finality_or_block_id)` - Get block information
+- `gas_price()` - Get current gas price
+- `raw(method, params_json)` - Raw JSON-RPC call
+
+**Transaction Functions** (require `--rpc-allow-transactions` + credentials via `--env`):
+- `call(signer_id, signer_key, receiver_id, method_name, args_json, deposit_yocto, gas)` - Call contract method with transaction
+- `transfer(signer_id, signer_key, receiver_id, amount_yocto)` - Transfer NEAR tokens
+
+### Security Model
+
+**CRITICAL**: Worker (test runner) NEVER signs transactions with its own key. All transaction signer credentials MUST be provided by WASM via environment variables:
+
+- `NEAR_SENDER_ID` - Account ID that will sign transactions
+- `NEAR_SENDER_PRIVATE_KEY` - Private key in NEAR format (ed25519:base58...)
+
+WASM code reads these from environment and explicitly passes to `call()` or `transfer()` functions. This is the same security model as production OutLayer workers.
+
+### Environment Variables
+
+Pass secrets and configuration to WASM using `--env` flag:
+
+```bash
+--env NEAR_SENDER_ID=alice.testnet \
+--env NEAR_SENDER_PRIVATE_KEY=ed25519:... \
+--env OPENAI_API_KEY=sk-... \
+--env BOT_FATHER_MASTER_KEY=ed25519:...
+```
+
+WASM code accesses these via standard `std::env::var("KEY_NAME")`.
+
+### Example: Testing WASM with RPC
+
+```rust
+// In your WASM code (Rust)
+use std::env;
+
+// Read credentials from environment (passed via --env)
+let signer_id = env::var("NEAR_SENDER_ID").unwrap();
+let signer_key = env::var("NEAR_SENDER_PRIVATE_KEY").unwrap();
+
+// Call NEAR RPC host function
+let (result, error) = near::rpc::api::view_account(&signer_id);
+
+// For transactions, explicitly provide credentials
+let (tx_hash, error) = near::rpc::api::transfer(
+    &signer_id,           // From env
+    &signer_key,          // From env
+    "receiver.testnet",
+    "1000000000000000000000000",  // 1 NEAR in yoctoNEAR
+);
+```
+
+Test this WASM:
+```bash
+./target/release/wasi-test \
+  --wasm your-app.wasm \
+  --input '{"action":"transfer"}' \
+  --env NEAR_SENDER_ID=alice.testnet \
+  --env NEAR_SENDER_PRIVATE_KEY=ed25519:... \
+  --rpc \
+  --rpc-allow-transactions
 ```
 
 ## Requirements
@@ -309,8 +455,11 @@ Options:
 - [WASI_TUTORIAL.md](../WASI_TUTORIAL.md) - Complete WASI development guide
 - [random-ark](../random-ark/) - Example WASI P1 module
 - [ai-ark](../ai-ark/) - Example WASI P2 component
+- [rpc-test-ark](../rpc-test-ark/) - Example with NEAR RPC host functions
+- [botfather-ark](../botfather-ark/) - Example with RPC transactions and secrets
+- [SECURITY_AUDIT_REPORT.md](../SECURITY_AUDIT_REPORT.md) - Security model for transaction signing
 
 ---
 
-**Last updated**: 2025-10-15
+**Last updated**: 2025-11-24
 **Compatible with**: wasmtime 28+, NEAR OutLayer MVP

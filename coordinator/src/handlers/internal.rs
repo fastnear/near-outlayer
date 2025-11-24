@@ -5,6 +5,7 @@ use axum::{
 };
 
 use crate::AppState;
+#[allow(unused_imports)]
 use crate::models::{StoreSystemLogRequest, SystemHiddenLog};
 
 /// POST /internal/system-logs
