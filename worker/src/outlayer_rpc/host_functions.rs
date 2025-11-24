@@ -98,8 +98,11 @@ pub fn add_rpc_to_linker<T: Send + 'static>(
     linker: &mut Linker<T>,
     get_state: impl Fn(&mut T) -> &mut RpcHostState + Send + Sync + Copy + 'static,
 ) -> anyhow::Result<()> {
+    tracing::info!("🔧 Adding NEAR RPC host functions to linker...");
+
     // Define the interface instance
     let mut interface = linker.instance("near:rpc/api")?;
+    tracing::debug!("   Created interface instance: near:rpc/api");
 
     // near_rpc_view: Call a view function on a contract
     interface.func_wrap_async(
@@ -397,6 +400,17 @@ pub fn add_rpc_to_linker<T: Send + 'static>(
             })
         },
     )?;
+
+    tracing::info!("✅ Added all NEAR RPC host functions:");
+    tracing::info!("   - view");
+    tracing::info!("   - view-account");
+    tracing::info!("   - view-access-key");
+    tracing::info!("   - block");
+    tracing::info!("   - gas-price");
+    tracing::info!("   - send-tx");
+    tracing::info!("   - raw");
+    tracing::info!("   - call");
+    tracing::info!("   - transfer");
 
     Ok(())
 }
