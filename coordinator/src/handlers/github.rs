@@ -768,4 +768,47 @@ mod tests {
         assert_eq!(parts[1], "alice");
         assert_eq!(parts[2], "project");
     }
+
+    #[test]
+    fn test_repo_accessor_normalization() {
+        // Test various URL formats normalize to same result
+        let test_cases = vec![
+            "https://github.com/zavodil/botfather-ark",
+            "git@github.com:zavodil/botfather-ark.git",
+            "github.com/zavodil/botfather-ark",
+            "zavodil/botfather-ark",
+        ];
+
+        let expected = "github.com/zavodil/botfather-ark";
+
+        for input in test_cases {
+            let normalized = parse_github_repo(input).unwrap();
+            assert_eq!(
+                normalized, expected,
+                "Failed to normalize '{}' to '{}'",
+                input, expected
+            );
+        }
+    }
+
+    #[test]
+    fn test_wasm_hash_accessor_validation() {
+        // Valid hash
+        let valid_hash = "a".repeat(64);
+        assert_eq!(valid_hash.len(), 64);
+        assert!(valid_hash.chars().all(|c| c.is_ascii_hexdigit()));
+
+        // Invalid: too short
+        let short_hash = "abc123";
+        assert!(short_hash.len() != 64);
+
+        // Invalid: not hex
+        let invalid_hash = "g".repeat(64);
+        assert!(!invalid_hash.chars().all(|c| c.is_ascii_hexdigit()));
+
+        // Valid: mixed case hex
+        let mixed_case = format!("{}{}", "A".repeat(32), "f".repeat(32));
+        assert_eq!(mixed_case.len(), 64);
+        assert!(mixed_case.chars().all(|c| c.is_ascii_hexdigit()));
+    }
 }

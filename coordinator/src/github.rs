@@ -15,7 +15,7 @@ use regex::Regex;
 /// # Examples
 ///
 /// ```
-/// use coordinator::github::parse_github_repo;
+/// use offchainvm_coordinator::github::parse_github_repo;
 ///
 /// assert_eq!(
 ///     parse_github_repo("https://github.com/alice/project.git").unwrap(),
