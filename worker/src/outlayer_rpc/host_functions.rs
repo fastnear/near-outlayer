@@ -79,6 +79,15 @@ type RpcResult = (String, String);
 ///
 ///     // Raw JSON-RPC call - returns JSON or error
 ///     raw: func(method: string, params-json: string) -> tuple<string, string>;
+///
+///     // Call contract method with transaction (WASM provides signing key)
+///     call: func(signer-id: string, signer-key: string, receiver-id: string,
+///                method-name: string, args-json: string, deposit-yocto: string,
+///                gas: string) -> tuple<string, string>;
+///
+///     // Transfer NEAR tokens (WASM provides signing key)
+///     transfer: func(signer-id: string, signer-key: string, receiver-id: string,
+///                    amount-yocto: string) -> tuple<string, string>;
 /// }
 ///
 /// world near-rpc-guest {
@@ -314,6 +323,70 @@ pub fn add_rpc_to_linker<T: Send + 'static>(
 
                         match proxy.call_method(&method, params).await {
                             Ok(result) => (serde_json::to_string(&result).unwrap_or_default(), String::new()),
+                            Err(e) => (String::new(), e.to_string()),
+                        }
+                    })
+                    .await
+                    .unwrap_or_else(|e| (String::new(), format!("spawn error: {}", e)));
+
+                Ok(result)
+            })
+        },
+    )?;
+
+    // near_rpc_call: Call a contract method with transaction (WASM provides signing key)
+    interface.func_wrap_async(
+        "call",
+        move |mut caller: wasmtime::StoreContextMut<'_, T>,
+              (signer_id, signer_key, receiver_id, method_name, args_json, deposit_yocto, gas): (String, String, String, String, String, String, String)| {
+            Box::new(async move {
+                let state = get_state(caller.data_mut());
+                let proxy = state.proxy.clone();
+                let runtime = state.runtime.clone();
+
+                let result: RpcResult = runtime
+                    .spawn(async move {
+                        let proxy = proxy.lock().await;
+
+                        // Call method through proxy (proxy will create and sign transaction)
+                        match proxy.call_contract_method(
+                            &signer_id,
+                            &signer_key,
+                            &receiver_id,
+                            &method_name,
+                            &args_json,
+                            &deposit_yocto,
+                            &gas,
+                        ).await {
+                            Ok(tx_hash) => (tx_hash, String::new()),
+                            Err(e) => (String::new(), e.to_string()),
+                        }
+                    })
+                    .await
+                    .unwrap_or_else(|e| (String::new(), format!("spawn error: {}", e)));
+
+                Ok(result)
+            })
+        },
+    )?;
+
+    // near_rpc_transfer: Transfer NEAR tokens (WASM provides signing key)
+    interface.func_wrap_async(
+        "transfer",
+        move |mut caller: wasmtime::StoreContextMut<'_, T>,
+              (signer_id, signer_key, receiver_id, amount_yocto): (String, String, String, String)| {
+            Box::new(async move {
+                let state = get_state(caller.data_mut());
+                let proxy = state.proxy.clone();
+                let runtime = state.runtime.clone();
+
+                let result: RpcResult = runtime
+                    .spawn(async move {
+                        let proxy = proxy.lock().await;
+
+                        // Transfer through proxy (proxy will create and sign transaction)
+                        match proxy.transfer(&signer_id, &signer_key, &receiver_id, &amount_yocto).await {
+                            Ok(tx_hash) => (tx_hash, String::new()),
                             Err(e) => (String::new(), e.to_string()),
                         }
                     })

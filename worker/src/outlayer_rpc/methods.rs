@@ -389,6 +389,239 @@ impl RpcProxy {
     }
 
     // =========================================================================
+    // Transaction Creation Methods (WASM provides signing key)
+    // =========================================================================
+
+    /// Call a contract method with transaction (WASM provides signing key)
+    ///
+    /// CRITICAL: Worker NEVER signs with its own key. WASM MUST provide signer credentials.
+    ///
+    /// # Arguments
+    /// * `signer_id` - Account ID that will sign the transaction (from WASM)
+    /// * `signer_key` - Private key in NEAR format (ed25519:base58...) (from WASM)
+    /// * `receiver_id` - Contract to call
+    /// * `method_name` - Method to call
+    /// * `args_json` - Arguments as JSON string
+    /// * `deposit_yocto` - Attached deposit in yoctoNEAR (as string)
+    /// * `gas` - Gas limit (as string)
+    ///
+    /// # Returns
+    /// * Transaction hash on success
+    pub async fn call_contract_method(
+        &self,
+        signer_id: &str,
+        signer_key: &str,
+        receiver_id: &str,
+        method_name: &str,
+        args_json: &str,
+        deposit_yocto: &str,
+        gas: &str,
+    ) -> Result<String> {
+        use near_crypto::{InMemorySigner, SecretKey};
+        use near_primitives::transaction::{Action, FunctionCallAction, Transaction, TransactionV0};
+        use near_primitives::types::AccountId;
+        use base64::Engine;
+
+        // Parse signer credentials
+        let signer_account_id: AccountId = signer_id.parse()
+            .map_err(|e| anyhow::anyhow!("Invalid signer account ID '{}': {}", signer_id, e))?;
+
+        let secret_key: SecretKey = signer_key.parse()
+            .map_err(|e| anyhow::anyhow!("Invalid signer private key: {}", e))?;
+
+        let signer = InMemorySigner::from_secret_key(signer_account_id.clone(), secret_key);
+
+        // Parse receiver
+        let receiver_account_id: AccountId = receiver_id.parse()
+            .map_err(|e| anyhow::anyhow!("Invalid receiver account ID '{}': {}", receiver_id, e))?;
+
+        // Parse deposit and gas
+        let deposit: u128 = deposit_yocto.parse()
+            .map_err(|e| anyhow::anyhow!("Invalid deposit '{}': {}", deposit_yocto, e))?;
+
+        let gas_amount: u64 = gas.parse()
+            .map_err(|e| anyhow::anyhow!("Invalid gas '{}': {}", gas, e))?;
+
+        // Convert args_json to bytes
+        let args_bytes = args_json.as_bytes().to_vec();
+
+        // 1. Get access key for nonce
+        let access_key_params = json!({
+            "request_type": "view_access_key",
+            "finality": "final",
+            "account_id": signer_id,
+            "public_key": signer.public_key().to_string()
+        });
+
+        let access_key_response = self.call_method("query", access_key_params).await
+            .map_err(|e| anyhow::anyhow!("Failed to query access key for {}: {}", signer_id, e))?;
+
+        let current_nonce = access_key_response
+            .get("result")
+            .and_then(|r| r.get("nonce"))
+            .and_then(|n| n.as_u64())
+            .ok_or_else(|| anyhow::anyhow!("Failed to extract nonce from access key response"))?;
+
+        // 2. Get latest block hash
+        let block_response = self.block(Some("final"), None).await
+            .map_err(|e| anyhow::anyhow!("Failed to query block: {}", e))?;
+
+        let block_hash_str = block_response
+            .get("result")
+            .and_then(|r| r.get("header"))
+            .and_then(|h| h.get("hash"))
+            .and_then(|h| h.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Failed to extract block hash from response"))?;
+
+        let block_hash: near_primitives::hash::CryptoHash = block_hash_str.parse()
+            .map_err(|e| anyhow::anyhow!("Failed to parse block hash: {}", e))?;
+
+        // 3. Create transaction
+        let transaction_v0 = TransactionV0 {
+            signer_id: signer_account_id,
+            public_key: signer.public_key(),
+            nonce: current_nonce + 1,
+            receiver_id: receiver_account_id,
+            block_hash,
+            actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
+                method_name: method_name.to_string(),
+                args: args_bytes,
+                gas: gas_amount,
+                deposit,
+            }))],
+        };
+
+        let transaction = Transaction::V0(transaction_v0);
+
+        // 4. Sign transaction with WASM-provided key
+        let signature = signer.sign(transaction.get_hash_and_size().0.as_ref());
+        let signed_transaction = near_primitives::transaction::SignedTransaction::new(
+            signature,
+            transaction,
+        );
+
+        let tx_hash = signed_transaction.get_hash();
+
+        // 5. Serialize to borsh and encode base64
+        let signed_tx_bytes = borsh::to_vec(&signed_transaction)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize transaction: {}", e))?;
+
+        let signed_tx_base64 = base64::engine::general_purpose::STANDARD.encode(&signed_tx_bytes);
+
+        // 6. Broadcast transaction via send_tx
+        self.send_tx(&signed_tx_base64, Some("NONE")).await?;
+
+        // Return transaction hash
+        Ok(format!("{}", tx_hash))
+    }
+
+    /// Transfer NEAR tokens (WASM provides signing key)
+    ///
+    /// CRITICAL: Worker NEVER signs with its own key. WASM MUST provide signer credentials.
+    ///
+    /// # Arguments
+    /// * `signer_id` - Account ID that will sign the transaction (from WASM)
+    /// * `signer_key` - Private key in NEAR format (ed25519:base58...) (from WASM)
+    /// * `receiver_id` - Recipient account
+    /// * `amount_yocto` - Amount in yoctoNEAR (as string)
+    ///
+    /// # Returns
+    /// * Transaction hash on success
+    pub async fn transfer(
+        &self,
+        signer_id: &str,
+        signer_key: &str,
+        receiver_id: &str,
+        amount_yocto: &str,
+    ) -> Result<String> {
+        use near_crypto::{InMemorySigner, SecretKey};
+        use near_primitives::transaction::{Action, Transaction, TransactionV0, TransferAction};
+        use near_primitives::types::AccountId;
+        use base64::Engine;
+
+        // Parse signer credentials
+        let signer_account_id: AccountId = signer_id.parse()
+            .map_err(|e| anyhow::anyhow!("Invalid signer account ID '{}': {}", signer_id, e))?;
+
+        let secret_key: SecretKey = signer_key.parse()
+            .map_err(|e| anyhow::anyhow!("Invalid signer private key: {}", e))?;
+
+        let signer = InMemorySigner::from_secret_key(signer_account_id.clone(), secret_key);
+
+        // Parse receiver
+        let receiver_account_id: AccountId = receiver_id.parse()
+            .map_err(|e| anyhow::anyhow!("Invalid receiver account ID '{}': {}", receiver_id, e))?;
+
+        // Parse amount
+        let amount: u128 = amount_yocto.parse()
+            .map_err(|e| anyhow::anyhow!("Invalid amount '{}': {}", amount_yocto, e))?;
+
+        // 1. Get access key for nonce
+        let access_key_params = json!({
+            "request_type": "view_access_key",
+            "finality": "final",
+            "account_id": signer_id,
+            "public_key": signer.public_key().to_string()
+        });
+
+        let access_key_response = self.call_method("query", access_key_params).await
+            .map_err(|e| anyhow::anyhow!("Failed to query access key for {}: {}", signer_id, e))?;
+
+        let current_nonce = access_key_response
+            .get("result")
+            .and_then(|r| r.get("nonce"))
+            .and_then(|n| n.as_u64())
+            .ok_or_else(|| anyhow::anyhow!("Failed to extract nonce from access key response"))?;
+
+        // 2. Get latest block hash
+        let block_response = self.block(Some("final"), None).await
+            .map_err(|e| anyhow::anyhow!("Failed to query block: {}", e))?;
+
+        let block_hash_str = block_response
+            .get("result")
+            .and_then(|r| r.get("header"))
+            .and_then(|h| h.get("hash"))
+            .and_then(|h| h.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Failed to extract block hash from response"))?;
+
+        let block_hash: near_primitives::hash::CryptoHash = block_hash_str.parse()
+            .map_err(|e| anyhow::anyhow!("Failed to parse block hash: {}", e))?;
+
+        // 3. Create transfer transaction
+        let transaction_v0 = TransactionV0 {
+            signer_id: signer_account_id,
+            public_key: signer.public_key(),
+            nonce: current_nonce + 1,
+            receiver_id: receiver_account_id,
+            block_hash,
+            actions: vec![Action::Transfer(TransferAction { deposit: amount })],
+        };
+
+        let transaction = Transaction::V0(transaction_v0);
+
+        // 4. Sign transaction with WASM-provided key
+        let signature = signer.sign(transaction.get_hash_and_size().0.as_ref());
+        let signed_transaction = near_primitives::transaction::SignedTransaction::new(
+            signature,
+            transaction,
+        );
+
+        let tx_hash = signed_transaction.get_hash();
+
+        // 5. Serialize to borsh and encode base64
+        let signed_tx_bytes = borsh::to_vec(&signed_transaction)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize transaction: {}", e))?;
+
+        let signed_tx_base64 = base64::engine::general_purpose::STANDARD.encode(&signed_tx_bytes);
+
+        // 6. Broadcast transaction via send_tx
+        self.send_tx(&signed_tx_base64, Some("NONE")).await?;
+
+        // Return transaction hash
+        Ok(format!("{}", tx_hash))
+    }
+
+    // =========================================================================
     // Helper Methods
     // =========================================================================
 
