@@ -187,6 +187,11 @@ pub async fn execute(
     debug!("Instantiating component");
     let command = Command::instantiate_async(&mut store, &component, &linker)
         .await
+        .map_err(|e| {
+            tracing::error!("Failed to instantiate component: {}", e);
+            tracing::error!("Error details: {:?}", e);
+            e
+        })
         .context("Failed to instantiate component")?;
 
     debug!("Running wasi:cli/run");
