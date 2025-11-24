@@ -27,9 +27,10 @@
 //! - WASM must provide its own signing keys for transactions
 
 pub mod methods;
-pub mod host_functions;
+//pub mod host_functions;  // Old async implementation
+pub mod host_functions_sync;  // Working sync implementation
 
-pub use host_functions::{add_rpc_to_linker, RpcHostState};
+pub use host_functions_sync::{add_rpc_to_linker, RpcHostState};
 
 use anyhow::{Context, Result};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -184,6 +185,11 @@ impl RpcProxy {
     }
 
     /// Get RPC URL (for debugging, without exposing API key)
+    /// Get RPC URL (INTERNAL USE ONLY - includes API key)
+    pub(crate) fn get_rpc_url(&self) -> &str {
+        &self.rpc_url
+    }
+
     pub fn get_rpc_url_masked(&self) -> String {
         // Mask API key in URL if present
         if let Some(pos) = self.rpc_url.find("api_key=") {

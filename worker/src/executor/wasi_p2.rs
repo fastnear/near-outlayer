@@ -111,24 +111,21 @@ pub async fn execute(
         if let Some(outlayer_rpc) = &ctx.outlayer_rpc {
             debug!("Adding NEAR RPC host functions to linker");
 
-            // Clone the proxy for use in host state
-            let proxy_clone = RpcProxy::new(
-                crate::config::RpcProxyConfig {
-                    enabled: true,
-                    rpc_url: None, // Will use the original proxy's URL
-                    max_calls_per_execution: 100,
-                    allow_transactions: true,
-                },
-                &outlayer_rpc.get_rpc_url_masked(),
+            // Create sync RPC proxy for host functions
+            let rpc_url = outlayer_rpc.get_rpc_url();
+            let sync_proxy = crate::outlayer_rpc::host_functions_sync::RpcProxy::new(
+                rpc_url,
+                100, // max_calls
+                true, // allow_transactions
+                None, // No default signer - WASM provides signing keys
             )?;
 
             // Add RPC host functions to linker
-            // Note: This adds the near:rpc/api interface that WASM can import
             crate::outlayer_rpc::add_rpc_to_linker(&mut linker, |state: &mut HostState| {
                 state.rpc_state_mut()
             })?;
 
-            Some(RpcHostState::new(proxy_clone, ctx.runtime_handle.clone()))
+            Some(RpcHostState::new(sync_proxy))
         } else {
             debug!("No RPC proxy in execution context");
             None
@@ -206,9 +203,7 @@ pub async fn execute(
 
     // Log RPC call count if available
     if let Some(ref rpc_state) = store.data().rpc_state {
-        let call_count = rpc_state.proxy.try_lock()
-            .map(|p| p.get_call_count())
-            .unwrap_or(0);
+        let call_count = rpc_state.proxy.get_call_count();
         if call_count > 0 {
             debug!("Component made {} RPC calls", call_count);
         }
