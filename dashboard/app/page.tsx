@@ -217,16 +217,16 @@ export default function Home() {
               </p>
             </div>
 
-            {/* GitHub Integration */}
+            {/* Code Source Flexibility */}
             <div className="feature-card rounded-lg px-6 py-8 transform transition-all">
               <div className="feature-icon inline-flex items-center justify-center p-4 rounded-lg mb-6">
                 <svg className="h-8 w-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
                 </svg>
               </div>
-              <h4 className="text-xl font-bold text-[var(--primary-orange)] mb-3">GitHub Integration</h4>
+              <h4 className="text-xl font-bold text-[var(--primary-orange)] mb-3">Code Source Flexibility</h4>
               <p className="text-gray-600">
-                Compile directly from public GitHub repos. Reference by branch or commit hash (immutable). WASM cache with distributed locking. GitLab support coming soon.
+                Compile from GitHub repos (branch or commit hash) OR upload pre-compiled WASM. Store immutable binaries on FastFS/IPFS. WASM cache with distributed locking for efficiency.
               </p>
             </div>
 
@@ -269,16 +269,16 @@ export default function Home() {
               </p>
             </div>
 
-            {/* Pre-compiled WASM */}
+            {/* Host Functions & Premium RPC */}
             <div className="feature-card rounded-lg px-6 py-8 transform transition-all">
               <div className="feature-icon inline-flex items-center justify-center p-4 rounded-lg mb-6">
                 <svg className="h-8 w-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                 </svg>
               </div>
-              <h4 className="text-xl font-bold text-[var(--primary-orange)] mb-3">Pre-compiled WASM</h4>
+              <h4 className="text-xl font-bold text-[var(--primary-orange)] mb-3">Host Functions & Premium RPC</h4>
               <p className="text-gray-600">
-                Run pre-compiled WASM files without source code. Store immutable binaries on FastFS/IPFS - no middlemen, no compilation dependencies. Perfect for closed-source or proprietary code.
+                Direct NEAR blockchain access from WASM via host functions (call, transfer, view). Premium FastNEAR RPC included. Control TEE-generated accounts for verifiable DeFi automation - your code manages funds users can trust.
               </p>
             </div>
 
