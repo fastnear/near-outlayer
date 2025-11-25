@@ -144,10 +144,22 @@ export default function SecretsPage() {
   };
 
   const handleEditSecret = (secret: UserSecret) => {
+    // Validate accessor exists
+    if (!secret.accessor) {
+      setError('Invalid secret: accessor is missing');
+      return;
+    }
+
     // Build label for confirmation
-    const label = isRepoAccessor(secret.accessor)
-      ? `${secret.accessor.Repo.repo}:${secret.profile}`
-      : `WASM(${secret.accessor.WasmHash.hash.substring(0, 8)}...):${secret.profile}`;
+    let label: string;
+    if (isRepoAccessor(secret.accessor)) {
+      label = `${secret.accessor.Repo.repo}:${secret.profile}`;
+    } else if ('WasmHash' in secret.accessor && secret.accessor.WasmHash?.hash) {
+      label = `WASM(${secret.accessor.WasmHash.hash.substring(0, 8)}...):${secret.profile}`;
+    } else {
+      setError('Invalid secret: unknown accessor type');
+      return;
+    }
 
     if (!confirm(`⚠️ Replace secrets for ${label}?\n\nNote: You cannot decrypt/view existing secrets - only workers can decrypt them.\nThis will completely replace the encrypted secrets with new ones.`)) {
       return;
@@ -158,10 +170,22 @@ export default function SecretsPage() {
   };
 
   const handleDeleteSecret = async (secret: UserSecret) => {
+    // Validate accessor exists
+    if (!secret.accessor) {
+      setError('Invalid secret: accessor is missing');
+      return;
+    }
+
     // Build label for confirmation
-    const label = isRepoAccessor(secret.accessor)
-      ? `${secret.accessor.Repo.repo}:${secret.profile}`
-      : `WASM(${secret.accessor.WasmHash.hash.substring(0, 8)}...):${secret.profile}`;
+    let label: string;
+    if (isRepoAccessor(secret.accessor)) {
+      label = `${secret.accessor.Repo.repo}:${secret.profile}`;
+    } else if ('WasmHash' in secret.accessor && secret.accessor.WasmHash?.hash) {
+      label = `WASM(${secret.accessor.WasmHash.hash.substring(0, 8)}...):${secret.profile}`;
+    } else {
+      setError('Invalid secret: unknown accessor type');
+      return;
+    }
 
     if (!confirm(`Delete secrets for ${label}? Storage deposit will be refunded automatically.`)) {
       return;
@@ -246,7 +270,7 @@ export default function SecretsPage() {
           onSubmit={handleSubmitSecrets}
           coordinatorUrl={coordinatorUrl}
           initialData={
-            editingSecret
+            editingSecret && editingSecret.accessor
               ? isRepoAccessor(editingSecret.accessor)
                 ? {
                     sourceType: 'repo' as const,
@@ -255,13 +279,15 @@ export default function SecretsPage() {
                     wasmHash: '',
                     profile: editingSecret.profile,
                   }
-                : {
+                : 'WasmHash' in editingSecret.accessor && editingSecret.accessor.WasmHash?.hash
+                ? {
                     sourceType: 'wasm_hash' as const,
                     repo: '',
                     branch: '',
                     wasmHash: editingSecret.accessor.WasmHash.hash,
                     profile: editingSecret.profile,
                   }
+                : undefined
               : undefined
           }
         />

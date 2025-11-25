@@ -10,13 +10,22 @@ interface SecretCardProps {
 }
 
 export function SecretCard({ secret, onEdit, onDelete }: SecretCardProps) {
+  // Validate accessor exists
+  if (!secret.accessor) {
+    return (
+      <div className="border border-red-200 rounded-lg p-4 bg-red-50">
+        <p className="text-sm text-red-700">⚠️ Invalid secret: accessor is missing</p>
+      </div>
+    );
+  }
+
   return (
     <div className="border border-gray-200 rounded-lg p-4 hover:border-blue-300 hover:shadow-sm transition-all">
       <div className="flex items-start justify-between">
         <div className="flex-1 min-w-0">
           {/* Header */}
           <div className="flex items-center space-x-2 mb-2">
-            {isRepoAccessor(secret.accessor) && (
+            {isRepoAccessor(secret.accessor) && secret.accessor.Repo && (
               <>
                 <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700">
                   GitHub
@@ -31,7 +40,7 @@ export function SecretCard({ secret, onEdit, onDelete }: SecretCardProps) {
                 )}
               </>
             )}
-            {isWasmHashAccessor(secret.accessor) && (
+            {isWasmHashAccessor(secret.accessor) && secret.accessor.WasmHash?.hash && (
               <>
                 <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700">
                   WASM Hash
