@@ -34,7 +34,7 @@ export function BotfatherExample() {
         <>Account discovery via Fastnear API</>,
         <>Batch contract calls with template variables (<code className="bg-gray-100 px-2 py-1 rounded">{`{{account_id}}`}</code>)</>,
         <>Fund distribution across multiple accounts</>,
-        <>Uses <code className="bg-gray-100 px-2 py-1 rounded">near:rpc/api</code> host functions: <code className="bg-gray-100 px-2 py-1 rounded">call()</code>, <code className="bg-gray-100 px-2 py-1 rounded">transfer()</code></>,
+        <>Uses <code className="bg-gray-100 px-2 py-1 rounded">near:rpc/api@0.1.0</code> host functions: <code className="bg-gray-100 px-2 py-1 rounded">call()</code>, <code className="bg-gray-100 px-2 py-1 rounded">transfer()</code></>,
       ]} />
 
       <h4 className="font-semibold mt-4 mb-2">Actions:</h4>
@@ -164,7 +164,7 @@ export function BotfatherExample() {
       <TechnicalDetailsSection items={[
         <><strong>WASI Version:</strong> Preview 2 (component model)</>,
         <><strong>Language:</strong> Rust</>,
-        <><strong>WIT Interface:</strong> <code className="bg-gray-100 px-2 py-1 rounded">near:rpc/api</code> (call, transfer, view)</>,
+        <><strong>WIT Interface:</strong> <code className="bg-gray-100 px-2 py-1 rounded">near:rpc/api@0.1.0</code> (call, transfer, view)</>,
         <><strong>Secrets:</strong> Required (<code className="bg-gray-100 px-2 py-1 rounded">NEAR_SENDER_PRIVATE_KEY</code>, <code className="bg-gray-100 px-2 py-1 rounded">OPENAI_API_KEY</code>, <code className="bg-gray-100 px-2 py-1 rounded">PROTECTED_MASTER_KEY</code>)</>,
         <><strong>Network:</strong> Required (Fastnear API, OpenAI API, NEAR RPC via host functions)</>,
       ]} />

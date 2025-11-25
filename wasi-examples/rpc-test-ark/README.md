@@ -4,7 +4,7 @@ Test WASM component for OutLayer RPC host functions.
 
 ## Overview
 
-This component tests the `near:rpc/api` host functions provided by OutLayer worker:
+This component tests the `near:rpc/api@0.1.0` host functions provided by OutLayer worker:
 
 - `view` - Call view functions on smart contracts
 - `view-account` - Get account information
@@ -116,7 +116,7 @@ cd ../wasi-test-runner
 
 ## How It Works
 
-1. WASM component imports `near:rpc/api` interface via wit-bindgen
+1. WASM component imports `near:rpc/api@0.1.0` interface via wit-bindgen
 2. Component calls host functions (e.g., `near::rpc::api::view_account`)
 3. OutLayer worker's `outlayer_rpc` module handles the request
 4. Worker adds API key and sends HTTP request to NEAR RPC
@@ -137,7 +137,7 @@ cd ../wasi-test-runner
 │  OutLayer Worker                   │
 │  (host_functions.rs)               │
 │                                    │
-│  linker.instance("near:rpc/api")   │
+│  linker.instance("near:rpc@0.1.0") │
 │  interface.func_wrap_async(...)    │
 └──────────────┬─────────────────────┘
                │ HTTP request (with API key)
@@ -150,9 +150,11 @@ cd ../wasi-test-runner
 
 ## WIT Interface
 
-The component imports `near:rpc/api` with these functions:
+The component imports `near:rpc/api@0.1.0` with these functions:
 
 ```wit
+package near:rpc@0.1.0;
+
 interface api {
     view: func(contract-id: string, method-name: string, args-json: string)
         -> tuple<string, string>;

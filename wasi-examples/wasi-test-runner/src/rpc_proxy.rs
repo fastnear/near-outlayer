@@ -1,6 +1,14 @@
 //! NEAR RPC Proxy for wasi-test-runner
 //!
-//! Provides RPC host functions for WASM components that import `near:rpc/api`.
+//! Provides RPC host functions for WASM components that import `near:rpc/api@0.1.0`.
+//!
+//! ## Versioning
+//!
+//! Host functions are versioned to maintain backward compatibility:
+//! - `near:rpc@0.1.0` - Current API (view, call, transfer, etc.)
+//! - Future versions (0.2.0+) can coexist with old versions
+//!
+//! WASM compiled with different API versions can run on the same worker.
 
 use anyhow::{Context, Result};
 use base64::Engine;
@@ -68,6 +76,11 @@ impl RpcProxy {
         self.call_count.store(0, Ordering::SeqCst);
     }
 
+
+    /// Get current call count
+    pub fn get_call_count(&self) -> u32 {
+        self.call_count.load(Ordering::SeqCst)
+    }
     /// Check rate limit and increment counter
     fn check_rate_limit(&self) -> Result<()> {
         let count = self.call_count.fetch_add(1, Ordering::SeqCst);
@@ -79,6 +92,16 @@ impl RpcProxy {
             );
         }
         Ok(())
+    }
+
+    /// Safe display of URL - hides API keys and query parameters
+    fn safe_url_display(url: &str) -> String {
+        if let Some(question_mark_pos) = url.find('?') {
+            let base = &url[..question_mark_pos];
+            format!("{}... (length: {})", base, url.len())
+        } else {
+            url.to_string()
+        }
     }
 
     /// Send JSON-RPC request (blocking)
@@ -101,7 +124,7 @@ impl RpcProxy {
             "params": params
         });
 
-        eprintln!("[RPC] Sending {} request to {}", method, self.rpc_url);
+        eprintln!("[RPC] Sending {} request to {}", method, Self::safe_url_display(&self.rpc_url));
 
         let response = self
             .client
@@ -344,12 +367,41 @@ impl RpcHostState {
     }
 }
 
+/// Helper to parse finality-or-block parameter
+fn parse_finality_or_block(s: &str) -> (Option<&str>, Option<Value>) {
+    if s.is_empty() || s == "final" {
+        (Some("final"), None)
+    } else if s == "optimistic" {
+        (Some("optimistic"), None)
+    } else if let Ok(height) = s.parse::<u64>() {
+        (None, Some(json!(height)))
+    } else {
+        // Assume it's a block hash
+        (None, Some(json!(s)))
+    }
+}
+
 /// Implement the generated Host trait for RpcHostState
 impl near::rpc::api::Host for RpcHostState {
-    fn view(&mut self, contract_id: String, method_name: String, args_json: String) -> (String, String) {
-        let args_base64 = base64::engine::general_purpose::STANDARD.encode(args_json.as_bytes());
+    // ==================== Query Methods ====================
 
-        match self.proxy.call_function(&contract_id, &method_name, &args_base64) {
+    fn view(&mut self, contract_id: String, method_name: String, args_json: String, finality_or_block: String) -> (String, String) {
+        let args_base64 = base64::engine::general_purpose::STANDARD.encode(args_json.as_bytes());
+        let (finality, block_id) = parse_finality_or_block(&finality_or_block);
+
+        let mut params = json!({
+            "request_type": "call_function",
+            "account_id": contract_id,
+            "method_name": method_name,
+            "args_base64": args_base64,
+        });
+        if let Some(fin) = finality {
+            params["finality"] = json!(fin);
+        } else if let Some(bid) = block_id {
+            params["block_id"] = bid;
+        }
+
+        match self.proxy.call_method("query", params) {
             Ok(result) => {
                 if let Some(result_array) = result.get("result").and_then(|r| r.get("result")) {
                     if let Some(arr) = result_array.as_array() {
@@ -366,50 +418,175 @@ impl near::rpc::api::Host for RpcHostState {
         }
     }
 
-    fn view_account(&mut self, account_id: String) -> (String, String) {
-        match self.proxy.view_account(&account_id) {
+    fn view_account(&mut self, account_id: String, finality_or_block: String) -> (String, String) {
+        let (finality, block_id) = parse_finality_or_block(&finality_or_block);
+
+        let mut params = json!({
+            "request_type": "view_account",
+            "account_id": account_id,
+        });
+        if let Some(fin) = finality {
+            params["finality"] = json!(fin);
+        } else if let Some(bid) = block_id {
+            params["block_id"] = bid;
+        }
+
+        match self.proxy.call_method("query", params) {
             Ok(result) => (serde_json::to_string(&result).unwrap_or_default(), String::new()),
             Err(e) => (String::new(), e.to_string()),
         }
     }
 
-    fn view_access_key(&mut self, account_id: String, public_key: String) -> (String, String) {
-        match self.proxy.view_access_key(&account_id, &public_key) {
+    fn view_access_key(&mut self, account_id: String, public_key: String, finality_or_block: String) -> (String, String) {
+        let (finality, block_id) = parse_finality_or_block(&finality_or_block);
+
+        let mut params = json!({
+            "request_type": "view_access_key",
+            "account_id": account_id,
+            "public_key": public_key,
+        });
+        if let Some(fin) = finality {
+            params["finality"] = json!(fin);
+        } else if let Some(bid) = block_id {
+            params["block_id"] = bid;
+        }
+
+        match self.proxy.call_method("query", params) {
             Ok(result) => (serde_json::to_string(&result).unwrap_or_default(), String::new()),
             Err(e) => (String::new(), e.to_string()),
         }
     }
 
-    fn block(&mut self, finality_or_block_id: String) -> (String, String) {
-        let (finality, block_id) =
-            if finality_or_block_id == "final" || finality_or_block_id == "optimistic" {
-                (Some(finality_or_block_id.as_str()), None)
-            } else if let Ok(height) = finality_or_block_id.parse::<u64>() {
-                (None, Some(json!(height)))
-            } else {
-                (None, Some(json!(finality_or_block_id)))
-            };
+    fn view_access_key_list(&mut self, account_id: String, finality_or_block: String) -> (String, String) {
+        let (finality, block_id) = parse_finality_or_block(&finality_or_block);
 
-        match self.proxy.block(finality, block_id) {
+        let mut params = json!({
+            "request_type": "view_access_key_list",
+            "account_id": account_id,
+        });
+        if let Some(fin) = finality {
+            params["finality"] = json!(fin);
+        } else if let Some(bid) = block_id {
+            params["block_id"] = bid;
+        }
+
+        match self.proxy.call_method("query", params) {
             Ok(result) => (serde_json::to_string(&result).unwrap_or_default(), String::new()),
             Err(e) => (String::new(), e.to_string()),
         }
     }
 
-    fn gas_price(&mut self) -> (String, String) {
-        match self.proxy.gas_price() {
-            Ok(result) => {
-                if let Some(price) = result.get("result").and_then(|r| r.get("gas_price")) {
-                    return (price.to_string(), String::new());
-                }
-                (serde_json::to_string(&result).unwrap_or_default(), String::new())
+    fn view_code(&mut self, account_id: String, finality_or_block: String) -> (String, String) {
+        let (finality, block_id) = parse_finality_or_block(&finality_or_block);
+
+        let mut params = json!({
+            "request_type": "view_code",
+            "account_id": account_id,
+        });
+        if let Some(fin) = finality {
+            params["finality"] = json!(fin);
+        } else if let Some(bid) = block_id {
+            params["block_id"] = bid;
+        }
+
+        match self.proxy.call_method("query", params) {
+            Ok(result) => (serde_json::to_string(&result).unwrap_or_default(), String::new()),
+            Err(e) => (String::new(), e.to_string()),
+        }
+    }
+
+    fn view_state(&mut self, account_id: String, prefix_base64: String, finality_or_block: String) -> (String, String) {
+        let (finality, block_id) = parse_finality_or_block(&finality_or_block);
+
+        let mut params = json!({
+            "request_type": "view_state",
+            "account_id": account_id,
+            "prefix_base64": prefix_base64,
+        });
+        if let Some(fin) = finality {
+            params["finality"] = json!(fin);
+        } else if let Some(bid) = block_id {
+            params["block_id"] = bid;
+        }
+
+        match self.proxy.call_method("query", params) {
+            Ok(result) => (serde_json::to_string(&result).unwrap_or_default(), String::new()),
+            Err(e) => (String::new(), e.to_string()),
+        }
+    }
+
+    // ==================== Block Methods ====================
+
+    fn block(&mut self, finality_or_block: String) -> (String, String) {
+        let (finality, block_id) = parse_finality_or_block(&finality_or_block);
+
+        let params = if let Some(fin) = finality {
+            json!({ "finality": fin })
+        } else if let Some(bid) = block_id {
+            json!({ "block_id": bid })
+        } else {
+            json!({ "finality": "final" })
+        };
+
+        match self.proxy.call_method("block", params) {
+            Ok(result) => (serde_json::to_string(&result).unwrap_or_default(), String::new()),
+            Err(e) => (String::new(), e.to_string()),
+        }
+    }
+
+    fn chunk(&mut self, chunk_id_or_block_shard: String) -> (String, String) {
+        // Parse: either "chunk_id" or "block_id,shard_id"
+        let params = if chunk_id_or_block_shard.contains(',') {
+            let parts: Vec<&str> = chunk_id_or_block_shard.split(',').collect();
+            if parts.len() != 2 {
+                return (String::new(), "Invalid format. Use 'block_id,shard_id' or 'chunk_id'".to_string());
             }
+            let block_id = parts[0].parse::<u64>().unwrap_or(0);
+            let shard_id = parts[1].parse::<u64>().unwrap_or(0);
+            json!({
+                "block_id": block_id,
+                "shard_id": shard_id
+            })
+        } else {
+            json!({ "chunk_id": chunk_id_or_block_shard })
+        };
+
+        match self.proxy.call_method("chunk", params) {
+            Ok(result) => (serde_json::to_string(&result).unwrap_or_default(), String::new()),
             Err(e) => (String::new(), e.to_string()),
         }
     }
+
+    fn changes(&mut self, finality_or_block: String) -> (String, String) {
+        let (finality, block_id) = parse_finality_or_block(&finality_or_block);
+
+        let mut params = json!({
+            "changes_type": "all_access_key_changes",
+            "account_ids": []
+        });
+
+        if let Some(fin) = finality {
+            params["finality"] = json!(fin);
+        } else if let Some(bid) = block_id {
+            params["block_id"] = bid;
+        } else {
+            params["finality"] = json!("final");
+        }
+
+        match self.proxy.call_method("EXPERIMENTAL_changes", params) {
+            Ok(result) => (serde_json::to_string(&result).unwrap_or_default(), String::new()),
+            Err(e) => (String::new(), e.to_string()),
+        }
+    }
+
+    // ==================== Transaction Methods ====================
 
     fn send_tx(&mut self, signed_tx_base64: String, wait_until: String) -> (String, String) {
-        let wait = if wait_until.is_empty() { None } else { Some(wait_until.as_str()) };
+        let wait = if wait_until.is_empty() {
+            Some("EXECUTED_OPTIMISTIC")
+        } else {
+            Some(wait_until.as_str())
+        };
 
         match self.proxy.send_tx(&signed_tx_base64, wait) {
             Ok(result) => (serde_json::to_string(&result).unwrap_or_default(), String::new()),
@@ -417,10 +594,26 @@ impl near::rpc::api::Host for RpcHostState {
         }
     }
 
-    fn raw(&mut self, method: String, params_json: String) -> (String, String) {
-        let params: Value = serde_json::from_str(&params_json).unwrap_or(json!([]));
+    fn tx_status(&mut self, tx_hash: String, sender_account_id: String, wait_until: String) -> (String, String) {
+        let mut params = json!({
+            "tx_hash": tx_hash,
+            "sender_account_id": sender_account_id
+        });
 
-        match self.proxy.call_method(&method, params) {
+        if !wait_until.is_empty() {
+            params["wait_until"] = json!(wait_until);
+        }
+
+        match self.proxy.call_method("EXPERIMENTAL_tx_status", params) {
+            Ok(result) => (serde_json::to_string(&result).unwrap_or_default(), String::new()),
+            Err(e) => (String::new(), e.to_string()),
+        }
+    }
+
+    fn receipt(&mut self, receipt_id: String) -> (String, String) {
+        let params = json!({ "receipt_id": receipt_id });
+
+        match self.proxy.call_method("EXPERIMENTAL_receipt", params) {
             Ok(result) => (serde_json::to_string(&result).unwrap_or_default(), String::new()),
             Err(e) => (String::new(), e.to_string()),
         }
@@ -438,9 +631,11 @@ impl near::rpc::api::Host for RpcHostState {
         args_json: String,
         deposit_yocto: String,
         gas: String,
+        wait_until: String,       // NEW: wait until finality
     ) -> (String, String) {
-        eprintln!("[HOST] call() invoked: signer={}, receiver={}, method={}, deposit={}, gas={}",
-            signer_id, receiver_id, method_name, deposit_yocto, gas);
+        eprintln!("[HOST] call() invoked: signer={}, receiver={}, method={}, deposit={}, gas={}, wait={}",
+            signer_id, receiver_id, method_name, deposit_yocto, gas,
+            if wait_until.is_empty() { "FINAL" } else { &wait_until });
 
         let deposit: u128 = match deposit_yocto.parse() {
             Ok(d) => d,
@@ -469,6 +664,8 @@ impl near::rpc::api::Host for RpcHostState {
 
         eprintln!("[HOST] Calling sign_and_send_tx_as...");
 
+        // Note: wait_until is ignored for now - sign_and_send_tx_as always waits for FINAL
+        // TODO: Add wait_until parameter to sign_and_send_tx_as
         match self.proxy.sign_and_send_tx_as(&signer_id, &signer_key, &receiver_id, vec![action]) {
             Ok(tx_hash) => {
                 eprintln!("[HOST] Transaction successful: {}", tx_hash);
@@ -490,7 +687,12 @@ impl near::rpc::api::Host for RpcHostState {
         signer_key: String,       // From WASM (user-provided via secrets)
         receiver_id: String,
         amount_yocto: String,
+        wait_until: String,       // NEW: wait until finality
     ) -> (String, String) {
+        eprintln!("[HOST] transfer() invoked: signer={}, receiver={}, amount={}, wait={}",
+            signer_id, receiver_id, amount_yocto,
+            if wait_until.is_empty() { "FINAL" } else { &wait_until });
+
         let amount: u128 = match amount_yocto.parse() {
             Ok(a) => a,
             Err(e) => return (String::new(), format!("Invalid amount: {}", e)),
@@ -498,8 +700,70 @@ impl near::rpc::api::Host for RpcHostState {
 
         let action = Action::Transfer(TransferAction { deposit: amount });
 
+        // Note: wait_until is ignored for now - sign_and_send_tx_as always waits for FINAL
+        // TODO: Add wait_until parameter to sign_and_send_tx_as
         match self.proxy.sign_and_send_tx_as(&signer_id, &signer_key, &receiver_id, vec![action]) {
             Ok(tx_hash) => (tx_hash, String::new()),
+            Err(e) => (String::new(), e.to_string()),
+        }
+    }
+
+    // ==================== Network Methods ====================
+
+    fn gas_price(&mut self, block_id: String) -> (String, String) {
+        let params = if block_id.is_empty() {
+            json!([null])
+        } else if let Ok(height) = block_id.parse::<u64>() {
+            json!([height])
+        } else {
+            json!([block_id])
+        };
+
+        match self.proxy.call_method("gas_price", params) {
+            Ok(result) => {
+                if let Some(price) = result.get("result").and_then(|r| r.get("gas_price")) {
+                    return (price.to_string(), String::new());
+                }
+                (serde_json::to_string(&result).unwrap_or_default(), String::new())
+            }
+            Err(e) => (String::new(), e.to_string()),
+        }
+    }
+
+    fn status(&mut self) -> (String, String) {
+        match self.proxy.call_method("status", json!([])) {
+            Ok(result) => (serde_json::to_string(&result).unwrap_or_default(), String::new()),
+            Err(e) => (String::new(), e.to_string()),
+        }
+    }
+
+    fn network_info(&mut self) -> (String, String) {
+        match self.proxy.call_method("network_info", json!([])) {
+            Ok(result) => (serde_json::to_string(&result).unwrap_or_default(), String::new()),
+            Err(e) => (String::new(), e.to_string()),
+        }
+    }
+
+    fn validators(&mut self, epoch_id: String) -> (String, String) {
+        let params = if epoch_id.is_empty() {
+            json!([null])
+        } else {
+            json!([epoch_id])
+        };
+
+        match self.proxy.call_method("validators", params) {
+            Ok(result) => (serde_json::to_string(&result).unwrap_or_default(), String::new()),
+            Err(e) => (String::new(), e.to_string()),
+        }
+    }
+
+    // ==================== Low-level API ====================
+
+    fn raw(&mut self, method: String, params_json: String) -> (String, String) {
+        let params: Value = serde_json::from_str(&params_json).unwrap_or(json!([]));
+
+        match self.proxy.call_method(&method, params) {
+            Ok(result) => (serde_json::to_string(&result).unwrap_or_default(), String::new()),
             Err(e) => (String::new(), e.to_string()),
         }
     }

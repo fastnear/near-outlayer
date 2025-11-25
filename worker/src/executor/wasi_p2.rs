@@ -5,7 +5,7 @@
 //! ## Features
 //! - Component model with typed interfaces
 //! - HTTP/HTTPS requests via wasi-http
-//! - NEAR RPC proxy via host functions (when ExecutionContext is provided)
+//! - NEAR RPC proxy via host functions `near:rpc/api@0.1.0` (when ExecutionContext is provided)
 //! - Advanced filesystem operations
 //! - Async execution
 //!

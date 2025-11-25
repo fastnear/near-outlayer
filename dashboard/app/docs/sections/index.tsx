@@ -372,7 +372,7 @@ export function WasiSection() {
             Host functions are defined in <code className="bg-gray-100 px-1 rounded">worker/wit/world.wit</code>:
           </p>
           <pre className="bg-gray-900 text-gray-100 p-3 rounded-lg overflow-x-auto text-xs mb-3">
-{`package near:rpc;
+{`package near:rpc@0.1.0;
 
 interface api {
     view: func(
@@ -410,6 +410,18 @@ world rpc-host {
               <li><strong>WASI Preview 2:</strong> Host functions require <code className="bg-yellow-100 px-1 rounded">wasm32-wasip2</code> target</li>
               <li><strong>Signer credentials:</strong> Must provide <code className="bg-yellow-100 px-1 rounded">NEAR_SENDER_PRIVATE_KEY</code> via secrets</li>
               <li><strong>NEAR tokens:</strong> Signer account must have sufficient balance for gas and deposits</li>
+            </ul>
+          </div>
+
+          <div className="bg-blue-50 border-l-4 border-blue-400 p-4 mt-4">
+            <h4 className="font-semibold text-blue-900 mb-2">🔄 API Versioning</h4>
+            <p className="text-sm text-blue-800 mb-2">
+              Host functions are versioned using semantic versioning (<code className="bg-blue-100 px-1 rounded">@0.1.0</code>). This ensures backward compatibility when the API evolves.
+            </p>
+            <ul className="list-disc list-inside text-sm text-blue-800 space-y-1">
+              <li><strong>Current version:</strong> <code className="bg-blue-100 px-1 rounded">near:rpc@0.1.0</code></li>
+              <li><strong>Multiple versions:</strong> Workers can run WASM compiled with different API versions simultaneously</li>
+              <li><strong>No breaking changes:</strong> Your WASM will continue working even when new versions are released</li>
             </ul>
           </div>
         </section>
