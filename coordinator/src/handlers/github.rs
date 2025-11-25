@@ -332,18 +332,57 @@ async fn fetch_branch_from_github(
 /// - 200: { "repo_normalized": "github.com/owner/repo", "branch": "main", "owner": "alice.near", "pubkey": "hex..." }
 /// - 400: Invalid repo format, missing owner, or keystore not configured
 /// - 502: Keystore error
+
+/// Secret accessor type - matches contract's SecretAccessor enum
+///
+/// IMPORTANT: When adding new accessor types:
+/// 1. Add variant here in coordinator
+/// 2. Add variant in keystore-worker/src/api.rs (SecretAccessor enum)
+/// 3. Add variant in contract/src/lib.rs (SecretAccessor enum)
+/// 4. Update seed generation in get_secrets_pubkey and add_generated_secret
+/// 5. Update dashboard/app/secrets/components/SecretsForm.tsx
+/// 6. Update worker/src/keystore_client.rs decrypt methods
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+pub enum SecretAccessor {
+    /// Secrets bound to a GitHub repository
+    Repo {
+        repo: String,
+        #[serde(default)]
+        branch: Option<String>,
+    },
+    /// Secrets bound to a specific WASM hash
+    WasmHash {
+        hash: String,
+    },
+}
+
 #[derive(Debug, Deserialize)]
 pub struct GetPubkeyRequest {
-    pub repo: String,
-    pub branch: Option<String>,
-    pub owner: String, // NEAR account ID (required)
-    pub secrets_json: String, // Secrets to validate before encryption
+    /// What code can access these secrets
+    pub accessor: SecretAccessor,
+    /// NEAR account ID that will own these secrets (REQUIRED)
+    pub owner: String,
+    /// Secrets JSON to validate before encryption
+    pub secrets_json: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type")]
+pub enum PubkeyResponseAccessor {
+    Repo {
+        repo_normalized: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+    },
+    WasmHash {
+        hash: String,
+    },
 }
 
 #[derive(Debug, Serialize)]
 pub struct GetPubkeyResponse {
-    pub repo_normalized: String,
-    pub branch: Option<String>,
+    pub accessor: PubkeyResponseAccessor,
     pub owner: String,
     pub pubkey: String, // hex-encoded public key
 }
@@ -370,25 +409,61 @@ pub async fn get_secrets_pubkey(
         ));
     }
 
-    // Normalize repo URL
-    let normalized_repo = parse_github_repo(&req.repo)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid repo format: {}", e)))?;
+    // Build seed and response accessor based on accessor type
+    let (seed, response_accessor) = match &req.accessor {
+        SecretAccessor::Repo { repo, branch } => {
+            // Normalize repo URL
+            let normalized_repo = parse_github_repo(repo)
+                .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid repo format: {}", e)))?;
 
-    // Build seed for keystore: repo:owner[:branch]
-    // This prevents secret reuse attacks (different owners get different keys)
-    let seed = if let Some(ref branch) = req.branch {
-        format!("{}:{}:{}", normalized_repo, req.owner, branch)
-    } else {
-        format!("{}:{}", normalized_repo, req.owner)
+            // Build seed: repo:owner[:branch]
+            let seed = if let Some(ref branch) = branch {
+                format!("{}:{}:{}", normalized_repo, req.owner, branch)
+            } else {
+                format!("{}:{}", normalized_repo, req.owner)
+            };
+
+            tracing::info!(
+                "🔐 ENCRYPTION SEED (Repo): repo_normalized={}, owner={}, branch={:?}, seed={}",
+                normalized_repo,
+                req.owner,
+                branch,
+                seed
+            );
+
+            let accessor = PubkeyResponseAccessor::Repo {
+                repo_normalized: normalized_repo,
+                branch: branch.clone(),
+            };
+
+            (seed, accessor)
+        }
+        SecretAccessor::WasmHash { hash } => {
+            // Validate hash format (64 hex characters)
+            if hash.len() != 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "Invalid WASM hash: must be 64 hex characters".to_string(),
+                ));
+            }
+
+            // Build seed: wasm_hash:owner
+            let seed = format!("wasm_hash:{}:{}", hash, req.owner);
+
+            tracing::info!(
+                "🔐 ENCRYPTION SEED (WasmHash): hash={}, owner={}, seed={}",
+                hash,
+                req.owner,
+                seed
+            );
+
+            let accessor = PubkeyResponseAccessor::WasmHash {
+                hash: hash.clone(),
+            };
+
+            (seed, accessor)
+        }
     };
-
-    tracing::info!(
-        "🔐 ENCRYPTION SEED (coordinator): repo_normalized={}, owner={}, branch={:?}, seed={}",
-        normalized_repo,
-        req.owner,
-        req.branch,
-        seed
-    );
 
     // Call keystore to get pubkey (POST with seed and secrets_json for validation)
     let client = reqwest::Client::new();
@@ -452,8 +527,7 @@ pub async fn get_secrets_pubkey(
     Ok((
         StatusCode::OK,
         Json(GetPubkeyResponse {
-            repo_normalized: normalized_repo,
-            branch: req.branch,
+            accessor: response_accessor,
             owner: req.owner,
             pubkey: keystore_data.pubkey,
         }),
@@ -488,9 +562,9 @@ pub async fn get_secrets_pubkey(
 /// - 502: Keystore error
 #[derive(Debug, Deserialize)]
 pub struct AddGeneratedSecretRequest {
-    pub repo: String,
+    /// What code can access these secrets
+    pub accessor: SecretAccessor,
     pub owner: String,
-    pub branch: Option<String>,
     pub encrypted_secrets_base64: Option<String>, // Existing encrypted secrets (optional)
     pub new_secrets: Vec<GeneratedSecretSpec>,
 }
@@ -505,6 +579,7 @@ pub struct GeneratedSecretSpec {
 pub struct AddGeneratedSecretResponse {
     pub encrypted_data_base64: String,
     pub all_keys: Vec<String>,
+    pub accessor: PubkeyResponseAccessor,
 }
 
 pub async fn add_generated_secret(
@@ -537,25 +612,61 @@ pub async fn add_generated_secret(
         ));
     }
 
-    // Normalize repo URL
-    let normalized_repo = parse_github_repo(&req.repo)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid repo format: {}", e)))?;
+    // Build seed and response accessor based on accessor type (same logic as get_pubkey)
+    let (seed, response_accessor) = match &req.accessor {
+        SecretAccessor::Repo { repo, branch } => {
+            // Normalize repo URL
+            let normalized_repo = parse_github_repo(repo)
+                .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid repo format: {}", e)))?;
 
-    // Build seed (same as get_pubkey for consistency)
-    let seed = if let Some(ref branch) = req.branch {
-        format!("{}:{}:{}", normalized_repo, req.owner, branch)
-    } else {
-        format!("{}:{}", normalized_repo, req.owner)
+            let seed = if let Some(ref branch) = branch {
+                format!("{}:{}:{}", normalized_repo, req.owner, branch)
+            } else {
+                format!("{}:{}", normalized_repo, req.owner)
+            };
+
+            tracing::info!(
+                "🔑 GENERATE SECRETS (Repo): repo={}, owner={}, branch={:?}, seed={}, new_secrets_count={}",
+                normalized_repo,
+                req.owner,
+                branch,
+                seed,
+                req.new_secrets.len()
+            );
+
+            let accessor = PubkeyResponseAccessor::Repo {
+                repo_normalized: normalized_repo,
+                branch: branch.clone(),
+            };
+
+            (seed, accessor)
+        }
+        SecretAccessor::WasmHash { hash } => {
+            // Validate hash format
+            if hash.len() != 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "Invalid WASM hash: must be 64 hex characters".to_string(),
+                ));
+            }
+
+            let seed = format!("wasm_hash:{}:{}", hash, req.owner);
+
+            tracing::info!(
+                "🔑 GENERATE SECRETS (WasmHash): hash={}, owner={}, seed={}, new_secrets_count={}",
+                hash,
+                req.owner,
+                seed,
+                req.new_secrets.len()
+            );
+
+            let accessor = PubkeyResponseAccessor::WasmHash {
+                hash: hash.clone(),
+            };
+
+            (seed, accessor)
+        }
     };
-
-    tracing::info!(
-        "🔑 GENERATE SECRETS (coordinator): repo={}, owner={}, branch={:?}, seed={}, new_secrets_count={}",
-        normalized_repo,
-        req.owner,
-        req.branch,
-        seed,
-        req.new_secrets.len()
-    );
 
     // Call keystore to generate and re-encrypt secrets
     let client = reqwest::Client::new();
@@ -619,6 +730,7 @@ pub async fn add_generated_secret(
         Json(AddGeneratedSecretResponse {
             encrypted_data_base64: keystore_data.encrypted_data_base64,
             all_keys: keystore_data.all_keys,
+            accessor: response_accessor,
         }),
     ))
 }
@@ -655,5 +767,48 @@ mod tests {
         assert_eq!(parts[0], "github.com");
         assert_eq!(parts[1], "alice");
         assert_eq!(parts[2], "project");
+    }
+
+    #[test]
+    fn test_repo_accessor_normalization() {
+        // Test various URL formats normalize to same result
+        let test_cases = vec![
+            "https://github.com/zavodil/botfather-ark",
+            "git@github.com:zavodil/botfather-ark.git",
+            "github.com/zavodil/botfather-ark",
+            "zavodil/botfather-ark",
+        ];
+
+        let expected = "github.com/zavodil/botfather-ark";
+
+        for input in test_cases {
+            let normalized = parse_github_repo(input).unwrap();
+            assert_eq!(
+                normalized, expected,
+                "Failed to normalize '{}' to '{}'",
+                input, expected
+            );
+        }
+    }
+
+    #[test]
+    fn test_wasm_hash_accessor_validation() {
+        // Valid hash
+        let valid_hash = "a".repeat(64);
+        assert_eq!(valid_hash.len(), 64);
+        assert!(valid_hash.chars().all(|c| c.is_ascii_hexdigit()));
+
+        // Invalid: too short
+        let short_hash = "abc123";
+        assert!(short_hash.len() != 64);
+
+        // Invalid: not hex
+        let invalid_hash = "g".repeat(64);
+        assert!(!invalid_hash.chars().all(|c| c.is_ascii_hexdigit()));
+
+        // Valid: mixed case hex
+        let mixed_case = format!("{}{}", "A".repeat(32), "f".repeat(32));
+        assert_eq!(mixed_case.len(), 64);
+        assert!(mixed_case.chars().all(|c| c.is_ascii_hexdigit()));
     }
 }

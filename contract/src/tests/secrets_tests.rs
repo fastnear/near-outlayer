@@ -24,8 +24,10 @@ fn test_estimate_storage_cost() {
     // Estimate cost for small secrets
     let small_data = "test_encrypted_data";
     let cost = contract.estimate_storage_cost(
-        "github.com/test/repo".to_string(),
-        None,
+        SecretAccessor::Repo {
+            repo: "github.com/test/repo".to_string(),
+            branch: None,
+        },
         "default".to_string(),
         accounts(1),
         small_data.to_string(),
@@ -50,8 +52,10 @@ fn test_storage_deposit_theft_attack_large_to_small() {
     // 1. Create large secret (1KB encrypted data)
     let large_data = "a".repeat(1000);
     let cost_large = contract.estimate_storage_cost(
-        "github.com/test/repo".to_string(),
-        None,
+        SecretAccessor::Repo {
+            repo: "github.com/test/repo".to_string(),
+            branch: None,
+        },
         "test".to_string(),
         accounts(1),
         large_data.clone(),
@@ -63,8 +67,10 @@ fn test_storage_deposit_theft_attack_large_to_small() {
     // Store with exact deposit
     testing_env!(context.attached_deposit(NearToken::from_yoctonear(cost_large.0)).build());
     contract.store_secrets(
-        "github.com/test/repo".to_string(),
-        None,
+        SecretAccessor::Repo {
+            repo: "github.com/test/repo".to_string(),
+            branch: None,
+        },
         "test".to_string(),
         large_data,
         types::AccessCondition::AllowAll,
@@ -72,8 +78,10 @@ fn test_storage_deposit_theft_attack_large_to_small() {
 
     // Verify stored deposit
     let stored = contract.get_secrets(
-        "github.com/test/repo".to_string(),
-        None,
+        SecretAccessor::Repo {
+            repo: "github.com/test/repo".to_string(),
+            branch: None,
+        },
         "test".to_string(),
         accounts(1),
     ).unwrap();
@@ -82,8 +90,10 @@ fn test_storage_deposit_theft_attack_large_to_small() {
     // 2. Update to small secret (10 bytes)
     let small_data = "small_data";
     let cost_small = contract.estimate_storage_cost(
-        "github.com/test/repo".to_string(),
-        None,
+        SecretAccessor::Repo {
+            repo: "github.com/test/repo".to_string(),
+            branch: None,
+        },
         "test".to_string(),
         accounts(1),
         small_data.to_string(),
@@ -96,8 +106,10 @@ fn test_storage_deposit_theft_attack_large_to_small() {
     // Try to update with 0 attached deposit (should use old deposit)
     testing_env!(context.attached_deposit(NearToken::from_yoctonear(0)).build());
     contract.store_secrets(
-        "github.com/test/repo".to_string(),
-        None,
+        SecretAccessor::Repo {
+            repo: "github.com/test/repo".to_string(),
+            branch: None,
+        },
         "test".to_string(),
         small_data.to_string(),
         types::AccessCondition::AllowAll,
@@ -105,8 +117,10 @@ fn test_storage_deposit_theft_attack_large_to_small() {
 
     // 3. Check result: storage_deposit should now be cost_small (NOT cost_large!)
     let updated = contract.get_secrets(
-        "github.com/test/repo".to_string(),
-        None,
+        SecretAccessor::Repo {
+            repo: "github.com/test/repo".to_string(),
+            branch: None,
+        },
         "test".to_string(),
         accounts(1),
     ).unwrap();
@@ -131,8 +145,10 @@ fn test_storage_deposit_increase_requires_payment() {
     // 1. Create small secret
     let small_data = "small";
     let cost_small = contract.estimate_storage_cost(
-        "github.com/test/repo".to_string(),
-        None,
+        SecretAccessor::Repo {
+            repo: "github.com/test/repo".to_string(),
+            branch: None,
+        },
         "test".to_string(),
         accounts(1),
         small_data.to_string(),
@@ -141,8 +157,10 @@ fn test_storage_deposit_increase_requires_payment() {
 
     testing_env!(context.attached_deposit(NearToken::from_yoctonear(cost_small.0)).build());
     contract.store_secrets(
-        "github.com/test/repo".to_string(),
-        None,
+        SecretAccessor::Repo {
+            repo: "github.com/test/repo".to_string(),
+            branch: None,
+        },
         "test".to_string(),
         small_data.to_string(),
         types::AccessCondition::AllowAll,
@@ -151,8 +169,10 @@ fn test_storage_deposit_increase_requires_payment() {
     // 2. Try to update to large secret with 0 deposit - should FAIL
     let large_data = "a".repeat(1000);
     let cost_large = contract.estimate_storage_cost(
-        "github.com/test/repo".to_string(),
-        None,
+        SecretAccessor::Repo {
+            repo: "github.com/test/repo".to_string(),
+            branch: None,
+        },
         "test".to_string(),
         accounts(1),
         large_data.clone(),
@@ -166,8 +186,10 @@ fn test_storage_deposit_increase_requires_payment() {
     testing_env!(context.attached_deposit(NearToken::from_yoctonear(0)).build());
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         contract.store_secrets(
-            "github.com/test/repo".to_string(),
-            None,
+            SecretAccessor::Repo {
+                repo: "github.com/test/repo".to_string(),
+                branch: None,
+            },
             "test".to_string(),
             large_data.clone(),
             types::AccessCondition::AllowAll,
@@ -180,8 +202,10 @@ fn test_storage_deposit_increase_requires_payment() {
     let additional_needed = cost_large.0 - cost_small.0;
     testing_env!(context.attached_deposit(NearToken::from_yoctonear(additional_needed)).build());
     contract.store_secrets(
-        "github.com/test/repo".to_string(),
-        None,
+        SecretAccessor::Repo {
+            repo: "github.com/test/repo".to_string(),
+            branch: None,
+        },
         "test".to_string(),
         large_data,
         types::AccessCondition::AllowAll,
@@ -189,8 +213,10 @@ fn test_storage_deposit_increase_requires_payment() {
 
     // Verify new cost is stored
     let updated = contract.get_secrets(
-        "github.com/test/repo".to_string(),
-        None,
+        SecretAccessor::Repo {
+            repo: "github.com/test/repo".to_string(),
+            branch: None,
+        },
         "test".to_string(),
         accounts(1),
     ).unwrap();
@@ -207,8 +233,10 @@ fn test_multiple_secrets_separate_deposits() {
     // Create secret 1: repo1/main/profile1
     let data1 = "secret_one_data";
     let cost1 = contract.estimate_storage_cost(
-        "github.com/repo1".to_string(),
-        Some("main".to_string()),
+        SecretAccessor::Repo {
+            repo: "github.com/repo1".to_string(),
+            branch: Some("main".to_string()),
+        },
         "profile1".to_string(),
         accounts(1),
         data1.to_string(),
@@ -217,8 +245,10 @@ fn test_multiple_secrets_separate_deposits() {
 
     testing_env!(context.attached_deposit(NearToken::from_yoctonear(cost1.0)).build());
     contract.store_secrets(
-        "github.com/repo1".to_string(),
-        Some("main".to_string()),
+        SecretAccessor::Repo {
+            repo: "github.com/repo1".to_string(),
+            branch: Some("main".to_string()),
+        },
         "profile1".to_string(),
         data1.to_string(),
         types::AccessCondition::AllowAll,
@@ -227,8 +257,10 @@ fn test_multiple_secrets_separate_deposits() {
     // Create secret 2: repo2/dev/profile2
     let data2 = "secret_two_data_longer_content";
     let cost2 = contract.estimate_storage_cost(
-        "github.com/repo2".to_string(),
-        Some("dev".to_string()),
+        SecretAccessor::Repo {
+            repo: "github.com/repo2".to_string(),
+            branch: Some("dev".to_string()),
+        },
         "profile2".to_string(),
         accounts(1),
         data2.to_string(),
@@ -237,8 +269,10 @@ fn test_multiple_secrets_separate_deposits() {
 
     testing_env!(context.attached_deposit(NearToken::from_yoctonear(cost2.0)).build());
     contract.store_secrets(
-        "github.com/repo2".to_string(),
-        Some("dev".to_string()),
+        SecretAccessor::Repo {
+            repo: "github.com/repo2".to_string(),
+            branch: Some("dev".to_string()),
+        },
         "profile2".to_string(),
         data2.to_string(),
         types::AccessCondition::AllowAll,
@@ -246,16 +280,20 @@ fn test_multiple_secrets_separate_deposits() {
 
     // Verify both exist with correct deposits
     let secret1 = contract.get_secrets(
-        "github.com/repo1".to_string(),
-        Some("main".to_string()),
+        SecretAccessor::Repo {
+            repo: "github.com/repo1".to_string(),
+            branch: Some("main".to_string()),
+        },
         "profile1".to_string(),
         accounts(1),
     ).unwrap();
     assert_eq!(secret1.storage_deposit.0, cost1.0);
 
     let secret2 = contract.get_secrets(
-        "github.com/repo2".to_string(),
-        Some("dev".to_string()),
+        SecretAccessor::Repo {
+            repo: "github.com/repo2".to_string(),
+            branch: Some("dev".to_string()),
+        },
         "profile2".to_string(),
         accounts(1),
     ).unwrap();
@@ -264,15 +302,19 @@ fn test_multiple_secrets_separate_deposits() {
     // Delete secret 1
     testing_env!(context.attached_deposit(NearToken::from_yoctonear(1)).build());
     contract.delete_secrets(
-        "github.com/repo1".to_string(),
-        Some("main".to_string()),
+        SecretAccessor::Repo {
+            repo: "github.com/repo1".to_string(),
+            branch: Some("main".to_string()),
+        },
         "profile1".to_string(),
     );
 
     // Verify secret 1 is gone
     let deleted = contract.get_secrets(
-        "github.com/repo1".to_string(),
-        Some("main".to_string()),
+        SecretAccessor::Repo {
+            repo: "github.com/repo1".to_string(),
+            branch: Some("main".to_string()),
+        },
         "profile1".to_string(),
         accounts(1),
     );
@@ -280,8 +322,10 @@ fn test_multiple_secrets_separate_deposits() {
 
     // Verify secret 2 still exists with original deposit (NOT affected by delete)
     let secret2_after = contract.get_secrets(
-        "github.com/repo2".to_string(),
-        Some("dev".to_string()),
+        SecretAccessor::Repo {
+            repo: "github.com/repo2".to_string(),
+            branch: Some("dev".to_string()),
+        },
         "profile2".to_string(),
         accounts(1),
     ).unwrap();
@@ -298,8 +342,10 @@ fn test_delete_refunds_exact_amount() {
     // Create secret
     let data = "test_secret_for_deletion";
     let cost = contract.estimate_storage_cost(
-        "github.com/test/repo".to_string(),
-        None,
+        SecretAccessor::Repo {
+            repo: "github.com/test/repo".to_string(),
+            branch: None,
+        },
         "test".to_string(),
         accounts(1),
         data.to_string(),
@@ -308,8 +354,10 @@ fn test_delete_refunds_exact_amount() {
 
     testing_env!(context.attached_deposit(NearToken::from_yoctonear(cost.0)).build());
     contract.store_secrets(
-        "github.com/test/repo".to_string(),
-        None,
+        SecretAccessor::Repo {
+            repo: "github.com/test/repo".to_string(),
+            branch: None,
+        },
         "test".to_string(),
         data.to_string(),
         types::AccessCondition::AllowAll,
@@ -318,16 +366,20 @@ fn test_delete_refunds_exact_amount() {
     // Delete and check refund
     testing_env!(context.attached_deposit(NearToken::from_yoctonear(1)).build());
     contract.delete_secrets(
-        "github.com/test/repo".to_string(),
-        None,
+        SecretAccessor::Repo {
+            repo: "github.com/test/repo".to_string(),
+            branch: None,
+        },
         "test".to_string(),
     );
 
     // Note: In real scenario, we'd check Promise transfers
     // Here we verify the secret is gone
     let deleted = contract.get_secrets(
-        "github.com/test/repo".to_string(),
-        None,
+        SecretAccessor::Repo {
+            repo: "github.com/test/repo".to_string(),
+            branch: None,
+        },
         "test".to_string(),
         accounts(1),
     );
@@ -345,8 +397,10 @@ fn test_access_condition_size_affects_cost() {
 
     // Cost with simple access condition (AllowAll)
     let cost_simple = contract.estimate_storage_cost(
-        "github.com/test/repo".to_string(),
-        None,
+        SecretAccessor::Repo {
+            repo: "github.com/test/repo".to_string(),
+            branch: None,
+        },
         "test".to_string(),
         accounts(1),
         data.to_string(),
@@ -365,8 +419,10 @@ fn test_access_condition_size_affects_cost() {
     };
 
     let cost_complex = contract.estimate_storage_cost(
-        "github.com/test/repo".to_string(),
-        None,
+        SecretAccessor::Repo {
+            repo: "github.com/test/repo".to_string(),
+            branch: None,
+        },
         "test".to_string(),
         accounts(1),
         data.to_string(),

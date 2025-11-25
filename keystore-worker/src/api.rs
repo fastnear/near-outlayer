@@ -62,14 +62,35 @@ impl IntoResponse for ApiError {
     }
 }
 
+/// Secret accessor type - matches contract's SecretAccessor enum
+///
+/// IMPORTANT: When adding new accessor types:
+/// 1. Add variant here in keystore-worker
+/// 2. Add variant in coordinator/src/handlers/github.rs (SecretAccessor enum)
+/// 3. Add variant in contract/src/lib.rs (SecretAccessor enum)
+/// 4. Update seed generation in decrypt_handler below
+/// 5. Update near.rs get_secrets methods if needed
+/// 6. Update worker/src/keystore_client.rs decrypt methods
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum SecretAccessor {
+    /// Secrets bound to a GitHub repository
+    Repo {
+        repo: String,
+        #[serde(default)]
+        branch: Option<String>,
+    },
+    /// Secrets bound to a specific WASM hash
+    WasmHash {
+        hash: String,
+    },
+}
+
 /// Request to decrypt secrets from contract
 #[derive(Debug, Deserialize)]
 pub struct DecryptRequest {
-    /// Repository URL (will be normalized)
-    pub repo: String,
-
-    /// Optional branch name
-    pub branch: Option<String>,
+    /// What code can access these secrets
+    pub accessor: SecretAccessor,
 
     /// Profile name (e.g., "default", "production")
     pub profile: String,
@@ -265,14 +286,30 @@ async fn decrypt_handler(
 ) -> Result<Json<DecryptResponse>, ApiError> {
     let task_id_str = req.task_id.as_deref().unwrap_or("unknown");
 
-    tracing::info!(
-        task_id = %task_id_str,
-        tee_type = %req.attestation.tee_type,
-        repo = %req.repo,
-        profile = %req.profile,
-        owner = %req.owner,
-        "Received decrypt request"
-    );
+    // Log request based on accessor type
+    match &req.accessor {
+        SecretAccessor::Repo { repo, branch } => {
+            tracing::info!(
+                task_id = %task_id_str,
+                tee_type = %req.attestation.tee_type,
+                repo = %repo,
+                branch = ?branch,
+                profile = %req.profile,
+                owner = %req.owner,
+                "Received decrypt request (Repo)"
+            );
+        }
+        SecretAccessor::WasmHash { hash } => {
+            tracing::info!(
+                task_id = %task_id_str,
+                tee_type = %req.attestation.tee_type,
+                wasm_hash = %hash,
+                profile = %req.profile,
+                owner = %req.owner,
+                "Received decrypt request (WasmHash)"
+            );
+        }
+    }
 
     // 1. Verify TEE attestation (security-critical step)
     crate::attestation::verify_attestation(
@@ -289,23 +326,46 @@ async fn decrypt_handler(
     let near_client = state.near_client.as_ref()
         .ok_or_else(|| ApiError::InternalError("NEAR client not configured".to_string()))?;
 
-    let secret_profile = near_client
-        .get_secrets(&req.repo, req.branch.as_deref(), &req.profile, &req.owner)
-        .await
-        .map_err(|e| {
-            tracing::error!(task_id = %task_id_str, error = %e, "Failed to read secrets from contract");
-            ApiError::InternalError(format!("Failed to read secrets from contract: {}", e))
-        })?
-        .ok_or_else(|| {
-            tracing::warn!(
-                task_id = %task_id_str,
-                repo = %req.repo,
-                profile = %req.profile,
-                owner = %req.owner,
-                "Secrets not found in contract"
-            );
-            ApiError::BadRequest("Secrets not found in contract".to_string())
-        })?;
+    let secret_profile = match &req.accessor {
+        SecretAccessor::Repo { repo, branch } => {
+            near_client
+                .get_secrets(repo, branch.as_deref(), &req.profile, &req.owner)
+                .await
+                .map_err(|e| {
+                    tracing::error!(task_id = %task_id_str, error = %e, "Failed to read secrets from contract");
+                    ApiError::InternalError(format!("Failed to read secrets from contract: {}", e))
+                })?
+                .ok_or_else(|| {
+                    tracing::warn!(
+                        task_id = %task_id_str,
+                        repo = %repo,
+                        profile = %req.profile,
+                        owner = %req.owner,
+                        "Secrets not found in contract"
+                    );
+                    ApiError::BadRequest("Secrets not found in contract".to_string())
+                })?
+        }
+        SecretAccessor::WasmHash { hash } => {
+            near_client
+                .get_secrets_by_wasm_hash(hash, &req.profile, &req.owner)
+                .await
+                .map_err(|e| {
+                    tracing::error!(task_id = %task_id_str, error = %e, "Failed to read secrets from contract");
+                    ApiError::InternalError(format!("Failed to read secrets from contract: {}", e))
+                })?
+                .ok_or_else(|| {
+                    tracing::warn!(
+                        task_id = %task_id_str,
+                        wasm_hash = %hash,
+                        profile = %req.profile,
+                        owner = %req.owner,
+                        "Secrets not found in contract"
+                    );
+                    ApiError::BadRequest("Secrets not found in contract".to_string())
+                })?
+        }
+    };
 
     tracing::debug!(task_id = %task_id_str, "Successfully read secrets from contract");
 
@@ -336,57 +396,73 @@ async fn decrypt_handler(
 
     tracing::info!(task_id = %task_id_str, caller = %caller, "Access granted");
 
-    // 4. Normalize repo URL and build seed: repo:owner[:branch]
+    // 4. Build seed based on accessor type
     // SECURITY NOTE:
-    // - We use branch from SECRET PROFILE (not request) to construct seed
+    // - For Repo: use branch from SECRET PROFILE (not request) to construct seed
     // - This is correct because seed must match the one used during encryption
     // - Access control already validated above (only owner can decrypt their secrets)
     // - Contract already returned the correct secrets based on request parameters
-    let normalized_repo = crate::utils::normalize_repo_url(&req.repo);
+    let seed = match &req.accessor {
+        SecretAccessor::Repo { repo, branch: request_branch } => {
+            let normalized_repo = crate::utils::normalize_repo_url(repo);
+            let secret_branch = secret_profile["branch"].as_str();
 
-    let secret_branch = secret_profile["branch"].as_str();
-    let request_branch = req.branch.as_deref();
+            // Log branch matching for debugging
+            match (request_branch.as_deref(), secret_branch) {
+                (Some(req_b), Some(sec_b)) if req_b == sec_b => {
+                    tracing::debug!("Branch match: {} (exact)", req_b);
+                }
+                (Some(req_b), None) => {
+                    tracing::debug!("Branch fallback: requested '{}', using wildcard secrets (branch=null)", req_b);
+                }
+                (None, None) => {
+                    tracing::debug!("Branch match: both null (wildcard)");
+                }
+                (None, Some(sec_b)) => {
+                    tracing::debug!("Branch match: secret has '{}', request wildcard", sec_b);
+                }
+                (Some(req_b), Some(sec_b)) => {
+                    tracing::warn!(
+                        task_id = %task_id_str,
+                        request_branch = %req_b,
+                        secret_branch = %sec_b,
+                        "Branch mismatch - contract returned different branch than requested"
+                    );
+                }
+            }
 
-    // Log branch matching for debugging
-    match (request_branch, secret_branch) {
-        (Some(req_b), Some(sec_b)) if req_b == sec_b => {
-            tracing::debug!("Branch match: {} (exact)", req_b);
-        }
-        (Some(req_b), None) => {
-            tracing::debug!("Branch fallback: requested '{}', using wildcard secrets (branch=null)", req_b);
-        }
-        (None, None) => {
-            tracing::debug!("Branch match: both null (wildcard)");
-        }
-        (None, Some(sec_b)) => {
-            tracing::debug!("Branch match: secret has '{}', request wildcard", sec_b);
-        }
-        (Some(req_b), Some(sec_b)) => {
-            tracing::warn!(
+            // Build seed using branch from secret profile (critical for correct decryption)
+            let seed = if let Some(b) = secret_branch {
+                format!("{}:{}:{}", normalized_repo, req.owner, b)
+            } else {
+                format!("{}:{}", normalized_repo, req.owner)
+            };
+
+            tracing::info!(
                 task_id = %task_id_str,
-                request_branch = %req_b,
-                secret_branch = %sec_b,
-                "Branch mismatch - contract returned different branch than requested"
+                repo_normalized = %normalized_repo,
+                owner = %req.owner,
+                secret_branch = ?secret_branch,
+                seed = %seed,
+                "🔓 DECRYPTION SEED (Repo)"
             );
+
+            seed
         }
-    }
+        SecretAccessor::WasmHash { hash } => {
+            let seed = format!("wasm_hash:{}:{}", hash, req.owner);
 
-    // Build seed using branch from secret profile (critical for correct decryption)
-    let seed = if let Some(b) = secret_branch {
-        format!("{}:{}:{}", normalized_repo, req.owner, b)
-    } else {
-        // branch is null in contract - secrets encrypted without branch in seed
-        format!("{}:{}", normalized_repo, req.owner)
+            tracing::info!(
+                task_id = %task_id_str,
+                wasm_hash = %hash,
+                owner = %req.owner,
+                seed = %seed,
+                "🔓 DECRYPTION SEED (WasmHash)"
+            );
+
+            seed
+        }
     };
-
-    tracing::info!(
-        task_id = %task_id_str,
-        repo_normalized = %normalized_repo,
-        owner = %req.owner,
-        secret_branch = ?secret_branch,
-        seed = %seed,
-        "🔓 DECRYPTION SEED (keystore)"
-    );
 
     // 5. Decrypt using derived keypair
     let encrypted_secrets_base64 = secret_profile["encrypted_secrets"]
@@ -647,8 +723,11 @@ mod tests {
     #[test]
     fn test_decrypt_request_serialization() {
         let json = r#"{
-            "repo": "github.com/user/repo",
-            "branch": "main",
+            "accessor": {
+                "type": "Repo",
+                "repo": "github.com/user/repo",
+                "branch": "main"
+            },
             "profile": "production",
             "owner": "owner.testnet",
             "user_account_id": "caller.testnet",
@@ -662,7 +741,13 @@ mod tests {
         }"#;
 
         let req: DecryptRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.repo, "github.com/user/repo");
+        match req.accessor {
+            SecretAccessor::Repo { repo, branch } => {
+                assert_eq!(repo, "github.com/user/repo");
+                assert_eq!(branch, Some("main".to_string()));
+            }
+            _ => panic!("Expected Repo accessor"),
+        }
         assert_eq!(req.owner, "owner.testnet");
         assert_eq!(req.user_account_id, "caller.testnet");
     }
@@ -757,5 +842,153 @@ mod tests {
         assert!(condition.validate("anyone.testnet", None).await.unwrap());
         assert!(condition.validate("another.near", None).await.unwrap());
         assert!(condition.validate("random.account", None).await.unwrap());
+    }
+
+    /// Test SecretAccessor::Repo serialization (with branch)
+    #[test]
+    fn test_secret_accessor_repo_with_branch() {
+        let accessor = SecretAccessor::Repo {
+            repo: "github.com/user/repo".to_string(),
+            branch: Some("main".to_string()),
+        };
+
+        let json = serde_json::to_string(&accessor).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["type"], "Repo");
+        assert_eq!(parsed["repo"], "github.com/user/repo");
+        assert_eq!(parsed["branch"], "main");
+    }
+
+    /// Test SecretAccessor::Repo serialization (without branch)
+    #[test]
+    fn test_secret_accessor_repo_without_branch() {
+        let accessor = SecretAccessor::Repo {
+            repo: "github.com/user/repo".to_string(),
+            branch: None,
+        };
+
+        let json = serde_json::to_string(&accessor).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["type"], "Repo");
+        assert_eq!(parsed["repo"], "github.com/user/repo");
+        assert!(parsed["branch"].is_null());
+    }
+
+    /// Test SecretAccessor::WasmHash serialization
+    #[test]
+    fn test_secret_accessor_wasm_hash() {
+        let accessor = SecretAccessor::WasmHash {
+            hash: "abc123def456".to_string(),
+        };
+
+        let json = serde_json::to_string(&accessor).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["type"], "WasmHash");
+        assert_eq!(parsed["hash"], "abc123def456");
+    }
+
+    /// Test SecretAccessor deserialization from JSON
+    #[test]
+    fn test_secret_accessor_deserialization() {
+        // Test Repo with branch
+        let json = r#"{"type": "Repo", "repo": "github.com/test/project", "branch": "develop"}"#;
+        let accessor: SecretAccessor = serde_json::from_str(json).unwrap();
+        match accessor {
+            SecretAccessor::Repo { repo, branch } => {
+                assert_eq!(repo, "github.com/test/project");
+                assert_eq!(branch, Some("develop".to_string()));
+            }
+            _ => panic!("Expected Repo variant"),
+        }
+
+        // Test Repo without branch
+        let json = r#"{"type": "Repo", "repo": "github.com/test/project"}"#;
+        let accessor: SecretAccessor = serde_json::from_str(json).unwrap();
+        match accessor {
+            SecretAccessor::Repo { repo, branch } => {
+                assert_eq!(repo, "github.com/test/project");
+                assert_eq!(branch, None);
+            }
+            _ => panic!("Expected Repo variant"),
+        }
+
+        // Test WasmHash
+        let json = r#"{"type": "WasmHash", "hash": "deadbeef123456"}"#;
+        let accessor: SecretAccessor = serde_json::from_str(json).unwrap();
+        match accessor {
+            SecretAccessor::WasmHash { hash } => {
+                assert_eq!(hash, "deadbeef123456");
+            }
+            _ => panic!("Expected WasmHash variant"),
+        }
+    }
+
+    /// Test DecryptRequest with Repo accessor
+    #[test]
+    fn test_decrypt_request_with_repo_accessor() {
+        let json = r#"{
+            "accessor": {
+                "type": "Repo",
+                "repo": "github.com/user/repo",
+                "branch": "main"
+            },
+            "profile": "production",
+            "owner": "owner.testnet",
+            "user_account_id": "caller.testnet",
+            "attestation": {
+                "tee_type": "simulated",
+                "quote": "",
+                "measurements": {},
+                "timestamp": 1704067200
+            },
+            "task_id": "task123"
+        }"#;
+
+        let req: DecryptRequest = serde_json::from_str(json).unwrap();
+        match req.accessor {
+            SecretAccessor::Repo { repo, branch } => {
+                assert_eq!(repo, "github.com/user/repo");
+                assert_eq!(branch, Some("main".to_string()));
+            }
+            _ => panic!("Expected Repo accessor"),
+        }
+        assert_eq!(req.profile, "production");
+        assert_eq!(req.owner, "owner.testnet");
+        assert_eq!(req.user_account_id, "caller.testnet");
+    }
+
+    /// Test DecryptRequest with WasmHash accessor
+    #[test]
+    fn test_decrypt_request_with_wasm_hash_accessor() {
+        let json = r#"{
+            "accessor": {
+                "type": "WasmHash",
+                "hash": "abc123def456"
+            },
+            "profile": "default",
+            "owner": "alice.near",
+            "user_account_id": "bob.near",
+            "attestation": {
+                "tee_type": "none",
+                "quote": "",
+                "measurements": {},
+                "timestamp": 1704067200
+            }
+        }"#;
+
+        let req: DecryptRequest = serde_json::from_str(json).unwrap();
+        match req.accessor {
+            SecretAccessor::WasmHash { hash } => {
+                assert_eq!(hash, "abc123def456");
+            }
+            _ => panic!("Expected WasmHash accessor"),
+        }
+        assert_eq!(req.profile, "default");
+        assert_eq!(req.owner, "alice.near");
+        assert_eq!(req.user_account_id, "bob.near");
+        assert!(req.task_id.is_none());
     }
 }

@@ -7,7 +7,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{error, info, warn};
 
-use crate::api_client::ApiClient;
+use crate::api_client::{ApiClient, CreateTaskParams, ResourceLimits as ApiResourceLimits};
 
 /// ExecutionRequested event data from contract (matches contract's event structure)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,13 +43,100 @@ pub struct RequestData {
     pub timestamp: u64,
     #[serde(default)]
     pub response_format: crate::api_client::ResponseFormat,
+    #[serde(default)]
+    pub compile_only: bool,
+    #[serde(default)]
+    pub force_rebuild: bool,
+    #[serde(default)]
+    pub store_on_fastfs: bool,
+}
+
+/// Code source - either GitHub repo or pre-compiled WASM URL
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum CodeSource {
+    GitHub {
+        #[serde(rename = "GitHub")]
+        github: GitHubSource,
+    },
+    WasmUrl {
+        #[serde(rename = "WasmUrl")]
+        wasm_url: WasmUrlSource,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CodeSource {
+pub struct GitHubSource {
     pub repo: String,
     pub commit: String,
     pub build_target: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WasmUrlSource {
+    pub url: String,
+    pub hash: String,
+    pub build_target: Option<String>,
+}
+
+impl CodeSource {
+    /// Get repo URL (for GitHub sources)
+    #[allow(dead_code)]
+    pub fn repo(&self) -> Option<&str> {
+        match self {
+            CodeSource::GitHub { github } => Some(&github.repo),
+            CodeSource::WasmUrl { .. } => None,
+        }
+    }
+
+    /// Get commit (for GitHub sources)
+    #[allow(dead_code)]
+    pub fn commit(&self) -> Option<&str> {
+        match self {
+            CodeSource::GitHub { github } => Some(&github.commit),
+            CodeSource::WasmUrl { .. } => None,
+        }
+    }
+
+    /// Get build target
+    pub fn build_target(&self) -> Option<&str> {
+        match self {
+            CodeSource::GitHub { github } => github.build_target.as_deref(),
+            CodeSource::WasmUrl { wasm_url } => wasm_url.build_target.as_deref(),
+        }
+    }
+
+    /// Set build target
+    pub fn set_build_target(&mut self, target: String) {
+        match self {
+            CodeSource::GitHub { github } => github.build_target = Some(target),
+            CodeSource::WasmUrl { wasm_url } => wasm_url.build_target = Some(target),
+        }
+    }
+
+    /// Get display string for logging
+    pub fn display(&self) -> String {
+        match self {
+            CodeSource::GitHub { github } => format!("{}@{}", github.repo, github.commit),
+            CodeSource::WasmUrl { wasm_url } => format!("url:{} hash:{}", wasm_url.url, wasm_url.hash),
+        }
+    }
+
+    /// Convert to api_client::CodeSource
+    pub fn to_api_code_source(&self) -> crate::api_client::CodeSource {
+        match self {
+            CodeSource::GitHub { github } => crate::api_client::CodeSource::GitHub {
+                repo: github.repo.clone(),
+                commit: github.commit.clone(),
+                build_target: github.build_target.clone().unwrap_or_else(|| "wasm32-wasi".to_string()),
+            },
+            CodeSource::WasmUrl { wasm_url } => crate::api_client::CodeSource::WasmUrl {
+                url: wasm_url.url.clone(),
+                hash: wasm_url.hash.clone(),
+                build_target: wasm_url.build_target.clone().unwrap_or_else(|| "wasm32-wasi".to_string()),
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -484,16 +571,16 @@ impl EventMonitor {
         info!("request_data secrets_ref: {:?}", request_data.secrets_ref);
 
         // Default to wasm32-wasi if not specified (will be normalized to wasm32-wasip1 by compiler)
-        if request_data.code_source.build_target.is_none() {
-            request_data.code_source.build_target = Some("wasm32-wasi".to_string());
+        if request_data.code_source.build_target().is_none() {
+            request_data.code_source.set_build_target("wasm32-wasi".to_string());
             info!("⚠️  No build_target specified, defaulting to wasm32-wasi");
         } else {
-            info!("📦 build_target specified: {}", request_data.code_source.build_target.as_ref().unwrap());
+            info!("📦 build_target specified: {}", request_data.code_source.build_target().unwrap());
         }
 
         info!(
-            "✅ Found execution_requested event at block {}: request_id={} repo={} commit={}",
-            block_height, request_data.request_id, request_data.code_source.repo, request_data.code_source.commit
+            "✅ Found execution_requested event at block {}: request_id={} source={}",
+            block_height, request_data.request_id, request_data.code_source.display()
         );
 
         Some(event_data)
@@ -509,10 +596,9 @@ impl EventMonitor {
             .context("Failed to parse request_data JSON")?;
 
         info!(
-            "Creating task for execution request: request_id={} repo={} commit={} sender={} response_format={:?}",
+            "Creating task for execution request: request_id={} source={} sender={} response_format={:?}",
             request_data.request_id,
-            request_data.code_source.repo,
-            request_data.code_source.commit,
+            request_data.code_source.display(),
             request_data.sender_id,
             request_data.response_format
         );
@@ -533,25 +619,31 @@ impl EventMonitor {
             gas_burnt: event.gas_burnt,
         };
 
+        // Convert code_source to api_client format
+        let api_code_source = request_data.code_source.to_api_code_source();
+
         // Create task in coordinator API
-        match self.api_client
-            .create_task(
-                request_data.request_id,              // request_id from contract
-                data_id_hex.clone(),
-                request_data.code_source.repo.clone(),
-                request_data.code_source.commit.clone(),
-                request_data.code_source.build_target.clone().unwrap_or_else(|| "wasm32-wasi".to_string()),
-                request_data.resource_limits.max_instructions,
-                request_data.resource_limits.max_memory_mb,
-                request_data.resource_limits.max_execution_seconds,
-                request_data.input_data.clone(),
-                request_data.secrets_ref.clone(),
-                request_data.response_format.clone(),
-                context,
-                Some(request_data.sender_id.clone()), // user_account_id
-                Some(request_data.payment.clone()),   // near_payment_yocto
-            )
-            .await
+        let params = CreateTaskParams {
+            request_id: request_data.request_id,
+            data_id: data_id_hex.clone(),
+            code_source: api_code_source,
+            resource_limits: ApiResourceLimits {
+                max_instructions: request_data.resource_limits.max_instructions,
+                max_memory_mb: request_data.resource_limits.max_memory_mb,
+                max_execution_seconds: request_data.resource_limits.max_execution_seconds,
+            },
+            input_data: request_data.input_data.clone(),
+            secrets_ref: request_data.secrets_ref.clone(),
+            response_format: request_data.response_format.clone(),
+            context,
+            user_account_id: Some(request_data.sender_id.clone()),
+            near_payment_yocto: Some(request_data.payment.clone()),
+            compile_only: request_data.compile_only,
+            force_rebuild: request_data.force_rebuild,
+            store_on_fastfs: request_data.store_on_fastfs,
+        };
+
+        match self.api_client.create_task(params).await
         {
             Ok(Some(request_id)) => {
                 info!("✅ Task created in coordinator: request_id={} data_id={}",
@@ -562,9 +654,8 @@ impl EventMonitor {
             }
             Err(e) => {
                 error!(
-                    "❌ Failed to create task: {}. data_id={} repo={} commit={}",
-                    e, data_id_hex,
-                    request_data.code_source.repo, request_data.code_source.commit
+                    "❌ Failed to create task: {}. data_id={} source={}",
+                    e, data_id_hex, request_data.code_source.display()
                 );
                 return Err(e);
             }

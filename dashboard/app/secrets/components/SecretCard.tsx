@@ -1,6 +1,6 @@
 'use client';
 
-import { UserSecret } from './types';
+import { UserSecret, isRepoAccessor, isWasmHashAccessor } from './types';
 import { formatAccessCondition } from './utils';
 
 interface SecretCardProps {
@@ -16,13 +16,30 @@ export function SecretCard({ secret, onEdit, onDelete }: SecretCardProps) {
         <div className="flex-1 min-w-0">
           {/* Header */}
           <div className="flex items-center space-x-2 mb-2">
-            <h3 className="text-sm font-semibold text-gray-900 truncate">
-              {secret.repo}
-            </h3>
-            {secret.branch && (
-              <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800">
-                {secret.branch}
-              </span>
+            {isRepoAccessor(secret.accessor) && (
+              <>
+                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700">
+                  GitHub
+                </span>
+                <h3 className="text-sm font-semibold text-gray-900 truncate">
+                  {secret.accessor.Repo.repo}
+                </h3>
+                {secret.accessor.Repo.branch && (
+                  <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800">
+                    {secret.accessor.Repo.branch}
+                  </span>
+                )}
+              </>
+            )}
+            {isWasmHashAccessor(secret.accessor) && (
+              <>
+                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700">
+                  WASM Hash
+                </span>
+                <h3 className="text-sm font-mono text-gray-900 truncate" title={secret.accessor.WasmHash.hash}>
+                  {secret.accessor.WasmHash.hash.substring(0, 8)}...{secret.accessor.WasmHash.hash.substring(secret.accessor.WasmHash.hash.length - 8)}
+                </h3>
+              </>
             )}
           </div>
 

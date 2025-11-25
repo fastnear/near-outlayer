@@ -5,6 +5,7 @@ use axum::{
 };
 
 use crate::auth::WorkerTokenHash;
+#[allow(unused_imports)]
 use crate::models::{AttestationResponse, StoreAttestationRequest, TaskAttestation};
 use crate::AppState;
 

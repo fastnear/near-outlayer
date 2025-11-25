@@ -35,9 +35,22 @@ pub async fn claim_job(
     // Calculate WASM checksum from code_source
     let wasm_checksum = calculate_wasm_checksum(&payload.code_source);
 
-    // Extract GitHub repo and commit for database
-    let (github_repo, github_commit) = match &payload.code_source {
-        CodeSource::GitHub { repo, commit, .. } => (Some(repo.clone()), Some(commit.clone())),
+    // Extract code source fields for database
+    let (github_repo, github_commit, wasm_url, wasm_content_hash, build_target) = match &payload.code_source {
+        CodeSource::GitHub { repo, commit, build_target } => (
+            Some(repo.clone()),
+            Some(commit.clone()),
+            None,
+            None,
+            Some(build_target.clone())
+        ),
+        CodeSource::WasmUrl { url, hash, build_target } => (
+            None,
+            None,
+            Some(url.clone()),
+            Some(hash.clone()),
+            Some(build_target.clone())
+        ),
     };
 
     // Check if WASM exists in cache
@@ -77,10 +90,22 @@ pub async fn claim_job(
         false
     };
 
+    // Handle force_rebuild - for COMPILER: treat as if WASM doesn't exist
+    // For EXECUTOR: use real wasm_file_exists (after compilation, WASM exists)
+    let needs_compilation = if payload.force_rebuild {
+        info!("🔄 force_rebuild=true, compiler will recompile");
+        true
+    } else {
+        !wasm_file_exists
+    };
+
+    // Use has_compile_result from payload (passed by worker from ExecutionRequest)
+    let has_compile_result = payload.has_compile_result;
+
     let mut jobs = Vec::new();
 
     // Determine job type based on WASM availability and worker capabilities
-    if !wasm_file_exists && can_compile {
+    if needs_compilation && can_compile && !has_compile_result {
         // Need compilation - check if compile job already exists
         let existing_compile = sqlx::query!(
             "SELECT job_id FROM jobs WHERE request_id = $1 AND data_id = $2 AND job_type = 'compile'",
@@ -107,8 +132,8 @@ pub async fn claim_job(
 
         let compile_job_result = sqlx::query!(
             r#"
-            INSERT INTO jobs (request_id, data_id, job_type, worker_id, status, wasm_checksum, user_account_id, near_payment_yocto, github_repo, github_commit, transaction_hash, created_at, updated_at)
-            VALUES ($1, $2, 'compile', $3, 'in_progress', $4, $5, $6, $7, $8, $9, NOW(), NOW())
+            INSERT INTO jobs (request_id, data_id, job_type, worker_id, status, wasm_checksum, user_account_id, near_payment_yocto, github_repo, github_commit, transaction_hash, wasm_url, wasm_content_hash, build_target, created_at, updated_at)
+            VALUES ($1, $2, 'compile', $3, 'in_progress', $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())
             RETURNING job_id
             "#,
             payload.request_id as i64,
@@ -119,7 +144,10 @@ pub async fn claim_job(
             payload.near_payment_yocto.as_deref(),
             github_repo.as_deref(),
             github_commit.as_deref(),
-            payload.transaction_hash.as_deref()
+            payload.transaction_hash.as_deref(),
+            wasm_url.as_deref(),
+            wasm_content_hash.as_deref(),
+            build_target.as_deref()
         )
         .fetch_one(&state.db)
         .await;
@@ -133,6 +161,7 @@ pub async fn claim_job(
                     allowed: true,
                     compile_cost_yocto: None, // Not applicable for compile jobs
                     compile_error: None,
+                    compile_time_ms: None, // Will be set after compilation
                 });
             }
             Err(e) => {
@@ -147,12 +176,13 @@ pub async fn claim_job(
                 return Err(StatusCode::INTERNAL_SERVER_ERROR);
             }
         }
-    } else if can_execute {
-        // Executor claiming job - either WASM exists or compilation failed
+    } else if can_execute && (!payload.compile_only || has_compile_result) {
+        // Executor claiming job - either WASM exists, compilation failed, or has compile_result to send
+        // Allow if compile_only=true but compile_result exists (need to send result to contract)
 
         // Check if compile job failed (executor needs to report error to contract)
         let compile_job = sqlx::query!(
-            "SELECT compile_cost_yocto, compile_error, status FROM jobs WHERE request_id = $1 AND data_id = $2 AND job_type = 'compile'",
+            "SELECT compile_cost_yocto, compile_error, status, compile_time_ms FROM jobs WHERE request_id = $1 AND data_id = $2 AND job_type = 'compile'",
             payload.request_id as i64,
             payload.data_id
         )
@@ -163,16 +193,29 @@ pub async fn claim_job(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-        let (compile_cost_yocto, compile_error) = compile_job
+        let (compile_cost_yocto, compile_error, compile_status, compile_time_ms) = compile_job
             .as_ref()
-            .map(|j| (j.compile_cost_yocto.clone(), j.compile_error.clone()))
-            .unwrap_or((None, None));
+            .map(|j| (j.compile_cost_yocto.clone(), j.compile_error.clone(), Some(j.status.clone()), j.compile_time_ms.map(|t| t as u64)))
+            .unwrap_or((None, None, None, None));
 
-        // If WASM doesn't exist and no compile error, executor can't do anything
-        if !wasm_file_exists && compile_error.is_none() {
+        // If WASM doesn't exist, no compile error, and no compile_result, executor can't do anything
+        // Note: use wasm_file_exists (real state), not needs_compilation (force_rebuild affects only compiler)
+        if !wasm_file_exists && compile_error.is_none() && !has_compile_result {
             debug!(
-                "❌ WASM not available and no compile error for request_id={}, executor cannot proceed",
+                "❌ WASM not available and no compile error/result for request_id={}, executor cannot proceed",
                 payload.request_id
+            );
+            let pricing = state.pricing.read().await.clone();
+            return Ok(Json(ClaimJobResponse { jobs: vec![], pricing }));
+        }
+
+        // If force_rebuild=true, executor must wait for compile job to complete
+        // Otherwise it will use old cached WASM instead of freshly compiled one
+        // Only wait if compile job exists (compile_job.is_some()) - otherwise compiler hasn't picked it up yet
+        if payload.force_rebuild && compile_job.is_some() && compile_status.as_deref() != Some("completed") && compile_error.is_none() {
+            debug!(
+                "⏳ force_rebuild=true but compile job not completed yet (status={:?}) for request_id={}, executor waiting",
+                compile_status, payload.request_id
             );
             let pricing = state.pricing.read().await.clone();
             return Ok(Json(ClaimJobResponse { jobs: vec![], pricing }));
@@ -211,8 +254,8 @@ pub async fn claim_job(
 
         let execute_job_result = sqlx::query!(
             r#"
-            INSERT INTO jobs (request_id, data_id, job_type, worker_id, status, wasm_checksum, user_account_id, near_payment_yocto, github_repo, github_commit, transaction_hash, created_at, updated_at)
-            VALUES ($1, $2, 'execute', $3, 'in_progress', $4, $5, $6, $7, $8, $9, NOW(), NOW())
+            INSERT INTO jobs (request_id, data_id, job_type, worker_id, status, wasm_checksum, user_account_id, near_payment_yocto, github_repo, github_commit, transaction_hash, wasm_url, wasm_content_hash, build_target, created_at, updated_at)
+            VALUES ($1, $2, 'execute', $3, 'in_progress', $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())
             RETURNING job_id
             "#,
             payload.request_id as i64,
@@ -223,7 +266,10 @@ pub async fn claim_job(
             payload.near_payment_yocto.as_deref(),
             github_repo.as_deref(),
             github_commit.as_deref(),
-            payload.transaction_hash.as_deref()
+            payload.transaction_hash.as_deref(),
+            wasm_url.as_deref(),
+            wasm_content_hash.as_deref(),
+            build_target.as_deref()
         )
         .fetch_one(&state.db)
         .await;
@@ -237,6 +283,7 @@ pub async fn claim_job(
                     allowed: true,
                     compile_cost_yocto,
                     compile_error,
+                    compile_time_ms,
                 });
             }
             Err(e) => {
@@ -281,6 +328,10 @@ fn calculate_wasm_checksum(code_source: &CodeSource) -> String {
             let input = format!("{}:{}:{}", repo, commit, build_target);
             let hash = Sha256::digest(input.as_bytes());
             hex::encode(hash)
+        }
+        CodeSource::WasmUrl { hash, .. } => {
+            // For WasmUrl, use the provided hash as checksum
+            hash.clone()
         }
     }
 }
@@ -346,7 +397,7 @@ pub async fn complete_job(
     // Get job details for history and to create execute task after compile
     let job = sqlx::query!(
         r#"
-        SELECT request_id, data_id, job_type, worker_id, wasm_checksum, user_account_id, near_payment_yocto, github_repo, github_commit, transaction_hash
+        SELECT request_id, data_id, job_type, worker_id, wasm_checksum, user_account_id, near_payment_yocto, github_repo, github_commit, transaction_hash, wasm_url, wasm_content_hash, build_target
         FROM jobs
         WHERE job_id = $1
         "#,
@@ -379,14 +430,21 @@ pub async fn complete_job(
         // For now, we'll create a minimal execute request - the worker will need to handle this
 
         // Build code source from stored data
+        let build_target = job.build_target.clone().unwrap_or_else(|| "wasm32-wasip1".to_string());
         let code_source = if let (Some(repo), Some(commit)) = (&job.github_repo, &job.github_commit) {
             CodeSource::GitHub {
                 repo: repo.clone(),
                 commit: commit.clone(),
-                build_target: "wasm32-wasip1".to_string(), // Default, could be stored in DB
+                build_target,
+            }
+        } else if let (Some(url), Some(hash)) = (&job.wasm_url, &job.wasm_content_hash) {
+            CodeSource::WasmUrl {
+                url: url.clone(),
+                hash: hash.clone(),
+                build_target,
             }
         } else {
-            error!("Missing github_repo or github_commit for compile job {}", payload.job_id);
+            error!("Missing code source fields for compile job {}", payload.job_id);
             return StatusCode::INTERNAL_SERVER_ERROR;
         };
 
@@ -402,7 +460,8 @@ pub async fn complete_job(
                    secrets_profile, secrets_account_id, response_format,
                    context_sender_id, context_block_height, context_block_timestamp,
                    context_contract_id, context_transaction_hash, context_receipt_id,
-                   context_predecessor_id, context_signer_public_key, context_gas_burnt
+                   context_predecessor_id, context_signer_public_key, context_gas_burnt,
+                   compile_only, force_rebuild, store_on_fastfs
             FROM execution_requests
             WHERE request_id = $1
             "#,
@@ -413,6 +472,34 @@ pub async fn complete_job(
 
         let execution_request = match original_request {
             Ok(Some(req)) => {
+                // Check if this was compile-only request
+                if req.compile_only {
+                    // If compile_result is provided, create execute task for executor to send result to contract
+                    if let Some(ref compile_result) = payload.compile_result {
+                        info!(
+                            "📤 Compile-only request with result for request_id={}, creating execute task to send result: {}",
+                            job.request_id, compile_result
+                        );
+                        // Save compile_result to execution_requests for executor to pick up
+                        if let Err(e) = sqlx::query!(
+                            "UPDATE execution_requests SET compile_result = $1 WHERE request_id = $2",
+                            compile_result,
+                            job.request_id
+                        )
+                        .execute(&state.db)
+                        .await {
+                            error!("Failed to save compile_result: {}", e);
+                        }
+                    } else {
+                        // No compile_result - nothing to send to contract
+                        info!(
+                            "✅ Compile-only request completed for request_id={}, no result to send",
+                            job.request_id
+                        );
+                        return StatusCode::OK;
+                    }
+                }
+
                 ExecutionRequest {
                     request_id: job.request_id as u64,
                     data_id: job.data_id.clone(),
@@ -423,7 +510,7 @@ pub async fn complete_job(
                         max_execution_seconds: req.max_execution_seconds.unwrap_or(60) as u64,
                     },
                     input_data: req.input_data.unwrap_or_default(),
-                    secrets_ref: if let (Some(profile), Some(account_id)) = (req.secrets_profile, req.secrets_account_id) {
+                    secrets_ref: if let (Some(profile), Some(account_id)) = (req.secrets_profile.clone(), req.secrets_account_id.clone()) {
                         Some(SecretsReference { profile, account_id })
                     } else {
                         None
@@ -447,6 +534,10 @@ pub async fn complete_job(
                     user_account_id: job.user_account_id.clone(),
                     near_payment_yocto: job.near_payment_yocto.clone(),
                     transaction_hash: job.transaction_hash.clone(),
+                    compile_only: req.compile_only,
+                    force_rebuild: req.force_rebuild,
+                    store_on_fastfs: req.store_on_fastfs,
+                    compile_result: payload.compile_result.clone(),
                 }
             }
             Ok(None) => {
@@ -469,6 +560,10 @@ pub async fn complete_job(
                     user_account_id: job.user_account_id.clone(),
                     near_payment_yocto: job.near_payment_yocto.clone(),
                     transaction_hash: job.transaction_hash.clone(),
+                    compile_only: false,
+                    force_rebuild: false,
+                    store_on_fastfs: false,
+                    compile_result: None,
                 }
             }
             Err(e) => {
@@ -490,6 +585,10 @@ pub async fn complete_job(
                     user_account_id: job.user_account_id.clone(),
                     near_payment_yocto: job.near_payment_yocto.clone(),
                     transaction_hash: job.transaction_hash.clone(),
+                    compile_only: false,
+                    force_rebuild: false,
+                    store_on_fastfs: false,
+                    compile_result: None,
                 }
             }
         };
@@ -528,14 +627,21 @@ pub async fn complete_job(
         );
 
         // Build minimal code source for the execute task
+        let build_target = job.build_target.clone().unwrap_or_else(|| "wasm32-wasip1".to_string());
         let code_source = if let (Some(repo), Some(commit)) = (&job.github_repo, &job.github_commit) {
             CodeSource::GitHub {
                 repo: repo.clone(),
                 commit: commit.clone(),
-                build_target: "wasm32-wasip1".to_string(),
+                build_target,
+            }
+        } else if let (Some(url), Some(hash)) = (&job.wasm_url, &job.wasm_content_hash) {
+            CodeSource::WasmUrl {
+                url: url.clone(),
+                hash: hash.clone(),
+                build_target,
             }
         } else {
-            error!("Missing github_repo or github_commit for failed compile job {}", payload.job_id);
+            error!("Missing code source fields for failed compile job {}", payload.job_id);
             return StatusCode::INTERNAL_SERVER_ERROR;
         };
 
@@ -556,6 +662,10 @@ pub async fn complete_job(
             user_account_id: job.user_account_id.clone(),
             near_payment_yocto: job.near_payment_yocto.clone(),
             transaction_hash: job.transaction_hash.clone(),
+            compile_only: false,
+            force_rebuild: false,
+            store_on_fastfs: false,
+            compile_result: None,
         };
 
         let request_json = match serde_json::to_string(&execution_request) {

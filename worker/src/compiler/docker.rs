@@ -299,7 +299,7 @@ fn classify_compilation_error(stderr_lines: &[String], exit_code: i64) -> (&'sta
     }
 
     // Generic compilation failure (fallback when no specific pattern matches)
-    ("compilation_error", "Compilation failed. Please check documentation and try to run your code on the playground.")
+    ("compilation_error", "Please check documentation and try to run your code on the playground.")
 }
 
 /// Extract WASM file from container

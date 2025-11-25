@@ -6,30 +6,46 @@ pub const STORAGE_PRICE_PER_BYTE: Balance = 10_000_000_000_000_000_000; // 0.000
 
 #[near_bindgen]
 impl Contract {
-    /// Store secrets for a repository with access control
+    /// Store secrets with access control
     ///
     /// User must attach storage deposit to cover the cost of storing secrets.
     /// The deposit will be refunded when secrets are deleted.
     ///
     /// # Arguments
-    /// * `repo` - Repository identifier (e.g., "owner/repo")
-    /// * `branch` - Optional branch name (None = all branches)
+    /// * `accessor` - What code can access these secrets (Repo or WasmHash)
     /// * `profile` - Profile name (e.g., "default", "premium", "staging")
     /// * `encrypted_secrets_base64` - Base64-encoded encrypted secrets
     /// * `access` - Access control rules
     #[payable]
     pub fn store_secrets(
         &mut self,
-        repo: String,
-        branch: Option<String>,
+        accessor: SecretAccessor,
         profile: String,
         encrypted_secrets_base64: String,
         access: types::AccessCondition,
     ) {
         let caller = env::predecessor_account_id();
 
-        // Validate inputs
-        assert!(!repo.is_empty(), "Repository cannot be empty");
+        // Validate accessor
+        match &accessor {
+            SecretAccessor::Repo { repo, branch } => {
+                assert!(!repo.is_empty(), "Repository cannot be empty");
+                if let Some(ref b) = branch {
+                    assert!(!b.is_empty(), "Branch name cannot be empty if provided");
+                    assert!(b.len() <= 255, "Branch name too long (max 255 chars)");
+                }
+            }
+            SecretAccessor::WasmHash { hash } => {
+                assert!(!hash.is_empty(), "WASM hash cannot be empty");
+                assert!(hash.len() == 64, "WASM hash must be 64 hex characters (SHA256)");
+                assert!(
+                    hash.chars().all(|c| c.is_ascii_hexdigit()),
+                    "WASM hash must be hex encoded"
+                );
+            }
+        }
+
+        // Validate common inputs
         assert!(!profile.is_empty(), "Profile cannot be empty");
         assert!(profile.len() <= 64, "Profile name too long (max 64 chars)");
         assert!(
@@ -41,16 +57,9 @@ impl Contract {
             "Encrypted secrets cannot be empty"
         );
 
-        // Validate branch name if provided
-        if let Some(ref b) = branch {
-            assert!(!b.is_empty(), "Branch name cannot be empty if provided");
-            assert!(b.len() <= 255, "Branch name too long (max 255 chars)");
-        }
-
         // Create secret key
         let key = SecretKey {
-            repo: repo.clone(),
-            branch: branch.clone(),
+            accessor: accessor.clone(),
             profile: profile.clone(),
             owner: caller.clone(),
         };
@@ -81,8 +90,8 @@ impl Contract {
             if refund > 0 {
                 near_sdk::Promise::new(caller.clone()).transfer(NearToken::from_yoctonear(refund));
                 log!(
-                    "Updating secrets: repo={}, branch={:?}, profile={}, old_deposit={}, attached={}, new_required={}, refund={}",
-                    repo, branch, profile,
+                    "Updating secrets: accessor={:?}, profile={}, old_deposit={}, attached={}, new_required={}, refund={}",
+                    accessor, profile,
                     existing.storage_deposit,
                     attached_deposit,
                     required_deposit,
@@ -128,9 +137,8 @@ impl Contract {
         }
 
         log!(
-            "Secrets stored: repo={}, branch={:?}, profile={}, owner={}, deposit={} yoctoNEAR",
-            repo,
-            branch,
+            "Secrets stored: accessor={:?}, profile={}, owner={}, deposit={} yoctoNEAR",
+            accessor,
             profile,
             caller,
             required_deposit
@@ -138,21 +146,35 @@ impl Contract {
     }
 
     /// Delete secrets and refund storage deposit
+    ///
+    /// # Arguments
+    /// * `accessor` - What code can access these secrets (Repo or WasmHash)
+    /// * `profile` - Profile name
     pub fn delete_secrets(
         &mut self,
-        repo: String,
-        branch: Option<String>,
+        accessor: SecretAccessor,
         profile: String,
     ) {
         let caller = env::predecessor_account_id();
 
         let key = SecretKey {
-            repo: repo.clone(),
-            branch: branch.clone(),
+            accessor: accessor.clone(),
             profile: profile.clone(),
             owner: caller.clone(),
         };
 
+        self.delete_secrets_internal(key, &caller);
+
+        log!(
+            "Secrets deleted: accessor={:?}, profile={}, owner={}",
+            accessor,
+            profile,
+            caller
+        );
+    }
+
+    /// Internal method to delete secrets by key
+    fn delete_secrets_internal(&mut self, key: SecretKey, caller: &AccountId) {
         let profile_data = self.secrets_storage.get(&key)
             .expect("Secrets not found");
 
@@ -160,13 +182,13 @@ impl Contract {
         self.secrets_storage.remove(&key);
 
         // Remove from user index
-        if let Some(mut user_secrets) = self.user_secrets_index.get(&caller) {
+        if let Some(mut user_secrets) = self.user_secrets_index.get(caller) {
             user_secrets.remove(&key);
             if user_secrets.is_empty() {
                 // Remove empty set
-                self.user_secrets_index.remove(&caller);
+                self.user_secrets_index.remove(caller);
             } else {
-                self.user_secrets_index.insert(&caller, &user_secrets);
+                self.user_secrets_index.insert(caller, &user_secrets);
             }
         }
 
@@ -174,30 +196,26 @@ impl Contract {
         if profile_data.storage_deposit > 0 {
             near_sdk::Promise::new(caller.clone())
                 .transfer(NearToken::from_yoctonear(profile_data.storage_deposit));
+            log!("Refunded {} yoctoNEAR", profile_data.storage_deposit);
         }
-
-        log!(
-            "Secrets deleted: repo={}, branch={:?}, profile={}, refunded={} yoctoNEAR",
-            repo,
-            branch,
-            profile,
-            profile_data.storage_deposit
-        );
     }
 
     /// Update access control rules for existing secrets
+    ///
+    /// # Arguments
+    /// * `accessor` - What code can access these secrets (Repo or WasmHash)
+    /// * `profile` - Profile name
+    /// * `new_access` - New access control rules
     pub fn update_access(
         &mut self,
-        repo: String,
-        branch: Option<String>,
+        accessor: SecretAccessor,
         profile: String,
         new_access: types::AccessCondition,
     ) {
         let caller = env::predecessor_account_id();
 
         let key = SecretKey {
-            repo: repo.clone(),
-            branch: branch.clone(),
+            accessor: accessor.clone(),
             profile: profile.clone(),
             owner: caller.clone(),
         };
@@ -212,9 +230,8 @@ impl Contract {
         self.secrets_storage.insert(&key, &profile_data);
 
         log!(
-            "Access control updated: repo={}, branch={:?}, profile={}",
-            repo,
-            branch,
+            "Access control updated: accessor={:?}, profile={}",
+            accessor,
             profile
         );
     }
@@ -227,7 +244,7 @@ impl Contract {
         access: &types::AccessCondition,
     ) -> u64 {
         // Storage calculation:
-        // - SecretKey: repo + branch + profile + owner (Borsh serialized)
+        // - SecretKey: key_type (enum) + profile + owner (Borsh serialized)
         // - SecretProfile: encrypted_secrets + access + timestamps + deposit (Borsh serialized)
         // - User index entry: UnorderedSet overhead (for new entries)
         // - Base overhead: LookupMap entry overhead
@@ -235,9 +252,21 @@ impl Contract {
         const BASE_STORAGE_OVERHEAD: u64 = 40; // LookupMap entry overhead (key hash + pointer)
         const INDEX_ENTRY_OVERHEAD: u64 = 64; // UnorderedSet entry overhead
 
-        // Key size (Borsh serialization adds length prefixes)
-        let key_size = (4 + key.repo.len() // String with u32 length prefix
-            + 1 + key.branch.as_ref().map(|b| 4 + b.len()).unwrap_or(0) // Option<String>
+        // Accessor size (Borsh serialization adds enum discriminant + data)
+        let accessor_size = match &key.accessor {
+            SecretAccessor::Repo { repo, branch } => {
+                1 + // enum discriminant
+                4 + repo.len() + // String with u32 length prefix
+                1 + branch.as_ref().map(|b| 4 + b.len()).unwrap_or(0) // Option<String>
+            }
+            SecretAccessor::WasmHash { hash } => {
+                1 + // enum discriminant
+                4 + hash.len() // String with u32 length prefix
+            }
+        };
+
+        // Key size
+        let key_size = (accessor_size
             + 4 + key.profile.len() // String with u32 length prefix
             + 4 + key.owner.as_str().len()) as u64; // AccountId (String with u32 length prefix)
 
@@ -272,36 +301,21 @@ impl Contract {
     /// the exact deposit amount required.
     ///
     /// # Arguments
-    /// * `repo` - Repository identifier (e.g., "github.com/owner/repo")
-    /// * `branch` - Optional branch name
-    /// * `profile` - Profile name (e.g., "default", "production")
+    /// * `accessor` - What code can access these secrets (Repo or WasmHash)
+    /// * `profile` - Profile name
     /// * `owner` - Account that will own the secrets
     /// * `encrypted_secrets_base64` - Base64-encoded encrypted secrets
     /// * `access` - Access control rules
-    ///
-    /// # Example
-    /// ```bash
-    /// near view outlayer.testnet estimate_storage_cost '{
-    ///   "repo": "github.com/alice/project",
-    ///   "branch": null,
-    ///   "profile": "production",
-    ///   "owner": "alice.testnet",
-    ///   "encrypted_secrets_base64": "YWJjZGVm...",
-    ///   "access": "AllowAll"
-    /// }'
-    /// ```
     pub fn estimate_storage_cost(
         &self,
-        repo: String,
-        branch: Option<String>,
+        accessor: SecretAccessor,
         profile: String,
         owner: AccountId,
         encrypted_secrets_base64: String,
         access: types::AccessCondition,
     ) -> U128 {
         let key = SecretKey {
-            repo,
-            branch,
+            accessor,
             profile,
             owner,
         };
@@ -310,52 +324,57 @@ impl Contract {
         U128((storage_bytes as u128) * STORAGE_PRICE_PER_BYTE)
     }
 
-    /// Get secrets for a repository (for keystore worker to read)
+    /// Get secrets (for keystore worker to read)
     ///
-    /// If querying with a specific branch returns None, automatically tries
-    /// with branch=null to find wildcard secrets (secrets that work for all branches).
+    /// For Repo accessor: if querying with a specific branch returns None,
+    /// automatically tries with branch=null to find wildcard secrets.
+    ///
+    /// # Arguments
+    /// * `accessor` - What code can access these secrets (Repo or WasmHash)
+    /// * `profile` - Profile name
+    /// * `owner` - Account that owns the secrets
     pub fn get_secrets(
         &self,
-        repo: String,
-        branch: Option<String>,
+        accessor: SecretAccessor,
         profile: String,
         owner: AccountId,
     ) -> Option<SecretProfileView> {
         let key = SecretKey {
-            repo: repo.clone(),
-            branch: branch.clone(),
+            accessor: accessor.clone(),
             profile: profile.clone(),
             owner: owner.clone(),
         };
 
-        // Try with specified branch first
-        if let Some(profile) = self.secrets_storage.get(&key) {
+        // Try with exact accessor first
+        if let Some(profile_data) = self.secrets_storage.get(&key) {
             return Some(SecretProfileView {
-                encrypted_secrets: profile.encrypted_secrets,
-                access: profile.access,
-                created_at: profile.created_at,
-                updated_at: profile.updated_at,
-                storage_deposit: U128(profile.storage_deposit),
-                branch: key.branch, // Return actual branch from key
+                encrypted_secrets: profile_data.encrypted_secrets,
+                access: profile_data.access,
+                created_at: profile_data.created_at,
+                updated_at: profile_data.updated_at,
+                storage_deposit: U128(profile_data.storage_deposit),
+                accessor: key.accessor,
             });
         }
 
-        // If not found and branch was specified, try with branch=null (wildcard)
-        if branch.is_some() {
+        // For Repo with branch, try wildcard (branch=null)
+        if let SecretAccessor::Repo { repo, branch: Some(_) } = accessor {
             let wildcard_key = SecretKey {
-                repo,
-                branch: None,
+                accessor: SecretAccessor::Repo {
+                    repo,
+                    branch: None,
+                },
                 profile,
                 owner,
             };
-            if let Some(profile) = self.secrets_storage.get(&wildcard_key) {
+            if let Some(profile_data) = self.secrets_storage.get(&wildcard_key) {
                 return Some(SecretProfileView {
-                    encrypted_secrets: profile.encrypted_secrets,
-                    access: profile.access,
-                    created_at: profile.created_at,
-                    updated_at: profile.updated_at,
-                    storage_deposit: U128(profile.storage_deposit),
-                    branch: wildcard_key.branch, // Return None (wildcard)
+                    encrypted_secrets: profile_data.encrypted_secrets,
+                    access: profile_data.access,
+                    created_at: profile_data.created_at,
+                    updated_at: profile_data.updated_at,
+                    storage_deposit: U128(profile_data.storage_deposit),
+                    accessor: wildcard_key.accessor,
                 });
             }
         }
@@ -368,7 +387,7 @@ impl Contract {
         &self,
         _repo: String,
         _branch: Option<String>,
-    ) -> Vec<String> {        
+    ) -> Vec<String> {
         // Note: This is inefficient and should be optimized with indexing in production
         // For MVP, we accept O(n) iteration
         let profiles = Vec::new();
@@ -381,16 +400,19 @@ impl Contract {
     }
 
     /// Check if secrets exist for a given key
+    ///
+    /// # Arguments
+    /// * `accessor` - What code can access these secrets (Repo or WasmHash)
+    /// * `profile` - Profile name
+    /// * `owner` - Account that owns the secrets
     pub fn secrets_exist(
         &self,
-        repo: String,
-        branch: Option<String>,
+        accessor: SecretAccessor,
         profile: String,
         owner: AccountId,
     ) -> bool {
         let key = SecretKey {
-            repo,
-            branch,
+            accessor,
             profile,
             owner,
         };
@@ -400,7 +422,7 @@ impl Contract {
 
     /// List all secrets for a user
     ///
-    /// Returns array of secret metadata with repository, branch, profile info
+    /// Returns array of secret metadata with accessor, profile info
     pub fn list_user_secrets(&self, account_id: AccountId) -> Vec<UserSecretInfo> {
         let user_secrets = self.user_secrets_index.get(&account_id);
 
@@ -410,8 +432,7 @@ impl Contract {
                     .iter()
                     .filter_map(|key| {
                         self.secrets_storage.get(&key).map(|profile| UserSecretInfo {
-                            repo: key.repo.clone(),
-                            branch: key.branch.clone(),
+                            accessor: key.accessor.clone(),
                             profile: key.profile.clone(),
                             created_at: profile.created_at,
                             updated_at: profile.updated_at,
@@ -430,8 +451,7 @@ impl Contract {
 #[derive(Clone, Debug)]
 #[near(serializers = [json])]
 pub struct UserSecretInfo {
-    pub repo: String,
-    pub branch: Option<String>,
+    pub accessor: SecretAccessor,
     pub profile: String,
     pub created_at: u64,
     pub updated_at: u64,
@@ -454,7 +474,7 @@ mod tests {
     }
 
     #[test]
-    fn test_store_secrets() {
+    fn test_store_secrets_repo() {
         let owner = accounts(0);
         let operator = accounts(1);
         let user = accounts(2);
@@ -469,8 +489,10 @@ mod tests {
         testing_env!(context.build());
 
         contract.store_secrets(
-            "github.com/alice/project".to_string(),
-            None,
+            SecretAccessor::Repo {
+                repo: "github.com/alice/project".to_string(),
+                branch: None,
+            },
             "default".to_string(),
             "base64encodeddata".to_string(),
             types::AccessCondition::AllowAll,
@@ -478,11 +500,81 @@ mod tests {
 
         // Verify secrets exist
         assert!(contract.secrets_exist(
-            "github.com/alice/project".to_string(),
-            None,
+            SecretAccessor::Repo {
+                repo: "github.com/alice/project".to_string(),
+                branch: None,
+            },
             "default".to_string(),
             user.clone(),
         ));
+    }
+
+    #[test]
+    fn test_store_secrets_wasm_hash() {
+        let owner = accounts(0);
+        let user = accounts(2);
+
+        let context = get_context(owner.clone(), NearToken::from_near(0));
+        testing_env!(context.build());
+
+        let mut contract = Contract::new(owner.clone(), None);
+
+        // Store secrets by wasm hash
+        let context = get_context(user.clone(), NearToken::from_near(1));
+        testing_env!(context.build());
+
+        let wasm_hash = "a".repeat(64); // Valid SHA256 hex hash
+        contract.store_secrets(
+            SecretAccessor::WasmHash {
+                hash: wasm_hash.clone(),
+            },
+            "default".to_string(),
+            "base64encodeddata".to_string(),
+            types::AccessCondition::AllowAll,
+        );
+
+        // Verify secrets exist
+        assert!(contract.secrets_exist(
+            SecretAccessor::WasmHash {
+                hash: wasm_hash.clone(),
+            },
+            "default".to_string(),
+            user.clone(),
+        ));
+
+        // Verify can retrieve
+        let secrets = contract.get_secrets(
+            SecretAccessor::WasmHash {
+                hash: wasm_hash,
+            },
+            "default".to_string(),
+            user.clone(),
+        );
+        assert!(secrets.is_some());
+    }
+
+    #[test]
+    #[should_panic(expected = "WASM hash must be 64 hex characters")]
+    fn test_invalid_wasm_hash_length() {
+        let owner = accounts(0);
+        let user = accounts(2);
+
+        let context = get_context(owner.clone(), NearToken::from_near(0));
+        testing_env!(context.build());
+
+        let mut contract = Contract::new(owner.clone(), None);
+
+        let context = get_context(user.clone(), NearToken::from_near(1));
+        testing_env!(context.build());
+
+        contract.store_secrets(
+            SecretAccessor::WasmHash {
+                hash: "tooshort".to_string(), // Invalid length
+            },
+            "default".to_string(),
+            "base64encodeddata".to_string(),
+            types::AccessCondition::AllowAll,
+        );
     }
 
     #[test]
@@ -500,8 +592,10 @@ mod tests {
         testing_env!(context.build());
 
         contract.store_secrets(
-            "github.com/alice/project".to_string(),
-            None,
+            SecretAccessor::Repo {
+                repo: "github.com/alice/project".to_string(),
+                branch: None,
+            },
             "invalid profile!".to_string(), // Invalid characters
             "base64encodeddata".to_string(),
             types::AccessCondition::AllowAll,
@@ -509,7 +603,7 @@ mod tests {
     }
 
     #[test]
-    fn test_delete_secrets() {
+    fn test_delete_secrets_repo() {
         let owner = accounts(0);
         let user = accounts(2);
 
@@ -523,8 +617,10 @@ mod tests {
         testing_env!(context.build());
 
         contract.store_secrets(
-            "github.com/alice/project".to_string(),
-            None,
+            SecretAccessor::Repo {
+                repo: "github.com/alice/project".to_string(),
+                branch: None,
+            },
             "default".to_string(),
             "base64encodeddata".to_string(),
             types::AccessCondition::AllowAll,
@@ -532,17 +628,108 @@ mod tests {
 
         // Delete secrets
         contract.delete_secrets(
-            "github.com/alice/project".to_string(),
-            None,
+            SecretAccessor::Repo {
+                repo: "github.com/alice/project".to_string(),
+                branch: None,
+            },
             "default".to_string(),
         );
 
         // Verify secrets don't exist
         assert!(!contract.secrets_exist(
-            "github.com/alice/project".to_string(),
-            None,
+            SecretAccessor::Repo {
+                repo: "github.com/alice/project".to_string(),
+                branch: None,
+            },
             "default".to_string(),
             user.clone(),
         ));
+    }
+
+    #[test]
+    fn test_delete_secrets_wasm_hash() {
+        let owner = accounts(0);
+        let user = accounts(2);
+
+        let context = get_context(owner.clone(), NearToken::from_near(0));
+        testing_env!(context.build());
+
+        let mut contract = Contract::new(owner.clone(), None);
+
+        // Store secrets by wasm hash
+        let context = get_context(user.clone(), NearToken::from_near(1));
+        testing_env!(context.build());
+
+        let wasm_hash = "b".repeat(64);
+        contract.store_secrets(
+            SecretAccessor::WasmHash {
+                hash: wasm_hash.clone(),
+            },
+            "default".to_string(),
+            "base64encodeddata".to_string(),
+            types::AccessCondition::AllowAll,
+        );
+
+        // Delete secrets
+        contract.delete_secrets(
+            SecretAccessor::WasmHash {
+                hash: wasm_hash.clone(),
+            },
+            "default".to_string(),
+        );
+
+        // Verify secrets don't exist
+        assert!(!contract.secrets_exist(
+            SecretAccessor::WasmHash {
+                hash: wasm_hash,
+            },
+            "default".to_string(),
+            user.clone(),
+        ));
+    }
+
+    #[test]
+    fn test_list_user_secrets() {
+        let owner = accounts(0);
+        let user = accounts(2);
+
+        let context = get_context(owner.clone(), NearToken::from_near(0));
+        testing_env!(context.build());
+
+        let mut contract = Contract::new(owner.clone(), None);
+
+        // Store both repo and wasm_hash secrets
+        let context = get_context(user.clone(), NearToken::from_near(1));
+        testing_env!(context.build());
+
+        contract.store_secrets(
+            SecretAccessor::Repo {
+                repo: "github.com/alice/project".to_string(),
+                branch: Some("main".to_string()),
+            },
+            "default".to_string(),
+            "base64encodeddata".to_string(),
+            types::AccessCondition::AllowAll,
+        );
+
+        let wasm_hash = "c".repeat(64);
+        contract.store_secrets(
+            SecretAccessor::WasmHash {
+                hash: wasm_hash.clone(),
+            },
+            "production".to_string(),
+            "base64encodeddata2".to_string(),
+            types::AccessCondition::AllowAll,
+        );
+
+        // List user secrets
+        let secrets = contract.list_user_secrets(user.clone());
+        assert_eq!(secrets.len(), 2);
+
+        // Verify we have both types
+        let has_repo = secrets.iter().any(|s| matches!(&s.accessor, SecretAccessor::Repo { .. }));
+        let has_wasm = secrets.iter().any(|s| matches!(&s.accessor, SecretAccessor::WasmHash { .. }));
+        assert!(has_repo);
+        assert!(has_wasm);
     }
 }

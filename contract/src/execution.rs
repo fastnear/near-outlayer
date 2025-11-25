@@ -6,11 +6,25 @@ impl Contract {
     /// Request off-chain execution
     ///
     /// # Arguments
-    /// * `code_source` - GitHub repository and commit to compile
+    /// * `code_source` - GitHub repository/commit to compile, or cached WASM checksum
     /// * `resource_limits` - Optional resource limits for execution (default: 1B instructions, 128MB, 60s)
+    ///                      If None, only compilation is performed (compile-only mode)
     /// * `input_data` - Optional input data for the WASM program (default: empty string)
     /// * `secrets_ref` - Optional reference to repo-based secrets (profile + account_id)
     /// * `response_format` - Optional output format: Bytes, Text, or Json (default: Text)
+    /// * `payer_account_id` - Optional account to receive refunds (default: sender)
+    /// * `params` - Optional request parameters (force_rebuild, store_on_fastfs)
+    ///
+    /// # Code Source
+    /// You can specify code in two ways:
+    /// - `GitHub { repo, commit, build_target }` - Compile from GitHub repository
+    /// - `WasmUrl { url, hash, build_target }` - Use pre-compiled WASM from URL
+    ///
+    /// # Compile-only Mode
+    /// If `resource_limits` is None, only compilation is performed:
+    /// - WASM is compiled and cached
+    /// - No execution occurs
+    /// - Useful for pre-compiling expensive builds
     ///
     /// # Repo-Based Secrets
     /// Secrets are now stored in contract per repository and accessed via references:
@@ -26,30 +40,62 @@ impl Contract {
         secrets_ref: Option<SecretsReference>,
         response_format: Option<ResponseFormat>,
         payer_account_id: Option<AccountId>,
+        params: Option<RequestParams>,
     ) {
         self.assert_not_paused();
 
-        let limits = resource_limits.unwrap_or_default();
 
-        // Validate resource limits against hard caps
-        let max_instructions = limits.max_instructions.unwrap_or_default();
-        let max_execution_seconds = limits.max_execution_seconds.unwrap_or_default();
+        // Use provided limits or defaults (for execute mode)
+        let limits = resource_limits.clone().unwrap_or_default();
 
-        assert!(
-            max_instructions <= MAX_INSTRUCTIONS,
-            "Requested max_instructions {} exceeds hard limit of {}",
-            max_instructions,
-            MAX_INSTRUCTIONS
-        );
+        // Get params or defaults
+        let request_params = params.unwrap_or_default();
 
-        assert!(
-            max_execution_seconds <= MAX_EXECUTION_SECONDS,
-            "Requested max_execution_seconds {} exceeds hard limit of {} seconds",
-            max_execution_seconds,
-            MAX_EXECUTION_SECONDS
-        );
+        // Determine if this is compile-only mode
+        let compile_only = request_params.compile_only || resource_limits.is_none();
 
-        let estimated_cost = self.estimate_cost(&limits);
+        // Validate: WasmUrl source cannot have force_rebuild
+        if matches!(code_source, CodeSource::WasmUrl { .. }) && request_params.force_rebuild {
+            env::panic_str("force_rebuild is not applicable for WasmUrl code source");
+        }
+
+        // Validate: store_on_fastfs requires force_rebuild (to ensure fresh compilation)
+        if request_params.store_on_fastfs && !request_params.force_rebuild {
+            env::panic_str("store_on_fastfs requires force_rebuild to ensure fresh compilation and upload");
+        }
+
+        // Validate: compile_only mode should not have input_data
+        if compile_only && input_data.is_some() && !input_data.as_ref().unwrap().is_empty() {
+            env::panic_str("input_data must be empty for compile_only mode - compilation does not use input_data");
+        }
+
+        // Validate resource limits against hard caps (only in execute mode)
+        if !compile_only {
+            let max_instructions = limits.max_instructions.unwrap_or_default();
+            let max_execution_seconds = limits.max_execution_seconds.unwrap_or_default();
+
+            assert!(
+                max_instructions <= MAX_INSTRUCTIONS,
+                "Requested max_instructions {} exceeds hard limit of {}",
+                max_instructions,
+                MAX_INSTRUCTIONS
+            );
+
+            assert!(
+                max_execution_seconds <= MAX_EXECUTION_SECONDS,
+                "Requested max_execution_seconds {} exceeds hard limit of {} seconds",
+                max_execution_seconds,
+                MAX_EXECUTION_SECONDS
+            );
+        }
+
+        // Calculate cost: base fee for compile-only, full estimate for execute
+        let estimated_cost = if compile_only {
+            self.base_fee // Only base fee for compile-only
+        } else {
+            self.estimate_cost(&limits)
+        };
+
         let payment = env::attached_deposit().as_yoctonear();
 
         assert!(
@@ -79,7 +125,10 @@ impl Contract {
             "secrets_ref": secrets_ref.as_ref(),
             "response_format": format,
             "payment": U128::from(payment),
-            "timestamp": env::block_timestamp()
+            "timestamp": env::block_timestamp(),
+            "compile_only": compile_only,
+            "force_rebuild": request_params.force_rebuild,
+            "store_on_fastfs": request_params.store_on_fastfs
         });
 
         // Create yield promise to pause execution

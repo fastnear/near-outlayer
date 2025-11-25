@@ -25,6 +25,28 @@ struct DecryptResponse {
     plaintext_secrets: String,
 }
 
+/// Secret accessor type - matches keystore's SecretAccessor enum
+///
+/// IMPORTANT: When adding new accessor types:
+/// 1. Add variant here in worker
+/// 2. Add variant in keystore-worker/src/api.rs (SecretAccessor enum)
+/// 3. Add variant in coordinator/src/handlers/github.rs (SecretAccessor enum)
+/// 4. Add variant in contract/src/lib.rs (SecretAccessor enum)
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type")]
+pub enum SecretAccessor {
+    /// Secrets bound to a GitHub repository
+    Repo {
+        repo: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+    },
+    /// Secrets bound to a specific WASM hash
+    WasmHash {
+        hash: String,
+    },
+}
+
 /// Client for keystore worker API
 pub struct KeystoreClient {
     base_url: String,
@@ -170,39 +192,46 @@ impl KeystoreClient {
         Ok(pubkey_hex)
     }
 
-    /// Decrypt secrets from contract (new repo-based system)
+    /// Decrypt secrets from contract using unified accessor format
     ///
     /// This method:
-    /// 1. Calls keystore with repo, branch, profile, owner, user_account_id
+    /// 1. Calls keystore /decrypt with accessor (Repo or WasmHash)
     /// 2. Keystore reads secrets from NEAR contract
     /// 3. Keystore validates access conditions (using user_account_id as caller)
-    /// 4. Keystore decrypts using derived key for seed (repo:owner[:branch])
+    /// 4. Keystore decrypts using derived key for seed
     /// 5. Returns HashMap of environment variables
     ///
     /// Note: This requires keystore to have NEAR RPC access configured
-    pub async fn decrypt_secrets_from_contract(
+    pub async fn decrypt_secrets(
         &self,
-        repo: &str,
-        branch: Option<&str>,
+        accessor: SecretAccessor,
         profile: &str,
         owner: &str,
         user_account_id: &str,
         task_id: Option<&str>,
     ) -> Result<std::collections::HashMap<String, String>> {
+        let accessor_desc = match &accessor {
+            SecretAccessor::Repo { repo, branch } => {
+                format!("Repo(repo={}, branch={:?})", repo, branch)
+            }
+            SecretAccessor::WasmHash { hash } => {
+                format!("WasmHash({})", hash)
+            }
+        };
+
         tracing::info!(
-            "🔑 decrypt_secrets_from_contract called: repo={}, branch={:?}, profile={}, owner={}, task_id={:?}",
-            repo, branch, profile, owner, task_id
+            "🔑 decrypt_secrets called: accessor={}, profile={}, owner={}, task_id={:?}",
+            accessor_desc, profile, owner, task_id
         );
 
         // Generate attestation
         let attestation = self.generate_attestation()
             .context("Failed to generate attestation")?;
 
-        // Prepare request with new fields
+        // Prepare request with accessor
         #[derive(Debug, Serialize)]
-        struct DecryptFromContractRequest {
-            repo: String,
-            branch: Option<String>,
+        struct DecryptRequest {
+            accessor: SecretAccessor,
             profile: String,
             owner: String,
             user_account_id: String,
@@ -210,9 +239,8 @@ impl KeystoreClient {
             task_id: Option<String>,
         }
 
-        let request = DecryptFromContractRequest {
-            repo: repo.to_string(),
-            branch: branch.map(|s| s.to_string()),
+        let request = DecryptRequest {
+            accessor: accessor.clone(),
             profile: profile.to_string(),
             owner: owner.to_string(),
             user_account_id: user_account_id.to_string(),
@@ -225,11 +253,11 @@ impl KeystoreClient {
 
         tracing::debug!(
             url = %url,
-            repo = %repo,
+            accessor = %accessor_desc,
             profile = %profile,
             owner = %owner,
             task_id = ?task_id,
-            "Requesting secret decryption from contract via keystore"
+            "Requesting secret decryption via keystore"
         );
 
         let response = self
@@ -245,16 +273,19 @@ impl KeystoreClient {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
 
-            // Parse user-friendly error message
+            // Parse user-friendly error message based on accessor type
+            let context = match &accessor {
+                SecretAccessor::Repo { .. } => "repository, branch, and profile",
+                SecretAccessor::WasmHash { .. } => "WASM hash and profile",
+            };
+
             let user_message = if status == 400 {
-                // Bad request - usually "Secrets not found"
                 if error_text.contains("not found") {
-                    "Secrets not found. Please check that secrets exist for this repository, branch, and profile.".to_string()
+                    format!("Secrets not found. Please check that secrets exist for this {}.", context)
                 } else {
                     "Invalid secrets request. Please check your secrets configuration.".to_string()
                 }
             } else if status == 401 {
-                // Access denied - parse error details
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&error_text) {
                     if let Some(error) = json.get("error").and_then(|e| e.as_str()) {
                         if error.contains("Access denied") {
@@ -269,9 +300,8 @@ impl KeystoreClient {
                     "Access to secrets denied. Check access conditions.".to_string()
                 }
             } else if status == 404 {
-                "Secrets not found. The specified secrets do not exist or have been deleted.".to_string()
+                format!("Secrets not found for this {}.", context)
             } else {
-                // Generic error - don't expose technical details
                 "Failed to decrypt secrets. Please check your secrets configuration.".to_string()
             };
 
@@ -288,10 +318,10 @@ impl KeystoreClient {
             .context("Failed to decode plaintext secrets")?;
 
         tracing::info!(
-            repo = %repo,
+            accessor = %accessor_desc,
             profile = %profile,
             plaintext_size = plaintext.len(),
-            "Successfully decrypted secrets from contract"
+            "Successfully decrypted secrets"
         );
 
         // Parse JSON to HashMap
@@ -302,12 +332,48 @@ impl KeystoreClient {
             .context("Invalid secrets format: must be a JSON object with string key-value pairs")?;
 
         tracing::debug!(
-            repo = %repo,
+            accessor = %accessor_desc,
             env_count = env_vars.len(),
             "Parsed environment variables from decrypted secrets"
         );
 
         Ok(env_vars)
+    }
+
+    /// Decrypt secrets from contract (convenience wrapper for Repo accessor)
+    ///
+    /// This is a convenience method that wraps decrypt_secrets with Repo accessor.
+    pub async fn decrypt_secrets_from_contract(
+        &self,
+        repo: &str,
+        branch: Option<&str>,
+        profile: &str,
+        owner: &str,
+        user_account_id: &str,
+        task_id: Option<&str>,
+    ) -> Result<std::collections::HashMap<String, String>> {
+        let accessor = SecretAccessor::Repo {
+            repo: repo.to_string(),
+            branch: branch.map(|s| s.to_string()),
+        };
+        self.decrypt_secrets(accessor, profile, owner, user_account_id, task_id).await
+    }
+
+    /// Decrypt secrets from contract by WASM hash (convenience wrapper for WasmHash accessor)
+    ///
+    /// This is a convenience method that wraps decrypt_secrets with WasmHash accessor.
+    pub async fn decrypt_secrets_by_wasm_hash(
+        &self,
+        wasm_hash: &str,
+        profile: &str,
+        owner: &str,
+        user_account_id: &str,
+        task_id: Option<&str>,
+    ) -> Result<std::collections::HashMap<String, String>> {
+        let accessor = SecretAccessor::WasmHash {
+            hash: wasm_hash.to_string(),
+        };
+        self.decrypt_secrets(accessor, profile, owner, user_account_id, task_id).await
     }
 }
 
@@ -352,5 +418,76 @@ mod tests {
 
         let attestation = client.generate_attestation().unwrap();
         assert_eq!(attestation.tee_type, "none");
+    }
+
+    /// Test SecretAccessor::Repo serialization (with branch)
+    #[test]
+    fn test_secret_accessor_repo_with_branch() {
+        let accessor = SecretAccessor::Repo {
+            repo: "github.com/user/repo".to_string(),
+            branch: Some("main".to_string()),
+        };
+
+        let json = serde_json::to_string(&accessor).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["type"], "Repo");
+        assert_eq!(parsed["repo"], "github.com/user/repo");
+        assert_eq!(parsed["branch"], "main");
+    }
+
+    /// Test SecretAccessor::Repo serialization (without branch - branch should be omitted)
+    #[test]
+    fn test_secret_accessor_repo_without_branch() {
+        let accessor = SecretAccessor::Repo {
+            repo: "github.com/user/repo".to_string(),
+            branch: None,
+        };
+
+        let json = serde_json::to_string(&accessor).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["type"], "Repo");
+        assert_eq!(parsed["repo"], "github.com/user/repo");
+        // branch should be omitted (not null) due to skip_serializing_if
+        assert!(parsed.get("branch").is_none());
+    }
+
+    /// Test SecretAccessor::WasmHash serialization
+    #[test]
+    fn test_secret_accessor_wasm_hash() {
+        let accessor = SecretAccessor::WasmHash {
+            hash: "abc123def456".to_string(),
+        };
+
+        let json = serde_json::to_string(&accessor).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["type"], "WasmHash");
+        assert_eq!(parsed["hash"], "abc123def456");
+    }
+
+    /// Test that serialized JSON is compatible with keystore's expected format
+    #[test]
+    fn test_secret_accessor_keystore_compatibility() {
+        // Repo with branch
+        let accessor = SecretAccessor::Repo {
+            repo: "github.com/test/project".to_string(),
+            branch: Some("develop".to_string()),
+        };
+        let json = serde_json::to_string(&accessor).unwrap();
+        // Keystore expects: {"type": "Repo", "repo": "...", "branch": "..."}
+        assert!(json.contains(r#""type":"Repo""#));
+        assert!(json.contains(r#""repo":"github.com/test/project""#));
+        assert!(json.contains(r#""branch":"develop""#));
+
+        // WasmHash
+        let accessor = SecretAccessor::WasmHash {
+            hash: "deadbeef".to_string(),
+        };
+        let json = serde_json::to_string(&accessor).unwrap();
+        // Keystore expects: {"type": "WasmHash", "hash": "..."}
+        assert!(json.contains(r#""type":"WasmHash""#));
+        assert!(json.contains(r#""hash":"deadbeef""#));
     }
 }

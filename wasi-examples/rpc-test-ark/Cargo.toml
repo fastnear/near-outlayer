@@ -1,0 +1,19 @@
+[package]
+name = "rpc-test-ark"
+version = "0.1.0"
+edition = "2021"
+description = "Test WASM for OutLayer RPC host functions"
+
+[[bin]]
+name = "rpc-test-ark"
+path = "src/main.rs"
+
+[dependencies]
+wit-bindgen = "0.36"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

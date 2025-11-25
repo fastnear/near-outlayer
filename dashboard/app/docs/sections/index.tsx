@@ -70,12 +70,26 @@ export function ContractIntegrationSection() {
             <div className="space-y-4">
               <div className="border-l-4 border-blue-400 pl-4">
                 <p className="font-mono text-sm text-gray-800 mb-1"><strong>code_source</strong>: CodeSource <span className="text-red-600">(required)</span></p>
-                <p className="text-sm text-gray-600 mb-2">Specifies where to get WASM code</p>
-                <ul className="list-disc list-inside text-sm text-gray-700 ml-4 space-y-1">
-                  <li><code className="bg-gray-100 px-2 py-1 rounded">repo</code>: GitHub repository URL (e.g., &quot;https://github.com/user/project&quot;)</li>
-                  <li><code className="bg-gray-100 px-2 py-1 rounded">commit</code>: Branch name (&quot;main&quot;) or commit hash (40-char SHA)</li>
-                  <li><code className="bg-gray-100 px-2 py-1 rounded">build_target</code>: Optional. &quot;wasm32-wasip1&quot; or &quot;wasm32-wasip2&quot; (default: wasip1)</li>
-                </ul>
+                <p className="text-sm text-gray-600 mb-2">Specifies where to get WASM code. Two variants available:</p>
+
+                <div className="mt-2 mb-2">
+                  <p className="text-sm font-semibold text-gray-800 mb-1">Variant 1: GitHub (compile from source)</p>
+                  <ul className="list-disc list-inside text-sm text-gray-700 ml-4 space-y-1">
+                    <li><code className="bg-gray-100 px-2 py-1 rounded">repo</code>: GitHub repository URL (e.g., &quot;https://github.com/user/project&quot;)</li>
+                    <li><code className="bg-gray-100 px-2 py-1 rounded">commit</code>: Branch name (&quot;main&quot;) or commit hash (40-char SHA)</li>
+                    <li><code className="bg-gray-100 px-2 py-1 rounded">build_target</code>: Optional. &quot;wasm32-wasip1&quot; or &quot;wasm32-wasip2&quot; (default: wasip1)</li>
+                  </ul>
+                </div>
+
+                <div className="mt-2">
+                  <p className="text-sm font-semibold text-gray-800 mb-1">Variant 2: WasmUrl (pre-compiled WASM)</p>
+                  <ul className="list-disc list-inside text-sm text-gray-700 ml-4 space-y-1">
+                    <li><code className="bg-gray-100 px-2 py-1 rounded">url</code>: URL to pre-compiled WASM file (FastFS, IPFS, etc.)</li>
+                    <li><code className="bg-gray-100 px-2 py-1 rounded">hash</code>: SHA256 hash of WASM file for verification</li>
+                    <li><code className="bg-gray-100 px-2 py-1 rounded">build_target</code>: &quot;wasm32-wasip1&quot; or &quot;wasm32-wasip2&quot;</li>
+                  </ul>
+                  <p className="text-xs text-gray-500 mt-1">Use WasmUrl for instant execution without compilation. Ideal for closed-source WASM or permanent deployments on FastFS/IPFS.</p>
+                </div>
               </div>
 
               <div className="border-l-4 border-gray-400 pl-4">
@@ -102,6 +116,7 @@ export function ContractIntegrationSection() {
                   <li><code className="bg-gray-100 px-2 py-1 rounded">account_id</code>: Account that owns the secrets</li>
                 </ul>
                 <p className="text-xs text-gray-500 mt-2">Worker decrypts secrets and injects as environment variables accessible via <code className="bg-gray-100 px-1 rounded">std::env::var()</code></p>
+                <p className="text-xs text-gray-500 mt-1">Secrets can be bound to GitHub repo+branch OR to a WASM hash. When using WasmUrl, secrets bound to the hash are automatically matched.</p>
               </div>
 
               <div className="border-l-4 border-gray-400 pl-4">
@@ -122,6 +137,17 @@ export function ContractIntegrationSection() {
                   <li><strong>Some(user_account)</strong>: Charge end user, refund to user</li>
                 </ul>
                 <p className="text-xs text-gray-500 mt-2">💡 Useful for contracts that want users to pay for their own executions</p>
+              </div>
+
+              <div className="border-l-4 border-purple-400 pl-4">
+                <p className="font-mono text-sm text-gray-800 mb-1"><strong>params</strong>: ExecutionParams <span className="text-gray-500">(optional)</span></p>
+                <p className="text-sm text-gray-600 mb-2">Advanced execution control parameters:</p>
+                <ul className="list-disc list-inside text-sm text-gray-700 ml-4 space-y-1">
+                  <li><code className="bg-gray-100 px-2 py-1 rounded">force_rebuild</code>: bool (default: false) - Force recompilation even if WASM exists in cache. Useful when you updated code but kept the same commit hash, or need a fresh build for debugging.</li>
+                  <li><code className="bg-gray-100 px-2 py-1 rounded">compile_only</code>: bool (default: false) - Only compile, don&apos;t execute. Returns checksum of compiled WASM. Useful for pre-warming cache or verifying compilation.</li>
+                  <li><code className="bg-gray-100 px-2 py-1 rounded">store_on_fastfs</code>: bool (default: false) - Store compiled WASM on FastFS after compilation. Returns FastFS URL instead of execution result. Useful for permanent storage and sharing.</li>
+                </ul>
+                <p className="text-xs text-gray-500 mt-2">💡 Example: <code className="bg-gray-100 px-1 rounded">{`"params": {"force_rebuild": true, "compile_only": false, "store_on_fastfs": false}`}</code></p>
               </div>
             </div>
           </div>
@@ -169,7 +195,24 @@ export function ContractIntegrationSection() {
               <strong>Execution time:</strong> Depends on your code - from milliseconds to minutes based on complexity and resource limits
             </p>
             <p className="text-sm text-gray-700">
-              <strong>On-chain WASM storage (coming soon):</strong> Skip compilation entirely. Store pre-compiled WASM on-chain for instant execution, no GitHub dependency, and DAO-governed updates.
+              <strong>Pre-compiled WASM:</strong> Skip compilation entirely. Use WasmUrl with FastFS/IPFS for instant ~1s execution.
+            </p>
+          </div>
+        </section>
+
+        <section id="fastfs-workflow">
+          <AnchorHeading id="fastfs-workflow">FastFS Workflow</AnchorHeading>
+          <p className="text-gray-700 mb-3">
+            For production deployments, use FastFS to store pre-compiled WASM for instant execution:
+          </p>
+          <ol className="list-decimal list-inside space-y-2 text-gray-700 ml-4">
+            <li><strong>Compile with store_on_fastfs:</strong> Set <code className="bg-gray-100 px-1 rounded">{`"params": {"store_on_fastfs": true, "compile_only": true}`}</code></li>
+            <li><strong>Get FastFS URL:</strong> Response contains <code className="bg-gray-100 px-1 rounded">fastfs_url</code> and <code className="bg-gray-100 px-1 rounded">wasm_hash</code></li>
+            <li><strong>Execute via WasmUrl:</strong> Use the URL and hash in <code className="bg-gray-100 px-1 rounded">code_source</code> for instant execution</li>
+          </ol>
+          <div className="bg-green-50 border-l-4 border-green-400 p-3 mt-3">
+            <p className="text-sm text-gray-700">
+              <strong>Benefits:</strong> Instant execution (no compilation), immutable code (hash-verified), works with closed-source WASM, permanent storage on-chain.
             </p>
           </div>
         </section>
@@ -251,6 +294,126 @@ export function WasiSection() {
           </ul>
         </section>
 
+        <section id="host-functions">
+          <AnchorHeading id="host-functions">Host Functions (Advanced)</AnchorHeading>
+          <p className="text-gray-700 mb-3">
+            OutLayer provides advanced host functions for direct NEAR RPC access from WASM. These functions enable your code to interact with the NEAR blockchain without relying on external HTTP APIs.
+          </p>
+
+          <div className="bg-blue-50 border-l-4 border-blue-400 p-4 mb-4">
+            <h4 className="font-semibold text-blue-900 mb-2">What are Host Functions?</h4>
+            <p className="text-sm text-blue-800">
+              Host functions are native functions provided by the worker runtime that WASM code can call directly. They bypass HTTP and give your code privileged access to private NEAR RPC endpoints (powered by Fastnear), enabling operations like sending transactions and querying blockchain state.
+            </p>
+          </div>
+
+          <h4 className="font-semibold text-gray-900 mb-2">Available Functions</h4>
+          <div className="space-y-3 mb-4">
+            <div className="border-l-4 border-orange-400 pl-3">
+              <p className="font-mono text-sm text-gray-800 mb-1">
+                <strong>call()</strong> - Execute NEAR contract call
+              </p>
+              <p className="text-sm text-gray-700 mb-2">
+                Send function calls to NEAR contracts with attached deposit and gas. Your WASM provides the signer credentials via secrets.
+              </p>
+              <p className="text-xs text-gray-600 font-mono bg-gray-50 p-2 rounded">
+                call(signer_id, signer_key, receiver_id, method_name, args_json, deposit_yocto, gas) → (tx_hash, status)
+              </p>
+            </div>
+
+            <div className="border-l-4 border-orange-400 pl-3">
+              <p className="font-mono text-sm text-gray-800 mb-1">
+                <strong>transfer()</strong> - Send NEAR tokens
+              </p>
+              <p className="text-sm text-gray-700 mb-2">
+                Transfer NEAR tokens from one account to another.
+              </p>
+              <p className="text-xs text-gray-600 font-mono bg-gray-50 p-2 rounded">
+                transfer(signer_id, signer_key, receiver_id, amount_yocto) → (tx_hash, status)
+              </p>
+            </div>
+
+            <div className="border-l-4 border-gray-400 pl-3">
+              <p className="font-mono text-sm text-gray-800 mb-1">
+                <strong>view()</strong> - Query contract state
+              </p>
+              <p className="text-sm text-gray-700 mb-2">
+                Read-only view calls to query contract state without sending transactions.
+              </p>
+              <p className="text-xs text-gray-600 font-mono bg-gray-50 p-2 rounded">
+                view(contract_id, method_name, args_json) → (result, status)
+              </p>
+            </div>
+          </div>
+
+          <h4 className="font-semibold text-gray-900 mb-2">Key Security Features</h4>
+          <ul className="list-disc list-inside text-gray-700 space-y-1 mb-4 text-sm">
+            <li><strong>WASM provides signer:</strong> Your code passes <code className="bg-gray-100 px-1 rounded">signer_key</code> from secrets - worker never uses its own keys</li>
+            <li><strong>Private RPC access:</strong> Fastnear-powered endpoints with higher rate limits and reliability</li>
+            <li><strong>Transaction tracking:</strong> All transactions are logged and can be verified on-chain</li>
+            <li><strong>TEE isolation:</strong> Signing keys remain inside TEE and never leave the secure enclave</li>
+          </ul>
+
+          <div className="bg-green-50 border-l-4 border-green-400 p-4 mb-4">
+            <h4 className="font-semibold text-green-900 mb-2">Example: botfather-ark</h4>
+            <p className="text-sm text-green-800 mb-2">
+              The <Link href="/docs/examples#botfather-ark" className="text-[var(--primary-orange)] hover:underline font-semibold">botfather-ark</Link> example demonstrates host functions in action:
+            </p>
+            <ul className="list-disc list-inside text-sm text-green-800 ml-4 space-y-1">
+              <li>Creates multiple NEAR accounts programmatically using <code className="bg-green-100 px-1 rounded">call()</code></li>
+              <li>Distributes NEAR tokens across accounts using <code className="bg-green-100 px-1 rounded">transfer()</code></li>
+              <li>Executes batch contract calls (e.g., token purchases, staking delegation)</li>
+              <li>Queries account balances via <code className="bg-green-100 px-1 rounded">view()</code></li>
+            </ul>
+          </div>
+
+          <h4 className="font-semibold text-gray-900 mb-2">WIT Interface Definition</h4>
+          <p className="text-sm text-gray-700 mb-2">
+            Host functions are defined in <code className="bg-gray-100 px-1 rounded">worker/wit/world.wit</code>:
+          </p>
+          <pre className="bg-gray-900 text-gray-100 p-3 rounded-lg overflow-x-auto text-xs mb-3">
+{`package near:rpc;
+
+interface api {
+    view: func(
+        contract-id: string,
+        method-name: string,
+        args-json: string
+    ) -> tuple<string, string>;
+
+    call: func(
+        signer-id: string,
+        signer-key: string,
+        receiver-id: string,
+        method-name: string,
+        args-json: string,
+        deposit-yocto: string,
+        gas: string
+    ) -> tuple<string, string>;
+
+    transfer: func(
+        signer-id: string,
+        signer-key: string,
+        receiver-id: string,
+        amount-yocto: string
+    ) -> tuple<string, string>;
+}
+
+world rpc-host {
+    import api;
+}`}
+          </pre>
+
+          <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4">
+            <h4 className="font-semibold text-yellow-900 mb-2">⚠️ Requirements</h4>
+            <ul className="list-disc list-inside text-sm text-yellow-800 space-y-1">
+              <li><strong>WASI Preview 2:</strong> Host functions require <code className="bg-yellow-100 px-1 rounded">wasm32-wasip2</code> target</li>
+              <li><strong>Signer credentials:</strong> Must provide <code className="bg-yellow-100 px-1 rounded">NEAR_SENDER_PRIVATE_KEY</code> via secrets</li>
+              <li><strong>NEAR tokens:</strong> Signer account must have sufficient balance for gas and deposits</li>
+            </ul>
+          </div>
+        </section>
+
         <section id="critical-requirements">
           <AnchorHeading id="critical-requirements">Critical Requirements</AnchorHeading>
           <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4">
@@ -269,14 +432,19 @@ export function WasiSection() {
         <section id="working-examples">
           <AnchorHeading id="working-examples">Working Examples</AnchorHeading>
           <p className="text-gray-700 mb-4">
-            We provide 8 complete, open-source examples demonstrating different WASI patterns:
+            We provide 9 complete, open-source examples demonstrating different WASI patterns:
           </p>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
             <div className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
               <h4 className="font-semibold mb-1">
-                <a href="https://github.com/zavodil/random-ark" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+                <Link href="/docs/examples#random-ark" className="text-[var(--primary-orange)] hover:underline">
                   random-ark
+                </Link>
+                <a href="https://github.com/zavodil/random-ark" target="_blank" rel="noopener noreferrer" className="ml-2 text-gray-500 hover:text-gray-700" title="View source on GitHub">
+                  <svg className="inline-block w-4 h-4" fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+                  </svg>
                 </a>
                 <span className="ml-2 text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">P1</span>
               </h4>
@@ -285,8 +453,13 @@ export function WasiSection() {
 
             <div className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
               <h4 className="font-semibold mb-1">
-                <a href="https://github.com/zavodil/echo-ark" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+                <Link href="/docs/examples#echo-ark" className="text-[var(--primary-orange)] hover:underline">
                   echo-ark
+                </Link>
+                <a href="https://github.com/zavodil/echo-ark" target="_blank" rel="noopener noreferrer" className="ml-2 text-gray-500 hover:text-gray-700" title="View source on GitHub">
+                  <svg className="inline-block w-4 h-4" fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+                  </svg>
                 </a>
                 <span className="ml-2 text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">P1</span>
               </h4>
@@ -295,8 +468,13 @@ export function WasiSection() {
 
             <div className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
               <h4 className="font-semibold mb-1">
-                <a href="https://github.com/zavodil/ai-ark" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+                <Link href="/docs/examples#ai-ark" className="text-[var(--primary-orange)] hover:underline">
                   ai-ark
+                </Link>
+                <a href="https://github.com/zavodil/ai-ark" target="_blank" rel="noopener noreferrer" className="ml-2 text-gray-500 hover:text-gray-700" title="View source on GitHub">
+                  <svg className="inline-block w-4 h-4" fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+                  </svg>
                 </a>
                 <span className="ml-2 text-xs bg-purple-100 text-purple-800 px-2 py-1 rounded">P2</span>
               </h4>
@@ -305,8 +483,13 @@ export function WasiSection() {
 
             <div className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
               <h4 className="font-semibold mb-1">
-                <a href="https://github.com/zavodil/weather-ark" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+                <Link href="/docs/examples#weather-ark" className="text-[var(--primary-orange)] hover:underline">
                   weather-ark
+                </Link>
+                <a href="https://github.com/zavodil/weather-ark" target="_blank" rel="noopener noreferrer" className="ml-2 text-gray-500 hover:text-gray-700" title="View source on GitHub">
+                  <svg className="inline-block w-4 h-4" fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+                  </svg>
                 </a>
                 <span className="ml-2 text-xs bg-purple-100 text-purple-800 px-2 py-1 rounded">P2</span>
               </h4>
@@ -315,8 +498,13 @@ export function WasiSection() {
 
             <div className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
               <h4 className="font-semibold mb-1">
-                <a href="https://github.com/zavodil/oracle-ark" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+                <Link href="/docs/examples#oracle-ark" className="text-[var(--primary-orange)] hover:underline">
                   oracle-ark
+                </Link>
+                <a href="https://github.com/zavodil/oracle-ark" target="_blank" rel="noopener noreferrer" className="ml-2 text-gray-500 hover:text-gray-700" title="View source on GitHub">
+                  <svg className="inline-block w-4 h-4" fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+                  </svg>
                 </a>
                 <span className="ml-2 text-xs bg-purple-100 text-purple-800 px-2 py-1 rounded">P2</span>
               </h4>
@@ -325,8 +513,44 @@ export function WasiSection() {
 
             <div className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
               <h4 className="font-semibold mb-1">
-                <a href="https://github.com/zavodil/intents-ark" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+                <Link href="/docs/examples#ethereum-api" className="text-[var(--primary-orange)] hover:underline">
+                  ethereum-api
+                </Link>
+                <a href="https://github.com/zavodil/ethereum-api" target="_blank" rel="noopener noreferrer" className="ml-2 text-gray-500 hover:text-gray-700" title="View source on GitHub">
+                  <svg className="inline-block w-4 h-4" fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+                  </svg>
+                </a>
+                <span className="ml-2 text-xs bg-purple-100 text-purple-800 px-2 py-1 rounded">P2</span>
+              </h4>
+              <p className="text-sm text-gray-600">Ethereum blockchain data access via RPC</p>
+            </div>
+
+            <div className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
+              <h4 className="font-semibold mb-1">
+                <Link href="/docs/examples#botfather-ark" className="text-[var(--primary-orange)] hover:underline">
+                  botfather-ark
+                </Link>
+                <a href="https://github.com/zavodil/botfather-ark" target="_blank" rel="noopener noreferrer" className="ml-2 text-gray-500 hover:text-gray-700" title="View source on GitHub">
+                  <svg className="inline-block w-4 h-4" fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+                  </svg>
+                </a>
+                <span className="ml-2 text-xs bg-purple-100 text-purple-800 px-2 py-1 rounded">P2</span>
+                <span className="ml-2 text-xs bg-orange-100 text-orange-800 px-2 py-1 rounded">Host Functions</span>
+              </h4>
+              <p className="text-sm text-gray-600">Account factory with AI names & batch operations. Demonstrates <code className="bg-gray-100 px-1 rounded text-xs">call()</code> and <code className="bg-gray-100 px-1 rounded text-xs">transfer()</code> host functions for NEAR RPC access.</p>
+            </div>
+
+            <div className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
+              <h4 className="font-semibold mb-1">
+                <Link href="/docs/examples#intents-ark" className="text-[var(--primary-orange)] hover:underline">
                   intents-ark
+                </Link>
+                <a href="https://github.com/zavodil/intents-ark" target="_blank" rel="noopener noreferrer" className="ml-2 text-gray-500 hover:text-gray-700" title="View source on GitHub">
+                  <svg className="inline-block w-4 h-4" fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+                  </svg>
                 </a>
                 <span className="ml-2 text-xs bg-purple-100 text-purple-800 px-2 py-1 rounded">P2</span>
               </h4>
@@ -335,8 +559,13 @@ export function WasiSection() {
 
             <div className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
               <h4 className="font-semibold mb-1">
-                <a href="https://github.com/zavodil/private-dao-ark" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+                <Link href="/docs/examples#private-dao-ark" className="text-[var(--primary-orange)] hover:underline">
                   private-dao-ark
+                </Link>
+                <a href="https://github.com/zavodil/private-dao-ark" target="_blank" rel="noopener noreferrer" className="ml-2 text-gray-500 hover:text-gray-700" title="View source on GitHub">
+                  <svg className="inline-block w-4 h-4" fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+                  </svg>
                 </a>
                 <span className="ml-2 text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">P1</span>
                 <span className="ml-2 text-xs bg-red-100 text-red-800 px-2 py-1 rounded">Advanced</span>
@@ -346,8 +575,13 @@ export function WasiSection() {
 
             <div className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
               <h4 className="font-semibold mb-1">
-                <a href="https://github.com/zavodil/captcha-ark" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+                <Link href="/docs/examples#captcha-ark" className="text-[var(--primary-orange)] hover:underline">
                   captcha-ark
+                </Link>
+                <a href="https://github.com/zavodil/captcha-ark" target="_blank" rel="noopener noreferrer" className="ml-2 text-gray-500 hover:text-gray-700" title="View source on GitHub">
+                  <svg className="inline-block w-4 h-4" fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+                  </svg>
                 </a>
                 <span className="ml-2 text-xs bg-purple-100 text-purple-800 px-2 py-1 rounded">P2</span>
                 <span className="ml-2 text-xs bg-green-100 text-green-800 px-2 py-1 rounded">Full Stack</span>
@@ -546,6 +780,45 @@ export function SecretsSection() {
                 Manual secrets cannot use this prefix - enforced by keystore validation.
               </p>
             </div>
+          </div>
+        </section>
+
+        <section id="secrets-binding">
+          <AnchorHeading id="secrets-binding">Secrets Binding Types</AnchorHeading>
+          <p className="text-gray-700 mb-3">
+            Secrets can be bound to different identifiers depending on your use case:
+          </p>
+
+          <div className="space-y-3">
+            <div className="border-l-4 border-blue-400 pl-3">
+              <p className="font-semibold text-gray-800 mb-1">Repository-based (GitHub)</p>
+              <p className="text-sm text-gray-700 mb-2">Bind secrets to a GitHub repository and optional branch</p>
+              <ul className="list-disc list-inside text-sm text-gray-700 ml-4">
+                <li>Key: <code className="bg-gray-100 px-1 rounded">repo + branch + profile + owner</code></li>
+                <li>Example: <code className="bg-gray-100 px-1 rounded">github.com/user/repo:main:production</code></li>
+                <li>Best for: Development, CI/CD workflows, version-specific secrets</li>
+              </ul>
+            </div>
+
+            <div className="border-l-4 border-purple-400 pl-3">
+              <p className="font-semibold text-gray-800 mb-1">WASM Hash-based</p>
+              <p className="text-sm text-gray-700 mb-2">Bind secrets to a specific compiled WASM binary (SHA256 hash)</p>
+              <ul className="list-disc list-inside text-sm text-gray-700 ml-4">
+                <li>Key: <code className="bg-gray-100 px-1 rounded">wasm_hash + profile + owner</code></li>
+                <li>Example: <code className="bg-gray-100 px-1 rounded">cbf80ed0...2f8:production</code></li>
+                <li>Best for: Pre-compiled WASM from FastFS/IPFS, immutable deployments</li>
+                <li>Guarantees: Only this exact binary can access the secrets</li>
+              </ul>
+            </div>
+          </div>
+
+          <div className="mt-3 p-3 bg-purple-50 border border-purple-200 rounded">
+            <p className="text-sm text-purple-900 font-medium mb-1">🔒 WASM Hash Binding Security</p>
+            <p className="text-xs text-purple-800">
+              When using WASM hash binding, secrets are cryptographically tied to the exact binary.
+              Any modification to the code produces a different hash, preventing unauthorized access.
+              This is ideal for production deployments where code immutability is required.
+            </p>
           </div>
         </section>
 

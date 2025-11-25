@@ -76,6 +76,19 @@ pub struct ExecutionRequest {
     pub user_account_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub near_payment_yocto: Option<String>,
+    /// If true, only compile the code without executing
+    #[serde(default)]
+    pub compile_only: bool,
+    /// Force recompilation even if WASM exists in cache
+    #[serde(default)]
+    pub force_rebuild: bool,
+    /// Store compiled WASM to FastFS after compilation
+    #[serde(default)]
+    pub store_on_fastfs: bool,
+    /// Result from compile job to pass to executor (e.g., FastFS URL or compilation error)
+    /// When set, executor should call resolve_execution with this value without running WASM
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compile_result: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,6 +97,13 @@ pub enum CodeSource {
     GitHub {
         repo: String,
         commit: String,
+        build_target: String,
+    },
+    /// Pre-compiled WASM file accessible via URL
+    /// Worker downloads from URL, verifies SHA256 hash, then executes without compilation
+    WasmUrl {
+        url: String,           // URL for downloading (https://, ipfs://, ar://)
+        hash: String,          // SHA256 hash for verification (hex encoded)
         build_target: String,
     },
 }
@@ -96,22 +116,49 @@ pub struct SecretsReference {
 }
 
 impl CodeSource {
-    pub fn repo(&self) -> &str {
+    pub fn repo(&self) -> Option<&str> {
         match self {
-            CodeSource::GitHub { repo, .. } => repo,
+            CodeSource::GitHub { repo, .. } => Some(repo),
+            CodeSource::WasmUrl { .. } => None,
         }
     }
 
-    pub fn commit(&self) -> &str {
+    pub fn commit(&self) -> Option<&str> {
         match self {
-            CodeSource::GitHub { commit, .. } => commit,
+            CodeSource::GitHub { commit, .. } => Some(commit),
+            CodeSource::WasmUrl { .. } => None,
         }
     }
 
-    pub fn build_target(&self) -> &str {
+    pub fn build_target(&self) -> Option<&str> {
         match self {
-            CodeSource::GitHub { build_target, .. } => build_target,
+            CodeSource::GitHub { build_target, .. } => Some(build_target),
+            CodeSource::WasmUrl { build_target, .. } => Some(build_target),
         }
+    }
+
+    /// Get the hash for WasmUrl sources (used for verification)
+    #[allow(dead_code)]
+    pub fn hash(&self) -> Option<&str> {
+        match self {
+            CodeSource::GitHub { .. } => None,
+            CodeSource::WasmUrl { hash, .. } => Some(hash),
+        }
+    }
+
+    /// Get the URL for WasmUrl sources
+    #[allow(dead_code)]
+    pub fn url(&self) -> Option<&str> {
+        match self {
+            CodeSource::GitHub { .. } => None,
+            CodeSource::WasmUrl { url, .. } => Some(url),
+        }
+    }
+
+    /// Check if this is a WasmUrl source (pre-compiled, no compilation needed)
+    #[allow(dead_code)]
+    pub fn is_wasm_url(&self) -> bool {
+        matches!(self, CodeSource::WasmUrl { .. })
     }
 }
 
@@ -120,6 +167,24 @@ pub struct ResourceLimits {
     pub max_instructions: u64,
     pub max_memory_mb: u32,
     pub max_execution_seconds: u64,
+}
+
+/// Parameters for creating a new task in coordinator
+#[derive(Debug, Clone)]
+pub struct CreateTaskParams {
+    pub request_id: u64,
+    pub data_id: String,
+    pub code_source: CodeSource,
+    pub resource_limits: ResourceLimits,
+    pub input_data: String,
+    pub secrets_ref: Option<SecretsReference>,
+    pub response_format: ResponseFormat,
+    pub context: ExecutionContext,
+    pub user_account_id: Option<String>,
+    pub near_payment_yocto: Option<String>,
+    pub compile_only: bool,
+    pub force_rebuild: bool,
+    pub store_on_fastfs: bool,
 }
 
 /// Execution output - can be bytes, text, or parsed JSON
@@ -164,6 +229,9 @@ pub struct JobInfo {
     /// Compilation error message (for execute jobs to report failure to contract)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compile_error: Option<String>,
+    /// Compilation time in milliseconds from compile job
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compile_time_ms: Option<u64>,
 }
 
 /// Pricing configuration from coordinator (fetched from NEAR contract)
@@ -398,6 +466,9 @@ impl ApiClient {
         near_payment_yocto: Option<String>,
         transaction_hash: Option<String>,
         capabilities: Vec<String>,
+        compile_only: bool,
+        force_rebuild: bool,
+        has_compile_result: bool,
     ) -> Result<ClaimJobResponse> {
         let url = format!("{}/jobs/claim", self.base_url);
 
@@ -415,6 +486,9 @@ impl ApiClient {
             #[serde(skip_serializing_if = "Option::is_none")]
             transaction_hash: Option<String>,
             capabilities: Vec<String>,
+            compile_only: bool,
+            force_rebuild: bool,
+            has_compile_result: bool,
         }
 
         let request = ClaimRequest {
@@ -427,6 +501,9 @@ impl ApiClient {
             near_payment_yocto,
             transaction_hash,
             capabilities,
+            compile_only,
+            force_rebuild,
+            has_compile_result,
         };
 
         tracing::debug!("🎯 Claiming job for request_id={}", request_id);
@@ -479,6 +556,8 @@ impl ApiClient {
     /// * `wasm_checksum` - WASM checksum (for compile jobs)
     /// * `actual_cost_yocto` - Total cost from contract (for execute jobs)
     /// * `compile_cost_yocto` - Compilation cost calculated by worker (for compile jobs)
+    /// * `compile_result` - Result to pass to executor (e.g., FastFS URL)
+    #[allow(clippy::too_many_arguments)]
     pub async fn complete_job(
         &self,
         job_id: i64,
@@ -491,6 +570,7 @@ impl ApiClient {
         actual_cost_yocto: Option<String>,
         compile_cost_yocto: Option<String>,
         error_category: Option<JobStatus>,
+        compile_result: Option<String>,
     ) -> Result<()> {
         let url = format!("{}/jobs/complete", self.base_url);
 
@@ -507,6 +587,8 @@ impl ApiClient {
             compile_cost_yocto: Option<String>,
             #[serde(skip_serializing_if = "Option::is_none")]
             error_category: Option<JobStatus>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            compile_result: Option<String>,
         }
 
         let request = CompleteJobRequest {
@@ -520,6 +602,7 @@ impl ApiClient {
             actual_cost_yocto,
             compile_cost_yocto,
             error_category,
+            compile_result,
         };
 
         tracing::debug!(
@@ -795,7 +878,9 @@ impl ApiClient {
     /// # Arguments
     /// * `lock_key` - Key of the lock to release
     pub async fn release_lock(&self, lock_key: &str) -> Result<()> {
-        let url = format!("{}/locks/release/{}", self.base_url, lock_key);
+        // URL-encode the lock key to handle special characters like : and /
+        let encoded_key = urlencoding::encode(lock_key);
+        let url = format!("{}/locks/release/{}", self.base_url, encoded_key);
 
         let response = self
             .client
@@ -833,23 +918,7 @@ impl ApiClient {
     /// * `near_payment_yocto` - Payment amount in yoctoNEAR
     ///
     /// Returns `Ok(Some(request_id))` if request was created, `Ok(None)` if duplicate
-    pub async fn create_task(
-        &self,
-        request_id: u64,
-        data_id: String,
-        repo: String,
-        commit: String,
-        build_target: String,
-        max_instructions: u64,
-        max_memory_mb: u32,
-        max_execution_seconds: u64,
-        input_data: String,
-        secrets_ref: Option<SecretsReference>,
-        response_format: ResponseFormat,
-        context: ExecutionContext,
-        user_account_id: Option<String>,
-        near_payment_yocto: Option<String>,
-    ) -> Result<Option<u64>> {
+    pub async fn create_task(&self, params: CreateTaskParams) -> Result<Option<u64>> {
         let url = format!("{}/executions/create", self.base_url);
 
         #[derive(Serialize)]
@@ -867,6 +936,9 @@ impl ApiClient {
             user_account_id: Option<String>,
             #[serde(skip_serializing_if = "Option::is_none")]
             near_payment_yocto: Option<String>,
+            compile_only: bool,
+            force_rebuild: bool,
+            store_on_fastfs: bool,
         }
 
         #[derive(Deserialize)]
@@ -876,24 +948,19 @@ impl ApiClient {
         }
 
         let request = CreateRequest {
-            request_id,
-            data_id,
-            code_source: CodeSource::GitHub {
-                repo,
-                commit,
-                build_target,
-            },
-            resource_limits: ResourceLimits {
-                max_instructions,
-                max_memory_mb,
-                max_execution_seconds,
-            },
-            input_data,
-            secrets_ref,
-            response_format,
-            context,
-            user_account_id,
-            near_payment_yocto,
+            request_id: params.request_id,
+            data_id: params.data_id,
+            code_source: params.code_source,
+            resource_limits: params.resource_limits,
+            input_data: params.input_data,
+            secrets_ref: params.secrets_ref,
+            response_format: params.response_format,
+            context: params.context,
+            user_account_id: params.user_account_id,
+            near_payment_yocto: params.near_payment_yocto,
+            compile_only: params.compile_only,
+            force_rebuild: params.force_rebuild,
+            store_on_fastfs: params.store_on_fastfs,
         };
 
         let response = self

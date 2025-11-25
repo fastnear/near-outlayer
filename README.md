@@ -117,21 +117,19 @@ phala deploy \
 ```
 
 **TEE Worker Features**:
-- ✅ **Native WASI compilation** (no Docker-in-Docker)
-- ✅ **Environment isolation** via `env -i` (clears all worker secrets)
-- ✅ **Resource limits** via `ulimit` (2GB RAM, 5min CPU, 1024 processes)
+- ✅ **Pre-compiled WASM execution** (no compilation in TEE with keys)
+- ✅ **User-provided WASM support** (for closed-source/private projects)
 - ✅ **Intel TDX attestation** (hardware-level isolation)
-- ✅ **Build.rs validation** (rejects malicious build scripts)
 - ✅ **Auto-registration** via register-contract (generates keypair in TEE)
 - ✅ **Secrets decryption** via Keystore with access control
+- ✅ **Hash verification** (ensures WASM integrity)
 
 **Security Model**:
-1. **Environment isolation**: `env -i` clears OPERATOR_PRIVATE_KEY and other worker secrets
-2. **Process isolation**: Linux kernel prevents memory access between processes
+1. **No compilation in TEE**: TEE workers with access to secrets do NOT compile code. This prevents supply chain attacks through malicious dependencies (build.rs scripts, proc macros) that could exfiltrate private keys.
+2. **Pre-compiled WASM only**: Users compile on their own infrastructure or use standard workers (without keys), then upload WASM to FastFS/IPFS. TEE workers execute pre-compiled binaries only.
 3. **Hardware isolation**: Intel TDX encrypts memory, protects from host
-4. **Resource limits**: Prevents DoS attacks (memory bombs, infinite loops)
-5. **Build.rs blocked**: No arbitrary code execution during compilation
-6. **Network allowed**: Needed for crates.io (cargo downloads dependencies)
+4. **Hash verification**: WASM integrity verified via SHA256 before execution
+5. **Secrets binding**: Secrets can be bound to specific WASM hash for immutable deployments
 
 **Image size**: ~700-800MB (includes Rust toolchain + WASI SDK)
 **Use case**: Production deployments in TEE environments

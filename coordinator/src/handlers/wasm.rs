@@ -5,6 +5,7 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, Utc};
+use sha2::{Digest, Sha256};
 use tracing::{debug, error, info, warn};
 
 use crate::models::WasmExistsResponse;
@@ -44,11 +45,43 @@ pub async fn get_wasm(
     .execute(&state.db)
     .await;
 
-    // Read and return file
+    // Read file
     let bytes = tokio::fs::read(&wasm_path).await.map_err(|e| {
         error!("Failed to read WASM file {}: {}", checksum, e);
         StatusCode::NOT_FOUND
     })?;
+
+    // Verify content_hash if available (integrity check)
+    let db_result = sqlx::query_as::<_, (Option<String>,)>(
+        "SELECT content_hash FROM wasm_cache WHERE checksum = $1"
+    )
+    .bind(&checksum)
+    .fetch_optional(&state.db)
+    .await;
+
+    if let Ok(Some((Some(expected_hash),))) = db_result {
+        let actual_hash = hex::encode(Sha256::digest(&bytes));
+        if actual_hash != expected_hash {
+            error!(
+                "🚨 WASM content hash mismatch! Expected: {}, actual: {}. File may be corrupted.",
+                expected_hash, actual_hash
+            );
+
+            // Delete corrupted file
+            if let Err(e) = tokio::fs::remove_file(&wasm_path).await {
+                warn!("Failed to delete corrupted WASM file: {}", e);
+            }
+
+            // Clean up metadata
+            let _ = sqlx::query("DELETE FROM wasm_cache WHERE checksum = $1")
+                .bind(&checksum)
+                .execute(&state.db)
+                .await;
+
+            info!("🧹 Deleted corrupted WASM and metadata: {}", checksum);
+            return Err(StatusCode::NOT_FOUND);
+        }
+    }
 
     debug!("WASM {} sent ({} bytes)", checksum, bytes.len());
     Ok(Bytes::from(bytes))
@@ -182,19 +215,23 @@ pub async fn upload_wasm(
         return StatusCode::INTERNAL_SERVER_ERROR;
     }
 
+    // Calculate content hash for integrity verification
+    let content_hash = hex::encode(Sha256::digest(&wasm_bytes));
+
     // Insert metadata into database
     let file_size = wasm_bytes.len() as i64;
     let result = sqlx::query!(
         r#"
-        INSERT INTO wasm_cache (checksum, repo_url, commit_hash, build_target, file_size, created_at, last_accessed_at)
-        VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
-        ON CONFLICT (checksum) DO UPDATE SET last_accessed_at = NOW()
+        INSERT INTO wasm_cache (checksum, repo_url, commit_hash, build_target, file_size, content_hash, created_at, last_accessed_at)
+        VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+        ON CONFLICT (checksum) DO UPDATE SET last_accessed_at = NOW(), content_hash = $6
         "#,
         checksum,
         repo_url,
         commit_hash,
         build_target,
-        file_size
+        file_size,
+        content_hash
     )
     .execute(&state.db)
     .await;

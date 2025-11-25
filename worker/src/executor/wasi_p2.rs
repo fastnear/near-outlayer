@@ -5,6 +5,7 @@
 //! ## Features
 //! - Component model with typed interfaces
 //! - HTTP/HTTPS requests via wasi-http
+//! - NEAR RPC proxy via host functions (when ExecutionContext is provided)
 //! - Advanced filesystem operations
 //! - Async execution
 //!
@@ -23,12 +24,19 @@ use wasmtime_wasi::bindings::Command;
 use wasmtime_wasi_http::{WasiHttpCtx, WasiHttpView};
 
 use crate::api_client::ResourceLimits;
+use crate::outlayer_rpc::{RpcHostState, RpcProxy};
+
+use super::ExecutionContext;
 
 /// Host state for WASI P2 execution
+///
+/// Contains WASI context, HTTP context, and optionally RPC proxy state.
 struct HostState {
     wasi_ctx: WasiCtx,
     wasi_http_ctx: WasiHttpCtx,
     table: ResourceTable,
+    /// RPC proxy state (only present if ExecutionContext has outlayer_rpc)
+    rpc_state: Option<RpcHostState>,
 }
 
 impl WasiView for HostState {
@@ -51,6 +59,13 @@ impl WasiHttpView for HostState {
     }
 }
 
+impl HostState {
+    /// Get RPC host state (for host function callbacks)
+    fn rpc_state_mut(&mut self) -> &mut RpcHostState {
+        self.rpc_state.as_mut().expect("RPC state not initialized")
+    }
+}
+
 /// Execute WASI Preview 2 component
 ///
 /// # Arguments
@@ -59,6 +74,7 @@ impl WasiHttpView for HostState {
 /// * `limits` - Resource limits (memory, instructions, time)
 /// * `env_vars` - Environment variables (from encrypted secrets)
 /// * `print_stderr` - Print WASM stderr to worker logs
+/// * `exec_ctx` - Execution context with optional RPC proxy
 ///
 /// # Returns
 /// * `Ok((output, fuel_consumed))` - Execution succeeded
@@ -69,6 +85,7 @@ pub async fn execute(
     limits: &ResourceLimits,
     env_vars: Option<HashMap<String, String>>,
     print_stderr: bool,
+    exec_ctx: Option<&ExecutionContext>,
 ) -> Result<(Vec<u8>, u64)> {
     // Configure wasmtime engine for WASI Preview 2
     let mut config = Config::new();
@@ -85,9 +102,38 @@ pub async fn execute(
     debug!("Loaded as WASI Preview 2 component");
 
     // Create linker with WASI and HTTP support
-    let mut linker = Linker::new(&engine);
+    let mut linker: Linker<HostState> = Linker::new(&engine);
     wasmtime_wasi::add_to_linker_async(&mut linker)?;
     wasmtime_wasi_http::add_only_http_to_linker_async(&mut linker)?;
+
+    // Add NEAR RPC host functions if context has RPC proxy
+    let rpc_state = if let Some(ctx) = exec_ctx {
+        if let Some(outlayer_rpc) = &ctx.outlayer_rpc {
+            debug!("Adding NEAR RPC host functions to linker");
+
+            // Create sync RPC proxy for host functions
+            let rpc_url = outlayer_rpc.get_rpc_url();
+            let sync_proxy = crate::outlayer_rpc::host_functions_sync::RpcProxy::new(
+                rpc_url,
+                100, // max_calls
+                true, // allow_transactions
+                None, // No default signer - WASM provides signing keys
+            )?;
+
+            // Add RPC host functions to linker
+            crate::outlayer_rpc::add_rpc_to_linker(&mut linker, |state: &mut HostState| {
+                state.rpc_state_mut()
+            })?;
+
+            Some(RpcHostState::new(sync_proxy))
+        } else {
+            debug!("No RPC proxy in execution context");
+            None
+        }
+    } else {
+        debug!("No execution context provided");
+        None
+    };
 
     // Prepare stdin/stdout/stderr pipes
     let stdin_pipe = wasmtime_wasi::pipe::MemoryInputPipe::new(input_data.to_vec());
@@ -117,10 +163,17 @@ pub async fn execute(
         }
     }
 
+    // Add indicator that RPC proxy is available
+    if rpc_state.is_some() {
+        wasi_builder.env("NEAR_RPC_PROXY_AVAILABLE", "1");
+        debug!("Added env var: NEAR_RPC_PROXY_AVAILABLE=1");
+    }
+
     let host_state = HostState {
         wasi_ctx: wasi_builder.build(),
         wasi_http_ctx: WasiHttpCtx::new(),
         table: ResourceTable::new(),
+        rpc_state,
     };
 
     // Create store with fuel limit
@@ -131,6 +184,11 @@ pub async fn execute(
     debug!("Instantiating component");
     let command = Command::instantiate_async(&mut store, &component, &linker)
         .await
+        .map_err(|e| {
+            tracing::error!("Failed to instantiate component: {}", e);
+            tracing::error!("Error details: {:?}", e);
+            e
+        })
         .context("Failed to instantiate component")?;
 
     debug!("Running wasi:cli/run");
@@ -142,6 +200,14 @@ pub async fn execute(
     // Get fuel consumed before checking result
     let fuel_consumed = limits.max_instructions - store.get_fuel().unwrap_or(0);
     debug!("Component consumed {} instructions", fuel_consumed);
+
+    // Log RPC call count if available
+    if let Some(ref rpc_state) = store.data().rpc_state {
+        let call_count = rpc_state.proxy.get_call_count();
+        if call_count > 0 {
+            debug!("Component made {} RPC calls", call_count);
+        }
+    }
 
     // Check execution result
     // Read stderr for debugging (if flag is enabled)

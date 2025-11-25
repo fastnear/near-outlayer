@@ -4,9 +4,11 @@ mod compiler;
 mod config;
 mod event_monitor;
 mod executor;
+mod fastfs;
 mod keystore_client;
 mod near_client;
 mod registration;
+mod outlayer_rpc;
 mod tdx_attestation;
 
 use anyhow::{Context, Result};
@@ -17,7 +19,7 @@ use collateral_fetcher::fetch_collateral_from_phala;
 use compiler::Compiler;
 use config::Config;
 use event_monitor::EventMonitor;
-use executor::Executor;
+use executor::{Executor, ExecutionContext};
 use keystore_client::KeystoreClient;
 use near_client::NearClient;
 use tdx_attestation::TdxClient;
@@ -83,8 +85,31 @@ async fn main() -> Result<()> {
         None
     };
 
-    // Initialize executor
-    let executor = Executor::new(config.default_max_instructions, config.print_wasm_stderr);
+    // Initialize RPC proxy if enabled
+    let rpc_proxy = if config.rpc_proxy.enabled {
+        info!("🔧 Initializing NEAR RPC proxy...");
+        let proxy = outlayer_rpc::RpcProxy::new(
+            config.rpc_proxy.clone(),
+            &config.near_rpc_url,
+        )?;
+        info!("✅ RPC proxy initialized: {}", proxy.get_rpc_url_masked());
+        Some(proxy)
+    } else {
+        info!("⚠️  RPC proxy disabled - WASM modules cannot make NEAR RPC calls");
+        None
+    };
+
+    // Initialize executor with RPC proxy context
+    let executor = if let Some(proxy) = rpc_proxy {
+        let runtime_handle = tokio::runtime::Handle::current();
+        let exec_context = ExecutionContext::new(runtime_handle.clone())
+            .with_outlayer_rpc(proxy);
+
+        Executor::new(config.default_max_instructions, config.print_wasm_stderr)
+            .with_context(exec_context)
+    } else {
+        Executor::new(config.default_max_instructions, config.print_wasm_stderr)
+    };
 
     // Initialize keystore client (optional)
     let keystore_client = if let (Some(keystore_url), Some(keystore_token)) = (
@@ -366,10 +391,21 @@ async fn worker_iteration(
     let user_account_id = execution_request.user_account_id.clone();
     let near_payment_yocto = execution_request.near_payment_yocto.clone();
     let transaction_hash = context.transaction_hash.clone();
+    let store_on_fastfs = execution_request.store_on_fastfs;
+    let compile_only = execution_request.compile_only;
+    let force_rebuild = execution_request.force_rebuild;
+    let compile_result = execution_request.compile_result.clone();
 
     // Claim jobs for this task with worker capabilities
-    info!("🎯 Claiming jobs for request_id={} data_id={} with capabilities={:?}",
-          request_id, data_id, config.capabilities.to_array());
+    let has_compile_result = compile_result.is_some();
+
+    // Log if task appears to be misrouted (useful for debugging)
+    if force_rebuild && !has_compile_result && !config.capabilities.can_compile() {
+        warn!("⚠️ Task with force_rebuild=true but no compile_result routed to executor - may be waiting for compiler");
+    }
+
+    info!("🎯 Claiming jobs for request_id={} data_id={} with capabilities={:?} compile_only={} force_rebuild={} has_compile_result={}",
+          request_id, data_id, config.capabilities.to_array(), compile_only, force_rebuild, has_compile_result);
     let claim_response = match api_client
         .claim_job(
             request_id,
@@ -381,6 +417,9 @@ async fn worker_iteration(
             near_payment_yocto.clone(),
             transaction_hash.clone(),
             config.capabilities.to_array(),
+            compile_only,
+            force_rebuild,
+            has_compile_result,
         )
         .await
     {
@@ -406,7 +445,7 @@ async fn worker_iteration(
     );
 
     // Local WASM cache - if we compile, we keep it in memory for execute job
-    let mut compiled_wasm: Option<(String, Vec<u8>, u64, Option<String>)> = None; // (checksum, bytes, compile_time_ms, created_at)
+    let mut compiled_wasm: Option<(String, Vec<u8>, u64, Option<String>, Option<String>)> = None; // (checksum, bytes, compile_time_ms, created_at, published_url)
 
     // Process each job in order
     for job in claim_response.jobs {
@@ -428,6 +467,7 @@ async fn worker_iteration(
                 match handle_compile_job(
                     api_client,
                     compiler_ref,
+                    near_client,
                     keystore_client,
                     tdx_client,
                     &job,
@@ -438,11 +478,14 @@ async fn worker_iteration(
                     near_payment_yocto.as_ref(),
                     request_id,
                     config,
+                    store_on_fastfs,
+                    force_rebuild,
+                    compile_only,
                 )
                 .await {
-                    Ok((checksum, wasm_bytes, compile_time_ms, created_at)) => {
-                        // Store in local cache for execute job (including compile time and created_at)
-                        compiled_wasm = Some((checksum, wasm_bytes, compile_time_ms, created_at));
+                    Ok((checksum, wasm_bytes, compile_time_ms, created_at, published_url)) => {
+                        // Store in local cache for execute job (including compile time, created_at, and published_url)
+                        compiled_wasm = Some((checksum, wasm_bytes, compile_time_ms, created_at, published_url));
                     }
                     Err(e) => {
                         // Compilation failed - complete_job already called in handle_compile_job
@@ -471,7 +514,9 @@ async fn worker_iteration(
                     transaction_hash.as_ref(),
                     request_id,
                     &data_id,
-                    compiled_wasm.as_ref().map(|(cs, b, ct, ca)| (cs, b, ct, ca.as_deref())), // Pass local WASM cache
+                    compiled_wasm.as_ref().map(|(cs, b, ct, ca, pu)| (cs, b, ct, ca.as_deref(), pu.as_deref())), // Pass local WASM cache with published_url
+                    compile_result.as_ref(), // Pass compile_result (published_url or result for compile_only)
+                    compile_only,
                 )
                 .await?;
             }
@@ -550,6 +595,7 @@ fn merge_env_vars(
 async fn handle_compile_job(
     api_client: &ApiClient,
     compiler: &Compiler,
+    _near_client: &NearClient,
     _keystore_client: Option<&KeystoreClient>,
     tdx_client: &tdx_attestation::TdxClient,
     job: &JobInfo,
@@ -560,8 +606,87 @@ async fn handle_compile_job(
     user_payment: Option<&String>,
     request_id: u64,
     config: &Config,
-) -> Result<(String, Vec<u8>, u64, Option<String>)> {
+    store_on_fastfs: bool,
+    force_rebuild: bool,
+    _compile_only: bool,
+) -> Result<(String, Vec<u8>, u64, Option<String>, Option<String>)> {
+    // Returns (checksum, wasm_bytes, compile_time_ms, created_at, published_url)
     info!("🔨 Starting compilation job_id={} request_id={}", job.job_id, request_id);
+
+    // Check if this is a WasmUrl source - if so, download instead of compile
+    if let CodeSource::WasmUrl { url, hash, build_target } = code_source {
+        info!("📥 WasmUrl source detected - downloading from URL instead of compiling");
+        info!("   URL: {}", url);
+        info!("   Hash: {}", hash);
+
+        let start_time = std::time::Instant::now();
+
+        // Download and cache WASM
+        let result = compiler.download_and_cache_wasm(url, hash, build_target).await;
+        let download_time_ms = start_time.elapsed().as_millis() as u64;
+
+        match result {
+            Ok((checksum, wasm_bytes, created_at)) => {
+                info!("✅ WASM downloaded: checksum={} size={} bytes time={}ms cached={:?}",
+                    checksum, wasm_bytes.len(), download_time_ms, created_at.is_some());
+
+                // Report completion to coordinator
+                // Note: For downloads, we report 0 compile_cost (no compilation happened)
+                if let Err(e) = api_client
+                    .complete_job(
+                        job.job_id,
+                        true,
+                        None,
+                        None,
+                        download_time_ms,
+                        0, // No instructions for download
+                        Some(checksum.clone()),
+                        None, // No actual_cost for download jobs
+                        Some("0".to_string()), // Zero compile cost - just download
+                        None, // No error category for success
+                        None, // No compile_result
+                    )
+                    .await
+                {
+                    warn!("⚠️ Failed to report download job completion: {}", e);
+                }
+
+                return Ok((checksum, wasm_bytes, download_time_ms, created_at, None)); // No FastFS for WasmUrl downloads
+            }
+            Err(e) => {
+                let error_msg = e.to_string();
+                warn!("❌ WASM download failed: {}", error_msg);
+
+                // Report failure to coordinator
+                if let Err(report_err) = api_client
+                    .complete_job(
+                        job.job_id,
+                        false,
+                        None,
+                        Some(error_msg.clone()),
+                        download_time_ms,
+                        0,
+                        None,
+                        None,
+                        None,
+                        Some(api_client::JobStatus::CompilationFailed), // Reuse status for download failures
+                        None, // No compile_result
+                    )
+                    .await
+                {
+                    warn!("⚠️ Failed to report download job failure: {}", report_err);
+                }
+
+                return Err(e);
+            }
+        }
+    }
+
+    // Extract GitHub fields - compile jobs for GitHub source
+    let (repo, commit, build_target) = match code_source {
+        CodeSource::GitHub { repo, commit, build_target } => (repo.as_str(), commit.as_str(), build_target.as_str()),
+        CodeSource::WasmUrl { .. } => unreachable!("WasmUrl handled above"),
+    };
 
     // Validate compilation budget
     if let Some(payment_str) = user_payment {
@@ -597,7 +722,7 @@ async fn handle_compile_job(
 
             // Report budget error to coordinator
             if let Err(e) = api_client
-                .complete_job(job.job_id, false, None, Some(error_msg.clone()), 0, 0, None, None, None, Some(api_client::JobStatus::InsufficientPayment))
+                .complete_job(job.job_id, false, None, Some(error_msg.clone()), 0, 0, None, None, None, Some(api_client::JobStatus::InsufficientPayment), None)
                 .await
             {
                 warn!("⚠️ Failed to report budget error: {}", e);
@@ -624,7 +749,7 @@ async fn handle_compile_job(
     };
 
     // Compile the code with timeout (returns checksum and bytes, does NOT upload yet)
-    let compile_result = compiler.compile_local(code_source, timeout_seconds).await;
+    let compile_result = compiler.compile_local_with_options(code_source, timeout_seconds, force_rebuild).await;
     let compile_time_ms = start_time.elapsed().as_millis() as u64;
 
     match compile_result {
@@ -655,9 +780,9 @@ async fn handle_compile_job(
             if let Err(e) = api_client
                 .upload_wasm(
                     checksum.clone(),
-                    code_source.repo().to_string(),
-                    code_source.commit().to_string(),
-                    code_source.build_target().to_string(),
+                    repo.to_string(),
+                    commit.to_string(),
+                    build_target.to_string(),
                     wasm_bytes.clone(),
                 )
                 .await
@@ -668,7 +793,60 @@ async fn handle_compile_job(
                 info!("✅ WASM uploaded successfully");
             }
 
-            // Report completion to coordinator (non-critical)
+            // Upload to FastFS if requested (before complete_job to include result)
+            let mut compile_result_for_executor: Option<String> = None;
+            let mut published_url: Option<String> = None;
+
+            if store_on_fastfs {
+                if let Some(ref fastfs_receiver) = config.fastfs_receiver {
+                    // Use dedicated FastFS sender if configured, otherwise use operator
+                    let signer = config.fastfs_sender_signer.clone()
+                        .unwrap_or_else(|| config.get_operator_signer().clone());
+
+                    info!("📦 Uploading compiled WASM to FastFS...");
+                    info!("   Sender: {}", signer.account_id);
+                    info!("   Receiver: {}", fastfs_receiver);
+
+                    let fastfs_client = fastfs::FastFsClient::new(
+                        &config.near_rpc_url,
+                        signer.clone(),
+                        fastfs_receiver,
+                    );
+
+                    // Build the FastFS URL (same format regardless of transaction success)
+                    let fastfs_url = format!(
+                        "https://{}.fastfs.io/{}/{}.wasm",
+                        signer.account_id,
+                        fastfs_receiver,
+                        checksum
+                    );
+
+                    match fastfs_client.upload_wasm(&wasm_bytes, &checksum).await {
+                        Ok(url) => {
+                            info!("✅ FastFS upload successful: {}", url);
+                        }
+                        Err(_) => {
+                            // FastFS transaction "fails" but indexer picks up the file - this is expected
+                            // The info message was already logged in fastfs.rs
+                            info!("📁 FastFS URL: {}", fastfs_url);
+                        }
+                    }
+
+                    // Always save published URL for compilation_note
+                    published_url = Some(fastfs_url.clone());
+
+                    // Always pass the URL to executor via compile_result
+                    // For compile_only: executor sends URL to contract as result
+                    // For normal: executor uses URL in compilation_note
+                    info!("📤 Setting compile_result for executor: {}", fastfs_url);
+                    compile_result_for_executor = Some(fastfs_url);
+                } else {
+                    warn!("⚠️ store_on_fastfs=true but FASTFS_RECEIVER not configured, skipping upload");
+                }
+            }
+
+            // Report completion to coordinator
+            // If compile_result is set, coordinator will create execute task for executor to send result
             if let Err(e) = api_client
                 .complete_job(
                     job.job_id,
@@ -681,6 +859,7 @@ async fn handle_compile_job(
                     None, // No actual_cost for compile jobs
                     Some(compile_cost_yocto.to_string()), // Send compile cost
                     None, // No error category for success
+                    compile_result_for_executor, // Pass FastFS URL to executor
                 )
                 .await
             {
@@ -692,9 +871,9 @@ async fn handle_compile_job(
             match tdx_client.generate_task_attestation(
                 "compile",
                 job.job_id,
-                Some(code_source.repo()),
-                Some(code_source.commit()),
-                Some(code_source.build_target()),
+                Some(repo),
+                Some(commit),
+                Some(build_target),
                 None, // No wasm_hash for compile (we produce it)
                 None, // No input_hash for compile
                 &checksum, // output_hash is the compiled WASM checksum
@@ -710,9 +889,9 @@ async fn handle_compile_job(
                         caller_account_id: user_account_id.clone(),
                         transaction_hash: context.transaction_hash.clone(),
                         block_height: context.block_height,
-                        repo_url: Some(code_source.repo().to_string()),
-                        commit_hash: Some(code_source.commit().to_string()),
-                        build_target: Some(code_source.build_target().to_string()),
+                        repo_url: Some(repo.to_string()),
+                        commit_hash: Some(commit.to_string()),
+                        build_target: Some(build_target.to_string()),
                         wasm_hash: None,
                         input_hash: None,
                         output_hash: checksum.clone(),
@@ -731,7 +910,7 @@ async fn handle_compile_job(
                 }
             }
 
-            Ok((checksum, wasm_bytes, compile_time_ms, created_at))
+            Ok((checksum, wasm_bytes, compile_time_ms, created_at, published_url))
         }
         Err(e) => {
             let error_msg = e.to_string();
@@ -773,6 +952,7 @@ async fn handle_compile_job(
                     None,
                     None,
                     Some(api_client::JobStatus::CompilationFailed),
+                    None, // No compile_result
                 )
                 .await
             {
@@ -785,6 +965,7 @@ async fn handle_compile_job(
 }
 
 /// Handle an execute job
+#[allow(clippy::too_many_arguments)]
 async fn handle_execute_job(
     api_client: &ApiClient,
     executor: &Executor,
@@ -803,9 +984,97 @@ async fn handle_execute_job(
     transaction_hash: Option<&String>,
     request_id: u64,
     data_id: &str,
-    compiled_wasm: Option<(&String, &Vec<u8>, &u64, Option<&str>)>, // Local cache from compile job (checksum, bytes, compile_time_ms, created_at)
+    compiled_wasm: Option<(&String, &Vec<u8>, &u64, Option<&str>, Option<&str>)>, // Local cache from compile job (checksum, bytes, compile_time_ms, created_at, published_url)
+    compile_result: Option<&String>, // Result from compile job (published_url or result for compile_only)
+    compile_only: bool,
 ) -> Result<()> {
     info!("⚙️ Starting execution job_id={}", job.job_id);
+
+    // Extract published_url from compile_result (if set by compiler)
+    // For compile_only=true: send as result, for compile_only=false: use in compilation_note
+    let published_url_from_compile_result = compile_result.cloned();
+
+    // Check if this is a result-only task (compile_only=true)
+    // Compiler passed the result (e.g., FastFS URL) for executor to send to contract
+    if compile_only && compile_result.is_some() {
+        let result_to_send = compile_result.unwrap();
+        info!("📤 Result-only execute task: sending compile_result to contract: {}", result_to_send);
+
+        // Use consistent "Published to" format for URLs
+        let compilation_note = if result_to_send.starts_with("http") {
+            format!("Published to {}", result_to_send)
+        } else {
+            format!("Result from compilation: {}", result_to_send)
+        };
+
+        let result = api_client::ExecutionResult {
+            success: true,
+            output: Some(api_client::ExecutionOutput::Text(result_to_send.clone())),
+            error: None,
+            execution_time_ms: 0, // No execution
+            instructions: 0, // No execution
+            compile_time_ms: None, // Already counted in compile job
+            compilation_note: Some(compilation_note),
+        };
+
+        match near_client.submit_execution_result(request_id, &result).await {
+            Ok((tx_hash, outcome)) => {
+                info!("✅ Compile result submitted to NEAR successfully: tx_hash={}", tx_hash);
+
+                // Extract actual cost from contract logs
+                let actual_cost = NearClient::extract_payment_from_logs(&outcome);
+                if actual_cost > 0 {
+                    info!("💰 Extracted cost from contract: {} yoctoNEAR ({:.6} NEAR)",
+                        actual_cost, actual_cost as f64 / 1e24);
+                }
+
+                // Report success to coordinator
+                if let Err(e) = api_client
+                    .complete_job(
+                        job.job_id,
+                        true,
+                        Some(api_client::ExecutionOutput::Text(result_to_send.clone())),
+                        None,
+                        0, // No execution time
+                        0, // No instructions
+                        None,
+                        if actual_cost > 0 { Some(actual_cost.to_string()) } else { None },
+                        None, // compile_cost already reported by compile job
+                        None, // No error category for success
+                        None, // No compile_result to pass on
+                    )
+                    .await
+                {
+                    warn!("⚠️ Failed to report execute job completion: {}", e);
+                }
+            }
+            Err(e) => {
+                error!("❌ Failed to submit compile result to contract: {}", e);
+
+                // Report failure to coordinator
+                if let Err(report_err) = api_client
+                    .complete_job(
+                        job.job_id,
+                        false,
+                        None,
+                        Some(format!("Failed to submit result to contract: {}", e)),
+                        0,
+                        0,
+                        None,
+                        None,
+                        None,
+                        Some(api_client::JobStatus::Failed),
+                        None,
+                    )
+                    .await
+                {
+                    warn!("⚠️ Failed to report execute job failure: {}", report_err);
+                }
+            }
+        }
+
+        return Ok(());
+    }
 
     // Check if compilation failed - if so, just report the error to contract
     if let Some(compile_error) = &job.compile_error {
@@ -849,6 +1118,7 @@ async fn handle_execute_job(
                         Some(compile_cost.to_string()),
                         None, // compile_cost already included in actual_cost
                         Some(api_client::JobStatus::CompilationFailed),
+                        None, // No compile_result
                     )
                     .await
                 {
@@ -870,6 +1140,7 @@ async fn handle_execute_job(
                         None,
                         None,
                         Some(api_client::JobStatus::Failed),
+                        None, // No compile_result
                     )
                     .await
                 {
@@ -896,11 +1167,11 @@ async fn handle_execute_job(
     let wasm_checksum = job.wasm_checksum.as_ref()
         .ok_or_else(|| anyhow::anyhow!("Execute job missing wasm_checksum"))?;
 
-    // Get WASM bytes, compile time, and creation timestamp - use local cache if available, otherwise download
-    let (wasm_bytes, compile_time_ms, created_at) = if let Some((cached_checksum, cached_bytes, cached_compile_time, cached_created_at)) = compiled_wasm {
+    // Get WASM bytes, compile time, creation timestamp, and published URL - use local cache if available, otherwise download
+    let (wasm_bytes, compile_time_ms, created_at, published_url) = if let Some((cached_checksum, cached_bytes, cached_compile_time, cached_created_at, cached_published_url)) = compiled_wasm {
         if cached_checksum == wasm_checksum {
-            info!("✅ Using locally compiled WASM: {} bytes (cache hit!) compiled in {}ms", cached_bytes.len(), cached_compile_time);
-            (cached_bytes.clone(), Some(*cached_compile_time), cached_created_at.map(|s| s.to_string()))
+            info!("✅ Using locally compiled WASM: {} bytes (freshly compiled!) compiled in {}ms", cached_bytes.len(), cached_compile_time);
+            (cached_bytes.clone(), Some(*cached_compile_time), cached_created_at.map(|s| s.to_string()), cached_published_url.map(|s| s.to_string()))
         } else {
             warn!("⚠️ Checksum mismatch - downloading from coordinator");
             // Check cache metadata to get created_at timestamp
@@ -909,7 +1180,7 @@ async fn handle_execute_job(
                 Err(e) => {
                     let error_msg = format!("Failed to check WASM existence: {}", e);
                     error!("❌ {}", error_msg);
-                    api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed)).await?;
+                    api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None).await?;
                     return Ok(());
                 }
             };
@@ -919,12 +1190,13 @@ async fn handle_execute_job(
                 Err(e) => {
                     let error_msg = format!("Failed to download WASM: {}", e);
                     error!("❌ {}", error_msg);
-                    api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed)).await?;
+                    api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None).await?;
                     return Ok(());
                 }
             };
             info!("✅ Downloaded WASM: {} bytes", bytes.len());
-            (bytes, None, created_at)
+            // Use compile_time_ms from job info (if compiled by separate worker)
+            (bytes, job.compile_time_ms, created_at, None) // No published_url when downloading from coordinator
         }
     } else {
         // No local cache - download from coordinator
@@ -934,7 +1206,7 @@ async fn handle_execute_job(
             Err(e) => {
                 let error_msg = format!("Failed to check WASM existence: {}", e);
                 error!("❌ {}", error_msg);
-                api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed)).await?;
+                api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None).await?;
                 return Ok(());
             }
         };
@@ -944,12 +1216,13 @@ async fn handle_execute_job(
             Err(e) => {
                 let error_msg = format!("Failed to download WASM: {}", e);
                 error!("❌ {}", error_msg);
-                api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed)).await?;
+                api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None).await?;
                 return Ok(());
             }
         };
         info!("✅ Downloaded WASM: {} bytes, created_at={:?}", bytes.len(), &created_at);
-        (bytes, None, created_at)
+        // Use compile_time_ms from job info (if compiled by separate worker)
+        (bytes, job.compile_time_ms, created_at, None) // No published_url when downloading from coordinator
     };
 
     // Decrypt secrets from contract if provided (new repo-based system)
@@ -957,32 +1230,44 @@ async fn handle_execute_job(
     info!("🔍 DEBUG keystore_client: {}", if keystore_client.is_some() { "Some" } else { "None" });
 
     let user_secrets = if let (Some(secrets_ref), Some(keystore)) = (secrets_ref, keystore_client) {
-        info!("🔐 Decrypting repo-based secrets: profile={}, owner={}", secrets_ref.profile, secrets_ref.account_id);
+        info!("🔐 Decrypting secrets: profile={}, owner={}", secrets_ref.profile, secrets_ref.account_id);
 
-        // Get repo from code_source
-        let repo = code_source.repo();
+        // user_account_id is the account that requested execution (used for access control)
+        let caller = user_account_id.map(|s| s.as_str()).unwrap_or(&secrets_ref.account_id);
 
-        // Resolve branch from commit via coordinator API (with caching)
-        let commit = code_source.commit();
-        let branch = match api_client.resolve_branch(repo, commit).await {
-            Ok(b) => {
-                if let Some(ref branch_name) = b {
-                    info!("✅ Coordinator resolved '{}' → branch '{}'", commit, branch_name);
-                } else {
-                    info!("⚠️  Coordinator: commit '{}' not found, using wildcard (branch=None)", commit);
-                }
-                b
+        // Decrypt secrets based on code_source type
+        let secrets_result = match code_source {
+            CodeSource::GitHub { repo, commit, .. } => {
+                info!("📦 Decrypting repo-based secrets for GitHub source");
+
+                // Resolve branch from commit via coordinator API (with caching)
+                let branch = match api_client.resolve_branch(repo, commit).await {
+                    Ok(b) => {
+                        if let Some(ref branch_name) = b {
+                            info!("✅ Coordinator resolved '{}' → branch '{}'", commit, branch_name);
+                        } else {
+                            info!("⚠️  Coordinator: commit '{}' not found, using wildcard (branch=None)", commit);
+                        }
+                        b
+                    }
+                    Err(e) => {
+                        warn!("⚠️  Coordinator API failed: {}, using wildcard (branch=None)", e);
+                        None
+                    }
+                };
+
+                // Call keystore to decrypt secrets by repo
+                keystore.decrypt_secrets_from_contract(repo, branch.as_deref(), &secrets_ref.profile, &secrets_ref.account_id, caller, Some(data_id)).await
             }
-            Err(e) => {
-                warn!("⚠️  Coordinator API failed: {}, using wildcard (branch=None)", e);
-                None
+            CodeSource::WasmUrl { hash, .. } => {
+                info!("📦 Decrypting wasm_hash-based secrets for WasmUrl source: {}", hash);
+
+                // Call keystore to decrypt secrets by wasm_hash
+                keystore.decrypt_secrets_by_wasm_hash(hash, &secrets_ref.profile, &secrets_ref.account_id, caller, Some(data_id)).await
             }
         };
 
-        // Call keystore to decrypt secrets from contract
-        // user_account_id is the account that requested execution (used for access control)
-        let caller = user_account_id.map(|s| s.as_str()).unwrap_or(&secrets_ref.account_id);
-        match keystore.decrypt_secrets_from_contract(repo, branch.as_deref(), &secrets_ref.profile, &secrets_ref.account_id, caller, Some(data_id)).await {
+        match secrets_result {
             Ok(secrets) => {
                 info!("✅ Secrets decrypted successfully: {} environment variables", secrets.len());
                 Some(secrets)
@@ -1041,7 +1326,8 @@ async fn handle_execute_job(
                         None,
                         if actual_cost > 0 { Some(actual_cost.to_string()) } else { None },
                         None,
-                        Some(error_category)
+                        Some(error_category),
+                        None, // No compile_result
                     )
                     .await?;
                 return Ok(());
@@ -1057,6 +1343,7 @@ async fn handle_execute_job(
     // Get build target from code source
     let build_target = match code_source {
         CodeSource::GitHub { build_target, .. } => Some(build_target.as_str()),
+        CodeSource::WasmUrl { build_target, .. } => Some(build_target.as_str()),
     };
 
     // Execute WASM
@@ -1077,17 +1364,34 @@ async fn handle_execute_job(
             // Add compilation time if WASM was compiled in this execution
             execution_result.compile_time_ms = compile_time_ms;
 
-            // Add compilation note if WASM was from cache
-            execution_result.compilation_note = created_at.as_ref().map(|timestamp| {
-                format!("Cached WASM from {}", timestamp)
-            });
+            // Add compilation note - prioritize published_url, then check if freshly compiled or cached
+            // published_url can come from local cache (compiled_wasm) or from compile_result (separate executor)
+            let effective_published_url = published_url.or(published_url_from_compile_result.clone());
 
-            info!("🔍 DEBUG: created_at={:?}, compilation_note={:?}", &created_at, &execution_result.compilation_note);
+            execution_result.compilation_note = if let Some(url) = &effective_published_url {
+                // WASM was published to FastFS/IPFS
+                Some(format!("Published to {}", url))
+            } else if compile_time_ms.is_some() {
+                // Freshly compiled in this task (no published_url)
+                Some("Freshly compiled".to_string())
+            } else if compile_cost > 0 {
+                // Compiled by separate compiler worker (compile_cost indicates compilation happened)
+                Some("Freshly compiled".to_string())
+            } else if let Some(timestamp) = &created_at {
+                // Downloaded from cache
+                Some(format!("Cached WASM from {}", timestamp))
+            } else {
+                None
+            };
+
+            info!("🔍 DEBUG: effective_published_url={:?}, compile_time_ms={:?}, compile_cost={}, created_at={:?}, compilation_note={:?}",
+                &effective_published_url, &compile_time_ms, compile_cost, &created_at, &execution_result.compilation_note);
 
             if let Some(ct) = compile_time_ms {
                 info!(
-                    "✅ Execution successful: compile={}ms execute={}ms instructions={}",
-                    ct, execution_result.execution_time_ms, execution_result.instructions
+                    "✅ Execution successful: compile={}ms execute={}ms instructions={}{}",
+                    ct, execution_result.execution_time_ms, execution_result.instructions,
+                    effective_published_url.as_ref().map(|u| format!(" published: {}", u)).unwrap_or_default()
                 );
             } else {
                 info!(
@@ -1133,6 +1437,7 @@ async fn handle_execute_job(
                             if actual_cost > 0 { Some(actual_cost.to_string()) } else { None },
                             if compile_cost > 0 { Some(compile_cost.to_string()) } else { None },
                             None, // No error category for success
+                            None, // No compile_result
                         )
                         .await
                     {
@@ -1164,9 +1469,9 @@ async fn handle_execute_job(
                         match tdx_client.generate_task_attestation(
                             "execute",
                             job.job_id,
-                            Some(code_source.repo()),
-                            Some(code_source.commit()),
-                            Some(code_source.build_target()),
+                            code_source.repo(),
+                            code_source.commit(),
+                            code_source.build_target(),
                             Some(wasm_checksum),
                             Some(&input_hash),
                             &output_hash,
@@ -1182,9 +1487,9 @@ async fn handle_execute_job(
                                     caller_account_id: user_account_id.cloned(),
                                     transaction_hash: transaction_hash.cloned(),
                                     block_height: context.block_height,
-                                    repo_url: Some(code_source.repo().to_string()),
-                                    commit_hash: Some(code_source.commit().to_string()),
-                                    build_target: Some(code_source.build_target().to_string()),
+                                    repo_url: code_source.repo().map(|s| s.to_string()),
+                                    commit_hash: code_source.commit().map(|s| s.to_string()),
+                                    build_target: code_source.build_target().map(|s| s.to_string()),
                                     wasm_hash: Some(wasm_checksum.clone()),
                                     input_hash: Some(input_hash),
                                     output_hash,
@@ -1221,6 +1526,7 @@ async fn handle_execute_job(
                             None,
                             None,
                             Some(api_client::JobStatus::Failed), // Infrastructure error - can't reach NEAR
+                            None, // No compile_result
                         )
                         .await
                     {
@@ -1275,6 +1581,7 @@ async fn handle_execute_job(
                     if actual_cost > 0 { Some(actual_cost.to_string()) } else { None },
                     None,
                     Some(api_client::JobStatus::ExecutionFailed), // WASM execution error (panic, trap, timeout)
+                    None, // No compile_result
                 )
                 .await
             {

@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { ChaCha20Poly1305 } from '@stablelib/chacha20poly1305';
 import { randomBytes } from '@stablelib/random';
 import { AccessConditionBuilder } from './AccessConditionBuilder';
-import { AccessCondition, FormData } from './types';
+import { AccessCondition, FormData, SecretSourceType } from './types';
 import { convertAccessToContractFormat } from './utils';
 
 interface SecretsFormProps {
@@ -13,8 +13,10 @@ interface SecretsFormProps {
   onSubmit: (formData: FormData, encryptedSecrets: number[]) => Promise<void>;
   coordinatorUrl: string;
   initialData?: {
+    sourceType?: SecretSourceType;
     repo: string;
     branch: string;
+    wasmHash?: string;
     profile: string;
   };
 }
@@ -38,8 +40,10 @@ const GENERATION_TYPES = [
 ];
 
 export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, initialData }: SecretsFormProps) {
+  const [sourceType, setSourceType] = useState<SecretSourceType>('repo');
   const [repo, setRepo] = useState('');
   const [branch, setBranch] = useState('');
+  const [wasmHash, setWasmHash] = useState('');
   const [profile, setProfile] = useState('default');
   const [plaintextSecrets, setPlaintextSecrets] = useState('{\n  "API_KEY": "your-api-key"\n}');
   const [accessCondition, setAccessCondition] = useState<AccessCondition>({ type: 'AllowAll' });
@@ -51,8 +55,10 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
   // Load initial data if provided (for edit mode)
   useEffect(() => {
     if (initialData) {
+      setSourceType(initialData.sourceType || 'repo');
       setRepo(initialData.repo);
       setBranch(initialData.branch || '');
+      setWasmHash(initialData.wasmHash || '');
       setProfile(initialData.profile);
       setPlaintextSecrets('{\n  "API_KEY": "your-new-api-key"\n}');
     }
@@ -87,9 +93,25 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
       return;
     }
 
-    if (!repo.trim()) {
-      setError('Repository is required');
-      return;
+    // Validate based on source type
+    if (sourceType === 'repo') {
+      if (!repo.trim()) {
+        setError('Repository is required');
+        return;
+      }
+    } else if (sourceType === 'wasm_hash') {
+      if (!wasmHash.trim()) {
+        setError('WASM hash is required');
+        return;
+      }
+      if (wasmHash.trim().length !== 64) {
+        setError('WASM hash must be 64 hex characters (SHA256)');
+        return;
+      }
+      if (!/^[a-fA-F0-9]{64}$/.test(wasmHash.trim())) {
+        setError('WASM hash must be hex encoded');
+        return;
+      }
     }
 
     if (!profile.trim()) {
@@ -139,14 +161,18 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
         let encryptedSecretsBase64: string | null = null;
 
         if (hasManualSecrets) {
+          // Build accessor based on source type
+          const accessor = sourceType === 'wasm_hash'
+            ? { type: 'WasmHash', hash: wasmHash.trim() }
+            : { type: 'Repo', repo: repo.trim(), branch: branch.trim() || null };
+
           // Get public key and encrypt
           const pubkeyResp = await fetch(`${coordinatorUrl}/secrets/pubkey`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              repo: repo.trim(),
+              accessor,
               owner: accountId,
-              branch: branch.trim() || null,
               secrets_json: plaintextSecrets,
             }),
           });
@@ -180,13 +206,17 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
         }
 
         // Step 2: Call /secrets/add_generated_secret
+        // Build accessor for generated secrets endpoint
+        const generatedAccessor = sourceType === 'wasm_hash'
+          ? { type: 'WasmHash', hash: wasmHash.trim() }
+          : { type: 'Repo', repo: repo.trim(), branch: branch.trim() || null };
+
         const response = await fetch(`${coordinatorUrl}/secrets/add_generated_secret`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            repo: repo.trim(),
+            accessor: generatedAccessor,
             owner: accountId,
-            branch: branch.trim() || null,
             encrypted_secrets_base64: encryptedSecretsBase64,
             new_secrets: validSecretsToGenerate.map(s => ({
               name: s.name.trim(),
@@ -218,12 +248,22 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
           encrypted_data_length: data.encrypted_data_base64.length,
         });
 
+        // Extract normalized values from response accessor
+        const repoNormalized = data.accessor?.type === 'Repo'
+          ? data.accessor.repo_normalized
+          : repo.trim();
+        const wasmHashNormalized = data.accessor?.type === 'WasmHash'
+          ? data.accessor.hash
+          : wasmHash.trim();
+
         // Convert base64 to array and submit to contract
         const encryptedArray = Array.from(atob(data.encrypted_data_base64), c => c.charCodeAt(0));
         const contractAccess = convertAccessToContractFormat(accessCondition);
         const formData: FormData = {
-          repo: repo.trim(),
+          sourceType,
+          repo: repoNormalized,
           branch: branch.trim() || null,
+          wasmHash: wasmHashNormalized,
           profile: profile.trim(),
           access: contractAccess,
         };
@@ -231,8 +271,10 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
         await onSubmit(formData, encryptedArray);
 
         // Clear form on success
+        setSourceType('repo');
         setRepo('');
         setBranch('');
+        setWasmHash('');
         setProfile('default');
         setPlaintextSecrets('{\n  "API_KEY": "your-api-key"\n}');
         setAccessCondition({ type: 'AllowAll' });
@@ -240,13 +282,17 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
         setError(null);
       } else {
         // Only manual secrets - use original flow
+        // Build accessor based on source type
+        const accessor = sourceType === 'wasm_hash'
+          ? { type: 'WasmHash', hash: wasmHash.trim() }
+          : { type: 'Repo', repo: repo.trim(), branch: branch.trim() || null };
+
         const pubkeyResp = await fetch(`${coordinatorUrl}/secrets/pubkey`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            repo: repo.trim(),
+            accessor,
             owner: accountId,
-            branch: branch.trim() || null,
             secrets_json: plaintextSecrets,
           }),
         });
@@ -263,7 +309,8 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
 
         const pubkeyData = await pubkeyResp.json();
         const pubkeyHex = pubkeyData.pubkey;
-        const repoNormalized = pubkeyData.repo_normalized;
+        // Extract normalized values from response accessor
+        const repoNormalized = pubkeyData.accessor?.repo_normalized || repo.trim();
 
         const keyMaterial = hexToBytes(pubkeyHex);
         const encoder = new TextEncoder();
@@ -278,8 +325,10 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
 
         const contractAccess = convertAccessToContractFormat(accessCondition);
         const formData: FormData = {
+          sourceType,
           repo: repoNormalized,
           branch: branch.trim() || null,
+          wasmHash: wasmHash.trim(),
           profile: profile.trim(),
           access: contractAccess,
         };
@@ -287,8 +336,10 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
         await onSubmit(formData, encryptedArray);
 
         // Clear form on success
+        setSourceType('repo');
         setRepo('');
         setBranch('');
+        setWasmHash('');
         setProfile('default');
         setPlaintextSecrets('{\n  "API_KEY": "your-api-key"\n}');
         setAccessCondition({ type: 'AllowAll' });
@@ -317,38 +368,98 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
           {initialData ? 'Update Secrets' : 'Create New Secrets'}
         </h2>
 
-        {/* Repository */}
+        {/* Source Type Selector */}
         <div className="mb-4">
           <label className="block text-sm font-medium text-gray-700 mb-2">
-            GitHub Repository *
+            Secret Binding Type *
           </label>
-          <input
-            type="text"
-            value={repo}
-            onChange={(e) => setRepo(e.target.value)}
-            placeholder="owner/repo or https://github.com/owner/repo"
-            className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
-            disabled={encrypting}
-          />
+          <div className="flex space-x-4">
+            <label className="inline-flex items-center">
+              <input
+                type="radio"
+                value="repo"
+                checked={sourceType === 'repo'}
+                onChange={(e) => setSourceType(e.target.value as SecretSourceType)}
+                className="form-radio h-4 w-4 text-blue-600"
+                disabled={encrypting}
+              />
+              <span className="ml-2 text-sm text-gray-700">GitHub Repository</span>
+            </label>
+            <label className="inline-flex items-center">
+              <input
+                type="radio"
+                value="wasm_hash"
+                checked={sourceType === 'wasm_hash'}
+                onChange={(e) => setSourceType(e.target.value as SecretSourceType)}
+                className="form-radio h-4 w-4 text-blue-600"
+                disabled={encrypting}
+              />
+              <span className="ml-2 text-sm text-gray-700">WASM Hash</span>
+            </label>
+          </div>
           <p className="mt-1 text-xs text-gray-500">
-            Examples: alice/project, https://github.com/alice/project
+            {sourceType === 'repo'
+              ? 'Bind secrets to a GitHub repository (for CodeSource::GitHub)'
+              : 'Bind secrets to a WASM binary hash (for CodeSource::WasmUrl)'}
           </p>
         </div>
 
-        {/* Branch (optional) */}
-        <div className="mb-4">
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            Branch (optional)
-          </label>
-          <input
-            type="text"
-            value={branch}
-            onChange={(e) => setBranch(e.target.value)}
-            placeholder="main, develop, etc. (leave empty for all branches)"
-            className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
-            disabled={encrypting}
-          />
-        </div>
+        {/* Repository fields - shown when sourceType is 'repo' */}
+        {sourceType === 'repo' && (
+          <>
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                GitHub Repository *
+              </label>
+              <input
+                type="text"
+                value={repo}
+                onChange={(e) => setRepo(e.target.value)}
+                placeholder="owner/repo or https://github.com/owner/repo"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                disabled={encrypting}
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                Examples: alice/project, https://github.com/alice/project
+              </p>
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Branch (optional)
+              </label>
+              <input
+                type="text"
+                value={branch}
+                onChange={(e) => setBranch(e.target.value)}
+                placeholder="main, develop, etc. (leave empty for all branches)"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                disabled={encrypting}
+              />
+            </div>
+          </>
+        )}
+
+        {/* WASM Hash field - shown when sourceType is 'wasm_hash' */}
+        {sourceType === 'wasm_hash' && (
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              WASM SHA256 Hash *
+            </label>
+            <input
+              type="text"
+              value={wasmHash}
+              onChange={(e) => setWasmHash(e.target.value.toLowerCase())}
+              placeholder="64-character hex hash (e.g., a1b2c3d4...)"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm font-mono text-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+              disabled={encrypting}
+              maxLength={64}
+            />
+            <p className="mt-1 text-xs text-gray-500">
+              The SHA256 hash of your compiled WASM binary (used with CodeSource::WasmUrl)
+            </p>
+          </div>
+        )}
 
         {/* Profile */}
         <div className="mb-4">

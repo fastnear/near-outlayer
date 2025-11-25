@@ -26,6 +26,7 @@ RUN mkdir src && \
 
 # Now copy actual source code
 COPY worker/src ./src
+COPY worker/wit ./wit
 
 # Build actual binary (dependencies already cached)
 RUN cargo build --release --locked --bin offchainvm-worker

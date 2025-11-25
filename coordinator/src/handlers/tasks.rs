@@ -5,7 +5,7 @@ use axum::{
 };
 use redis::AsyncCommands;
 use serde::Deserialize;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 use crate::models::{CreateTaskRequest, CreateTaskResponse, ExecutionRequest};
 use crate::AppState;
@@ -120,7 +120,8 @@ pub async fn create_task(
     State(state): State<AppState>,
     Json(payload): Json<CreateTaskRequest>,
 ) -> Result<(StatusCode, Json<CreateTaskResponse>), StatusCode> {
-    debug!("Creating task for request_id={} data_id={}", payload.request_id, payload.data_id);
+    info!("📥 Creating task for request_id={} data_id={} compile_only={} force_rebuild={} store_on_fastfs={}",
+        payload.request_id, payload.data_id, payload.compile_only, payload.force_rebuild, payload.store_on_fastfs);
 
     let request_id = payload.request_id;
 
@@ -172,14 +173,26 @@ pub async fn create_task(
     };
 
     // Determine which queue to use
-    let queue_name = if wasm_file_exists {
-        // WASM exists - go directly to execute queue
-        debug!("WASM {} found in cache, pushing to execute queue", wasm_checksum);
-        &state.config.redis_queue_execute
-    } else {
-        // WASM not found - needs compilation first
-        debug!("WASM {} not in cache, pushing to compile queue", wasm_checksum);
+    // force_rebuild forces compilation even if WASM exists
+    let needs_compilation = !wasm_file_exists || payload.force_rebuild;
+
+    debug!(
+        "Queue decision: wasm_file_exists={} force_rebuild={} → needs_compilation={}",
+        wasm_file_exists, payload.force_rebuild, needs_compilation
+    );
+
+    let queue_name = if needs_compilation {
+        // Needs compilation - push to compile queue
+        if payload.force_rebuild && wasm_file_exists {
+            info!("🔄 WASM {} found but force_rebuild=true → compile queue", wasm_checksum);
+        } else {
+            info!("📦 WASM {} not in cache → compile queue", wasm_checksum);
+        }
         &state.config.redis_queue_compile
+    } else {
+        // WASM exists - go directly to execute queue
+        info!("✅ WASM {} found in cache → execute queue", wasm_checksum);
+        &state.config.redis_queue_execute
     };
 
     // Create execution request and push to Redis queue
@@ -195,6 +208,10 @@ pub async fn create_task(
         user_account_id: payload.user_account_id,
         near_payment_yocto: payload.near_payment_yocto,
         transaction_hash: payload.transaction_hash,
+        compile_only: payload.compile_only,
+        force_rebuild: payload.force_rebuild,
+        store_on_fastfs: payload.store_on_fastfs,
+        compile_result: None, // No compile result yet - set after compilation
     };
 
     let request_json = serde_json::to_string(&execution_request).map_err(|e| {
@@ -232,9 +249,10 @@ pub async fn create_task(
             secrets_profile, secrets_account_id, response_format,
             context_sender_id, context_block_height, context_block_timestamp,
             context_contract_id, context_transaction_hash, context_receipt_id,
-            context_predecessor_id, context_signer_public_key, context_gas_burnt
+            context_predecessor_id, context_signer_public_key, context_gas_burnt,
+            compile_only, force_rebuild, store_on_fastfs
         ) VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
         )
         ON CONFLICT (request_id) DO NOTHING
         "#,
@@ -255,7 +273,10 @@ pub async fn create_task(
         execution_request.context.receipt_id,
         execution_request.context.predecessor_id,
         execution_request.context.signer_public_key,
-        execution_request.context.gas_burnt.map(|g| g as i64)
+        execution_request.context.gas_burnt.map(|g| g as i64),
+        execution_request.compile_only,
+        execution_request.force_rebuild,
+        execution_request.store_on_fastfs
     )
     .execute(&state.db)
     .await
@@ -279,6 +300,10 @@ fn calculate_wasm_checksum(code_source: &crate::models::CodeSource) -> String {
             let input = format!("{}:{}:{}", repo, commit, build_target);
             let hash = Sha256::digest(input.as_bytes());
             hex::encode(hash)
+        }
+        crate::models::CodeSource::WasmUrl { hash, .. } => {
+            // For WasmUrl, use the provided hash as checksum
+            hash.clone()
         }
     }
 }

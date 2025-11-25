@@ -16,6 +16,7 @@
 //!        input_data: &[u8],
 //!        limits: &ResourceLimits,
 //!        env_vars: Option<HashMap<String, String>>,
+//!        ctx: Option<&ExecutionContext>,
 //!    ) -> Result<(Vec<u8>, u64)>
 //!    ```
 //! 3. Add module declaration: `mod wasi_unknown;`
@@ -31,13 +32,57 @@
 
 use anyhow::Result;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
 use tracing::{info, warn};
 
 use crate::api_client::{ExecutionOutput, ExecutionResult, ResourceLimits, ResponseFormat};
+use crate::outlayer_rpc::RpcProxy;
 
 mod wasi_p1;
 mod wasi_p2;
+
+/// Execution context with optional dependencies for WASM execution
+///
+/// This struct holds external services that WASM code can use through host functions.
+/// Currently supports:
+/// - RPC Proxy: Allows WASM to make NEAR RPC calls without exposing API keys
+///
+/// Future extensions might include:
+/// - Storage access
+/// - External API clients
+/// - Metrics/logging services
+#[derive(Clone)]
+pub struct ExecutionContext {
+    /// RPC proxy for NEAR blockchain access (only used in WASI P2)
+    pub outlayer_rpc: Option<Arc<RpcProxy>>,
+    /// Tokio runtime handle for async operations in host functions
+    pub runtime_handle: tokio::runtime::Handle,
+}
+
+impl ExecutionContext {
+    /// Create a new execution context
+    #[allow(dead_code)]
+    pub fn new(runtime_handle: tokio::runtime::Handle) -> Self {
+        Self {
+            outlayer_rpc: None,
+            runtime_handle,
+        }
+    }
+
+    /// Create context with RPC proxy
+    #[allow(dead_code)]
+    pub fn with_outlayer_rpc(mut self, proxy: RpcProxy) -> Self {
+        self.outlayer_rpc = Some(Arc::new(proxy));
+        self
+    }
+
+    /// Check if RPC proxy is available
+    #[allow(dead_code)]
+    pub fn has_outlayer_rpc(&self) -> bool {
+        self.outlayer_rpc.is_some()
+    }
+}
 
 /// WASM executor supporting multiple WASI versions
 pub struct Executor {
@@ -45,6 +90,8 @@ pub struct Executor {
     _default_max_instructions: u64,
     /// Print WASM stderr to worker logs
     print_wasm_stderr: bool,
+    /// Execution context with optional RPC proxy and other services
+    context: Option<ExecutionContext>,
 }
 
 impl Executor {
@@ -53,7 +100,15 @@ impl Executor {
         Self {
             _default_max_instructions: default_max_instructions,
             print_wasm_stderr,
+            context: None,
         }
+    }
+
+    /// Create executor with execution context
+    #[allow(dead_code)]
+    pub fn with_context(mut self, context: ExecutionContext) -> Self {
+        self.context = Some(context);
+        self
     }
 
     /// Execute WASM with input data
@@ -76,7 +131,7 @@ impl Executor {
         let start = Instant::now();
 
         // Try to execute with different WASI versions
-        let result = Self::execute_async(wasm_bytes, input_data, limits, env_vars, build_target, self.print_wasm_stderr).await;
+        let result = self.execute_async(wasm_bytes, input_data, limits, env_vars, build_target).await;
 
         let execution_time_ms = start.elapsed().as_millis() as u64;
 
@@ -159,16 +214,16 @@ impl Executor {
     /// Otherwise, try all formats in priority order.
     ///
     /// Priority order:
-    /// 1. WASI Preview 2 component (HTTP, modern features)
+    /// 1. WASI Preview 2 component (HTTP, modern features, RPC proxy)
     /// 2. WASI Preview 1 module (standard WASI)
     /// 3. Error if no format matches
     async fn execute_async(
+        &self,
         wasm_bytes: &[u8],
         input_data: &[u8],
         limits: &ResourceLimits,
         env_vars: Option<HashMap<String, String>>,
         build_target: Option<&str>,
-        print_wasm_stderr: bool,
     ) -> Result<(Vec<u8>, u64)> {
         // Optimize: if we know build_target, try appropriate executor first
         if let Some(target) = build_target {
@@ -177,12 +232,21 @@ impl Executor {
                 "wasm32-wasip2" => {
                     tracing::debug!("🔹 Trying WASI P2 executor (target: wasm32-wasip2)");
                     // When target is known, return error directly (don't fallback to other formats)
-                    return wasi_p2::execute(wasm_bytes, input_data, limits, env_vars, print_wasm_stderr).await;
+                    // Pass execution context (RPC proxy) to P2 executor
+                    return wasi_p2::execute(
+                        wasm_bytes,
+                        input_data,
+                        limits,
+                        env_vars,
+                        self.print_wasm_stderr,
+                        self.context.as_ref(),
+                    ).await;
                 }
                 "wasm32-wasip1" | "wasm32-wasi" => {
                     tracing::debug!("🔹 Trying WASI P1 executor (target: {})", target);
                     // When target is known, return error directly (don't fallback to other formats)
-                    return wasi_p1::execute(wasm_bytes, input_data, limits, env_vars, print_wasm_stderr).await;
+                    // P1 does not support RPC proxy (no component model)
+                    return wasi_p1::execute(wasm_bytes, input_data, limits, env_vars, self.print_wasm_stderr).await;
                 }
                 _ => {
                     tracing::debug!("⚠️ Unknown target '{}', fallback to auto-detection", target);
@@ -194,14 +258,21 @@ impl Executor {
         }
 
         // Fallback: auto-detect format (for unknown targets or if specific executor failed)
-        // Try WASI P2 component first
-        if let Ok(result) = wasi_p2::execute(wasm_bytes, input_data, limits, env_vars.clone(), print_wasm_stderr).await
+        // Try WASI P2 component first (with RPC proxy support)
+        if let Ok(result) = wasi_p2::execute(
+            wasm_bytes,
+            input_data,
+            limits,
+            env_vars.clone(),
+            self.print_wasm_stderr,
+            self.context.as_ref(),
+        ).await
         {
             return Ok(result);
         }
 
-        // Try WASI P1 module
-        if let Ok(result) = wasi_p1::execute(wasm_bytes, input_data, limits, env_vars.clone(), print_wasm_stderr).await
+        // Try WASI P1 module (no RPC proxy)
+        if let Ok(result) = wasi_p1::execute(wasm_bytes, input_data, limits, env_vars.clone(), self.print_wasm_stderr).await
         {
             return Ok(result);
         }

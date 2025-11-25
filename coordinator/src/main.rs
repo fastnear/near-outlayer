@@ -146,6 +146,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/public/stats", get(handlers::public::get_stats))
         .route("/public/repos/popular", get(handlers::public::get_popular_repos))
         .route("/public/wasm/info", get(handlers::public::get_wasm_info))
+        .route("/public/wasm/exists/:checksum", get(handlers::wasm::wasm_exists))
         .route("/public/pricing", get(handlers::pricing::get_pricing))
         .route("/public/pricing/refresh", post(handlers::pricing::refresh_pricing))
         .route(

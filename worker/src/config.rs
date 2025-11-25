@@ -53,6 +53,7 @@ pub struct Config {
     // Worker registration mode
     // If true - use TEE registration flow (requires REGISTER_CONTRACT_ID and INIT_ACCOUNT_*)
     // If false - use legacy mode with OPERATOR_PRIVATE_KEY (for testnet without TEE)
+    // CRITICAL: OPERATOR_PRIVATE_KEY is ONLY for resolve_execution(), NEVER for user transactions!
     pub use_tee_registration: bool,
 
     // Worker registration (optional - for TEE key registration)
@@ -74,6 +75,32 @@ pub struct Config {
 
     // Worker capabilities (what this worker can do)
     pub capabilities: WorkerCapabilities,
+
+    // FastFS receiver contract (optional - for storing compiled WASM)
+    pub fastfs_receiver: Option<String>,
+
+    // FastFS sender account (optional - separate account for paying FastFS storage)
+    pub fastfs_sender_signer: Option<InMemorySigner>,
+
+    // RPC Proxy configuration (for WASM host functions)
+    #[allow(dead_code)]
+    pub rpc_proxy: RpcProxyConfig,
+}
+
+/// RPC Proxy configuration for WASM host functions
+#[derive(Debug, Clone)]
+pub struct RpcProxyConfig {
+    /// Enable RPC proxy host functions for WASM
+    #[allow(dead_code)]
+    pub enabled: bool,
+    /// RPC URL with API key (separate from worker's NEAR_RPC_URL)
+    /// If not set, falls back to worker's near_rpc_url
+    pub rpc_url: Option<String>,
+    /// Maximum RPC calls per execution (rate limiting)
+    pub max_calls_per_execution: u32,
+    /// Allow transaction methods (send_tx, broadcast_tx_*)
+    /// If false, only view methods are allowed
+    pub allow_transactions: bool,
 }
 
 /// Worker capabilities - what jobs this worker can handle
@@ -118,6 +145,9 @@ impl Config {
     /// - OFFCHAINVM_CONTRACT_ID: OffchainVM contract account ID
     /// - OPERATOR_ACCOUNT_ID: Worker operator account ID
     /// - OPERATOR_PRIVATE_KEY: Worker operator private key (ed25519:...)
+    ///   ⚠️ CRITICAL: This key is ONLY for calling resolve_execution() on OutLayer contract!
+    ///   This key is NEVER passed to WASM and NEVER used for signing user transactions.
+    ///   User transactions are signed with keys provided by WASM via secrets mechanism.
     ///
     /// Optional environment variables (with defaults):
     /// - WORKER_ID: Unique worker identifier (default: random UUID)
@@ -179,11 +209,15 @@ impl Config {
             .context("USE_TEE_REGISTRATION must be 'true' or 'false'")?;
 
         // Load operator_signer based on registration mode
+        // CRITICAL: operator_signer is ONLY used for calling resolve_execution() on OutLayer contract
+        // This key is NEVER passed to WASM and NEVER used for user transactions!
+        // User transactions are signed with keys from WASM (provided via secrets mechanism).
         let operator_signer = if use_tee_registration {
             // TEE mode: operator_signer will be set after registration in main.rs
             None
         } else {
             // Legacy mode: load OPERATOR_PRIVATE_KEY from env
+            // CRITICAL: This key is ONLY for resolve_execution(), NOT for user transactions!
             let operator_private_key = env::var("OPERATOR_PRIVATE_KEY")
                 .context("OPERATOR_PRIVATE_KEY is required when USE_TEE_REGISTRATION=false")?;
 
@@ -316,6 +350,26 @@ impl Config {
             execution: execution_enabled,
         };
 
+        // FastFS receiver contract (optional)
+        let fastfs_receiver = env::var("FASTFS_RECEIVER").ok();
+
+        // FastFS sender account (optional - separate account for paying storage)
+        let fastfs_sender_signer = if let Ok(sender_account_id) = env::var("FASTFS_SENDER_ACCOUNT_ID") {
+            let sender_private_key = env::var("FASTFS_SENDER_PRIVATE_KEY")
+                .context("FASTFS_SENDER_PRIVATE_KEY is required when FASTFS_SENDER_ACCOUNT_ID is set")?;
+
+            let sender_account = AccountId::from_str(&sender_account_id)
+                .context("Invalid FASTFS_SENDER_ACCOUNT_ID format")?;
+
+            let secret_key: SecretKey = sender_private_key
+                .parse()
+                .context("Invalid FASTFS_SENDER_PRIVATE_KEY format (expected ed25519:...)")?;
+
+            Some(InMemorySigner::from_secret_key(sender_account, secret_key))
+        } else {
+            None
+        };
+
         // Worker registration configuration (optional)
         let register_contract_id = env::var("REGISTER_CONTRACT_ID")
             .ok()
@@ -342,6 +396,31 @@ impl Config {
             (Some(init_account_id), Some(init_signer))
         } else {
             (None, None)
+        };
+
+        // NEAR RPC Proxy configuration (for WASM host functions)
+        let rpc_proxy_enabled = env::var("NEAR_RPC_PROXY_ENABLED")
+            .unwrap_or_else(|_| "true".to_string())
+            .parse::<bool>()
+            .context("NEAR_RPC_PROXY_ENABLED must be 'true' or 'false'")?;
+
+        let rpc_proxy_url = env::var("NEAR_RPC_PROXY_URL").ok();
+
+        let rpc_proxy_max_calls = env::var("NEAR_RPC_PROXY_MAX_CALLS")
+            .unwrap_or_else(|_| "100".to_string())
+            .parse::<u32>()
+            .context("NEAR_RPC_PROXY_MAX_CALLS must be a valid number")?;
+
+        let rpc_proxy_allow_transactions = env::var("NEAR_RPC_PROXY_ALLOW_TRANSACTIONS")
+            .unwrap_or_else(|_| "true".to_string())
+            .parse::<bool>()
+            .context("NEAR_RPC_PROXY_ALLOW_TRANSACTIONS must be 'true' or 'false'")?;
+
+        let rpc_proxy = RpcProxyConfig {
+            enabled: rpc_proxy_enabled,
+            rpc_url: rpc_proxy_url,
+            max_calls_per_execution: rpc_proxy_max_calls,
+            allow_transactions: rpc_proxy_allow_transactions,
         };
 
         Ok(Self {
@@ -376,6 +455,9 @@ impl Config {
             save_system_hidden_logs_to_debug,
             print_wasm_stderr,
             capabilities,
+            fastfs_receiver,
+            fastfs_sender_signer,
+            rpc_proxy,
         })
     }
 
@@ -512,6 +594,14 @@ mod tests {
             capabilities: WorkerCapabilities {
                 compilation: true,
                 execution: true,
+            },
+            fastfs_receiver: None,
+            fastfs_sender_signer: None,
+            rpc_proxy: RpcProxyConfig {
+                enabled: true,
+                rpc_url: None,
+                max_calls_per_execution: 100,
+                allow_transactions: true,
             },
         }
     }

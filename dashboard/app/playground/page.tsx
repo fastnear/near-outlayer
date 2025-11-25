@@ -3,7 +3,7 @@
 import { useState, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useNearWallet } from '@/contexts/NearWalletContext';
-import { checkWasmExists } from '@/lib/api';
+import { checkWasmExists, checkWasmExistsByChecksum } from '@/lib/api';
 import { getTransactionUrl } from '@/lib/explorer';
 import { actionCreators } from '@near-js/transactions';
 import WalletConnectionModal from '@/components/WalletConnectionModal';
@@ -19,14 +19,24 @@ interface BasePreset {
 // Direct execution preset (calls OutLayer)
 interface DirectPreset extends BasePreset {
   type: 'direct';
-  repo: string;
-  commit: string;
+  codeSourceType?: 'github' | 'wasmurl'; // default: 'github'
+  // GitHub source fields
+  repo?: string;
+  commit?: string;
+  // WasmUrl source fields
+  wasmUrl?: string;
+  wasmHash?: string;
+  // Common fields
   buildTarget: string;
   args: string;
   responseFormat: string;
   secretsProfile?: string;
   secretsOwnerTestnet?: string;
   secretsOwnerMainnet?: string;
+  // Execution params
+  compileOnly?: boolean;
+  forceRebuild?: boolean;
+  storeOnFastfs?: boolean;
 }
 
 // Proxy contract preset (calls application contract)
@@ -66,16 +76,17 @@ const DIRECT_PRESETS: DirectPreset[] = [
   {
     type: 'direct',
     name: 'AI Completions',
-    description: '🤖 Get AI inference with system prompt stored in encrypted secrets and user prompt coming from on-chain. Example system prompt: start sentences with "O". Build AI agents, chatbots, content generation.',
-    repo: 'https://github.com/zavodil/ai-ark',
-    commit: 'main',
+    description: '🤖 AI inference with system prompt from encrypted secrets. Demo: AI responds with all sentences starting with "O" - you can set any custom rules like language restrictions, personality, response format. Using pre-compiled WASM from FastFS for faster execution.',
+    codeSourceType: 'wasmurl',
+    wasmUrl: 'https://wasmhub.testnet.fastfs.io/fastfs.testnet/cbf80ed0080dd62f2041745cdc958ec0fbd192f33aeaa756f7873d742204b2f8.wasm',
+    wasmHash: '41c1c7b3528565f3fd139943f439d61c0768e9abdb9b579bd0921ecbfcabeded',
     buildTarget: 'wasm32-wasip2',
     args: '{"prompt":"What could the NEAR OutLayer project do?","history":[{"role":"user","content":"Tell me about NEAR"},{"role":"assistant","content":"NEAR is the most scalable Layer 1 blockchain."}],"model_name":"accounts/fireworks/models/gpt-oss-20b","openai_endpoint":"https://api.fireworks.ai/inference/v1/chat/completions","max_tokens":16384}',
     responseFormat: 'Text',
     secretsProfile: 'secret-system-prompt',
     secretsOwnerTestnet: 'zavodil2.testnet',
     secretsOwnerMainnet: 'zavodil.near',
-    networks: ['testnet', 'mainnet'],
+    networks: ['testnet'],
     docsLink: '/docs/examples#ai-ark',
   },
   {
@@ -134,6 +145,21 @@ const DIRECT_PRESETS: DirectPreset[] = [
     secretsOwnerMainnet: 'zavodil.near',
     networks: ['testnet', 'mainnet'],
     docsLink: '/docs/examples#ethereum-api',
+  },
+  {
+    type: 'direct',
+    name: 'Publish to FastFS',
+    description: '📦 Compile code and publish WASM to FastFS for permanent storage. Returns FastFS URL instead of executing. Requires force_rebuild to ensure fresh compilation.',
+    repo: 'https://github.com/zavodil/random-ark',
+    commit: 'main',
+    buildTarget: 'wasm32-wasip1',
+    args: '',
+    responseFormat: 'Text',
+    networks: ['testnet', 'mainnet'],
+    docsLink: '/docs/contract-integration#params',
+    compileOnly: true,
+    forceRebuild: true,
+    storeOnFastfs: true,
   },
 ];
 
@@ -198,13 +224,22 @@ function PlaygroundContent() {
 
   // Initialize with preset from URL or first preset
   const [selectedPreset, setSelectedPreset] = useState<string>(initialPreset?.name || '');
+  const [codeSourceType, setCodeSourceType] = useState<'github' | 'wasmurl'>(initialPreset?.type === 'direct' ? (initialPreset.codeSourceType || 'github') : 'github');
   const [repo, setRepo] = useState(initialPreset?.type === 'direct' ? initialPreset.repo : '');
   const [commit, setCommit] = useState(initialPreset?.type === 'direct' ? initialPreset.commit : '');
+  const [wasmUrl, setWasmUrl] = useState('');
+  const [wasmHash, setWasmHash] = useState('');
+  const [hashLoading, setHashLoading] = useState(false);
+  const [hashError, setHashError] = useState<string | null>(null);
   const [buildTarget, setBuildTarget] = useState(initialPreset?.type === 'direct' ? initialPreset.buildTarget : 'wasm32-wasip1');
   const [args, setArgs] = useState(initialPreset?.args || '');
   const [responseFormat, setResponseFormat] = useState(initialPreset?.type === 'direct' ? initialPreset.responseFormat : 'Json');
   const [secretsProfile, setSecretsProfile] = useState(initialPreset?.type === 'direct' ? initialPreset.secretsProfile || '' : '');
   const [secretsOwner, setSecretsOwner] = useState('');
+  // Execution params
+  const [compileOnly, setCompileOnly] = useState(initialPreset?.type === 'direct' ? initialPreset.compileOnly || false : false);
+  const [forceRebuild, setForceRebuild] = useState(initialPreset?.type === 'direct' ? initialPreset.forceRebuild || false : false);
+  const [storeOnFastfs, setStoreOnFastfs] = useState(initialPreset?.type === 'direct' ? initialPreset.storeOnFastfs || false : false);
 
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ transaction: Record<string, unknown>; executionOutput: string | null; transactionHash: string } | null>(null);
@@ -312,11 +347,18 @@ function PlaygroundContent() {
       setArgs(preset.args);
 
       if (preset.type === 'direct') {
-        setRepo(preset.repo);
-        setCommit(preset.commit);
+        setCodeSourceType(preset.codeSourceType || 'github');
+        setRepo(preset.repo || '');
+        setCommit(preset.commit || '');
+        setWasmUrl(preset.wasmUrl || '');
+        setWasmHash(preset.wasmHash || '');
         setBuildTarget(preset.buildTarget);
         setResponseFormat(preset.responseFormat);
         setSecretsProfile(preset.secretsProfile || '');
+        // Execution params
+        setCompileOnly(preset.compileOnly || false);
+        setForceRebuild(preset.forceRebuild || false);
+        setStoreOnFastfs(preset.storeOnFastfs || false);
 
         // Select secrets owner based on current network
         const owner = network === 'testnet'
@@ -325,12 +367,17 @@ function PlaygroundContent() {
         setSecretsOwner(owner);
       } else {
         // Proxy preset - clear direct-only fields
+        setCodeSourceType('github');
         setRepo('');
         setCommit('');
+        setWasmUrl('');
         setBuildTarget('wasm32-wasip1');
         setResponseFormat('Json');
         setSecretsProfile('');
         setSecretsOwner('');
+        setCompileOnly(false);
+        setForceRebuild(false);
+        setStoreOnFastfs(false);
       }
 
       setWasmInfo(null); // Clear WASM cache info
@@ -348,12 +395,28 @@ function PlaygroundContent() {
       setError(null);
       const currentPreset = PRESETS.find(p => p.name === selectedPreset);
 
+      // Check if we're using WasmUrl for direct preset
+      if (currentPreset?.type === 'direct' && codeSourceType === 'wasmurl') {
+        // WasmUrl - check by hash
+        if (!wasmHash) {
+          setError('Please enter or calculate WASM hash first');
+          return;
+        }
+        const info = await checkWasmExistsByChecksum(wasmHash);
+        setWasmInfo(info);
+        return;
+      }
+
       let checkRepo: string;
       let checkCommit: string;
       let checkBuildTarget: string;
 
       if (currentPreset?.type === 'direct') {
-        // Direct preset - use form values
+        // Direct preset with GitHub - use form values
+        if (!repo || !commit) {
+          setError('Repository and commit are required for GitHub source');
+          return;
+        }
         checkRepo = repo;
         checkCommit = commit;
         checkBuildTarget = buildTarget;
@@ -375,6 +438,42 @@ function PlaygroundContent() {
     }
   };
 
+  // Calculate SHA256 hash from WASM URL
+  const calculateWasmHash = async () => {
+    if (!wasmUrl) {
+      setHashError('Please enter a WASM URL first');
+      return;
+    }
+
+    setHashLoading(true);
+    setHashError(null);
+
+    try {
+      // Fetch the WASM file
+      const response = await fetch(wasmUrl);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch: ${response.status} ${response.statusText}`);
+      }
+
+      // Get the binary data
+      const arrayBuffer = await response.arrayBuffer();
+
+      // Calculate SHA256 using Web Crypto API
+      const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
+
+      // Convert to hex string
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+      setWasmHash(hashHex);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to calculate hash';
+      setHashError(message);
+      console.error('Hash calculation error:', err);
+    } finally {
+      setHashLoading(false);
+    }
+  };
 
   const handleExecute = async () => {
     if (!isConnected) {
@@ -450,13 +549,35 @@ function PlaygroundContent() {
           };
         }
 
+        // Build code_source based on type
+        const codeSource = codeSourceType === 'github'
+          ? {
+              GitHub: {
+                repo,
+                commit,
+                build_target: buildTarget,
+              },
+            }
+          : {
+              WasmUrl: {
+                url: wasmUrl,
+                hash: wasmHash,
+                build_target: buildTarget || null,
+              },
+            };
+
+        // Build params if any are set
+        const params = (compileOnly || forceRebuild || storeOnFastfs)
+          ? {
+              compile_only: compileOnly || undefined,
+              force_rebuild: forceRebuild || undefined,
+              store_on_fastfs: storeOnFastfs || undefined,
+            }
+          : null;
+
         // Prepare transaction arguments
         const transactionArgs = {
-          code_source: {
-            repo,
-            commit,
-            build_target: buildTarget,
-          },
+          code_source: codeSource,
           resource_limits: {
             max_instructions: 10000000000, // 10B instructions
             max_memory_mb: 128,
@@ -465,6 +586,7 @@ function PlaygroundContent() {
           input_data: inputData,
           secrets_ref: secretsRef,
           response_format: responseFormat,
+          params,
         };
 
         action = actionCreators.functionCall(
@@ -538,74 +660,38 @@ function PlaygroundContent() {
           {/* Preset Selector */}
           {availablePresets.length > 0 && (
             <div className="mb-6">
-              <label className="block text-sm font-medium text-gray-700 mb-3">
+              <label htmlFor="presetSelector" className="block text-sm font-medium text-gray-700 mb-1">
                 Example Presets
               </label>
-
-              {/* Direct Execution Group */}
-              {availablePresets.filter(p => p.type === 'direct').length > 0 && (
-                <div className="mb-4">
-                  <h3 className="text-xs font-semibold text-gray-600 mb-2 uppercase tracking-wider">
-                    Direct Execution (call OutLayer)
-                  </h3>
-                  <div className="flex flex-wrap gap-2">
-                    {availablePresets
-                      .filter(p => p.type === 'direct')
-                      .map((preset) => {
-                        // Generate ID from preset name (lowercase, replace spaces with hyphens)
-                        const presetId = preset.name.toLowerCase().replace(/\s+/g, '-');
-                        return (
-                          <button
-                            key={preset.name}
-                            id={presetId}
-                            onClick={() => applyPreset(preset.name)}
-                            className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                              selectedPreset === preset.name
-                                ? 'bg-gradient-to-r from-[#c17817] to-[#d4a017] text-white'
-                                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                            }`}
-                          >
-                            {preset.name}
-                          </button>
-                        );
-                      })}
-                  </div>
-                </div>
-              )}
-
-              {/* Proxy Contract Group */}
-              {availablePresets.filter(p => p.type === 'proxy').length > 0 && (
-                <div className="mb-4">
-                  <h3 className="text-xs font-semibold text-gray-600 mb-2 uppercase tracking-wider">
-                    Via Proxy Contracts
-                  </h3>
-                  <div className="flex flex-wrap gap-2">
+              <select
+                id="presetSelector"
+                value={selectedPreset}
+                onChange={(e) => applyPreset(e.target.value)}
+                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm px-3 py-2"
+              >
+                <optgroup label="Direct Execution (call OutLayer)">
+                  {availablePresets
+                    .filter(p => p.type === 'direct')
+                    .map((preset) => (
+                      <option key={preset.name} value={preset.name}>
+                        {preset.name}
+                      </option>
+                    ))}
+                </optgroup>
+                {availablePresets.filter(p => p.type === 'proxy').length > 0 && (
+                  <optgroup label="Via Proxy Contracts">
                     {availablePresets
                       .filter(p => p.type === 'proxy')
-                      .map((preset) => {
-                        // Generate ID from preset name (lowercase, replace spaces with hyphens)
-                        const presetId = preset.name.toLowerCase().replace(/\s+/g, '-');
-                        return (
-                          <button
-                            key={preset.name}
-                            id={presetId}
-                            onClick={() => applyPreset(preset.name)}
-                            className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                              selectedPreset === preset.name
-                                ? 'bg-gradient-to-r from-[#c17817] to-[#d4a017] text-white'
-                                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                            }`}
-                          >
-                            {preset.name}
-                          </button>
-                        );
-                      })}
-                  </div>
-                </div>
-              )}
-
-              <p className="mt-2 text-xs text-gray-500">
-                Click a preset to auto-fill the form with example values
+                      .map((preset) => (
+                        <option key={preset.name} value={preset.name}>
+                          {preset.name}
+                        </option>
+                      ))}
+                  </optgroup>
+                )}
+              </select>
+              <p className="mt-1 text-xs text-gray-500">
+                Select a preset to auto-fill the form with example values
               </p>
 
               {/* Show description for selected preset */}
@@ -698,88 +784,224 @@ function PlaygroundContent() {
             const currentPreset = PRESETS.find(p => p.name === selectedPreset);
             return currentPreset?.type === 'direct' ? (
               <>
-                {/* GitHub Repository */}
+                {/* Code Source Type Selector */}
                 <div className="mb-6">
-                  <div className="flex items-center justify-between mb-1">
-                    <label htmlFor="repo" className="block text-sm font-medium text-gray-700">
-                      GitHub Repository
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Code Source
+                  </label>
+                  <div className="flex gap-4">
+                    <label className="inline-flex items-center">
+                      <input
+                        type="radio"
+                        name="codeSourceType"
+                        value="github"
+                        checked={codeSourceType === 'github'}
+                        onChange={(e) => setCodeSourceType(e.target.value as 'github' | 'wasmurl')}
+                        className="form-radio h-4 w-4 text-blue-600"
+                      />
+                      <span className="ml-2 text-sm text-gray-700">GitHub Repository</span>
                     </label>
-                    {repo && (
-                      <a
-                        href={`${repo}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
-                      >
-                        <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
-                          <path fillRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clipRule="evenodd"/>
-                        </svg>
-                        Fork It!
-                      </a>
-                    )}
+                    <label className="inline-flex items-center">
+                      <input
+                        type="radio"
+                        name="codeSourceType"
+                        value="wasmurl"
+                        checked={codeSourceType === 'wasmurl'}
+                        onChange={(e) => setCodeSourceType(e.target.value as 'github' | 'wasmurl')}
+                        className="form-radio h-4 w-4 text-blue-600"
+                      />
+                      <span className="ml-2 text-sm text-gray-700">WASM URL</span>
+                    </label>
                   </div>
-                  <input
-                    type="text"
-                    id="repo"
-                    value={repo}
-                    onChange={(e) => setRepo(e.target.value)}
-                    placeholder="https://github.com/user/repo"
-                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm px-3 py-2"
-                  />
                 </div>
 
-                {/* Commit/Branch */}
-                <div className="mb-6">
-                  <label htmlFor="commit" className="block text-sm font-medium text-gray-700">
-                    Commit Hash or Branch
-                  </label>
-                  <input
-                    type="text"
-                    id="commit"
-                    value={commit}
-                    onChange={(e) => setCommit(e.target.value)}
-                    placeholder="main"
-                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm px-3 py-2"
-                  />
+                {codeSourceType === 'github' ? (
+                  <>
+                    {/* GitHub Repository */}
+                    <div className="mb-6">
+                      <div className="flex items-center justify-between mb-1">
+                        <label htmlFor="repo" className="block text-sm font-medium text-gray-700">
+                          GitHub Repository
+                        </label>
+                        {repo && (
+                          <a
+                            href={`${repo}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                              <path fillRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clipRule="evenodd"/>
+                            </svg>
+                            Fork It!
+                          </a>
+                        )}
+                      </div>
+                      <input
+                        type="text"
+                        id="repo"
+                        value={repo}
+                        onChange={(e) => setRepo(e.target.value)}
+                        placeholder="https://github.com/user/repo"
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm px-3 py-2"
+                      />
+                    </div>
+
+                    {/* Commit/Branch */}
+                    <div className="mb-6">
+                      <label htmlFor="commit" className="block text-sm font-medium text-gray-700">
+                        Commit Hash or Branch
+                      </label>
+                      <input
+                        type="text"
+                        id="commit"
+                        value={commit}
+                        onChange={(e) => setCommit(e.target.value)}
+                        placeholder="main"
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm px-3 py-2"
+                      />
+                    </div>
+
+                  </>
+                ) : (
+                  /* WASM URL inputs */
+                  <>
+                    <div className="mb-6">
+                      <label htmlFor="wasmUrl" className="block text-sm font-medium text-gray-700">
+                        WASM URL
+                      </label>
+                      <input
+                        type="text"
+                        id="wasmUrl"
+                        value={wasmUrl}
+                        onChange={(e) => setWasmUrl(e.target.value)}
+                        placeholder="https://example.com/compiled.wasm or ipfs://..."
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm px-3 py-2"
+                      />
+                      <p className="mt-1 text-xs text-gray-500">
+                        Direct URL to pre-compiled WASM file (HTTP/HTTPS or IPFS)
+                      </p>
+                    </div>
+                    <div className="mb-6">
+                      <label htmlFor="wasmHash" className="block text-sm font-medium text-gray-700">
+                        WASM Hash (SHA256)
+                      </label>
+                      <div className="mt-1 flex gap-2">
+                        <input
+                          type="text"
+                          id="wasmHash"
+                          value={wasmHash}
+                          onChange={(e) => setWasmHash(e.target.value)}
+                          placeholder="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                          className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm font-mono px-3 py-2"
+                        />
+                        <button
+                          type="button"
+                          onClick={calculateWasmHash}
+                          disabled={hashLoading || !wasmUrl}
+                          className="inline-flex items-center px-3 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+                        >
+                          {hashLoading ? (
+                            <>
+                              <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-gray-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                              </svg>
+                              Calculating...
+                            </>
+                          ) : (
+                            'Calculate'
+                          )}
+                        </button>
+                      </div>
+                      {hashError && (
+                        <p className="mt-1 text-xs text-red-600">{hashError}</p>
+                      )}
+                      <p className="mt-1 text-xs text-gray-500">
+                        SHA256 hash for verification (hex encoded, 64 characters). Click &quot;Calculate&quot; to auto-fill from URL.
+                      </p>
+                    </div>
+                  </>
+                )}
+
+                {/* Build Target and Response Format in columns */}
+                <div className="mb-6 grid grid-cols-2 gap-4">
+                  <div>
+                    <label htmlFor="buildTarget" className="block text-sm font-medium text-gray-700">
+                      Build Target
+                    </label>
+                    <select
+                      id="buildTarget"
+                      value={buildTarget}
+                      onChange={(e) => setBuildTarget(e.target.value)}
+                      className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm px-3 py-2"
+                    >
+                      <option value="wasm32-wasip1">wasm32-wasip1</option>
+                      <option value="wasm32-wasip2">wasm32-wasip2</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label htmlFor="responseFormat" className="block text-sm font-medium text-gray-700">
+                      Response Format
+                    </label>
+                    <select
+                      id="responseFormat"
+                      value={responseFormat}
+                      onChange={(e) => setResponseFormat(e.target.value)}
+                      className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm px-3 py-2"
+                    >
+                      <option value="Json">JSON</option>
+                      <option value="Text">Text</option>
+                      <option value="Bytes">Bytes</option>
+                    </select>
+                  </div>
                 </div>
 
-                {/* Build Target */}
-                <div className="mb-6">
-                  <label htmlFor="buildTarget" className="block text-sm font-medium text-gray-700">
-                    Build Target
-                  </label>
-                  <select
-                    id="buildTarget"
-                    value={buildTarget}
-                    onChange={(e) => setBuildTarget(e.target.value)}
-                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm px-3 py-2"
-                  >
-                    <option value="wasm32-wasip1">wasm32-wasip1</option>
-                    <option value="wasm32-wasip2">wasm32-wasip2</option>
-                  </select>
-                </div>
-
-                {/* Response Format */}
-                <div className="mb-6">
-                  <label htmlFor="responseFormat" className="block text-sm font-medium text-gray-700">
-                    Response Format
-                  </label>
-                  <select
-                    id="responseFormat"
-                    value={responseFormat}
-                    onChange={(e) => setResponseFormat(e.target.value)}
-                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm px-3 py-2"
-                  >
-                    <option value="Json">JSON (parse output as JSON)</option>
-                    <option value="Text">Text (UTF-8 string)</option>
-                    <option value="Bytes">Bytes (raw binary)</option>
-                  </select>
-                  <p className="mt-1 text-xs text-gray-500">
-                    {responseFormat === 'Json' && 'Contract will receive parsed JSON object instead of string'}
-                    {responseFormat === 'Text' && 'Contract will receive UTF-8 text string'}
-                    {responseFormat === 'Bytes' && 'Contract will receive raw bytes array'}
-                  </p>
-                </div>
+                {/* Execution Parameters - collapsible, only for GitHub sources */}
+                {codeSourceType === 'github' && (
+                <details className="mb-6" open={compileOnly || forceRebuild || storeOnFastfs}>
+                  <summary className="cursor-pointer text-sm font-medium text-gray-700 hover:text-gray-900">
+                    Execution Parameters {(compileOnly || forceRebuild || storeOnFastfs) && <span className="text-blue-600">(modified)</span>}
+                  </summary>
+                  <div className="mt-3 space-y-2 pl-4">
+                    <label className="inline-flex items-center">
+                      <input
+                        type="checkbox"
+                        checked={compileOnly}
+                        onChange={(e) => setCompileOnly(e.target.checked)}
+                        className="form-checkbox h-4 w-4 text-blue-600 rounded"
+                      />
+                      <span className="ml-2 text-sm text-gray-700">
+                        Compile Only <span className="text-gray-500">(returns checksum)</span>
+                      </span>
+                    </label>
+                    <br />
+                    <label className="inline-flex items-center">
+                      <input
+                        type="checkbox"
+                        checked={forceRebuild}
+                        onChange={(e) => setForceRebuild(e.target.checked)}
+                        className="form-checkbox h-4 w-4 text-blue-600 rounded"
+                      />
+                      <span className="ml-2 text-sm text-gray-700">
+                        Force Rebuild <span className="text-gray-500">(recompile even if cached)</span>
+                      </span>
+                    </label>
+                    <br />
+                    <label className="inline-flex items-center">
+                      <input
+                        type="checkbox"
+                        checked={storeOnFastfs}
+                        onChange={(e) => setStoreOnFastfs(e.target.checked)}
+                        className="form-checkbox h-4 w-4 text-blue-600 rounded"
+                      />
+                      <span className="ml-2 text-sm text-gray-700">
+                        Store on FastFS <span className="text-gray-500">(publish to permanent storage)</span>
+                      </span>
+                    </label>
+                  </div>
+                </details>
+                )}
               </>
             ) : null;
           })()}
@@ -916,36 +1138,6 @@ function PlaygroundContent() {
             ) : null;
           })()}
 
-          {/* Check WASM Button - for direct execution and proxy with wasmRepo */}
-          {(() => {
-            const currentPreset = PRESETS.find(p => p.name === selectedPreset);
-            const shouldShowButton = currentPreset?.type === 'direct' ||
-                                     (currentPreset?.type === 'proxy' && currentPreset.wasmRepo);
-            return shouldShowButton ? (
-              <div className="mb-6">
-                <button
-                  onClick={handleCheckWasm}
-                  className="inline-flex items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
-                >
-                  Check WASM Cache
-                </button>
-                {wasmInfo && (
-                  <div className="mt-2 text-sm">
-                    {wasmInfo.exists ? (
-                      <span className="text-green-600">
-                        ✓ WASM exists (checksum: {wasmInfo.checksum?.substring(0, 12)}...)
-                      </span>
-                    ) : (
-                      <span className="text-yellow-600">
-                        ⚠ WASM not cached - will be compiled on first execution{currentPreset?.type === 'proxy' && currentPreset.increaseDepositIfNoCache ? ' (+0.1 NEAR added to deposit)' : ''}
-                      </span>
-                    )}
-                  </div>
-                )}
-              </div>
-            ) : null;
-          })()}
-
           {/* Execute Button */}
           <div className="mt-6">
             {/* Deposit info for direct execution */}
@@ -998,6 +1190,36 @@ function PlaygroundContent() {
                 'Execute'
               )}
             </button>
+
+            {/* Check WASM Cache - for direct execution and proxy with wasmRepo */}
+            {(() => {
+              const currentPreset = PRESETS.find(p => p.name === selectedPreset);
+              const shouldShowButton = currentPreset?.type === 'direct' ||
+                                       (currentPreset?.type === 'proxy' && currentPreset.wasmRepo);
+              return shouldShowButton ? (
+                <div className="mt-3 flex items-center justify-between">
+                  <div className="text-xs">
+                    {wasmInfo && (
+                      wasmInfo.exists ? (
+                        <span className="text-green-600">
+                          ✓ Cached ({wasmInfo.checksum?.substring(0, 8)}...)
+                        </span>
+                      ) : (
+                        <span className="text-yellow-600">
+                          ⚠ Not cached{currentPreset?.type === 'proxy' && currentPreset.increaseDepositIfNoCache ? ' (+0.1 NEAR)' : ''}
+                        </span>
+                      )
+                    )}
+                  </div>
+                  <button
+                    onClick={handleCheckWasm}
+                    className="text-sm text-blue-600 hover:text-blue-800 font-medium"
+                  >
+                    📦 Check WASM Cache →
+                  </button>
+                </div>
+              ) : null;
+            })()}
           </div>
 
           {/* Wallet Connection Modal */}
