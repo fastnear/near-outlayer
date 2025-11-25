@@ -19,3 +19,6 @@
 [submodule "wasi-examples/private-dao-ark"]
 	path = wasi-examples/private-dao-ark
 	url = git@github.com:zavodil/private-dao-ark.git
+[submodule "wasi-examples/botfather-ark"]
+	path = wasi-examples/botfather-ark
+	url = git@github.com:zavodil/botfather-ark.git
