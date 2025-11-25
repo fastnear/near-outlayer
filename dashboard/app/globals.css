@@ -127,5 +127,6 @@ body {
 }
 
 .btn-secondary:hover {
-  background: rgba(45, 80, 22, 0.05);
+  background: var(--primary-green);
+  color: white;
 }

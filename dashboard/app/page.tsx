@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import Image from 'next/image';
 import { useEffect, useRef } from 'react';
+import AnimatedGrid from '@/components/AnimatedGrid';
 
 export default function Home() {
   const matrixRef = useRef<HTMLDivElement>(null);
@@ -74,6 +75,9 @@ export default function Home() {
 
   return (
     <div className="relative min-h-screen">
+      {/* Animated Grid Background */}
+      <AnimatedGrid />
+
       {/* Hero section */}
       <div className="relative z-10 px-4 py-8 sm:py-16 sm:px-6 lg:px-8">
         <div className="text-center">
