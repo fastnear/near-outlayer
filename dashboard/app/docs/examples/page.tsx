@@ -533,6 +533,213 @@ near call outlayer.testnet request_execution '{
           </ul>
         </div>
 
+        {/* botfather-ark */}
+        <div id="botfather-ark" className="border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow scroll-mt-4">
+          <AnchorHeading
+            id="botfather-ark"
+            badges={
+              <>
+                <span className="ml-3 text-sm bg-purple-100 text-purple-800 px-3 py-1 rounded">WASI P2</span>
+                <span className="ml-2 text-sm bg-yellow-100 text-yellow-800 px-3 py-1 rounded">Intermediate</span>
+              </>
+            }
+          >
+            botfather-ark
+          </AnchorHeading>
+          <div className="flex flex-wrap gap-3 mt-4 mb-4">
+            <a
+              href="https://github.com/zavodil/botfather-ark"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-2 px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors font-medium"
+            >
+              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                <path fillRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clipRule="evenodd"/>
+              </svg>
+              <span>Source Code on GitHub</span>
+            </a>
+          </div>
+          <p className="text-gray-700 mb-4">
+            Account factory pattern for NEAR - create and manage multiple NEAR accounts with AI-generated names using hierarchical key derivation. Demonstrates advanced host function usage with <code className="bg-gray-100 px-2 py-1 rounded">call()</code> and <code className="bg-gray-100 px-2 py-1 rounded">transfer()</code>, providing access to private NEAR RPC endpoints (powered by FastNEAR).
+          </p>
+
+          <h4 className="font-semibold mt-4 mb-2">Use Cases:</h4>
+          <ul className="list-disc list-inside text-gray-700 space-y-1 mb-4">
+            <li><strong>Account Factory:</strong> Generate multiple NEAR accounts programmatically</li>
+            <li><strong>Batch Operations:</strong> Execute contract calls on multiple accounts simultaneously (e.g., buy tokens, delegate to staking pool)</li>
+            <li><strong>Onboarding Platform:</strong> Create named accounts for users via Telegram bots or web apps</li>
+            <li><strong>Sub-Account Management:</strong> Manage hierarchical account structures with deterministic key derivation</li>
+          </ul>
+
+          <h4 className="font-semibold mt-4 mb-2">Key Features:</h4>
+          <ul className="list-disc list-inside text-gray-700 space-y-1 mb-4">            
+            <li>AI-powered account name generation (GPT integration)</li>
+            <li>Deterministic key derivation from master seed using SHA-256</li>
+            <li>Account discovery via Fastnear API</li>
+            <li>Batch contract calls with template variables (<code className="bg-gray-100 px-2 py-1 rounded">{`{{account_id}}`}</code>)</li>
+            <li>Fund distribution across multiple accounts</li>
+            <li>Uses <code className="bg-gray-100 px-2 py-1 rounded">near:rpc/api</code> host functions: <code className="bg-gray-100 px-2 py-1 rounded">call()</code>, <code className="bg-gray-100 px-2 py-1 rounded">transfer()</code></li>
+          </ul>
+
+          <h4 className="font-semibold mt-4 mb-2">Actions:</h4>
+          <div className="space-y-3">
+            <div>
+              <p className="text-sm font-medium text-gray-800 mb-1">1. Create Accounts:</p>
+              <SyntaxHighlighter language="json" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
+{`{
+  "action": "create_accounts",
+  "prompt": "space exploration theme",
+  "count": 3,
+  "deposit_per_account": "1000000000000000000000000"
+}`}
+              </SyntaxHighlighter>
+              <p className="text-sm text-gray-600 mt-1">Creates accounts like <code className="bg-gray-100 px-2 py-1 rounded">mars-rover.testnet</code>, <code className="bg-gray-100 px-2 py-1 rounded">moon-base.testnet</code></p>
+            </div>
+
+            <div>
+              <p className="text-sm font-medium text-gray-800 mb-1">2. Fund Accounts:</p>
+              <SyntaxHighlighter language="json" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
+{`{
+  "action": "fund_accounts",
+  "total_amount": "30000000000000000000000000",
+  "indices": []
+}`}
+              </SyntaxHighlighter>
+              <p className="text-sm text-gray-600 mt-1">Empty <code className="bg-gray-100 px-2 py-1 rounded">indices</code> = fund all accounts equally (30 NEAR ÷ 3 accounts = 10 NEAR each)</p>
+            </div>
+
+            <div>
+              <p className="text-sm font-medium text-gray-800 mb-1">3. Batch Contract Calls:</p>
+              <SyntaxHighlighter language="json" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
+{`{
+  "action": "batch_call",
+  "contract_id": "token.near",
+  "method_name": "transfer",
+  "args": {"receiver_id": "{{account_id}}", "amount": "1000"},
+  "deposit": "1",
+  "gas": "30000000000000",
+  "indices": [0, 2]
+}`}
+              </SyntaxHighlighter>
+              <p className="text-sm text-gray-600 mt-1">Execute on accounts at indices 0 and 2. Use <code className="bg-gray-100 px-2 py-1 rounded">{`{{account_id}}`}</code> placeholder for dynamic account ID</p>
+            </div>
+
+            <div>
+              <p className="text-sm font-medium text-gray-800 mb-1">4. List Accounts:</p>
+              <SyntaxHighlighter language="json" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
+{`{
+  "action": "list_accounts"
+}`}
+              </SyntaxHighlighter>
+              <p className="text-sm text-gray-600 mt-1">Returns all created accounts with balances and public keys</p>
+            </div>
+          </div>
+
+          <h4 className="font-semibold mt-4 mb-2">Output Example:</h4>
+          <SyntaxHighlighter language="json" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
+{`{
+  "success": true,
+  "accounts": [
+    {
+      "index": 0,
+      "account_id": "mars_rover.testnet",
+      "public_key": "ed25519:...",
+      "balance": "1000000000000000000000000",
+      "balance_near": "1.0000"
+    }
+  ],
+  "transactions": [
+    {
+      "account_id": "mars_rover.testnet",
+      "tx_hash": "Abc123...",
+      "success": true
+    }
+  ]
+}`}
+          </SyntaxHighlighter>
+
+          <div className="mt-4 p-4 bg-blue-50 border-l-4 border-blue-400">
+            <h4 className="font-semibold text-gray-900 mb-2">How It Works</h4>
+            <ol className="list-decimal list-inside text-sm text-gray-700 space-y-1">
+              <li><strong>Key Derivation in TEE:</strong> Master key (<code className="bg-white px-2 py-1 rounded text-xs">PROTECTED_MASTER_KEY</code>) is generated inside TEE (nobody ever sees it). Derived keys are created using SHA-256: <code className="bg-white px-2 py-1 rounded text-xs">SHA256(master + sender_id + index)</code> - each derived key controls one account</li>
+              <li><strong>Account Discovery:</strong> Queries Fastnear API to find existing accounts by derived public keys (stateless operation)</li>
+              <li><strong>AI Name Generation:</strong> Calls OpenAI API to generate creative account names based on theme prompt</li>
+              <li><strong>Account Creation:</strong> Uses NEAR RPC <code className="bg-white px-2 py-1 rounded text-xs">call()</code> host function to create accounts via <code className="bg-white px-2 py-1 rounded text-xs">create_account</code> action</li>
+              <li><strong>Batch Execution:</strong> Iterates through account indices and executes operations using <code className="bg-white px-2 py-1 rounded text-xs">call()</code> or <code className="bg-white px-2 py-1 rounded text-xs">transfer()</code></li>
+            </ol>
+          </div>
+
+          <h4 className="font-semibold mt-4 mb-2">Setting Up Secrets</h4>
+          <div className="bg-purple-50 border-l-4 border-purple-400 p-4 mb-4">
+            <p className="text-sm text-purple-900 font-medium mb-2">
+              ⚠️ This example is not available in Playground because it requires creating a secret with <code className="bg-purple-100 px-1 rounded text-xs">NEAR_SENDER_PRIVATE_KEY</code> - your NEAR account&apos;s private key (with NEAR tokens) to pay for account creation and funding.
+            </p>
+            <p className="text-sm text-gray-700 mb-3">
+              To use this example, create a secret in the <Link href="/secrets" className="text-[var(--primary-orange)] hover:underline font-semibold">Secrets page</Link> with the following configuration:
+            </p>
+
+            <h5 className="font-semibold text-gray-900 mb-2 text-sm">Manual Secrets:</h5>
+            <SyntaxHighlighter language="json" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.75rem', marginBottom: '0.75rem' }}>
+{`{
+  "NEAR_SENDER_PRIVATE_KEY": "ed25519:your_private_key",
+  "OPENAI_API_KEY": "sk-...",
+  "OPENAI_ENDPOINT": "https://api.openai.com/v1/chat/completions",
+  "OPENAI_MODEL": "gpt-3.5-turbo"
+}`}
+            </SyntaxHighlighter>
+
+            <h5 className="font-semibold text-gray-900 mb-2 text-sm">Generated Secret (created in TEE):</h5>
+            <ul className="list-disc list-inside text-sm text-gray-700 ml-4 space-y-1 mb-3">
+              <li>Click <strong>&quot;Generate Secret&quot;</strong> button</li>
+              <li>Secret name: <code className="bg-purple-100 px-1 rounded text-xs">PROTECTED_MASTER_KEY</code></li>
+              <li>Type: <code className="bg-purple-100 px-1 rounded text-xs">ED25519</code> (generates ed25519 key pair in TEE)</li>
+              <li>This key is created inside TEE and never exposed - used to derive all account keys</li>
+            </ul>
+
+            <h5 className="font-semibold text-gray-900 mb-2 text-sm">Access Control:</h5>
+            <p className="text-sm text-gray-700 mb-1">
+              Set <strong>👥 Whitelist</strong> with your account ID (the one that will manage created accounts)
+            </p>
+          </div>
+
+          <h4 className="font-semibold mt-4 mb-2">Technical Details:</h4>
+          <ul className="list-disc list-inside text-gray-700 mb-4 space-y-1 text-sm">
+            <li><strong>WASI Version:</strong> Preview 2 (component model)</li>
+            <li><strong>Language:</strong> Rust</li>
+            <li><strong>WIT Interface:</strong> <code className="bg-gray-100 px-2 py-1 rounded">near:rpc/api</code> (call, transfer, view)</li>
+            <li><strong>Secrets:</strong> Required (OpenAI key, master key, sender credentials)</li>
+            <li><strong>Network:</strong> Required (OpenAI API, Fastnear API, NEAR RPC)</li>
+            <li><strong>Key Feature:</strong> Demonstrates advanced host function usage - WASM provides signer credentials, worker never signs with its own key</li>
+          </ul>
+
+          <div className="mt-4 p-4 bg-yellow-50 border-l-4 border-yellow-400">
+            <h4 className="font-semibold text-gray-900 mb-2">Important Security Notes</h4>
+            <ul className="text-sm text-gray-700 space-y-1">
+              <li>✅ <strong>WASM provides signer:</strong> User&apos;s NEAR private key is passed via secrets (not worker&apos;s key)</li>
+              <li>✅ <strong>Keys created in TEE:</strong> Master key (<code className="bg-white px-2 py-1 rounded text-xs">PROTECTED_MASTER_KEY</code>) is generated inside TEE and never leaves it. Derived keys are created using deterministic SHA-256 derivation from master seed.</li>
+              <li>✅ <strong>Accounts managed only in TEE:</strong> All derived accounts are controlled exclusively by keys that exist only inside TEE - nobody can export or see the private keys</li>
+              <li>✅ <strong>Deterministic keys:</strong> Same master seed + sender + index always generates same account key</li>
+              <li>✅ <strong>Master key isolation:</strong> Each <code className="bg-white px-2 py-1 rounded text-xs">NEAR_SENDER_ID</code> has isolated account space</li>
+              <li>⚠️ <strong>Store master key safely:</strong> Loss of master key = loss of access to all derived accounts</li>
+            </ul>
+          </div>
+
+          <div className="mt-4 p-4 bg-gray-50 rounded-lg">
+            <h4 className="font-semibold text-gray-900 mb-2">Learn More</h4>
+            <ul className="text-sm text-gray-700 space-y-1">
+              <li>
+                📖 <a href="https://github.com/zavodil/botfather-ark/blob/main/README.md" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">Full Documentation on GitHub</a>
+              </li>
+              <li>
+                🔧 <a href="https://github.com/zavodil/botfather-ark/blob/main/build.sh" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">Build Script & Configuration</a>
+              </li>
+              <li>
+                💡 <Link href="/docs/wasi#host-functions" className="text-[var(--primary-orange)] hover:underline">Understanding Host Functions</Link>
+              </li>
+            </ul>
+          </div>
+        </div>
+
         {/* oracle-ark */}
         <div id="oracle-ark" className="border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow scroll-mt-4">
           <AnchorHeading
