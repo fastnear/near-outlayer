@@ -75,5 +75,6 @@ urlencoding = "2.1"
 
 # Phala dstack SDK for TDX attestation
 dstack-sdk = "0.1"
+log = "0.4.28"
 
 [dev-dependencies]

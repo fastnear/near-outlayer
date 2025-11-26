@@ -86,7 +86,7 @@ const DIRECT_PRESETS: DirectPreset[] = [
     secretsProfile: 'secret-system-prompt',
     secretsOwnerTestnet: 'zavodil2.testnet',
     secretsOwnerMainnet: 'zavodil.near',
-    networks: ['testnet'],
+    networks: ['testnet', 'mainnet'],
     docsLink: '/docs/examples#ai-ark',
   },
   {

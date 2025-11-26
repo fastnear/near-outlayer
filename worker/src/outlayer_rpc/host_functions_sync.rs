@@ -12,6 +12,7 @@
 
 use anyhow::{Context, Result};
 use base64::Engine;
+use log::{debug, info};
 use near_crypto::{InMemorySigner, SecretKey};
 use near_primitives::action::{Action, FunctionCallAction, TransferAction};
 use near_primitives::hash::CryptoHash;
@@ -124,7 +125,7 @@ impl RpcProxy {
             "params": params
         });
 
-        eprintln!("[RPC] Sending {} request to {}", method, Self::safe_url_display(&self.rpc_url));
+        info!("[RPC] Sending {} request to {}", method, Self::safe_url_display(&self.rpc_url));
 
         let response = self
             .client
@@ -248,39 +249,39 @@ impl RpcProxy {
         receiver_id: &str,
         actions: Vec<Action>,
     ) -> Result<String> {
-        eprintln!("[RPC_PROXY] sign_and_send_tx_as called: signer={}, receiver={}", signer_account, receiver_id);
+        debug!("[RPC_PROXY] sign_and_send_tx_as called: signer={}, receiver={}", signer_account, receiver_id);
 
         let secret_key = SecretKey::from_str(secret_key_str)
             .map_err(|e| {
-                eprintln!("[RPC_PROXY] Failed to parse secret key: {}", e);
+                debug!("[RPC_PROXY] Failed to parse secret key: {}", e);
                 anyhow::anyhow!("Invalid secret key: {}", e)
             })?;
 
         let signer_id = AccountId::from_str(signer_account)
             .map_err(|e| {
-                eprintln!("[RPC_PROXY] Failed to parse signer account: {}", e);
+                debug!("[RPC_PROXY] Failed to parse signer account: {}", e);
                 anyhow::anyhow!("Invalid signer account: {}", e)
             })?;
 
         let receiver = AccountId::from_str(receiver_id)
             .map_err(|e| {
-                eprintln!("[RPC_PROXY] Failed to parse receiver account: {}", e);
+                debug!("[RPC_PROXY] Failed to parse receiver account: {}", e);
                 anyhow::anyhow!("Invalid receiver account: {}", e)
             })?;
 
         let signer = InMemorySigner::from_secret_key(signer_id.clone(), secret_key);
         let public_key = signer.public_key();
 
-        eprintln!("[RPC_PROXY] About to get access key nonce for {}, pubkey: {}", signer_account, public_key);
+        debug!("[RPC_PROXY] About to get access key nonce for {}, pubkey: {}", signer_account, public_key);
 
         // Get nonce and block hash
         let (nonce, block_hash, _) = self.get_access_key_nonce(signer_account, &public_key.to_string())
             .map_err(|e| {
-                eprintln!("[RPC_PROXY] Failed to get access key nonce: {}", e);
+                debug!("[RPC_PROXY] Failed to get access key nonce: {}", e);
                 e
             })?;
 
-        eprintln!("[RPC_PROXY] Got nonce={}, block_hash={}", nonce, block_hash);
+        debug!("[RPC_PROXY] Got nonce={}, block_hash={}", nonce, block_hash);
 
         let tx = Transaction::V0(TransactionV0 {
             signer_id,
@@ -295,7 +296,7 @@ impl RpcProxy {
         let tx_hash = tx.get_hash_and_size().0;
         let tx_hash_base58 = bs58::encode(tx_hash.as_ref()).into_string();
 
-        eprintln!("[RPC_PROXY] Transaction hash: {}", tx_hash_base58);
+        debug!("[RPC_PROXY] Transaction hash: {}", tx_hash_base58);
 
         // Sign transaction
         let signature = signer.sign(tx_hash.as_ref());
@@ -304,12 +305,12 @@ impl RpcProxy {
         // Serialize and encode
         let signed_tx_bytes = borsh::to_vec(&signed_tx)
             .map_err(|e| {
-                eprintln!("[RPC_PROXY] Failed to serialize tx: {}", e);
+                debug!("[RPC_PROXY] Failed to serialize tx: {}", e);
                 anyhow::anyhow!("Failed to serialize tx: {}", e)
             })?;
         let signed_tx_base64 = base64::engine::general_purpose::STANDARD.encode(&signed_tx_bytes);
 
-        eprintln!("[RPC_PROXY] About to send transaction to RPC...");
+        info!("[RPC_PROXY] Sending transaction to RPC...");
 
         // Send transaction and wait for finalization
         let result = self.send_tx(&signed_tx_base64, Some("FINAL"))
@@ -318,10 +319,10 @@ impl RpcProxy {
                 e
             })?;
 
-        eprintln!("[RPC_PROXY] Transaction sent, checking status...");
+        debug!("[RPC_PROXY] Transaction sent, checking status...");
 
-        // Print full result for debugging
-        eprintln!("[RPC_PROXY] Full RPC result: {}", serde_json::to_string_pretty(&result).unwrap_or_else(|_| format!("{:?}", result)));
+        // Print full result for debugging (only in debug mode)
+        debug!("[RPC_PROXY] Full RPC result: {}", serde_json::to_string_pretty(&result).unwrap_or_else(|_| format!("{:?}", result)));
 
         // Check for RPC-level error first (e.g., invalid transaction, not enough balance)
         if let Some(error) = result.get("error") {
@@ -338,18 +339,18 @@ impl RpcProxy {
         if let Some(status) = result.get("result").and_then(|r| r.get("status")) {
             // Check for Failure variant
             if let Some(failure) = status.get("Failure") {
-                eprintln!("[RPC_PROXY] Transaction failed: {:?}", failure);
+                debug!("[RPC_PROXY] Transaction failed: {:?}", failure);
                 return Err(anyhow::anyhow!("Transaction failed: {:?}", failure));
             }
         } else if let Some(status) = result.get("status") {
             // Check top-level status (some RPC responses have it here)
             if let Some(failure) = status.get("Failure") {
-                eprintln!("[RPC_PROXY] Transaction failed (top-level): {:?}", failure);
+                debug!("[RPC_PROXY] Transaction failed (top-level): {:?}", failure);
                 return Err(anyhow::anyhow!("Transaction failed: {:?}", failure));
             }
         }
 
-        eprintln!("[RPC_PROXY] Transaction completed successfully: {}", tx_hash_base58);
+        info!("[RPC_PROXY] Transaction completed successfully: {}", tx_hash_base58);
 
         // Return the transaction hash we computed (not from RPC response)
         Ok(tx_hash_base58)
@@ -628,14 +629,14 @@ impl near::rpc::api::Host for RpcHostState {
         gas: String,
         wait_until: String,       // NEW: wait until finality
     ) -> (String, String) {
-        eprintln!("[HOST] call() invoked: signer={}, receiver={}, method={}, deposit={}, gas={}, wait={}",
+        debug!("[HOST] call() invoked: signer={}, receiver={}, method={}, deposit={}, gas={}, wait={}",
             signer_id, receiver_id, method_name, deposit_yocto, gas,
             if wait_until.is_empty() { "FINAL" } else { &wait_until });
 
         let deposit: u128 = match deposit_yocto.parse() {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("[HOST] Invalid deposit: {}", e);
+                debug!("[HOST] Invalid deposit: {}", e);
                 return (String::new(), format!("Invalid deposit: {}", e));
             }
         };
@@ -643,12 +644,12 @@ impl near::rpc::api::Host for RpcHostState {
         let gas_amount: u64 = match gas.parse() {
             Ok(g) => g,
             Err(e) => {
-                eprintln!("[HOST] Invalid gas: {}", e);
+                debug!("[HOST] Invalid gas: {}", e);
                 return (String::new(), format!("Invalid gas: {}", e));
             }
         };
 
-        eprintln!("[HOST] Creating FunctionCall action...");
+        debug!("[HOST] Creating FunctionCall action...");
 
         let action = Action::FunctionCall(Box::new(FunctionCallAction {
             method_name: method_name.clone(),
@@ -657,13 +658,13 @@ impl near::rpc::api::Host for RpcHostState {
             deposit,
         }));
 
-        eprintln!("[HOST] Calling sign_and_send_tx_as...");
+        debug!("[HOST] Calling sign_and_send_tx_as...");
 
         // Note: wait_until is ignored for now - sign_and_send_tx_as always waits for FINAL
         // TODO: Add wait_until parameter to sign_and_send_tx_as
         match self.proxy.sign_and_send_tx_as(&signer_id, &signer_key, &receiver_id, vec![action]) {
             Ok(tx_hash) => {
-                eprintln!("[HOST] Transaction successful: {}", tx_hash);
+                info!("[HOST] Transaction successful: {}", tx_hash);
                 (tx_hash, String::new())
             }
             Err(e) => {
@@ -684,7 +685,7 @@ impl near::rpc::api::Host for RpcHostState {
         amount_yocto: String,
         wait_until: String,       // NEW: wait until finality
     ) -> (String, String) {
-        eprintln!("[HOST] transfer() invoked: signer={}, receiver={}, amount={}, wait={}",
+        debug!("[HOST] transfer() invoked: signer={}, receiver={}, amount={}, wait={}",
             signer_id, receiver_id, amount_yocto,
             if wait_until.is_empty() { "FINAL" } else { &wait_until });
 
