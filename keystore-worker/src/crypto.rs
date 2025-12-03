@@ -69,10 +69,24 @@ impl Keystore {
         let mut master_secret = [0u8; 32];
         master_secret.copy_from_slice(&bytes);
 
-        tracing::info!("Loaded keystore from existing master secret");
+        Self::from_master_secret(&master_secret)
+    }
+
+    /// Create keystore from master secret bytes
+    pub fn from_master_secret(master_secret: &[u8; 32]) -> Result<Self> {
+        // Log hash of master secret for debugging (if enabled)
+        if std::env::var("LOG_MASTER_KEY_HASH").unwrap_or_else(|_| "false".to_string()) == "true" {
+            let mut hasher = Sha256::new();
+            hasher.update(master_secret);
+            let hash = hasher.finalize();
+            tracing::warn!("🔑 MASTER KEY HASH (SHA256): {}", hex::encode(hash));
+            tracing::warn!("   This is for debugging only! Remove LOG_MASTER_KEY_HASH in production!");
+        }
+
+        tracing::info!("Loaded keystore from master secret");
 
         Ok(Self {
-            master_secret,
+            master_secret: *master_secret,
             keypair_cache: std::sync::Arc::new(RwLock::new(HashMap::new())),
         })
     }

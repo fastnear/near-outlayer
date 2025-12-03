@@ -27,9 +27,12 @@ mod near;
 mod secret_generation;
 mod types;
 mod utils;
+mod mpc_ckd;
+mod tee_registration;
+mod tdx_attestation;
 
 use anyhow::{Context, Result};
-use config::Config;
+use config::{Config, TeeMode};
 use crypto::Keystore;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -57,12 +60,6 @@ async fn main() -> Result<()> {
         "Configuration loaded"
     );
 
-    // Initialize or load keystore (master secret based)
-    let keystore = initialize_keystore(&config).await?;
-
-    tracing::info!("Keystore initialized with master secret derivation");
-    tracing::info!("Each repo will have a unique keypair derived from master_secret + seed");
-
     // Initialize NEAR RPC client for reading secrets from contract
     // Only NEAR_RPC_URL and NEAR_CONTRACT_ID are required (read-only)
     let near_client = if let (Ok(rpc_url), Ok(contract_id)) = (
@@ -89,8 +86,74 @@ async fn main() -> Result<()> {
         None
     };
 
+    // Check if we're in TEE registration mode
+    let use_tee_registration = std::env::var("USE_TEE_REGISTRATION")
+        .unwrap_or_else(|_| "false".to_string())
+        .parse::<bool>()
+        .unwrap_or(false);
+
+    // Validate configuration: KEYSTORE_MASTER_SECRET is incompatible with TEE registration
+    if use_tee_registration && std::env::var("KEYSTORE_MASTER_SECRET").is_ok() {
+        tracing::error!("❌ Configuration error: KEYSTORE_MASTER_SECRET cannot be used with USE_TEE_REGISTRATION=true");
+        tracing::error!("   When using TEE registration, the master secret comes from MPC CKD after DAO approval");
+        tracing::error!("   Please remove KEYSTORE_MASTER_SECRET from your .env file");
+        return Err(anyhow::anyhow!("Incompatible configuration: KEYSTORE_MASTER_SECRET with USE_TEE_REGISTRATION=true"));
+    }
+
+    // Initialize keystore (temporary if TEE mode)
+    let initial_keystore = if use_tee_registration {
+        tracing::info!("🔐 TEE registration mode - starting with temporary keystore");
+        tracing::info!("   API will be blocked until DAO approval and MPC key obtained");
+        crypto::Keystore::generate() // Temporary keystore
+    } else {
+        // Initialize normal keystore for non-TEE mode
+        let keystore = initialize_keystore(&config).await?;
+        tracing::info!("Keystore initialized with master secret derivation");
+        tracing::info!("Each repo will have a unique keypair derived from master_secret + seed");
+        keystore
+    };
+
     // Create API server
-    let app_state = api::AppState::new(keystore, config.clone(), near_client);
+    let app_state = api::AppState::new(initial_keystore, config.clone(), near_client);
+
+    // If in TEE mode, spawn task to handle registration and MPC key retrieval
+    if use_tee_registration {
+        let state_clone = app_state.clone();
+        let config_clone = config.clone();
+
+        tokio::spawn(async move {
+            tracing::info!("🔐 Starting TEE registration process in background");
+
+            match perform_tee_registration(&config_clone).await {
+                Ok(real_keystore) => {
+                    // Replace the temporary keystore with the real one
+                    state_clone.replace_keystore(real_keystore).await;
+                    state_clone.mark_ready();
+                    tracing::info!("✅ TEE registration complete! Keystore is now ready to serve requests");
+                }
+                Err(e) => {
+                    tracing::error!("❌ TEE registration failed: {}", e);
+
+                    // Enhanced error debugging when LOG_MASTER_KEY_HASH is set
+                    if std::env::var("LOG_MASTER_KEY_HASH").unwrap_or_default() == "true" {
+                        tracing::error!("🔍 DEBUG: Full error chain:");
+                        let mut source = e.source();
+                        let mut level = 1;
+                        while let Some(err) = source {
+                            tracing::error!("   Level {}: {}", level, err);
+                            source = err.source();
+                            level += 1;
+                        }
+                        tracing::error!("🔍 DEBUG: Error Debug format: {:?}", e);
+                    }
+
+                    tracing::error!("   Keystore will remain in not-ready state");
+                    tracing::error!("   Fix the issue and restart the service");
+                }
+            }
+        });
+    }
+
     let router = api::create_router(app_state);
 
     // Start server
@@ -112,19 +175,133 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Perform TEE registration and get MPC-derived keystore
+async fn perform_tee_registration(config: &Config) -> Result<Keystore> {
+    tracing::info!("🔐 Starting TEE registration flow");
+
+    // Check required environment variables
+    let dao_contract = std::env::var("KEYSTORE_DAO_CONTRACT")
+        .context("KEYSTORE_DAO_CONTRACT not set")?;
+    let init_account_id = std::env::var("INIT_ACCOUNT_ID")
+        .context("INIT_ACCOUNT_ID not set")?;
+    let init_private_key = std::env::var("INIT_ACCOUNT_PRIVATE_KEY")
+        .context("INIT_ACCOUNT_PRIVATE_KEY not set")?;
+    let near_rpc_url = std::env::var("NEAR_RPC_URL")
+        .unwrap_or_else(|_| "https://rpc.testnet.near.org".to_string());
+
+    // Create registration client
+    let registration = tee_registration::RegistrationClient::new(
+        near_rpc_url.clone(),
+        dao_contract.parse()?,
+        init_account_id.parse()?,
+        init_private_key.parse()?,
+    )?;
+
+    // Load or generate keypair
+    // In TEE mode, generate ephemeral keypair in memory only
+    let is_tee_mode = config.tee_mode != TeeMode::None;
+    let (public_key, secret_key) = registration.load_or_generate_keypair(is_tee_mode)?;
+    tracing::info!("📂 Using keystore public key: {}", public_key);
+
+    // Check if already approved
+    let approved = match mpc_ckd::check_keystore_approval(
+        &near_rpc_url,
+        &dao_contract,
+        &public_key.to_string(),
+    ).await {
+        Ok(approved) => approved,
+        Err(e) => {
+            let error_str = format!("{:?}", e);
+            if error_str.contains("MethodNotFound") {
+                tracing::warn!("⚠️ Method 'is_keystore_approved' not found on DAO contract");
+                tracing::warn!("   This might be an older version of the contract");
+                tracing::warn!("   Assuming keystore is NOT approved and proceeding with registration");
+                false // Assume not approved if method doesn't exist
+            } else {
+                return Err(e);
+            }
+        }
+    };
+
+    if !approved {
+        tracing::info!("📝 Keystore not yet approved, submitting registration to DAO");
+
+        // Debug log the registration parameters if LOG_MASTER_KEY_HASH is set
+        if std::env::var("LOG_MASTER_KEY_HASH").unwrap_or_default() == "true" {
+            tracing::info!("🔍 DEBUG: Registration parameters:");
+            tracing::info!("   DAO contract: {}", dao_contract);
+            tracing::info!("   Init account: {}", init_account_id);
+            tracing::info!("   Public key: {}", public_key);
+            tracing::info!("   TEE mode: {:?}", config.tee_mode);
+        }
+
+        // Generate attestation using new TdxClient
+        use crate::tdx_attestation::TdxClient;
+        let tdx_client = TdxClient::new(config.tee_mode.to_string());
+
+        // Extract ED25519 public key bytes
+        let pubkey_bytes = match &public_key {
+            near_crypto::PublicKey::ED25519(key) => key.0,
+            _ => anyhow::bail!("Only ED25519 keys supported"),
+        };
+
+        let tdx_quote = tdx_client.generate_registration_quote(&pubkey_bytes).await?;
+        tracing::info!("📡 Generated TEE attestation (mode: {:?})", config.tee_mode);
+
+        // Submit to DAO
+        let proposal_id = match registration.submit_registration(public_key.clone(), tdx_quote).await {
+            Ok(id) => id,
+            Err(e) => {
+                if std::env::var("LOG_MASTER_KEY_HASH").unwrap_or_default() == "true" {
+                    tracing::error!("🔍 DEBUG: Failed to submit registration");
+                    tracing::error!("   Error: {:?}", e);
+                    tracing::error!("   Check that dao.outlayer.testnet has 'submit_keystore_registration' method");
+                    tracing::error!("   You can verify with: near view dao.outlayer.testnet get_config");
+                }
+                return Err(e);
+            }
+        };
+        tracing::info!("📤 Registration submitted! Proposal ID: {}", proposal_id);
+
+        // Wait for approval
+        tracing::info!("⏳ Waiting for DAO approval (this may take a while)...");
+        tracing::info!("   DAO members need to vote on proposal #{}", proposal_id);
+        registration.wait_for_approval(proposal_id, &public_key).await?;
+    } else {
+        tracing::info!("✅ Keystore already approved by DAO");
+    }
+
+    // Now we're approved, get MPC-derived secret
+    tracing::info!("🔑 Requesting master secret from MPC network via CKD");
+    let keystore = mpc_ckd::initialize_mpc_keystore(dao_contract, secret_key).await?;
+
+    tracing::info!("✅ Successfully obtained MPC-derived master secret");
+    Ok(keystore)
+}
+
 /// Initialize keystore from environment or generate new one
 ///
-/// In production TEE:
-/// - First start: Generate master_secret, seal to TEE storage
-/// - Subsequent starts: Load from sealed storage
-///
-/// For MVP (non-TEE):
+/// For non-TEE mode only:
 /// - Use KEYSTORE_MASTER_SECRET from environment (if set)
 /// - Otherwise: Generate new master_secret and warn user to save it
 async fn initialize_keystore(_config: &Config) -> Result<Keystore> {
-    // Try to load from environment variable
+    // Non-TEE mode: use environment variable or generate
     if let Ok(master_secret_hex) = std::env::var("KEYSTORE_MASTER_SECRET") {
         tracing::info!("Loading keystore from KEYSTORE_MASTER_SECRET");
+
+        // Log master key hash if configured to do so
+        if std::env::var("LOG_MASTER_KEY_HASH")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false)
+        {
+            use sha2::{Sha256, Digest};
+            let mut hasher = Sha256::new();
+            hasher.update(master_secret_hex.as_bytes());
+            let hash = hasher.finalize();
+            tracing::info!("Master key hash (SHA256): {}", hex::encode(hash));
+        }
+
         Keystore::from_master_secret_hex(&master_secret_hex)
             .context("Failed to load keystore from master secret")
     } else {

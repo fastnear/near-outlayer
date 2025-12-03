@@ -21,10 +21,11 @@ use crate::attestation::Attestation;
 /// Application state shared across all handlers
 #[derive(Clone)]
 pub struct AppState {
-    pub keystore: crate::crypto::Keystore,
+    pub keystore: std::sync::Arc<tokio::sync::RwLock<crate::crypto::Keystore>>,
     pub config: crate::config::Config,
     pub expected_measurements: crate::attestation::ExpectedMeasurements,
     pub near_client: Option<std::sync::Arc<crate::near::NearClient>>,
+    pub is_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl AppState {
@@ -33,12 +34,36 @@ impl AppState {
         config: crate::config::Config,
         near_client: Option<crate::near::NearClient>,
     ) -> Self {
+        // Check if we're in TEE registration mode
+        let is_tee_registration = std::env::var("USE_TEE_REGISTRATION")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+
+        // If not in TEE mode or already initialized, we're ready
+        // If in TEE mode, we're ready only after getting master key from MPC
+        let is_ready = !is_tee_registration;
+
         Self {
-            keystore,
+            keystore: std::sync::Arc::new(tokio::sync::RwLock::new(keystore)),
             config: config.clone(),
             expected_measurements: crate::attestation::ExpectedMeasurements::default(),
             near_client: near_client.map(std::sync::Arc::new),
+            is_ready: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(is_ready)),
         }
+    }
+
+    pub fn mark_ready(&self) {
+        self.is_ready.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.is_ready.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub async fn replace_keystore(&self, new_keystore: crate::crypto::Keystore) {
+        let mut keystore = self.keystore.write().await;
+        *keystore = new_keystore;
     }
 }
 
@@ -204,6 +229,14 @@ async fn pubkey_handler(
     State(state): State<AppState>,
     Json(req): Json<PubkeyRequest>,
 ) -> Result<Json<PubkeyResponse>, ApiError> {
+    // Check if keystore is ready (has master key from MPC)
+    if !state.is_ready() {
+        tracing::warn!("Pubkey request rejected - keystore not ready (waiting for DAO approval and MPC key)");
+        return Err(ApiError::Unauthorized(
+            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string()
+        ));
+    }
+
     // 1. Validate secrets JSON first (check for reserved keywords)
     let secrets_map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&req.secrets_json)
         .map_err(|e| ApiError::BadRequest(format!("Invalid JSON format: {}", e)))?;
@@ -265,8 +298,8 @@ async fn pubkey_handler(
     }
 
     // 2. Generate public key for encryption
-    let pubkey_hex = state
-        .keystore
+    let keystore = state.keystore.read().await;
+    let pubkey_hex = keystore
         .public_key_hex(&req.seed)
         .map_err(|e| ApiError::InternalError(format!("Failed to derive public key: {}", e)))?;
 
@@ -284,6 +317,14 @@ async fn decrypt_handler(
     State(state): State<AppState>,
     Json(req): Json<DecryptRequest>,
 ) -> Result<Json<DecryptResponse>, ApiError> {
+    // Check if keystore is ready (has master key from MPC)
+    if !state.is_ready() {
+        tracing::warn!("Decrypt request rejected - keystore not ready (waiting for DAO approval and MPC key)");
+        return Err(ApiError::Unauthorized(
+            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string()
+        ));
+    }
+
     let task_id_str = req.task_id.as_deref().unwrap_or("unknown");
 
     // Log request based on accessor type
@@ -472,7 +513,8 @@ async fn decrypt_handler(
     let encrypted_bytes = base64::decode(encrypted_secrets_base64)
         .map_err(|e| ApiError::InternalError(format!("Invalid base64 in encrypted_secrets: {}", e)))?;
 
-    let plaintext_bytes = state.keystore.decrypt(&seed, &encrypted_bytes).map_err(|e| {
+    let keystore = state.keystore.read().await;
+    let plaintext_bytes = keystore.decrypt(&seed, &encrypted_bytes).map_err(|e| {
         tracing::error!(task_id = %task_id_str, seed = %seed, error = %e, "Decryption failed");
         ApiError::InternalError(format!("Decryption failed: {}", e))
     })?;
@@ -503,6 +545,14 @@ async fn add_generated_secret_handler(
     State(state): State<AppState>,
     Json(req): Json<AddGeneratedSecretRequest>,
 ) -> Result<Json<AddGeneratedSecretResponse>, ApiError> {
+    // Check if keystore is ready (has master key from MPC)
+    if !state.is_ready() {
+        tracing::warn!("Add generated secret request rejected - keystore not ready (waiting for DAO approval and MPC key)");
+        return Err(ApiError::Unauthorized(
+            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string()
+        ));
+    }
+
     tracing::info!(
         seed = %req.seed,
         num_new_secrets = req.new_secrets.len(),
@@ -517,10 +567,11 @@ async fn add_generated_secret_handler(
             .map_err(|e| ApiError::BadRequest(format!("Invalid base64 in encrypted_secrets: {}", e)))?;
 
         // Decrypt
-        let plaintext_bytes = state
-            .keystore
+        let keystore = state.keystore.read().await;
+        let plaintext_bytes = keystore
             .decrypt(&req.seed, &encrypted_bytes)
             .map_err(|e| ApiError::InternalError(format!("Failed to decrypt existing secrets: {}", e)))?;
+        drop(keystore); // Release read lock early
 
         // Parse JSON
         let plaintext_str = String::from_utf8(plaintext_bytes)
@@ -639,8 +690,8 @@ async fn add_generated_secret_handler(
     let final_secrets_json = serde_json::to_string(&secrets_map)
         .map_err(|e| ApiError::InternalError(format!("Failed to serialize secrets: {}", e)))?;
 
-    let encrypted_bytes = state
-        .keystore
+    let keystore = state.keystore.read().await;
+    let encrypted_bytes = keystore
         .encrypt(&req.seed, final_secrets_json.as_bytes())
         .map_err(|e| ApiError::InternalError(format!("Failed to encrypt secrets: {}", e)))?;
 
