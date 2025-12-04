@@ -110,7 +110,7 @@ export default function GettingStartedSection() {
               </defs>
 
               <line x1="100" y1="100" x2="310" y2="100" stroke="#3b82f6" strokeWidth="2" markerEnd="url(#arrowBlue)" />
-              <text x="205" y="95" textAnchor="middle" fontSize="11" fill="#1e40af">1. call contract</text>
+              <text x="205" y="95" textAnchor="middle" fontSize="11" fill="#1e40af" fontWeight="bold">1. call contract</text>
 
               {/* Step 2: Your Contract -> OutLayer */}
               <line x1="310" y1="140" x2="510" y2="140" stroke="#a855f7" strokeWidth="2" markerEnd="url(#arrowPurple)" />
@@ -124,20 +124,20 @@ export default function GettingStartedSection() {
 
               {/* Step 3: OutLayer -> Worker */}
               <line x1="510" y1="230" x2="700" y2="230" stroke="#f97316" strokeWidth="2" markerEnd="url(#arrowOrange)" />
-              <text x="605" y="225" textAnchor="middle" fontSize="11" fill="#c2410c">3. emit event</text>
+              <text x="605" y="225" textAnchor="middle" fontSize="11" fill="#c2410c" fontWeight="bold">3. emit event</text>
 
               {/* Worker execution box */}
               <rect x="630" y="250" width="140" height="100" fill="#f0fdf4" stroke="#16a34a" strokeWidth="2" rx="4" />
-              <text x="700" y="268" textAnchor="middle" fontSize="10" fontWeight="bold" fill="#166534">🔨 Off-chain work:</text>
-              <text x="700" y="283" textAnchor="middle" fontSize="9" fill="#166534">• Clone GitHub</text>
-              <text x="700" y="298" textAnchor="middle" fontSize="9" fill="#166534">• Compile Rust</text>
-              <text x="700" y="313" textAnchor="middle" fontSize="9" fill="#166534">• Execute WASM</text>
-              <text x="700" y="328" textAnchor="middle" fontSize="9" fill="#166534">• Read stdout</text>
-              <text x="700" y="343" textAnchor="middle" fontSize="8" fill="#6b7280" fontStyle="italic">(10 sec - few min)</text>              
+              <text x="640" y="268" textAnchor="start" fontSize="10" fontWeight="bold" fill="#166534">🔨 Off-chain worker:</text>
+              <text x="640" y="283" textAnchor="start" fontSize="9" fill="#166534">• Clone GitHub</text>
+              <text x="640" y="298" textAnchor="start" fontSize="9" fill="#166534">• Compile WASM</text>
+              <text x="640" y="313" textAnchor="start" fontSize="9" fill="#166534">• Execute with tx input</text>
+              <text x="645" y="328" textAnchor="start" fontSize="9" fill="#6b7280">(fast / cheap / any code)</text>              
+              <text x="640" y="342" textAnchor="start" fontSize="9" fill="#166534">• Read stdout</text>              
 
               {/* Step 5: OutLayer -> Your Contract */}
               <line x1="700" y1="370" x2="510" y2="370" stroke="#f97316" strokeWidth="2" markerEnd="url(#arrowOrange)" />
-              <text x="605" y="385" textAnchor="middle" fontSize="11" fill="#c2410c">4. yield_resume()</text>
+              <text x="605" y="385" textAnchor="middle" fontSize="11" fill="#c2410c" fontWeight="bold">4. yield_resume()</text>
 
               {/* RESUME box */}
               <rect x="450" y="400" width="120" height="40" fill="#dcfce7" stroke="#16a34a" strokeWidth="2" rx="4" />
@@ -145,11 +145,11 @@ export default function GettingStartedSection() {
               <text x="510" y="430" textAnchor="middle" fontSize="9" fill="#166534">Process result</text>
 
               {/* Step 4: Worker -> OutLayer */}
-              <line x1="510" y1="470" x2="310" y2="470" stroke="#16a34a" strokeWidth="2" markerEnd="url(#arrowGreen)" />
-              <text x="410" y="465" textAnchor="middle" fontSize="11" fill="#15803d">5. return result</text>
+              <line x1="510" y1="470" x2="310" y2="470" stroke="#a855f7" strokeWidth="2" markerEnd="url(#arrowPurple)" />
+              <text x="410" y="465" textAnchor="middle" fontSize="11" fill="#7e22ce" fontWeight="bold">5. return result</text>
 
               {/* Final result */}
-              <rect x="100" y="500" width="400" height="40" fill="#dcfce7" stroke="#16a34a" strokeWidth="2" rx="8" />
+              <rect x="100" y="500" width="380" height="40" fill="#dcfce7" stroke="#16a34a" strokeWidth="2" rx="8" />
               <text x="300" y="525" textAnchor="middle" fontSize="12" fontWeight="bold" fill="#166534">✅ Transaction Complete - User receives final result</text>
             </svg>
           </div>
