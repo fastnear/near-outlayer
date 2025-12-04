@@ -684,7 +684,16 @@ async fn handle_compile_job(
 
     // Extract GitHub fields - compile jobs for GitHub source
     let (repo, commit, build_target) = match code_source {
-        CodeSource::GitHub { repo, commit, build_target } => (repo.as_str(), commit.as_str(), build_target.as_str()),
+        CodeSource::GitHub { repo, commit, build_target } => {
+            // If commit is empty, use "main" as default
+            let commit_str = if commit.is_empty() {
+                info!("⚠️ Commit is empty, using 'main' as default branch");
+                "main"
+            } else {
+                commit.as_str()
+            };
+            (repo.as_str(), commit_str, build_target.as_str())
+        },
         CodeSource::WasmUrl { .. } => unreachable!("WasmUrl handled above"),
     };
 
