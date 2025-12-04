@@ -120,7 +120,7 @@ export function BotfatherExample() {
       />
 
       <HowItWorksSection items={[
-        <><strong>Key Derivation in TEE:</strong> Master key (<code className="bg-white px-2 py-1 rounded text-xs">PROTECTED_MASTER_KEY</code>) is generated inside TEE (nobody ever sees it). Derived keys are created using SHA-256: <code className="bg-white px-2 py-1 rounded text-xs">SHA256(master + sender_id + index)</code> - each derived key controls one account</>,
+        <><strong>Key Derivation in TEE:</strong> Derivation key (<code className="bg-white px-2 py-1 rounded text-xs">PROTECTED_MASTER_KEY</code>) is generated inside TEE (nobody ever sees it). Derived keys are created using SHA-256: <code className="bg-white px-2 py-1 rounded text-xs">SHA256(derivation_key + sender_id + index)</code> - each derived key controls one account</>,
         <><strong>Account Discovery:</strong> Queries Fastnear API to find existing accounts by derived public keys (stateless operation)</>,
         <><strong>AI Name Generation:</strong> Calls OpenAI API to generate creative account names based on theme prompt</>,
         <><strong>Account Creation:</strong> Uses NEAR RPC <code className="bg-white px-2 py-1 rounded text-xs">call()</code> host function to create accounts via <code className="bg-white px-2 py-1 rounded text-xs">create_account</code> action</>,
@@ -171,11 +171,11 @@ export function BotfatherExample() {
 
       <SecurityNotesSection items={[
         <>✅ <strong>WASM provides signer:</strong> User&apos;s NEAR private key is passed via secrets (not worker&apos;s key)</>,
-        <>✅ <strong>Keys created in TEE:</strong> Master key (<code className="bg-white px-2 py-1 rounded text-xs">PROTECTED_MASTER_KEY</code>) is generated inside TEE and never leaves it. Derived keys are created using deterministic SHA-256 derivation from master seed.</>,
+        <>✅ <strong>Keys created in TEE:</strong> Derivation key (<code className="bg-white px-2 py-1 rounded text-xs">PROTECTED_MASTER_KEY</code>) is generated inside TEE and never leaves it. Derived keys are created using deterministic SHA-256 derivation from derivation key.</>,
         <>✅ <strong>Accounts managed only in TEE:</strong> All derived accounts are controlled exclusively by keys that exist only inside TEE - nobody can export or see the private keys</>,
-        <>✅ <strong>Deterministic keys:</strong> Same master seed + sender + index always generates same account key</>,
-        <>✅ <strong>Master key isolation:</strong> Each <code className="bg-white px-2 py-1 rounded text-xs">NEAR_SENDER_ID</code> has isolated account space</>,
-        <>⚠️ <strong>Store master key safely:</strong> Loss of master key = loss of access to all derived accounts</>,
+        <>✅ <strong>Deterministic keys:</strong> Same derivation key + sender + index always generates same account key</>,
+        <>✅ <strong>Derivation key isolation:</strong> Each <code className="bg-white px-2 py-1 rounded text-xs">NEAR_SENDER_ID</code> has isolated account space</>,
+        <>⚠️ <strong>Store derivation key safely:</strong> Loss of derivation key = loss of access to all derived accounts</>,
       ]} />
     </ExampleCard>
   );

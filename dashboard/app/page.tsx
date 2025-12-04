@@ -191,7 +191,7 @@ export default function Home() {
               </div>
               <h4 className="text-xl font-bold text-[var(--primary-green)] mb-3">Encrypted Secrets</h4>
               <p className="text-gray-600">
-                Store API keys encrypted on-chain with sophisticated access control (whitelists, token balance, complex logic). Automatically injected as WASI environment variables.
+                Store API keys encrypted on-chain, protected by Confidential Key Derivation (CKD) via NEAR MPC Network. Deterministic secrets persist across TEE restarts. Automatically injected as WASI environment variables.
               </p>
             </div>
 
