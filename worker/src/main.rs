@@ -1460,15 +1460,34 @@ async fn handle_execute_job(
 
                     // Generate and store TDX attestation
                     {
-                        // Calculate output hash (SHA256 of output)
+                        // Calculate output hash to match what the contract returns to the user
+                        // The contract converts ExecutionOutput to serde_json::Value and returns it
                         use sha2::{Digest, Sha256};
                         let output_hash = if let Some(ref output) = execution_result.output {
                             let mut hasher = Sha256::new();
-                            match output {
-                                api_client::ExecutionOutput::Bytes(bytes) => hasher.update(bytes),
-                                api_client::ExecutionOutput::Text(text) => hasher.update(text.as_bytes()),
-                                api_client::ExecutionOutput::Json(json) => hasher.update(json.to_string().as_bytes()),
-                            }
+
+                            // Hash the JSON value that the contract returns (see contract/src/execution.rs:308-322)
+                            let json_value = match output {
+                                api_client::ExecutionOutput::Bytes(bytes) => {
+                                    // Contract returns base64-encoded string for bytes
+                                    use base64::{engine::general_purpose::STANDARD, Engine};
+                                    serde_json::Value::String(STANDARD.encode(bytes))
+                                },
+                                api_client::ExecutionOutput::Text(text) => {
+                                    // Contract returns text as JSON string
+                                    serde_json::Value::String(text.clone())
+                                },
+                                api_client::ExecutionOutput::Json(json) => {
+                                    // Contract returns JSON value directly
+                                    json.clone()
+                                },
+                            };
+
+                            // Serialize the JSON value to string (this is what gets returned from contract)
+                            let json_string = serde_json::to_string(&json_value)
+                                .unwrap_or_else(|_| "null".to_string());
+                            hasher.update(json_string.as_bytes());
+
                             hex::encode(hasher.finalize())
                         } else {
                             "no-output".to_string()
