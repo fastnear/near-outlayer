@@ -12,7 +12,7 @@ mod outlayer_rpc;
 mod tdx_attestation;
 
 use anyhow::{Context, Result};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use api_client::{ApiClient, CodeSource, ExecutionResult, JobInfo, JobType};
 use collateral_fetcher::fetch_collateral_from_phala;
@@ -517,6 +517,7 @@ async fn worker_iteration(
                     compiled_wasm.as_ref().map(|(cs, b, ct, ca, pu)| (cs, b, ct, ca.as_deref(), pu.as_deref())), // Pass local WASM cache with published_url
                     compile_result.as_ref(), // Pass compile_result (published_url or result for compile_only)
                     compile_only,
+                    config.use_tee_registration,
                 )
                 .await?;
             }
@@ -1000,6 +1001,7 @@ async fn handle_execute_job(
     compiled_wasm: Option<(&String, &Vec<u8>, &u64, Option<&str>, Option<&str>)>, // Local cache from compile job (checksum, bytes, compile_time_ms, created_at, published_url)
     compile_result: Option<&String>, // Result from compile job (published_url or result for compile_only)
     compile_only: bool,
+    use_tee_registration: bool,
 ) -> Result<()> {
     info!("⚙️ Starting execution job_id={}", job.job_id);
 
@@ -1494,7 +1496,7 @@ async fn handle_execute_job(
                         };
 
                         // Generate and store TDX attestation only if TEE registration is enabled
-                        if config.use_tee_registration {
+                        if use_tee_registration {
                             // Calculate input hash
                             let mut input_hasher = Sha256::new();
                             input_hasher.update(input_data.as_bytes());
