@@ -53,6 +53,7 @@ When users want to execute code that requires secrets (API keys, credentials, et
 - **Simple API:** RESTful HTTP endpoints
 - **Contract Integration:** Publishes public key to NEAR contract
 - **Token Auth:** SHA256 bearer tokens for additional security layer
+- **CKD Support:** Confidential Key Derivation via NEAR MPC Network for deterministic secrets
 
 ## API Endpoints
 
@@ -289,6 +290,76 @@ near call outlayer.testnet request_execution \
 - Use X25519 ECDH instead of Ed25519 for encryption
 - Implement sealed storage for private key persistence
 - Add remote attestation with hardware root of trust
+
+## Confidential Key Derivation (CKD)
+
+### Overview
+
+The keystore integrates with NEAR's **Confidential Key Derivation (CKD)** - an advanced cryptographic primitive that leverages the NEAR MPC Network to provide deterministic secrets for TEE applications. Unlike traditional key derivation, CKD uses distributed computation where multiple MPC nodes collaborate to generate secrets without any single node knowing the final value.
+
+### How It Works with MPC Network
+
+```
+TEE App → Developer Contract → MPC Contract → MPC Network
+    ↑                                               ↓
+    └─── Encrypted Secret (Y, C) ←─────────────────┘
+
+No single MPC node knows the final secret!
+```
+
+The CKD protocol flow:
+1. TEE app generates fresh ElGamal key pair (a, A) and includes A in attestation
+2. Developer contract validates TEE attestation and calls MPC contract
+3. Each MPC node computes partial BLS signature using its secret share
+4. Coordinator aggregates encrypted shares into (Y, C)
+5. Only the TEE app can decrypt using private key a to get final secret
+
+### Security Properties
+
+1. **Deterministic** - Same app_id always produces the same secret
+2. **Private** - Secret known only to the requesting TEE app
+3. **Distributed** - No single MPC node has the complete secret
+4. **TEE-protected** - Secrets computed and used only inside secure enclaves
+5. **Threshold security** - Requires t-of-n MPC nodes to cooperate
+
+### Cryptographic Foundation
+
+- **BLS signatures** on pairing-friendly BLS12-381 curves
+- **ElGamal encryption** for secure transport
+- **HKDF** for final key derivation
+- **Threshold cryptography** ensuring no single point of failure
+
+### Use Case: Persistent Secrets
+
+When a user stores secrets for their repository:
+1. Keystore derives a unique child key for that repo
+2. Secrets are encrypted with the child key
+3. After keystore restart, the same child key can be regenerated
+4. Secrets remain accessible without storing any keys on disk
+
+### Implementation
+
+The CKD is implemented using HMAC-SHA256 with domain separation:
+
+```rust
+// Derive child key for a specific repository
+let child_key = hmac_sha256(
+    master_key,
+    format!("keystore-ckd:{}:{}", repo_url, owner)
+);
+```
+
+This ensures:
+- **No key reuse** across different repositories
+- **Consistent keys** for the same repository
+- **Cryptographic isolation** between users and repos
+
+### Benefits
+
+1. **No key management overhead** - Only derivation key needs protection
+2. **Automatic key rotation** - Change derivation key to rotate all derived keys
+3. **Audit trail** - Can track which repos had keys derived
+4. **Compliance** - Keys are never persisted, only derived when needed
 
 ## Security Considerations
 

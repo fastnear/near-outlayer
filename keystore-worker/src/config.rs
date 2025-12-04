@@ -42,6 +42,18 @@ pub enum TeeMode {
     None,
 }
 
+impl std::fmt::Display for TeeMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TeeMode::Sgx => write!(f, "sgx"),
+            TeeMode::Sev => write!(f, "sev"),
+            TeeMode::Tdx => write!(f, "tdx"),
+            TeeMode::Simulated => write!(f, "simulated"),
+            TeeMode::None => write!(f, "none"),
+        }
+    }
+}
+
 impl Config {
     /// Load configuration from environment variables
     pub fn from_env() -> Result<Self> {

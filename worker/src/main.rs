@@ -12,7 +12,7 @@ mod outlayer_rpc;
 mod tdx_attestation;
 
 use anyhow::{Context, Result};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use api_client::{ApiClient, CodeSource, ExecutionResult, JobInfo, JobType};
 use collateral_fetcher::fetch_collateral_from_phala;
@@ -517,6 +517,7 @@ async fn worker_iteration(
                     compiled_wasm.as_ref().map(|(cs, b, ct, ca, pu)| (cs, b, ct, ca.as_deref(), pu.as_deref())), // Pass local WASM cache with published_url
                     compile_result.as_ref(), // Pass compile_result (published_url or result for compile_only)
                     compile_only,
+                    config.use_tee_registration,
                 )
                 .await?;
             }
@@ -684,7 +685,16 @@ async fn handle_compile_job(
 
     // Extract GitHub fields - compile jobs for GitHub source
     let (repo, commit, build_target) = match code_source {
-        CodeSource::GitHub { repo, commit, build_target } => (repo.as_str(), commit.as_str(), build_target.as_str()),
+        CodeSource::GitHub { repo, commit, build_target } => {
+            // If commit is empty, use "main" as default
+            let commit_str = if commit.is_empty() {
+                info!("⚠️ Commit is empty, using 'main' as default branch");
+                "main"
+            } else {
+                commit.as_str()
+            };
+            (repo.as_str(), commit_str, build_target.as_str())
+        },
         CodeSource::WasmUrl { .. } => unreachable!("WasmUrl handled above"),
     };
 
@@ -867,47 +877,51 @@ async fn handle_compile_job(
                 // Continue anyway - will upload later
             }
 
-            // Generate and store TDX attestation
-            match tdx_client.generate_task_attestation(
-                "compile",
-                job.job_id,
-                Some(repo),
-                Some(commit),
-                Some(build_target),
-                None, // No wasm_hash for compile (we produce it)
-                None, // No input_hash for compile
-                &checksum, // output_hash is the compiled WASM checksum
-                context.block_height,
-            ).await {
-                Ok(tdx_quote) => {
-                    // Send attestation to coordinator
-                    let attestation_request = api_client::StoreAttestationRequest {
-                        task_id: job.job_id,
-                        task_type: api_client::TaskType::Compile,
-                        tdx_quote,
-                        request_id: Some(request_id as i64),
-                        caller_account_id: user_account_id.clone(),
-                        transaction_hash: context.transaction_hash.clone(),
-                        block_height: context.block_height,
-                        repo_url: Some(repo.to_string()),
-                        commit_hash: Some(commit.to_string()),
-                        build_target: Some(build_target.to_string()),
-                        wasm_hash: None,
-                        input_hash: None,
-                        output_hash: checksum.clone(),
-                    };
+            // Generate and store TDX attestation only if TEE registration is enabled
+            if config.use_tee_registration {
+                match tdx_client.generate_task_attestation(
+                    "compile",
+                    job.job_id,
+                    Some(repo),
+                    Some(commit),
+                    Some(build_target),
+                    None, // No wasm_hash for compile (we produce it)
+                    None, // No input_hash for compile
+                    &checksum, // output_hash is the compiled WASM checksum
+                    context.block_height,
+                ).await {
+                    Ok(tdx_quote) => {
+                        // Send attestation to coordinator
+                        let attestation_request = api_client::StoreAttestationRequest {
+                            task_id: job.job_id,
+                            task_type: api_client::TaskType::Compile,
+                            tdx_quote,
+                            request_id: Some(request_id as i64),
+                            caller_account_id: user_account_id.clone(),
+                            transaction_hash: context.transaction_hash.clone(),
+                            block_height: context.block_height,
+                            repo_url: Some(repo.to_string()),
+                            commit_hash: Some(commit.to_string()),
+                            build_target: Some(build_target.to_string()),
+                            wasm_hash: None,
+                            input_hash: None,
+                            output_hash: checksum.clone(),
+                        };
 
-                    if let Err(e) = api_client.store_attestation(attestation_request).await {
-                        warn!("⚠️ Failed to store compilation attestation: {}", e);
+                        if let Err(e) = api_client.store_attestation(attestation_request).await {
+                            warn!("⚠️ Failed to store compilation attestation: {}", e);
+                            // Non-critical - continue anyway
+                        } else {
+                            info!("✅ Stored compilation attestation for task_id={}", job.job_id);
+                        }
+                    }
+                    Err(e) => {
+                        warn!("⚠️ Failed to generate TDX attestation for compilation: {}", e);
                         // Non-critical - continue anyway
-                    } else {
-                        info!("✅ Stored compilation attestation for task_id={}", job.job_id);
                     }
                 }
-                Err(e) => {
-                    warn!("⚠️ Failed to generate TDX attestation for compilation: {}", e);
-                    // Non-critical - continue anyway
-                }
+            } else {
+                debug!("Skipping attestation generation (USE_TEE_REGISTRATION=false)");
             }
 
             Ok((checksum, wasm_bytes, compile_time_ms, created_at, published_url))
@@ -987,6 +1001,7 @@ async fn handle_execute_job(
     compiled_wasm: Option<(&String, &Vec<u8>, &u64, Option<&str>, Option<&str>)>, // Local cache from compile job (checksum, bytes, compile_time_ms, created_at, published_url)
     compile_result: Option<&String>, // Result from compile job (published_url or result for compile_only)
     compile_only: bool,
+    use_tee_registration: bool,
 ) -> Result<()> {
     info!("⚙️ Starting execution job_id={}", job.job_id);
 
@@ -1447,65 +1462,89 @@ async fn handle_execute_job(
 
                     // Generate and store TDX attestation
                     {
-                        // Calculate output hash (SHA256 of output)
+                        // Calculate output hash to match what the contract returns to the user
+                        // The contract converts ExecutionOutput to serde_json::Value and returns it
                         use sha2::{Digest, Sha256};
                         let output_hash = if let Some(ref output) = execution_result.output {
                             let mut hasher = Sha256::new();
-                            match output {
-                                api_client::ExecutionOutput::Bytes(bytes) => hasher.update(bytes),
-                                api_client::ExecutionOutput::Text(text) => hasher.update(text.as_bytes()),
-                                api_client::ExecutionOutput::Json(json) => hasher.update(json.to_string().as_bytes()),
-                            }
+
+                            // Hash the JSON value that the contract returns (see contract/src/execution.rs:308-322)
+                            let json_value = match output {
+                                api_client::ExecutionOutput::Bytes(bytes) => {
+                                    // Contract returns base64-encoded string for bytes
+                                    use base64::{engine::general_purpose::STANDARD, Engine};
+                                    serde_json::Value::String(STANDARD.encode(bytes))
+                                },
+                                api_client::ExecutionOutput::Text(text) => {
+                                    // Contract returns text as JSON string
+                                    serde_json::Value::String(text.clone())
+                                },
+                                api_client::ExecutionOutput::Json(json) => {
+                                    // Contract returns JSON value directly
+                                    json.clone()
+                                },
+                            };
+
+                            // Serialize the JSON value to string (this is what gets returned from contract)
+                            let json_string = serde_json::to_string(&json_value)
+                                .unwrap_or_else(|_| "null".to_string());
+                            hasher.update(json_string.as_bytes());
+
                             hex::encode(hasher.finalize())
                         } else {
                             "no-output".to_string()
                         };
 
-                        // Calculate input hash
-                        let mut input_hasher = Sha256::new();
-                        input_hasher.update(input_data.as_bytes());
-                        let input_hash = hex::encode(input_hasher.finalize());
+                        // Generate and store TDX attestation only if TEE registration is enabled
+                        if use_tee_registration {
+                            // Calculate input hash
+                            let mut input_hasher = Sha256::new();
+                            input_hasher.update(input_data.as_bytes());
+                            let input_hash = hex::encode(input_hasher.finalize());
 
-                        match tdx_client.generate_task_attestation(
-                            "execute",
-                            job.job_id,
-                            code_source.repo(),
-                            code_source.commit(),
-                            code_source.build_target(),
-                            Some(wasm_checksum),
-                            Some(&input_hash),
-                            &output_hash,
-                            context.block_height,
-                        ).await {
-                            Ok(tdx_quote) => {
-                                // Send attestation to coordinator
-                                let attestation_request = api_client::StoreAttestationRequest {
-                                    task_id: job.job_id,
-                                    task_type: api_client::TaskType::Execute,
-                                    tdx_quote,
-                                    request_id: Some(request_id as i64),
-                                    caller_account_id: user_account_id.cloned(),
-                                    transaction_hash: transaction_hash.cloned(),
-                                    block_height: context.block_height,
-                                    repo_url: code_source.repo().map(|s| s.to_string()),
-                                    commit_hash: code_source.commit().map(|s| s.to_string()),
-                                    build_target: code_source.build_target().map(|s| s.to_string()),
-                                    wasm_hash: Some(wasm_checksum.clone()),
-                                    input_hash: Some(input_hash),
-                                    output_hash,
-                                };
+                            match tdx_client.generate_task_attestation(
+                                "execute",
+                                job.job_id,
+                                code_source.repo(),
+                                code_source.commit(),
+                                code_source.build_target(),
+                                Some(wasm_checksum),
+                                Some(&input_hash),
+                                &output_hash,
+                                context.block_height,
+                            ).await {
+                                Ok(tdx_quote) => {
+                                    // Send attestation to coordinator
+                                    let attestation_request = api_client::StoreAttestationRequest {
+                                        task_id: job.job_id,
+                                        task_type: api_client::TaskType::Execute,
+                                        tdx_quote,
+                                        request_id: Some(request_id as i64),
+                                        caller_account_id: user_account_id.cloned(),
+                                        transaction_hash: transaction_hash.cloned(),
+                                        block_height: context.block_height,
+                                        repo_url: code_source.repo().map(|s| s.to_string()),
+                                        commit_hash: code_source.commit().map(|s| s.to_string()),
+                                        build_target: code_source.build_target().map(|s| s.to_string()),
+                                        wasm_hash: Some(wasm_checksum.clone()),
+                                        input_hash: Some(input_hash),
+                                        output_hash,
+                                    };
 
-                                if let Err(e) = api_client.store_attestation(attestation_request).await {
-                                    warn!("⚠️ Failed to store execution attestation: {}", e);
+                                    if let Err(e) = api_client.store_attestation(attestation_request).await {
+                                        warn!("⚠️ Failed to store execution attestation: {}", e);
+                                        // Non-critical - continue anyway
+                                    } else {
+                                        info!("✅ Stored execution attestation for task_id={}", job.job_id);
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!("⚠️ Failed to generate TDX attestation for execution: {}", e);
                                     // Non-critical - continue anyway
-                                } else {
-                                    info!("✅ Stored execution attestation for task_id={}", job.job_id);
                                 }
                             }
-                            Err(e) => {
-                                warn!("⚠️ Failed to generate TDX attestation for execution: {}", e);
-                                // Non-critical - continue anyway
-                            }
+                        } else {
+                            debug!("Skipping attestation generation (USE_TEE_REGISTRATION=false)");
                         }
                     }
                 }

@@ -739,14 +739,24 @@ export function SecretsSection() {
 
   return (
     <div className="prose max-w-none">
-      <h2 className="text-3xl font-bold mb-6 text-[var(--primary-orange)]">Managing Secrets</h2>
+      <h2 className="text-3xl font-bold mb-6 text-[var(--primary-orange)]">Secrets</h2>
+
+      <div className="bg-blue-50 p-4 rounded-lg mb-6">
+        <p className="text-blue-900 font-semibold mb-2">🔐 Enterprise-Grade Security with CKD & MPC Network</p>
+        <p className="text-blue-800">
+          Secrets are protected using <strong>Confidential Key Derivation (CKD)</strong> - a cutting-edge primitive that leverages
+          the NEAR MPC Network to provide deterministic secrets for TEE applications. Each app gets cryptographically isolated keys
+          that persist across TEE restarts, derived through distributed computation where no single node knows the final secret.
+        </p>
+      </div>
 
       <div className="space-y-6">
         <section id="what-are-secrets">
           <AnchorHeading id="what-are-secrets">What are Secrets?</AnchorHeading>
           <p className="text-gray-700">
             Secrets are encrypted API keys, tokens, or sensitive data stored on-chain. They are automatically decrypted
-            and injected as environment variables when your WASM code executes.
+            and injected as environment variables when your WASM code executes. The keystore service running in TEE
+            handles all encryption/decryption operations.
           </p>
         </section>
 
@@ -777,7 +787,7 @@ export function SecretsSection() {
                 <p className="text-sm text-gray-700 mb-2">Generate cryptographically secure secrets in TEE without seeing their values</p>
                 <ul className="list-disc list-inside text-sm text-gray-700 ml-4">
                   <li>Generated inside TEE (nobody ever sees the value)</li>
-                  <li>Perfect for master keys, signing keys, encryption keys</li>
+                  <li>Perfect for derivation keys, signing keys, encryption keys</li>
                   <li className="text-green-700">✅ Must start with <code className="bg-green-100 px-1 rounded">PROTECTED_*</code> prefix (proves TEE generation)</li>
                   <li>Example: <code className="bg-gray-100 px-2 py-1 rounded">PROTECTED_MASTER_KEY</code></li>
                   <li>Types: hex32/64, ED25519, password:N</li>
@@ -868,9 +878,249 @@ export function SecretsSection() {
         <section id="security-model">
           <AnchorHeading id="security-model">Security Model</AnchorHeading>
           <p className="text-gray-700">
-            Secrets are encrypted with XOR (MVP phase) and will be upgraded to ChaCha20-Poly1305 in production.
+            Secrets are encrypted with ChaCha20-Poly1305 AEAD (authenticated encryption with associated data).
             Decryption happens in TEE workers with attestation verification. Your secrets never leave the secure enclave.
           </p>
+        </section>
+
+        <section id="confidential-key-derivation">
+          <AnchorHeading id="confidential-key-derivation">Confidential Key Derivation (CKD)</AnchorHeading>
+
+          <div className="bg-gray-50 p-4 rounded-lg mb-4">
+            <h4 className="font-semibold text-gray-900 mb-2">How Keystore Gets Its Derivation Key via MPC</h4>
+            <p className="text-gray-700 mb-3">
+              The keystore worker itself is a TEE application that obtains its derivation key through NEAR MPC Network via DAO governance.
+              Once authorized by the DAO, the keystore requests a deterministic derivation key from MPC nodes using Confidential Key Derivation.
+              This derivation key is then used to decrypt secrets for other applications, ensuring all cryptographic operations stay within the TEE.
+            </p>
+
+            <div className="bg-white border border-gray-200 rounded p-3 mb-3">
+              <pre className="text-sm text-gray-800">
+{`1. Keystore TEE → DAO Contract → MPC Contract → MPC Network
+      ↑                                              ↓
+      └──── Receives Encrypted Derivation Key ───────┘
+
+2. User App requests decryption → Keystore uses derivation key
+                                   (all keys stay in TEE)`}
+              </pre>
+            </div>
+
+            <p className="text-sm text-gray-700 mb-2">
+              <strong>Two-Level Architecture:</strong>
+            </p>
+            <ul className="list-disc list-inside text-sm text-gray-700 space-y-1 mb-3">
+              <li><strong>Level 1:</strong> Keystore obtains derivation key from NEAR MPC via CKD protocol</li>
+              <li><strong>Level 2:</strong> Keystore uses derivation key to decrypt app secrets</li>
+              <li>All operations happen inside TEE - keys never leave the enclave</li>
+              <li>DAO governance ensures only legitimate keystores get derivation keys</li>
+              <li>MPC Network ensures no single entity controls the derivation key generation</li>
+            </ul>
+          </div>
+
+          <div className="grid md:grid-cols-2 gap-4 mb-4">
+            <div className="border rounded-lg p-4 bg-green-50">
+              <h4 className="font-semibold text-green-900 mb-2">✅ Key Properties</h4>
+              <ul className="text-sm text-green-800 space-y-1">
+                <li>• <strong>Deterministic:</strong> Same app_id always gets same secret</li>
+                <li>• <strong>Private:</strong> Secret known only to TEE app</li>
+                <li>• <strong>Distributed:</strong> No single MPC node has the secret</li>
+                <li>• <strong>Persistent:</strong> Works across TEE restarts</li>
+              </ul>
+            </div>
+
+            <div className="border rounded-lg p-4 bg-blue-50">
+              <h4 className="font-semibold text-blue-900 mb-2">🔒 Security Guarantees</h4>
+              <ul className="text-sm text-blue-800 space-y-1">
+                <li>• BLS signatures on BLS12-381 curves</li>
+                <li>• ElGamal encryption for transport</li>
+                <li>• TEE attestation verification</li>
+                <li>• Threshold cryptography (t-of-n)</li>
+              </ul>
+            </div>
+          </div>
+
+          <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4">
+            <h4 className="font-semibold text-yellow-900 mb-2">Why MPC-based CKD is Revolutionary</h4>
+            <p className="text-sm text-yellow-800">
+              Traditional approaches either store keys (security risk) or lose them on restart (no persistence).
+              NEAR&apos;s MPC-based CKD is unique: it provides deterministic secrets through distributed computation where
+              no single entity ever has the complete key. This combines the benefits of persistence, security, and
+              decentralization - a combination not available in other systems.
+            </p>
+          </div>
+        </section>
+
+        <section id="dao-governance">
+          <AnchorHeading id="dao-governance">DAO Governance & Keystore Authorization</AnchorHeading>
+
+          <div className="bg-purple-50 p-4 rounded-lg mb-4">
+            <h4 className="font-semibold text-purple-900 mb-2">🏛️ DAO Controls Keystore Access to MPC</h4>
+            <p className="text-purple-800">
+              The DAO governs which keystore workers can receive derivation keys from the NEAR MPC Network. Only TEE-verified keystores
+              that pass DAO voting can request CKD from MPC nodes. This ensures that derivation keys are only given to legitimate,
+              attestation-verified keystores running in secure enclaves, preventing any unauthorized access to user secrets.
+            </p>
+          </div>
+
+          <h4 className="font-semibold text-gray-900 mb-3">Keystore Authorization Flow</h4>
+
+          <ol className="list-decimal list-inside space-y-3 text-gray-700 mb-4">
+            <li>
+              <strong>On-Chain TEE Verification:</strong> Keystore submits Intel TDX/SGX attestation directly to DAO contract.
+              The contract cryptographically verifies the Intel certificate and TEE environment hash (RTMR3/MRENCLAVE) on-chain.
+              This ensures submissions can only come from genuine TEE with verified binary.
+            </li>
+            <li>
+              <strong>Automated Validation:</strong> DAO contract automatically rejects any submission that:
+              <ul className="list-disc list-inside ml-6 mt-1 text-sm">
+                <li>Doesn&apos;t have valid Intel signature</li>
+                <li>Comes from unverified RTMR3/MRENCLAVE</li>
+                <li>Attempts to bypass TEE requirements</li>
+              </ul>
+            </li>
+            <li>
+              <strong>DAO Voting:</strong> Only after passing on-chain TEE verification, DAO members vote to authorize keystore
+              based on operator reputation, stake, and network capacity needs
+            </li>
+            <li>
+              <strong>MPC Key Request:</strong> Once approved, keystore requests derivation key from MPC Network
+              using CKD protocol with its unique keystore_id
+            </li>
+            <li>
+              <strong>Derivation Key Receipt:</strong> Keystore receives encrypted derivation key, decrypts it in TEE,
+              and can now decrypt user secrets while keeping all keys inside the enclave
+            </li>
+          </ol>
+
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
+            <h4 className="font-semibold text-blue-900 mb-2">🔍 Cryptographic Properties</h4>
+            <p className="text-sm text-blue-800 mb-2">
+              The CKD protocol ensures strong security through:
+            </p>
+            <ul className="list-disc list-inside text-sm text-blue-800 space-y-1">
+              <li>BLS signatures on pairing-friendly BLS12-381 curves</li>
+              <li>Threshold cryptography - requires t-of-n nodes to cooperate</li>
+              <li>ElGamal encryption for secure transport</li>
+              <li>HKDF for key derivation from BLS signatures</li>
+            </ul>
+            <p className="text-sm text-blue-800 mt-2">
+              This combination ensures that secrets are deterministic yet unpredictable, persistent yet secure,
+              distributed yet accessible only to authorized TEE apps.
+            </p>
+          </div>
+
+          <div className="grid md:grid-cols-2 gap-4 mb-4">
+            <div className="border rounded-lg p-4">
+              <h4 className="font-semibold text-gray-900 mb-2">🛡️ Security Properties</h4>
+              <ul className="text-sm text-gray-700 space-y-1">
+                <li>• <strong>No single point of failure:</strong> Distributed MPC nodes</li>
+                <li>• <strong>Forward secrecy:</strong> Fresh key pair for each request</li>
+                <li>• <strong>TEE isolation:</strong> Secrets computed inside enclave</li>
+                <li>• <strong>Threshold security:</strong> Requires multiple nodes</li>
+              </ul>
+            </div>
+
+            <div className="border rounded-lg p-4">
+              <h4 className="font-semibold text-gray-900 mb-2">✅ Trust Model</h4>
+              <ul className="text-sm text-gray-700 space-y-1">
+                <li>• Intel TDX attestation verification</li>
+                <li>• MPC network consensus</li>
+                <li>• Smart contract enforcement</li>
+                <li>• Cryptographic correctness proofs</li>
+              </ul>
+            </div>
+          </div>
+
+          <div className="bg-green-50 border-l-4 border-green-400 p-4">
+            <h4 className="font-semibold text-green-900 mb-2">Example: CKD Request</h4>
+            <p className="text-sm text-green-800 mb-2">
+              How a TEE app requests a deterministic secret:
+            </p>
+            <pre className="bg-green-100 p-2 rounded text-xs overflow-x-auto">
+{`// TEE app generates key pair
+let (a, A) = generate_elgamal_keypair();
+
+// Include A in attestation report_data
+let attestation = get_tdx_attestation(A);
+
+// Call developer contract
+developer_contract.get_key(attestation, A);
+
+// Developer contract validates and calls MPC
+mpc_contract.gen_app_private_key(A);
+
+// Receive encrypted secret (Y, C)
+// Decrypt: sig = C - a·Y
+// Derive: secret = HKDF(sig)`}
+            </pre>
+            <p className="text-xs text-green-700 mt-2">
+              The final secret is deterministic for app_id but known only to the TEE app.
+            </p>
+          </div>
+        </section>
+
+        <section id="ckd-faq">
+          <AnchorHeading id="ckd-faq">CKD & MPC FAQ</AnchorHeading>
+
+          <div className="space-y-4">
+            <details className="border rounded-lg p-4">
+              <summary className="font-semibold cursor-pointer text-gray-900">
+                What happens if the keystore restarts?
+              </summary>
+              <p className="mt-2 text-gray-700">
+                The keystore can request the same derivation key again from NEAR MPC using its keystore_id. Since CKD
+                is deterministic, it will receive the same derivation key. This allows the keystore to continue decrypting
+                user secrets after restarts without storing keys on disk.
+              </p>
+            </details>
+
+            <details className="border rounded-lg p-4">
+              <summary className="font-semibold cursor-pointer text-gray-900">
+                Can MPC nodes or DAO see my secrets?
+              </summary>
+              <p className="mt-2 text-gray-700">
+                No. MPC nodes only generate the derivation key for the keystore when requested by the DAO contract - they never
+                see user secrets. Importantly, MPC Network only responds to requests that come through the DAO contract transaction,
+                not direct requests. The DAO governs which keystores can receive derivation keys but has no access to the keys themselves.
+                User secrets are encrypted and only the keystore (running in TEE) can decrypt them. No entity outside the TEE ever has access to plaintext secrets.
+              </p>
+            </details>
+
+            <details className="border rounded-lg p-4">
+              <summary className="font-semibold cursor-pointer text-gray-900">
+                How is this different from regular key storage?
+              </summary>
+              <p className="mt-2 text-gray-700">
+                Traditional systems either store keys (security risk) or generate random keys that are lost on restart.
+                CKD provides deterministic secrets through distributed computation - persistent yet secure, distributed
+                yet accessible, a unique combination enabled by MPC and TEE technologies.
+              </p>
+            </details>
+
+            <details className="border rounded-lg p-4">
+              <summary className="font-semibold cursor-pointer text-gray-900">
+                What prevents unauthorized access to secrets?
+              </summary>
+              <p className="mt-2 text-gray-700">
+                Multiple layers: (1) DAO governance controls which keystores can receive derivation keys,
+                (2) TEE attestation verification ensures only genuine TEE apps run the keystore,
+                (3) MPC Network only responds to requests from DAO contract (not direct requests),
+                (4) Threshold cryptography requires multiple MPC nodes to cooperate,
+                (5) All cryptographic operations happen inside TEE enclave.
+              </p>
+            </details>
+
+            <details className="border rounded-lg p-4">
+              <summary className="font-semibold cursor-pointer text-gray-900">
+                Why use BLS signatures on BLS12-381 curves?
+              </summary>
+              <p className="mt-2 text-gray-700">
+                BLS signatures provide unique properties: deterministic, aggregatable, and efficient verification.
+                BLS12-381 is a pairing-friendly curve specifically designed for cryptographic protocols, offering
+                128-bit security with optimal performance for threshold cryptography and MPC operations.
+              </p>
+            </details>
+          </div>
         </section>
       </div>
     </div>

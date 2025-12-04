@@ -4,10 +4,11 @@ set -e
 echo "Building register-contract..."
 
 # Build with LLVM for WASM target (required for ring crate)
+# --no-abi: Don't embed ABI into the contract (prevents deserialization errors)
 # --no-wasmopt: cargo-near's wasm-opt has bulk-memory validation issues
 CC=/Users/alice/.local/opt/llvm/bin/clang \
 AR=/Users/alice/.local/opt/llvm/bin/llvm-ar \
-cargo near build non-reproducible-wasm --no-wasmopt
+cargo near build non-reproducible-wasm --no-abi --no-wasmopt
 
 # Create res directory if not exists
 mkdir -p res

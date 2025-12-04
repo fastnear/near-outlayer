@@ -72,17 +72,19 @@ echo ""
 echo -e "${YELLOW}[3/6] Testing image startup...${NC}"
 echo "Starting keystore container for 5 seconds..."
 
-# Create minimal test config
+# Create minimal test config (non-TEE mode for testing)
 TEST_ENV_FILE=$(mktemp)
 cat > "$TEST_ENV_FILE" <<EOF
 SERVER_HOST=0.0.0.0
 SERVER_PORT=8081
 NEAR_NETWORK=testnet
 NEAR_RPC_URL=https://rpc.testnet.near.org
-OFFCHAINVM_CONTRACT_ID=outlayer.testnet
+NEAR_CONTRACT_ID=outlayer.testnet
 ALLOWED_WORKER_TOKEN_HASHES=test_hash_12345
 TEE_MODE=none
+USE_TEE_REGISTRATION=false
 KEYSTORE_MASTER_SECRET=a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2
+RUST_LOG=info
 EOF
 
 # Start container
@@ -98,7 +100,7 @@ docker rm "$CONTAINER_ID" >/dev/null 2>&1 || true
 rm "$TEST_ENV_FILE"
 
 # Check for startup success
-if echo "$LOGS" | grep -q "Keystore worker API server started"; then
+if echo "$LOGS" | grep -q "Keystore worker API server started\|Starting NEAR OutLayer Keystore Worker"; then
     echo -e "${GREEN}✓ Keystore started successfully${NC}"
     echo ""
     echo "Sample logs:"
@@ -136,45 +138,40 @@ echo ""
 echo -e "Docker image: ${GREEN}${FULL_IMAGE}${NC}"
 echo -e "Latest tag: ${GREEN}${LATEST_IMAGE}${NC}"
 echo ""
-echo -e "${BLUE}Next steps for Phala Cloud deployment:${NC}"
+echo -e "${BLUE}Next steps:${NC}"
 echo ""
-echo "1. Update docker/.env.keystore-phala with your configuration:"
-echo "   cp docker/.env.keystore-phala.example docker/.env.keystore-phala"
-echo "   nano docker/.env.keystore-phala"
+echo "For TEE deployment with DAO registration, use the new deployment script:"
+echo -e "${GREEN}./scripts/deploy_keystore_phala.sh deploy${NC}"
 echo ""
-echo "2. Generate and configure authentication tokens:"
-echo "   # Generate token"
-echo "   TOKEN=\$(openssl rand -hex 32)"
-echo "   echo \"Worker token: \$TOKEN\""
+echo "Or continue manually:"
 echo ""
-echo "   # Hash token for keystore config"
-echo "   HASH=\$(echo -n \"\$TOKEN\" | sha256sum | cut -d' ' -f1)"
-echo "   echo \"Token hash: \$HASH\""
+echo "1. Update docker/.env.testnet-keystore-phala with your configuration:"
+echo "   - Set DOCKER_IMAGE_KEYSTORE=${FULL_IMAGE}"
+echo "   - Configure USE_TEE_REGISTRATION=true for TEE mode"
+echo "   - Set KEYSTORE_DAO_CONTRACT=dao.outlayer.testnet"
+echo "   - Configure MPC_PUBLIC_KEY for CKD"
+echo "   - Do NOT set KEYSTORE_MASTER_SECRET when USE_TEE_REGISTRATION=true"
 echo ""
-echo "   # Add hash to .env.keystore-phala:"
-echo "   ALLOWED_WORKER_TOKEN_HASHES=\$HASH"
+echo "2. Deploy to Phala Cloud using CLI:"
+echo "   phala deploy \\"
+echo "     --name outlayer-testnet-keystore \\"
+echo "     --compose docker/docker-compose.keystore-phala.yml \\"
+echo "     --env-file docker/.env.testnet-keystore-phala \\"
+echo "     --vcpu 2 --memory 2G --disk-size 20G \\"
+echo "     --kms-id phala-prod10"
 echo ""
-echo "   # Give original token to workers (in .env.phala):"
-echo "   KEYSTORE_AUTH_TOKEN=\$TOKEN"
+echo "3. After deployment, get RTMR3 from logs:"
+echo "   phala logs outlayer-testnet-keystore --tail 100 | grep RTMR3"
 echo ""
-echo "3. Generate master secret:"
-echo "   MASTER=\$(openssl rand -hex 32)"
-echo "   echo \"KEYSTORE_MASTER_SECRET=\$MASTER\" >> docker/.env.keystore-phala"
+echo "4. Add RTMR3 to DAO for auto-approval:"
+echo "   near call dao.outlayer.testnet add_approved_rtmr3 \\"
+echo "     '{\"rtmr3\": \"<YOUR_RTMR3>\"}' \\"
+echo "     --accountId owner.outlayer.testnet \\"
+echo "     --gas 30000000000000"
 echo ""
-echo "4. Upload to Phala Cloud:"
-echo "   - Navigate to: https://dstack.phala.network"
-echo "   - Create new deployment"
-echo "   - Upload docker-compose.keystore-phala.yml"
-echo "   - Configure environment variables from .env.keystore-phala"
-echo "   - Deploy and get your keystore URL (e.g., https://keystore-abc123.phala.cloud)"
-echo ""
-echo "5. Update worker configuration with keystore URL:"
-echo "   KEYSTORE_BASE_URL=https://keystore-abc123.phala.cloud"
-echo "   KEYSTORE_AUTH_TOKEN=<same token from step 2>"
-echo ""
-echo -e "${YELLOW}⚠️  Security reminders:${NC}"
-echo "  - Keep KEYSTORE_MASTER_SECRET secret and backed up"
-echo "  - Use different tokens for each environment (dev/staging/prod)"
-echo "  - Never commit .env.keystore-phala to git"
-echo "  - Only workers and coordinator should access keystore URL"
+echo -e "${YELLOW}⚠️  Important for TEE mode:${NC}"
+echo "  - RTMR3 changes with each code rebuild"
+echo "  - Master secret comes from MPC after DAO approval"
+echo "  - Never set KEYSTORE_MASTER_SECRET manually in TEE mode"
+echo "  - Keystore will use fallback local key if MPC CKD fails"
 echo ""

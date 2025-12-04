@@ -43,10 +43,14 @@ const pageStructure = {
   '/docs/secrets': [
     { id: 'what-are-secrets', title: 'What are Secrets?' },
     { id: 'creating-secrets', title: 'Creating Secrets' },
+    { id: 'secrets-binding', title: 'Secrets Binding Types' },
     { id: 'access-control', title: 'Access Control' },
     { id: 'using-secrets', title: 'Using Secrets in Code' },
     { id: 'storage-costs', title: 'Storage Costs' },
     { id: 'security-model', title: 'Security Model' },
+    { id: 'confidential-key-derivation', title: 'Confidential Key Derivation (CKD)' },
+    { id: 'dao-governance', title: 'DAO Governance & Keystore' },
+    { id: 'ckd-faq', title: 'CKD & MPC FAQ' },
   ],
   '/docs/pricing': [
     { id: 'dynamic-pricing', title: 'Dynamic Pricing Model' },
@@ -334,7 +338,7 @@ export default function DocsLayout({
                     }
                   }}
                 >
-                  <span>Managing Secrets</span>
+                  <span>Secrets</span>
                   {pageStructure['/docs/secrets'] && (
                     <svg className={`w-4 h-4 transition-transform ${expandedPages['/docs/secrets'] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />

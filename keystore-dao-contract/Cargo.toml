@@ -1,0 +1,40 @@
+[package]
+name = "keystore-dao-contract"
+version = "0.1.0"
+edition = "2021"
+
+[package.metadata.near.build]
+wasm-opt-args = ["--enable-bulk-memory"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+abi = ["borsh/unstable__schema"]
+
+[dependencies]
+near-sdk = { version = "=5.17.2", features = ["legacy"] }
+schemars = "0.8"
+borsh = { version = "1.5", features = ["derive"] }
+
+# TDX quote verification - using official dcap-qvl 0.3.2 (same as MPC Node and register-contract)
+dcap-qvl = { version = "=0.3.2", default-features = false, features = ["contract", "borsh", "std"] }
+hex = "0.4"
+sha2 = "0.10"
+serde_json = "1.0"
+
+# WASM-specific dependencies (same as register-contract)
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["custom"] }
+
+[profile.release]
+codegen-units = 1
+opt-level = "z"
+lto = true
+debug = false
+panic = "abort"
+overflow-checks = true
+
+[profile.release.package."*"]
+codegen-units = 1
+opt-level = "z"

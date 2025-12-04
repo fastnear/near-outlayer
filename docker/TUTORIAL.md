@@ -2,11 +2,14 @@
 .phala/config
 
 # build keystore 
-./scripts/build_and_push_keystore.sh zavodil v1.0.3
+####### old ./scripts/build_and_push_keystore.sh zavodil v1.0.3
+./scripts/build_and_push_keystore_tee.sh zavodil latest
 
 # deploy keystore to phala
 cd docker
-phala deploy --name outlayer-testnet-keystore --compose docker-compose.keystore-phala.yml --env-file .env.testnet-keystore-phala --vcpu 2 --memory 2G --disk-size 20G --kms-id phala-prod10
+phala deploy --name outlayer-testnet-keystore --compose docker-compose.keystore-phala.yml --env-file .env.testnet-keystore-phala --vcpu 1 --memory 1G --disk-size 10G --kms-id phala-prod10
+
+phala cvms create --name outlayer-testnet-keystore --compose ./docker-compose.keystore-phala.yml --env-file ./.env.testnet-keystore-phala  --vcpu 1 --memory 1G --disk-size 10G
 
 # set KEYSTORE_BASE_URL based on keystore deployment
 /docker/.env.testnet-worker-phala
@@ -29,9 +32,11 @@ phala deploy --name outlayer-testnet-worker-compiler --compose docker-compose.wo
 run worker, find rtmr3 in logs
 
 near call worker.outlayer.testnet add_approved_rtmr3 \
-  '{"rtmr3":"0ea5ecbe56b001163dff68b320c5759ac6355ac95097ccfdb99d556ca525ec317104a5f1ffc8008f9bdf63173886bed7"}' \
+  '{"rtmr3":"3532fc9f9ea02061b67f89904e27c005b4cac86f58f439d224cc7538cc9e158975639ed5ae6d7f68943f35fd8b204ddf"}' \
   --accountId owner.outlayer.testnet \
   --networkId testnet
+
+near contract call-function as-transaction dao.outlayer.testnet add_approved_rtmr3 json-args '{"rtmr3": "3dc2180c4bb80d112bdfc3b24ee3777d86e55fe24331f8b58749f8786ad04294e84a70af5b8b6a38103577104d200f3c"}' prepaid-gas '30.0 Tgas' attached-deposit '0 NEAR' sign-as owner.outlayer.testnet network-config testnet sign-with-keychain send
 
 # check whitelist
 near contract call-function as-read-only worker.outlayer.testnet get_approved_rtmr3 json-args {} network-config testnet now

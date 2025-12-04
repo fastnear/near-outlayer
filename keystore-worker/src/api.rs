@@ -1,9 +1,12 @@
 //! HTTP API server for keystore worker
 //!
-//! Endpoints:
+//! Public endpoints (no auth required):
 //! - GET /health - Health check
-//! - GET /pubkey?seed=... - Get public key for a specific seed
-//! - POST /decrypt - Decrypt secrets from contract (requires auth + attestation)
+//! - POST /pubkey - Get public key for encryption (used by dashboard)
+//!
+//! Protected endpoints (require bearer token auth):
+//! - POST /decrypt - Decrypt secrets from contract (worker only)
+//! - POST /add_generated_secret - Add generated secrets (worker only)
 
 use axum::{
     extract::State,
@@ -21,10 +24,11 @@ use crate::attestation::Attestation;
 /// Application state shared across all handlers
 #[derive(Clone)]
 pub struct AppState {
-    pub keystore: crate::crypto::Keystore,
+    pub keystore: std::sync::Arc<tokio::sync::RwLock<crate::crypto::Keystore>>,
     pub config: crate::config::Config,
     pub expected_measurements: crate::attestation::ExpectedMeasurements,
     pub near_client: Option<std::sync::Arc<crate::near::NearClient>>,
+    pub is_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl AppState {
@@ -33,12 +37,36 @@ impl AppState {
         config: crate::config::Config,
         near_client: Option<crate::near::NearClient>,
     ) -> Self {
+        // Check if we're in TEE registration mode
+        let is_tee_registration = std::env::var("USE_TEE_REGISTRATION")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+
+        // If not in TEE mode or already initialized, we're ready
+        // If in TEE mode, we're ready only after getting master key from MPC
+        let is_ready = !is_tee_registration;
+
         Self {
-            keystore,
+            keystore: std::sync::Arc::new(tokio::sync::RwLock::new(keystore)),
             config: config.clone(),
             expected_measurements: crate::attestation::ExpectedMeasurements::default(),
             near_client: near_client.map(std::sync::Arc::new),
+            is_ready: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(is_ready)),
         }
+    }
+
+    pub fn mark_ready(&self) {
+        self.is_ready.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.is_ready.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub async fn replace_keystore(&self, new_keystore: crate::crypto::Keystore) {
+        let mut keystore = self.keystore.write().await;
+        *keystore = new_keystore;
     }
 }
 
@@ -175,18 +203,23 @@ pub struct HealthResponse {
 }
 
 /// Create the API router with all endpoints
-/// All endpoints require auth (keystore is internal service, accessed only by coordinator)
+/// Only /decrypt and /add_generated_secret require auth (for worker access)
+/// /pubkey and /health are public (for dashboard/coordinator access)
 pub fn create_router(state: AppState) -> Router {
-    Router::new()
-        .route("/health", get(health_handler))
-        .route("/pubkey", post(pubkey_handler)) // Changed to POST to accept secrets for validation
+    // Protected routes (require auth token)
+    let protected_routes = Router::new()
         .route("/decrypt", post(decrypt_handler))
-        .route("/add_generated_secret", post(add_generated_secret_handler)) // NEW: Add generated secrets
-        // Auth middleware applies to all routes (keystore is internal)
+        .route("/add_generated_secret", post(add_generated_secret_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
-        ))
+        ));
+
+    // Public routes (no auth required)
+    Router::new()
+        .route("/health", get(health_handler))
+        .route("/pubkey", post(pubkey_handler)) // Public for dashboard encryption
+        .merge(protected_routes)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -204,6 +237,14 @@ async fn pubkey_handler(
     State(state): State<AppState>,
     Json(req): Json<PubkeyRequest>,
 ) -> Result<Json<PubkeyResponse>, ApiError> {
+    // Check if keystore is ready (has master key from MPC)
+    if !state.is_ready() {
+        tracing::warn!("Pubkey request rejected - keystore not ready (waiting for DAO approval and MPC key)");
+        return Err(ApiError::Unauthorized(
+            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string()
+        ));
+    }
+
     // 1. Validate secrets JSON first (check for reserved keywords)
     let secrets_map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&req.secrets_json)
         .map_err(|e| ApiError::BadRequest(format!("Invalid JSON format: {}", e)))?;
@@ -265,8 +306,8 @@ async fn pubkey_handler(
     }
 
     // 2. Generate public key for encryption
-    let pubkey_hex = state
-        .keystore
+    let keystore = state.keystore.read().await;
+    let pubkey_hex = keystore
         .public_key_hex(&req.seed)
         .map_err(|e| ApiError::InternalError(format!("Failed to derive public key: {}", e)))?;
 
@@ -284,6 +325,14 @@ async fn decrypt_handler(
     State(state): State<AppState>,
     Json(req): Json<DecryptRequest>,
 ) -> Result<Json<DecryptResponse>, ApiError> {
+    // Check if keystore is ready (has master key from MPC)
+    if !state.is_ready() {
+        tracing::warn!("Decrypt request rejected - keystore not ready (waiting for DAO approval and MPC key)");
+        return Err(ApiError::Unauthorized(
+            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string()
+        ));
+    }
+
     let task_id_str = req.task_id.as_deref().unwrap_or("unknown");
 
     // Log request based on accessor type
@@ -311,7 +360,9 @@ async fn decrypt_handler(
         }
     }
 
-    // 1. Verify TEE attestation (security-critical step)
+    // 1. Verify TEE attestation
+    // Note: Primary authentication is via bearer token (checked in auth_middleware).
+    // When both keystore and worker are in TEE, attestation verification relies on token auth.
     crate::attestation::verify_attestation(
         &req.attestation,
         &state.config.tee_mode,
@@ -472,7 +523,8 @@ async fn decrypt_handler(
     let encrypted_bytes = base64::decode(encrypted_secrets_base64)
         .map_err(|e| ApiError::InternalError(format!("Invalid base64 in encrypted_secrets: {}", e)))?;
 
-    let plaintext_bytes = state.keystore.decrypt(&seed, &encrypted_bytes).map_err(|e| {
+    let keystore = state.keystore.read().await;
+    let plaintext_bytes = keystore.decrypt(&seed, &encrypted_bytes).map_err(|e| {
         tracing::error!(task_id = %task_id_str, seed = %seed, error = %e, "Decryption failed");
         ApiError::InternalError(format!("Decryption failed: {}", e))
     })?;
@@ -503,6 +555,14 @@ async fn add_generated_secret_handler(
     State(state): State<AppState>,
     Json(req): Json<AddGeneratedSecretRequest>,
 ) -> Result<Json<AddGeneratedSecretResponse>, ApiError> {
+    // Check if keystore is ready (has master key from MPC)
+    if !state.is_ready() {
+        tracing::warn!("Add generated secret request rejected - keystore not ready (waiting for DAO approval and MPC key)");
+        return Err(ApiError::Unauthorized(
+            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string()
+        ));
+    }
+
     tracing::info!(
         seed = %req.seed,
         num_new_secrets = req.new_secrets.len(),
@@ -517,10 +577,11 @@ async fn add_generated_secret_handler(
             .map_err(|e| ApiError::BadRequest(format!("Invalid base64 in encrypted_secrets: {}", e)))?;
 
         // Decrypt
-        let plaintext_bytes = state
-            .keystore
+        let keystore = state.keystore.read().await;
+        let plaintext_bytes = keystore
             .decrypt(&req.seed, &encrypted_bytes)
             .map_err(|e| ApiError::InternalError(format!("Failed to decrypt existing secrets: {}", e)))?;
+        drop(keystore); // Release read lock early
 
         // Parse JSON
         let plaintext_str = String::from_utf8(plaintext_bytes)
@@ -639,8 +700,8 @@ async fn add_generated_secret_handler(
     let final_secrets_json = serde_json::to_string(&secrets_map)
         .map_err(|e| ApiError::InternalError(format!("Failed to serialize secrets: {}", e)))?;
 
-    let encrypted_bytes = state
-        .keystore
+    let keystore = state.keystore.read().await;
+    let encrypted_bytes = keystore
         .encrypt(&req.seed, final_secrets_json.as_bytes())
         .map_err(|e| ApiError::InternalError(format!("Failed to encrypt secrets: {}", e)))?;
 
@@ -664,10 +725,12 @@ async fn add_generated_secret_handler(
     }))
 }
 
-/// Authentication middleware
+/// Authentication middleware (only for /decrypt and /add_generated_secret)
 ///
 /// Checks Bearer token in Authorization header.
 /// Token is hashed with SHA256 and compared against allowed hashes.
+/// This is the primary authentication mechanism when worker accesses secrets.
+/// Note: /pubkey and /health are public endpoints (no auth required).
 async fn auth_middleware(
     State(state): State<AppState>,
     req: axum::http::Request<axum::body::Body>,
@@ -678,12 +741,18 @@ async fn auth_middleware(
         .headers()
         .get("Authorization")
         .and_then(|h| h.to_str().ok())
-        .ok_or_else(|| ApiError::Unauthorized("Missing Authorization header".to_string()))?;
+        .ok_or_else(|| {
+            tracing::warn!("Missing Authorization header in request");
+            ApiError::Unauthorized("Missing Authorization header".to_string())
+        })?;
 
     // Extract Bearer token
     let token = auth_header
         .strip_prefix("Bearer ")
-        .ok_or_else(|| ApiError::Unauthorized("Invalid Authorization format".to_string()))?;
+        .ok_or_else(|| {
+            tracing::warn!("Invalid Authorization format (expected 'Bearer <token>')");
+            ApiError::Unauthorized("Invalid Authorization format".to_string())
+        })?;
 
     // Hash token with SHA256
     use sha2::{Digest, Sha256};
@@ -693,9 +762,25 @@ async fn auth_middleware(
 
     // Check if hash is in allowed list
     if !state.config.allowed_worker_token_hashes.contains(&token_hash) {
-        tracing::warn!(token_hash = %token_hash, "Unauthorized access attempt");
+        tracing::warn!(
+            token_hash = %token_hash,
+            allowed_hashes = ?state.config.allowed_worker_token_hashes,
+            "Unauthorized: token hash not in allowed list"
+        );
         return Err(ApiError::Unauthorized("Invalid token".to_string()));
     }
+
+    // Find which worker this token belongs to (for logging)
+    let worker_index = state.config.allowed_worker_token_hashes
+        .iter()
+        .position(|h| h == &token_hash)
+        .unwrap_or(0);
+
+    tracing::debug!(
+        token_hash = %token_hash,
+        worker_index = worker_index,
+        "✅ Worker authenticated successfully via bearer token"
+    );
 
     Ok(next.run(req).await)
 }
