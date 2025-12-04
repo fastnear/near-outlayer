@@ -472,19 +472,11 @@ pub async fn get_secrets_pubkey(
         "secrets_json": req.secrets_json,
     });
 
-    let mut request_builder = client
+    // Note: /pubkey endpoint is public (no auth required)
+    // This allows dashboard to encrypt secrets without needing auth token
+    let keystore_response = client
         .post(format!("{}/pubkey", keystore_url))
-        .json(&payload);
-
-    // Add Authorization header if token is configured
-    if let Some(ref token) = state.config.keystore_auth_token {
-        tracing::debug!("Adding keystore auth token (length: {})", token.len());
-        request_builder = request_builder.header("Authorization", format!("Bearer {}", token));
-    } else {
-        tracing::warn!("⚠️ KEYSTORE_AUTH_TOKEN not configured - keystore request will fail!");
-    }
-
-    let keystore_response = request_builder
+        .json(&payload)
         .send()
         .await
         .map_err(|e| {
@@ -680,11 +672,11 @@ pub async fn add_generated_secret(
         .post(format!("{}/add_generated_secret", keystore_url))
         .json(&payload);
 
-    // Add Authorization header if token is configured
+    // Add Authorization header (required for /add_generated_secret)
     if let Some(ref token) = state.config.keystore_auth_token {
         request_builder = request_builder.header("Authorization", format!("Bearer {}", token));
     } else {
-        tracing::warn!("⚠️ KEYSTORE_AUTH_TOKEN not configured - keystore request will fail!");
+        tracing::warn!("⚠️ KEYSTORE_AUTH_TOKEN not configured - /add_generated_secret will fail!");
     }
 
     let keystore_response = request_builder

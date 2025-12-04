@@ -1,9 +1,12 @@
 //! HTTP API server for keystore worker
 //!
-//! Endpoints:
+//! Public endpoints (no auth required):
 //! - GET /health - Health check
-//! - GET /pubkey?seed=... - Get public key for a specific seed
-//! - POST /decrypt - Decrypt secrets from contract (requires auth + attestation)
+//! - POST /pubkey - Get public key for encryption (used by dashboard)
+//!
+//! Protected endpoints (require bearer token auth):
+//! - POST /decrypt - Decrypt secrets from contract (worker only)
+//! - POST /add_generated_secret - Add generated secrets (worker only)
 
 use axum::{
     extract::State,
@@ -200,18 +203,23 @@ pub struct HealthResponse {
 }
 
 /// Create the API router with all endpoints
-/// All endpoints require auth (keystore is internal service, accessed only by coordinator)
+/// Only /decrypt and /add_generated_secret require auth (for worker access)
+/// /pubkey and /health are public (for dashboard/coordinator access)
 pub fn create_router(state: AppState) -> Router {
-    Router::new()
-        .route("/health", get(health_handler))
-        .route("/pubkey", post(pubkey_handler)) // Changed to POST to accept secrets for validation
+    // Protected routes (require auth token)
+    let protected_routes = Router::new()
         .route("/decrypt", post(decrypt_handler))
-        .route("/add_generated_secret", post(add_generated_secret_handler)) // NEW: Add generated secrets
-        // Auth middleware applies to all routes (keystore is internal)
+        .route("/add_generated_secret", post(add_generated_secret_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
-        ))
+        ));
+
+    // Public routes (no auth required)
+    Router::new()
+        .route("/health", get(health_handler))
+        .route("/pubkey", post(pubkey_handler)) // Public for dashboard encryption
+        .merge(protected_routes)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -717,11 +725,12 @@ async fn add_generated_secret_handler(
     }))
 }
 
-/// Authentication middleware
+/// Authentication middleware (only for /decrypt and /add_generated_secret)
 ///
 /// Checks Bearer token in Authorization header.
 /// Token is hashed with SHA256 and compared against allowed hashes.
-/// This is the primary authentication mechanism when both keystore and worker are in TEE.
+/// This is the primary authentication mechanism when worker accesses secrets.
+/// Note: /pubkey and /health are public endpoints (no auth required).
 async fn auth_middleware(
     State(state): State<AppState>,
     req: axum::http::Request<axum::body::Body>,
