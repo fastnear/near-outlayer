@@ -352,7 +352,9 @@ async fn decrypt_handler(
         }
     }
 
-    // 1. Verify TEE attestation (security-critical step)
+    // 1. Verify TEE attestation
+    // Note: Primary authentication is via bearer token (checked in auth_middleware).
+    // When both keystore and worker are in TEE, attestation verification relies on token auth.
     crate::attestation::verify_attestation(
         &req.attestation,
         &state.config.tee_mode,
@@ -719,6 +721,7 @@ async fn add_generated_secret_handler(
 ///
 /// Checks Bearer token in Authorization header.
 /// Token is hashed with SHA256 and compared against allowed hashes.
+/// This is the primary authentication mechanism when both keystore and worker are in TEE.
 async fn auth_middleware(
     State(state): State<AppState>,
     req: axum::http::Request<axum::body::Body>,
@@ -729,12 +732,18 @@ async fn auth_middleware(
         .headers()
         .get("Authorization")
         .and_then(|h| h.to_str().ok())
-        .ok_or_else(|| ApiError::Unauthorized("Missing Authorization header".to_string()))?;
+        .ok_or_else(|| {
+            tracing::warn!("Missing Authorization header in request");
+            ApiError::Unauthorized("Missing Authorization header".to_string())
+        })?;
 
     // Extract Bearer token
     let token = auth_header
         .strip_prefix("Bearer ")
-        .ok_or_else(|| ApiError::Unauthorized("Invalid Authorization format".to_string()))?;
+        .ok_or_else(|| {
+            tracing::warn!("Invalid Authorization format (expected 'Bearer <token>')");
+            ApiError::Unauthorized("Invalid Authorization format".to_string())
+        })?;
 
     // Hash token with SHA256
     use sha2::{Digest, Sha256};
@@ -744,9 +753,25 @@ async fn auth_middleware(
 
     // Check if hash is in allowed list
     if !state.config.allowed_worker_token_hashes.contains(&token_hash) {
-        tracing::warn!(token_hash = %token_hash, "Unauthorized access attempt");
+        tracing::warn!(
+            token_hash = %token_hash,
+            allowed_hashes = ?state.config.allowed_worker_token_hashes,
+            "Unauthorized: token hash not in allowed list"
+        );
         return Err(ApiError::Unauthorized("Invalid token".to_string()));
     }
+
+    // Find which worker this token belongs to (for logging)
+    let worker_index = state.config.allowed_worker_token_hashes
+        .iter()
+        .position(|h| h == &token_hash)
+        .unwrap_or(0);
+
+    tracing::debug!(
+        token_hash = %token_hash,
+        worker_index = worker_index,
+        "✅ Worker authenticated successfully via bearer token"
+    );
 
     Ok(next.run(req).await)
 }
