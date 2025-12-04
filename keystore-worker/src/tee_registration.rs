@@ -12,7 +12,7 @@ use near_jsonrpc_client::{methods, JsonRpcClient};
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::transaction::{Action, FunctionCallAction, Transaction, TransactionV0};
 use near_primitives::types::{AccountId, BlockReference, Finality};
-use near_primitives::views::{QueryRequest, CallResult, FinalExecutionStatus};
+use near_primitives::views::{QueryRequest, CallResult};
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
@@ -383,7 +383,6 @@ impl RegistrationClient {
 
         let mut attempts = 0;
         const MAX_ATTEMPTS: u32 = 360; // 30 minutes with 5 second intervals
-        let mut executed = false;
 
         loop {
             // Check if keystore is already approved (proposal executed)
@@ -396,9 +395,7 @@ impl RegistrationClient {
             let proposal_status = self.get_proposal_status(proposal_id).await?;
             match proposal_status.as_str() {
                 "Approved" => {
-                    if !executed {
-                        info!("✅ Proposal approved! Waiting for an execution");                        
-                    }
+                    info!("✅ Proposal approved! Will auto-execute when quorum reached");
                 }
                 "Executed" => {
                     // Proposal already executed, wait for keystore to be approved

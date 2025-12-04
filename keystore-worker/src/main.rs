@@ -177,9 +177,9 @@ async fn main() -> Result<()> {
 
 /// Perform TEE registration and get MPC-derived keystore
 async fn perform_tee_registration(config: &Config) -> Result<Keystore> {
-    tracing::info!("🔐 Starting TEE registration flow");
+    tracing::info!("🔐 Starting TEE registration flow with retry logic");
 
-    // Check required environment variables
+    // Check required environment variables - NO FALLBACKS!
     let dao_contract = std::env::var("KEYSTORE_DAO_CONTRACT")
         .context("KEYSTORE_DAO_CONTRACT not set")?;
     let init_account_id = std::env::var("INIT_ACCOUNT_ID")
@@ -187,7 +187,7 @@ async fn perform_tee_registration(config: &Config) -> Result<Keystore> {
     let init_private_key = std::env::var("INIT_ACCOUNT_PRIVATE_KEY")
         .context("INIT_ACCOUNT_PRIVATE_KEY not set")?;
     let near_rpc_url = std::env::var("NEAR_RPC_URL")
-        .unwrap_or_else(|_| "https://rpc.testnet.near.org".to_string());
+        .context("NEAR_RPC_URL is required for TEE registration")?;
 
     // Create registration client
     let registration = tee_registration::RegistrationClient::new(
@@ -247,12 +247,26 @@ async fn perform_tee_registration(config: &Config) -> Result<Keystore> {
 
         let tdx_quote = tdx_client.generate_registration_quote(&pubkey_bytes).await?;
         tracing::info!("📡 Generated TEE attestation (mode: {:?})", config.tee_mode);
+        tracing::info!("   Quote will be verified by DAO contract against approved RTMR3 list");
 
-        // Submit to DAO
+        // Submit to DAO (contract will verify the quote)
         let proposal_id = match registration.submit_registration(public_key.clone(), tdx_quote).await {
             Ok(id) => id,
             Err(e) => {
-                if std::env::var("LOG_MASTER_KEY_HASH").unwrap_or_default() == "true" {
+                let error_str = e.to_string();
+
+                // Check if error is due to RTMR3 not being approved
+                if error_str.contains("not approved") || error_str.contains("RTMR3") {
+                    tracing::error!("❌ Registration rejected by DAO contract");
+                    tracing::error!("   RTMR3 not in approved list");
+                    tracing::error!("");
+                    tracing::error!("📝 Solution:");
+                    tracing::error!("   1. Check DAO contract logs for the extracted RTMR3");
+                    tracing::error!("   2. Admin needs to add RTMR3 to approved list");
+                    tracing::error!("   3. Restart keystore worker after RTMR3 is approved");
+                    tracing::error!("");
+                    tracing::error!("⏹️  Keystore stopped - fix the issue and restart");
+                } else if std::env::var("LOG_MASTER_KEY_HASH").unwrap_or_default() == "true" {
                     tracing::error!("🔍 DEBUG: Failed to submit registration");
                     tracing::error!("   Error: {:?}", e);
                     tracing::error!("   Check that dao.outlayer.testnet has 'submit_keystore_registration' method");

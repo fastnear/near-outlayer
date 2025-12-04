@@ -187,9 +187,18 @@ impl KeystoreDao {
         let (rtmr3, embedded_pubkey) = self.verify_tdx_quote(&tdx_quote_hex, &collateral);
 
         env::log_str(&format!(
-            "📋 TEE Registration Request:\n  RTMR3: {}\n  Public Key: {:?}",
+            "TEE Registration Request. RTMR3: {}. Public Key: {:?}",
             rtmr3, embedded_pubkey
         ));
+
+        // CRITICAL: Check if RTMR3 is in approved list
+        assert!(
+            self.approved_rtmr3.contains(&rtmr3),
+            "RTMR3 {} not approved for registration. Contact admin to add this RTMR3.",
+            rtmr3
+        );
+
+        env::log_str(&format!("✅ RTMR3 {} is in approved list", rtmr3));
 
         // Verify public key matches quote
         assert_eq!(
@@ -214,7 +223,7 @@ impl KeystoreDao {
         self.next_proposal_id += 1;
         
         env::log_str(&format!(
-            "📝 Created proposal {} for keystore registration (RTMR3: {})",
+            "Created proposal {} for keystore registration (RTMR3: {})",
             proposal_id, rtmr3
         ));    
 
@@ -262,7 +271,7 @@ impl KeystoreDao {
             proposal.status = ProposalStatus::Approved;
                         
             env::log_str(&format!(
-                "✅ Proposal {} approved with {} votes",
+                "Proposal {} approved with {} votes",
                 proposal_id, proposal.votes_for
             ));
 
@@ -272,7 +281,7 @@ impl KeystoreDao {
             self.proposals.insert(&proposal_id, &proposal);
 
             env::log_str(&format!(
-                "❌ Proposal {} rejected with {} votes against",
+                "Proposal {} rejected with {} votes against",
                 proposal_id, proposal.votes_against
             ));
         }
@@ -282,64 +291,47 @@ impl KeystoreDao {
         }        
     }
 
-    /* 
-    /// Execute approved proposal to add keystore access key
-    pub fn execute_proposal(&mut self, proposal_id: u64) {
-        // Get proposal
-        let mut proposal = self.proposals.get(&proposal_id)
-            .expect("Proposal not found");
-
-        // Check status
-        assert_eq!(
-            proposal.status, ProposalStatus::Approved,
-            "Proposal is not approved"
-        );
-
-        // Add public key to this contract's account
-        // Permission: full, to attach 1 yocto to request_app_private_key calls
-        /*
-        Code below: add functional key, gives an error InvalidAccessKeyError(DepositWithFunctionCall)
-        let allowance = Allowance::limited(NearToken::from_near(10)).unwrap(); // 10 NEAR for MPC operations
-        Promise::new(env::current_account_id()).add_access_key_allowance(
-            proposal.public_key.clone(),
-            allowance,
-            self.mpc_contract_id.clone(),
-            "request_app_private_key".to_string(),
-        );
-         */
-        Promise::new(env::current_account_id()).add_full_access_key(
-            proposal.public_key.clone()
-        );
-
-        // Mark as executed
-        proposal.status = ProposalStatus::Executed;
-        self.proposals.insert(&proposal_id, &proposal);
-
-        // Add to approved keystores
-        self.approved_keystores.insert(&proposal.public_key);
-
-        env::log_str(&format!(
-            "✅ Executed proposal {}: Added keystore access key (RTMR3: {})",
-            proposal_id, proposal.rtmr3
-        ));
-    }
-    */
-
     /// Owner: Add approved RTMR3 for auto-approval
-    pub fn add_approved_rtmr3(&mut self, rtmr3: String) {
+    /// If clear_others is true, removes all existing RTMR3s before adding the new one
+    pub fn add_approved_rtmr3(&mut self, rtmr3: String, clear_others: Option<bool>) {
         self.assert_owner();
         assert_eq!(rtmr3.len(), 96, "RTMR3 must be 96 hex chars");
 
+        // Clear all existing RTMR3s if requested (useful for testing)
+        if clear_others.unwrap_or(false) {
+            let count = self.approved_rtmr3.len();
+            self.approved_rtmr3.clear();
+            env::log_str(&format!("Cleared {} existing RTMR3 entries", count));
+        }
+
         self.approved_rtmr3.insert(&rtmr3);
-        env::log_str(&format!("✅ Added approved RTMR3: {}", rtmr3));
+        env::log_str(&format!("Added approved RTMR3: {}", rtmr3));
+        env::log_str(&format!("Total approved RTMR3s: {}", self.approved_rtmr3.len()));
     }
 
-    /// Owner: Remove approved RTMR3
-    pub fn remove_approved_rtmr3(&mut self, rtmr3: String) {
+    /// Owner: Clear all approved RTMR3s (useful for testing)
+    pub fn clear_all_approved_rtmr3(&mut self) {
         self.assert_owner();
 
-        self.approved_rtmr3.remove(&rtmr3);
-        env::log_str(&format!("🗑️ Removed approved RTMR3: {}", rtmr3));
+        let count = self.approved_rtmr3.len();
+        self.approved_rtmr3.clear();
+
+        env::log_str(&format!("Cleared all {} RTMR3 entries", count));
+    }
+
+    /// Owner: Remove specific approved RTMR3
+    pub fn remove_approved_rtmr3(&mut self, rtmr3: String) {
+        self.assert_owner();
+        assert_eq!(rtmr3.len(), 96, "RTMR3 must be 96 hex chars");
+
+        let was_present = self.approved_rtmr3.remove(&rtmr3);
+
+        if was_present {
+            env::log_str(&format!("Removed approved RTMR3: {}", rtmr3));
+            env::log_str(&format!("Total approved RTMR3s remaining: {}", self.approved_rtmr3.len()));
+        } else {
+            env::log_str(&format!("RTMR3 not found in approved list: {}", rtmr3));
+        }
     }
 
     /// Owner: Add DAO member
@@ -351,7 +343,7 @@ impl KeystoreDao {
         // Recalculate threshold
         self.approval_threshold = (self.dao_members.len() as u32 / 2) + 1;
 
-        env::log_str(&format!("✅ Added DAO member: {}", member));
+        env::log_str(&format!("Added DAO member: {}", member));
     }
 
     /// Owner: Remove DAO member
@@ -364,7 +356,7 @@ impl KeystoreDao {
         // Recalculate threshold
         self.approval_threshold = (self.dao_members.len() as u32 / 2) + 1;
 
-        env::log_str(&format!("🗑️ Removed DAO member: {}", member));
+        env::log_str(&format!("Removed DAO member: {}", member));
     }
 
     /// Owner: Update TDX quote collateral
