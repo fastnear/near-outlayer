@@ -15,6 +15,8 @@ If you are not sure, just reply "I don't know how to do it". It's totally ok, hy
 - CHANGES.md
 These files waste time. Human only reads code and core documentation (README, TUTORIAL, etc).
 
+**NEVER CREATE DOCUMENTATION ABOUT CHANGES**: When making fixes or changes to the codebase, NEVER create documentation files describing what was changed or fixed. Simply make the code changes directly without creating any explanatory documentation. Human doesn't want or need these documentation files.
+
 **CRITICAL - WASI Development**: When human asks to write a new WASI container/example, you MUST:
 1. FIRST read existing examples in `wasi-examples/` directory to understand the patterns
 2. ALWAYS read and follow `wasi-examples/WASI_TUTORIAL.md` tutorial
