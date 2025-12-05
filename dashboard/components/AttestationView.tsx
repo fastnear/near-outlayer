@@ -309,17 +309,107 @@ export default function AttestationView({
                 }}
                 className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded"
               >
-                🔍 Verify from Blockchain
+                🔍 Load & Verify from Blockchain
+              </button>
+            )}
+            {ioValidation && (
+              <button
+                onClick={() => setIoValidation(null)}
+                className="px-3 py-1 bg-gray-400 hover:bg-gray-500 text-white text-sm font-medium rounded"
+              >
+                Close
               </button>
             )}
           </div>
-          {ioValidation && !ioValidation.loading && !ioValidation.error && (
-            <div className={`px-3 py-2 rounded ${ioValidation.inputMatch && ioValidation.outputMatch ? 'bg-green-100' : 'bg-red-100'}`}>
-              <span className={`text-sm font-semibold ${ioValidation.inputMatch && ioValidation.outputMatch ? 'text-green-800' : 'text-red-800'}`}>
-                {ioValidation.inputMatch ? '✓ Input Match' : '✗ Input Mismatch'} |
-                {ioValidation.outputMatch ? ' ✓ Output Match' : ' ✗ Output Mismatch'}
-              </span>
-            </div>
+
+          {ioValidation && (
+            <>
+              {ioValidation.loading && (
+                <div className="flex justify-center py-4">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+                </div>
+              )}
+
+              {ioValidation.error && (
+                <div className="bg-red-50 border border-red-300 rounded p-3 mb-3">
+                  <p className="text-red-800 text-sm">⚠️ Error: {ioValidation.error}</p>
+                </div>
+              )}
+
+              {!ioValidation.loading && !ioValidation.error && (
+                <div className="space-y-4">
+                  {/* Input Data Section */}
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-800 mb-1">Input Data</label>
+                    <textarea
+                      value={ioValidation.inputData}
+                      onChange={async (e) => {
+                        const newInputData = e.target.value;
+                        const { sha256 } = await import('@/lib/near-rpc');
+                        const newInputHash = newInputData ? await sha256(newInputData) : '';
+                        const newInputMatch = newInputHash === attestation.input_hash;
+                        setIoValidation({ ...ioValidation, inputData: newInputData, inputHash: newInputHash, inputMatch: newInputMatch });
+                      }}
+                      className="w-full h-20 p-2 border border-gray-300 rounded font-mono text-sm"
+                      placeholder="Input data from transaction..."
+                    />
+                    <div className="mt-2 space-y-1">
+                      <div className="flex items-start gap-2">
+                        <span className="text-xs font-semibold text-gray-600 w-32">Calculated Hash:</span>
+                        <span className="text-xs font-mono text-gray-800 break-all flex-1">{ioValidation.inputHash || 'N/A'}</span>
+                      </div>
+                      <div className="flex items-start gap-2">
+                        <span className="text-xs font-semibold text-gray-600 w-32">Attestation Hash:</span>
+                        <span className="text-xs font-mono text-gray-800 break-all flex-1">{attestation.input_hash || 'N/A'}</span>
+                      </div>
+                      <div className={`px-3 py-2 rounded ${ioValidation.inputMatch ? 'bg-green-100 border border-green-300' : 'bg-red-100 border border-red-300'}`}>
+                        <span className={`text-sm font-semibold ${ioValidation.inputMatch ? 'text-green-800' : 'text-red-800'}`}>
+                          {ioValidation.inputMatch ? '✓ Input Hash Matches' : '✗ Input Hash Mismatch'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Output Data Section */}
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-800 mb-1">Output Data</label>
+                    <textarea
+                      value={ioValidation.outputData}
+                      onChange={async (e) => {
+                        const newOutputData = e.target.value;
+                        const { sha256 } = await import('@/lib/near-rpc');
+                        const newOutputHash = newOutputData ? await sha256(newOutputData) : '';
+                        const newOutputMatch = newOutputHash === attestation.output_hash;
+                        setIoValidation({ ...ioValidation, outputData: newOutputData, outputHash: newOutputHash, outputMatch: newOutputMatch });
+                      }}
+                      className="w-full h-20 p-2 border border-gray-300 rounded font-mono text-sm"
+                      placeholder="Output data from transaction..."
+                    />
+                    <div className="mt-2 space-y-1">
+                      <div className="flex items-start gap-2">
+                        <span className="text-xs font-semibold text-gray-600 w-32">Calculated Hash:</span>
+                        <span className="text-xs font-mono text-gray-800 break-all flex-1">{ioValidation.outputHash || 'N/A'}</span>
+                      </div>
+                      <div className="flex items-start gap-2">
+                        <span className="text-xs font-semibold text-gray-600 w-32">Attestation Hash:</span>
+                        <span className="text-xs font-mono text-gray-800 break-all flex-1">{attestation.output_hash || 'N/A'}</span>
+                      </div>
+                      <div className={`px-3 py-2 rounded ${ioValidation.outputMatch ? 'bg-green-100 border border-green-300' : 'bg-red-100 border border-red-300'}`}>
+                        <span className={`text-sm font-semibold ${ioValidation.outputMatch ? 'text-green-800' : 'text-red-800'}`}>
+                          {ioValidation.outputMatch ? '✓ Output Hash Matches' : '✗ Output Hash Mismatch'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {!ioValidation && (
+            <p className="text-sm text-gray-700">
+              Click the button to fetch transaction data from NEAR archival RPC and verify input/output hashes.
+            </p>
           )}
         </div>
       )}
@@ -367,22 +457,182 @@ export default function AttestationView({
               }}
               className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium rounded"
             >
-              🔐 Verify Quote
+              🔐 Verify Quote (RTMR3 + Task Hash)
+            </button>
+          )}
+          {quoteValidation && (
+            <button
+              onClick={() => setQuoteValidation(null)}
+              className="px-3 py-1 bg-gray-400 hover:bg-gray-500 text-white text-sm font-medium rounded"
+            >
+              Close
             </button>
           )}
         </div>
 
-        {!quoteValidation ? (
-          <p className="text-sm text-gray-700">
-            Click to verify RTMR3 and Task Hash from TDX quote
-          </p>
-        ) : (
-          <div className={`px-4 py-3 rounded ${quoteValidation.rtmr3Match && quoteValidation.taskHashMatch ? 'bg-green-100' : 'bg-red-100'}`}>
-            <p className={`font-semibold ${quoteValidation.rtmr3Match && quoteValidation.taskHashMatch ? 'text-green-800' : 'text-red-800'}`}>
-              {quoteValidation.rtmr3Match && quoteValidation.taskHashMatch
-                ? '✓ Full Verification Passed!'
-                : '✗ Verification Failed'}
+        {!quoteValidation && (
+          <>
+            <label className="block text-sm font-semibold text-gray-800 mb-1">TDX Quote (Base64)</label>
+            <textarea
+              readOnly
+              value={attestation.tdx_quote}
+              className="w-full h-24 bg-white p-2 rounded border border-gray-300 font-mono text-xs"
+            />
+            <p className="text-sm text-gray-700 mt-2">
+              Click &quot;Verify Quote&quot; to extract and verify:
+              <br />• RTMR3 (worker measurement) - proves which TEE environment executed the code
+              <br />• Task Hash (REPORTDATA) - cryptographic commitment to input/output/wasm hashes, prevents attestation forgery
             </p>
+          </>
+        )}
+
+        {quoteValidation && (
+          <div className="space-y-4">
+            {/* Quote Input */}
+            <div>
+              <label className="block text-sm font-semibold text-gray-800 mb-1">TDX Quote (Base64)</label>
+              <textarea
+                readOnly
+                value={quoteValidation.quote}
+                className="w-full h-20 p-2 border border-gray-300 rounded font-mono text-xs bg-gray-50"
+              />
+            </div>
+
+            {/* Extracted RTMR3 */}
+            <div>
+              <label className="block text-sm font-semibold text-gray-800 mb-1">
+                Extracted RTMR3 (Worker Measurement, offset 256)
+              </label>
+              <div className="bg-white p-2 border border-gray-300 rounded font-mono text-xs break-all">
+                {formatRtmr3(quoteValidation.extractedRtmr3) || 'Failed to extract'}
+              </div>
+              <div className="bg-white p-2 border border-gray-300 rounded font-mono text-xs break-all mt-1">
+                <span className="font-semibold">Expected:</span> {formatRtmr3(quoteValidation.expectedRtmr3)}
+              </div>
+              <div className={`mt-1 px-2 py-1 rounded text-xs ${quoteValidation.rtmr3Match ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                {quoteValidation.rtmr3Match ? '✓ RTMR3 Match' : '✗ RTMR3 Mismatch'}
+              </div>
+            </div>
+
+            {/* Extracted Task Hash */}
+            <div>
+              <label className="block text-sm font-semibold text-gray-800 mb-1">
+                Extracted Task Hash (REPORTDATA, offset 568)
+              </label>
+              <div className="bg-white p-2 border border-gray-300 rounded font-mono text-xs break-all">
+                {quoteValidation.extractedTaskHash || 'Failed to extract'}
+              </div>
+              <div className="bg-white p-2 border border-gray-300 rounded font-mono text-xs break-all mt-1">
+                <span className="font-semibold">Expected:</span> {quoteValidation.expectedTaskHash}
+              </div>
+              <div className={`mt-1 px-2 py-1 rounded text-xs ${quoteValidation.taskHashMatch ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                {quoteValidation.taskHashMatch ? '✓ Task Hash Match (contains commitment to input/output/wasm hashes)' : '✗ Task Hash Mismatch'}
+              </div>
+
+              {/* Expandable: Show how Task Hash is calculated */}
+              <details className="mt-3 bg-purple-100 border border-purple-300 rounded p-3">
+                <summary className="cursor-pointer font-semibold text-purple-900 text-sm hover:text-purple-700">
+                  📊 Show Task Hash Calculation Steps
+                </summary>
+                <div className="mt-3 space-y-2 text-xs">
+                  <p className="font-semibold text-purple-900">Binary concatenation order (then SHA256):</p>
+                  <div className="space-y-1 font-mono bg-white p-2 rounded border border-purple-200">
+                    <div className="flex items-start gap-2">
+                      <span className="text-purple-700 font-bold min-w-[20px]">1.</span>
+                      <div className="flex-1">
+                        <span className="text-gray-600">task_type (string):</span>
+                        <div className="text-purple-900 break-all">&quot;{attestation.task_type}&quot;</div>
+                      </div>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className="text-purple-700 font-bold min-w-[20px]">2.</span>
+                      <div className="flex-1">
+                        <span className="text-gray-600">task_id (i64, little-endian):</span>
+                        <div className="text-purple-900">{attestation.task_id}</div>
+                      </div>
+                    </div>
+                    {attestation.repo_url && (
+                      <div className="flex items-start gap-2">
+                        <span className="text-purple-700 font-bold min-w-[20px]">3.</span>
+                        <div className="flex-1">
+                          <span className="text-gray-600">repo_url (string):</span>
+                          <div className="text-purple-900 break-all">&quot;{attestation.repo_url}&quot;</div>
+                        </div>
+                      </div>
+                    )}
+                    {attestation.commit_hash && (
+                      <div className="flex items-start gap-2">
+                        <span className="text-purple-700 font-bold min-w-[20px]">4.</span>
+                        <div className="flex-1">
+                          <span className="text-gray-600">commit_hash (string):</span>
+                          <div className="text-purple-900">&quot;{attestation.commit_hash}&quot;</div>
+                        </div>
+                      </div>
+                    )}
+                    {attestation.build_target && (
+                      <div className="flex items-start gap-2">
+                        <span className="text-purple-700 font-bold min-w-[20px]">5.</span>
+                        <div className="flex-1">
+                          <span className="text-gray-600">build_target (string):</span>
+                          <div className="text-purple-900">&quot;{attestation.build_target}&quot;</div>
+                        </div>
+                      </div>
+                    )}
+                    {attestation.wasm_hash && (
+                      <div className="flex items-start gap-2">
+                        <span className="text-purple-700 font-bold min-w-[20px]">6.</span>
+                        <div className="flex-1">
+                          <span className="text-gray-600">wasm_hash (hex string):</span>
+                          <div className="text-purple-900 break-all">&quot;{attestation.wasm_hash}&quot;</div>
+                        </div>
+                      </div>
+                    )}
+                    {attestation.input_hash && (
+                      <div className="flex items-start gap-2">
+                        <span className="text-purple-700 font-bold min-w-[20px]">7.</span>
+                        <div className="flex-1">
+                          <span className="text-gray-600">input_hash (hex string):</span>
+                          <div className="text-purple-900 break-all">&quot;{attestation.input_hash}&quot;</div>
+                        </div>
+                      </div>
+                    )}
+                    <div className="flex items-start gap-2">
+                      <span className="text-purple-700 font-bold min-w-[20px]">8.</span>
+                      <div className="flex-1">
+                        <span className="text-gray-600">output_hash (hex string):</span>
+                        <div className="text-purple-900 break-all">&quot;{attestation.output_hash}&quot;</div>
+                      </div>
+                    </div>
+                    {attestation.block_height && (
+                      <div className="flex items-start gap-2">
+                        <span className="text-purple-700 font-bold min-w-[20px]">9.</span>
+                        <div className="flex-1">
+                          <span className="text-gray-600">block_height (u64, little-endian):</span>
+                          <div className="text-purple-900">{attestation.block_height}</div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  <div className="mt-2 p-2 bg-purple-50 border border-purple-200 rounded">
+                    <div className="text-purple-900 font-semibold">Final Hash (SHA256 of concatenated bytes):</div>
+                    <div className="text-purple-800 font-mono text-xs break-all mt-1">{quoteValidation.expectedTaskHash}</div>
+                  </div>
+                  <p className="text-purple-800 text-xs mt-2">
+                    <strong>Note:</strong> Each string is encoded as UTF-8 bytes, numbers are little-endian encoded.
+                    The Task Hash binds the TDX Quote to this specific execution, preventing attestation forgery.
+                  </p>
+                </div>
+              </details>
+            </div>
+
+            {/* Overall Verification Result */}
+            <div className={`px-4 py-3 rounded ${quoteValidation.rtmr3Match && quoteValidation.taskHashMatch ? 'bg-green-100 border border-green-300' : 'bg-red-100 border border-red-300'}`}>
+              <p className={`font-semibold ${quoteValidation.rtmr3Match && quoteValidation.taskHashMatch ? 'text-green-800' : 'text-red-800'}`}>
+                {quoteValidation.rtmr3Match && quoteValidation.taskHashMatch
+                  ? '✓ Full Verification Passed! The TDX Quote is valid and matches all expected values.'
+                  : '✗ Verification Failed - The attestation may be invalid or tampered'}
+              </p>
+            </div>
           </div>
         )}
       </div>
