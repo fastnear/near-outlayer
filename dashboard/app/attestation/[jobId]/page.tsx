@@ -136,20 +136,12 @@ export default function AttestationPage() {
               {urlNetwork && <span className="ml-2 text-sm bg-gray-100 px-2 py-1 rounded">({urlNetwork})</span>}
             </p>
           </div>
-          <div className="flex gap-2">
-            <button
-              onClick={() => setShowHelp(!showHelp)}
-              className="px-4 py-2 bg-blue-100 hover:bg-blue-200 text-blue-700 font-medium rounded"
-            >
-              ❓ Help
-            </button>
-            <Link
-              href="/executions"
-              className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium rounded"
-            >
-              All Executions
-            </Link>
-          </div>
+          <Link
+            href="/executions"
+            className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium rounded"
+          >
+            All Executions
+          </Link>
         </div>
       </div>
 

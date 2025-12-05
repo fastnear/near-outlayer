@@ -144,19 +144,6 @@ export default function AttestationView({
 
   return (
     <div className="space-y-4">
-      {/* Help toggle button - only if handler provided */}
-      {onToggleHelp && (
-        <div className="flex justify-end">
-          <button
-            onClick={onToggleHelp}
-            className="px-3 py-1 bg-blue-100 hover:bg-blue-200 text-blue-700 text-sm font-medium rounded"
-            title="Show help about attestation fields"
-          >
-            ❓ Help
-          </button>
-        </div>
-      )}
-
       {/* Help Section */}
       {showHelp && (
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
@@ -184,10 +171,24 @@ export default function AttestationView({
 
       {/* Quick Verification Status */}
       <div className="bg-blue-50 border border-blue-200 rounded-md p-4">
-        <p className="text-blue-800 font-semibold">
-          {rtmr3Valid ? '✓' : '⚠️'} RTMR3: {rtmr3Valid ? 'Valid' : 'Invalid'} |
-          Task Hash: Click &quot;Verify Quote&quot; below to check
-        </p>
+        <div className="flex justify-between items-start">
+          <div className="flex-1">
+            <p className="text-blue-800 font-semibold">
+              {rtmr3Valid ? '✓' : '⚠️'} RTMR3: {rtmr3Valid ? 'Valid' : 'Invalid'} |
+              Task Hash: Click &quot;Verify Quote&quot; below to check
+            </p>
+            <p className="text-blue-700 text-sm mt-1">Full verification (including task hash with input/output/wasm commitment) is available in the &quot;TDX Quote Verification&quot; section below.</p>
+          </div>
+          {onToggleHelp && (
+            <button
+              onClick={onToggleHelp}
+              className="ml-3 px-3 py-1 bg-white hover:bg-blue-100 text-blue-700 text-sm font-medium rounded border border-blue-300"
+              title="Show help about attestation fields"
+            >
+              ❓ Help
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Basic Info */}
