@@ -658,7 +658,7 @@ world rpc-host {
   https://github.com/user/myproject main wasm32-wasip1 myapp.wasm
 
 # The script will:
-# 1. Pull zavodil/wasmedge-compiler:latest Docker image
+# 1. Pull zavodil/wasmedge-compiler:latest Docker image (instant if already up to date)
 # 2. Clone your repository and checkout the commit
 # 3. Run cargo build with the exact same flags as worker
 # 4. Optimize WASM (wasm-opt for P1, wasm-tools for P2)

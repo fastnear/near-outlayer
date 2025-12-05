@@ -86,14 +86,12 @@ echo "CPU limit: ${COMPILE_CPU_LIMIT} CPUs"
 echo "Timeout: ${COMPILE_TIMEOUT}s"
 echo ""
 
-# Pull Docker image if not exists locally
-if ! docker image inspect "$DOCKER_IMAGE" > /dev/null 2>&1; then
-    echo -e "${YELLOW}⚠️  Docker image not found locally. Pulling from Docker Hub...${NC}"
-    docker pull "$DOCKER_IMAGE"
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}❌ Failed to pull Docker image${NC}"
-        exit 1
-    fi
+# Pull Docker image (quick if already up to date)
+echo -e "${GREEN}📦 Pulling Docker image...${NC}"
+docker pull "$DOCKER_IMAGE"
+if [ $? -ne 0 ]; then
+    echo -e "${RED}❌ Failed to pull Docker image${NC}"
+    exit 1
 fi
 
 # Create temporary directory for output
