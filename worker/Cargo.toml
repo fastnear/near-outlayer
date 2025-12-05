@@ -28,7 +28,7 @@ near-jsonrpc-primitives = "0.26"
 # WASM execution (wasmtime with WASI Preview 2 support)
 # wasmtime = { version = "37", features = ["component-model", "async"] }
 # WASI core, CLI (for WasiCommand), and HTTP support.
-# FIX: Добавляем фичу 'cli', чтобы экспортировался модуль `bindings` для WasiCommand.
+# FIX: Added 'cli' feature to export `bindings` module for WasiCommand.
 # wasmtime-wasi = { version = "37" } 
 
 wasmtime = { version = "28", features = ["component-model", "async"] }
