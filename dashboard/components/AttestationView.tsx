@@ -636,33 +636,7 @@ export default function AttestationView({
             </div>
           </div>
         )}
-      </div>
-
-      {/* Share Link - only for non-modal views */}
-      {!isModal && shareUrl && (
-        <div className="bg-gray-50 rounded-lg p-4 text-center">
-          <p className="text-sm text-gray-600 mb-2">Direct link to this attestation:</p>
-          <div className="flex justify-center gap-2">
-            <button
-              onClick={() => {
-                navigator.clipboard.writeText(shareUrl);
-                alert('Link copied!');
-              }}
-              className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded"
-            >
-              📋 Copy Link
-            </button>
-            <a
-              href={shareUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="px-3 py-1 bg-gray-600 hover:bg-gray-700 text-white text-sm rounded"
-            >
-              🔗 Open in New Tab
-            </a>
-          </div>
-        </div>
-      )}
+      </div>      
     </div>
   );
 }

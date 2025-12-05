@@ -174,14 +174,6 @@ export default function AttestationPage() {
           >
             📋 Copy Link
           </button>
-          <a
-            href={`https://twitter.com/intent/tweet?text=Check%20out%20this%20verifiable%20TEE%20attestation%20for%20off-chain%20computation%20on%20%40NEARProtocol%3A%20${encodeURIComponent(window.location.origin + window.location.pathname + '?network=' + (urlNetwork || network))}%20%23NEAR%20%23TEE%20%23VerifiableCompute`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="px-4 py-2 bg-black hover:bg-gray-800 text-white font-medium rounded"
-          >
-            Share on 𝕏
-          </a>
         </div>
       </div>
     </div>
