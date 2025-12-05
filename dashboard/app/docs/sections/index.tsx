@@ -632,7 +632,64 @@ world rpc-host {
         <section id="testing-locally">
           <AnchorHeading id="testing-locally">Testing Locally</AnchorHeading>
 
-          <h4 className="text-lg font-semibold mb-2 mt-4">Option 1: WASI Test Runner (Recommended)</h4>
+          <h4 className="text-lg font-semibold mb-2 mt-4">Option 1: Test Compiler Script (Quick Compilation Test)</h4>
+          <p className="text-gray-700 mb-3">
+            Use <strong>test_compiler.sh</strong> to test compilation of your GitHub repository locally without running the full worker infrastructure.
+            This script uses the same Docker image (<code className="bg-gray-100 px-1 rounded">zavodil/wasmedge-compiler:latest</code> with Rust 1.85) and compilation logic as the production worker.
+          </p>
+
+          <div className="bg-green-50 border-l-4 border-green-400 p-4 mb-3">
+            <p className="text-sm text-green-800 mb-2">
+              <strong>Perfect for:</strong> Testing if your repository compiles correctly before deploying to OutLayer.
+            </p>
+          </div>
+
+          <pre className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm mb-3">
+{`# Test compilation for WASI Preview 1
+./scripts/test_compiler.sh \\
+  https://github.com/zavodil/random-ark main wasm32-wasip1
+
+# Test compilation for WASI Preview 2
+./scripts/test_compiler.sh \\
+  https://github.com/zavodil/ai-ark main wasm32-wasip2
+
+# Custom output file
+./scripts/test_compiler.sh \\
+  https://github.com/user/myproject main wasm32-wasip1 myapp.wasm
+
+# The script will:
+# 1. Pull zavodil/wasmedge-compiler:latest Docker image
+# 2. Clone your repository and checkout the commit
+# 3. Run cargo build with the exact same flags as worker
+# 4. Optimize WASM (wasm-opt for P1, wasm-tools for P2)
+# 5. Output compiled WASM with SHA256 checksum`}
+          </pre>
+
+          <p className="text-gray-700 mb-3">
+            <strong>Key features:</strong>
+          </p>
+          <ul className="list-disc list-inside text-gray-700 ml-4 space-y-1 mb-3">
+            <li>Uses official Docker image from Docker Hub (no local builds needed)</li>
+            <li>Exactly mirrors worker compiler behavior</li>
+            <li>Supports all three targets: <code className="bg-gray-100 px-1 rounded">wasm32-wasip1</code>, <code className="bg-gray-100 px-1 rounded">wasm32-wasip2</code>, <code className="bg-gray-100 px-1 rounded">wasm32-wasi</code></li>
+            <li>Shows compilation time, file size, and SHA256 checksum</li>
+            <li>Configurable memory/CPU limits via environment variables</li>
+          </ul>
+
+          <div className="bg-yellow-50 border-l-4 border-yellow-400 p-3 mb-4">
+            <p className="text-sm text-yellow-800 mb-2">
+              <strong>Troubleshooting:</strong> If you get <code className="bg-yellow-100 px-1 rounded">cabi_realloc</code> error with wasm32-wasip2,
+              it means the project is not configured as a WASI P2 component. WASI Preview 2 requires projects to be built as components
+              (using cargo-component) and export special memory management functions. Most existing projects are written for WASI P1.
+              Solution: Use <code className="bg-yellow-100 px-1 rounded">wasm32-wasip1</code> instead.
+            </p>
+            <p className="text-sm text-yellow-800">
+              <strong>Note on Rust version:</strong> The Docker image uses Rust 1.85 for maximum compatibility. While newer Rust versions (1.88+)
+              exist, they may have breaking changes with certain dependencies. The production worker uses 1.85 to ensure broad compatibility.
+            </p>
+          </div>
+
+          <h4 className="text-lg font-semibold mb-2 mt-4">Option 2: WASI Test Runner (Full Validation)</h4>
           <p className="text-gray-700 mb-3">
             We provide <strong>wasi-test-runner</strong> - a universal test tool that validates your WASM modules for OutLayer compatibility.
             It tests binary format, fuel metering, I/O handling, resource limits, JSON validation, and output size.
@@ -675,7 +732,7 @@ cargo build --release
             <li>Output size limits (&lt;900 bytes)</li>
           </ul>
 
-          <h4 className="text-lg font-semibold mb-2 mt-4">Option 2: Manual Testing with wasmtime</h4>
+          <h4 className="text-lg font-semibold mb-2 mt-4">Option 3: Manual Testing with wasmtime</h4>
           <p className="text-gray-700 mb-2">
             Test directly using <code className="bg-gray-100 px-2 py-1 rounded">wasmtime</code>:
           </p>
