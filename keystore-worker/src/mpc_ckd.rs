@@ -223,7 +223,7 @@ impl MpcCkdClient {
         _signer_account_id: &str,
         request: CkdRequestArgs,
     ) -> Result<CkdResponse> {
-        tracing::info!("Calling MPC contract: {}", self.config.mpc_contract_id);
+        tracing::info!("Calling MPC contract: {} using dao proxy contract", self.config.mpc_contract_id);
 
         // Serialize request to JSON
         let args = serde_json::to_vec(&request)?;
@@ -259,13 +259,13 @@ impl MpcCkdClient {
             signer_id: self.signer.account_id.clone(),
             public_key: self.signer.public_key.clone(),
             nonce,
-            receiver_id: self.config.mpc_contract_id.parse()?,
+            receiver_id: self.signer.account_id.clone(), // call dao contract
             block_hash: block.header.hash,
             actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
-                method_name: "request_app_private_key".to_string(),
+                method_name: "request_key".to_string(),
                 args,
-                gas: 100_000_000_000_000, // 100 TGas
-                deposit: 1,
+                gas: 300_000_000_000_000, // 300 TGas
+                deposit: 0,
             }))],
         };
 

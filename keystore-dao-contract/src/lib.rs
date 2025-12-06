@@ -1,7 +1,7 @@
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::collections::{LookupMap, UnorderedSet};
 use near_sdk::serde::{Deserialize, Serialize};
-use near_sdk::{env, near_bindgen, AccountId, Promise, PublicKey, BorshStorageKey};
+use near_sdk::{env, ext_contract, near_bindgen, AccountId, Promise, PromiseOrValue, PublicKey, BorshStorageKey, NearToken, Allowance, Gas};
 use schemars::JsonSchema;
 
 // Collateral wrapper for TDX verification (from register-contract)
@@ -17,6 +17,28 @@ fn randomness_unsupported(_: &mut [u8]) -> Result<(), Error> {
 }
 #[cfg(target_arch = "wasm32")]
 register_custom_getrandom!(randomness_unsupported);
+
+// dtos module for MPC types (simplified version for contract interface)
+pub mod dtos {
+    use near_sdk::serde::{Deserialize, Serialize};
+
+    /// BLS12-381 G1 public key type - simplified as String for JSON serialization
+    /// In the actual MPC contract this is [u8; 96] but we use String for easier JSON handling
+    #[cfg_attr(
+        all(feature = "abi", not(target_arch = "wasm32")),
+        derive(schemars::JsonSchema)
+    )]
+    #[derive(Serialize, Deserialize, Clone, Debug)]
+    #[serde(crate = "near_sdk::serde")]
+    pub struct Bls12381G1PublicKey(pub String);
+}
+
+// External interface for MPC contract
+#[ext_contract(ext_mpc)]
+#[allow(dead_code)]
+trait ExtMPC {
+    fn request_app_private_key(&self, request: CKDRequestArgs) -> CKDResponse;
+}
 
 #[derive(BorshSerialize, BorshStorageKey)]
 #[borsh(crate = "near_sdk::borsh")]
@@ -112,6 +134,36 @@ pub struct KeystoreDao {
 
     /// TDX quote collateral (Intel's reference data for verification)
     pub quote_collateral: Option<String>,
+}
+
+#[cfg_attr(
+    all(feature = "abi", not(target_arch = "wasm32")),
+    derive(::near_sdk::schemars::JsonSchema)
+)]
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
+pub struct CKDResponse {
+    pub big_y: dtos::Bls12381G1PublicKey,
+    pub big_c: dtos::Bls12381G1PublicKey,
+}
+
+#[cfg_attr(
+    all(feature = "abi", not(target_arch = "wasm32")),
+    derive(schemars::JsonSchema)
+)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(crate = "near_sdk::serde")]
+pub struct DomainId(pub u64);
+
+#[cfg_attr(
+    all(feature = "abi", not(target_arch = "wasm32")),
+    derive(schemars::JsonSchema)
+)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(crate = "near_sdk::serde")]
+pub struct CKDRequestArgs {
+    pub app_public_key: dtos::Bls12381G1PublicKey,
+    pub domain_id: DomainId,
 }
 
 impl Default for KeystoreDao {
@@ -428,8 +480,26 @@ impl KeystoreDao {
             "approved_rtmr3_count": self.approved_rtmr3.len(),
             "has_collateral": self.quote_collateral.is_some(),
         })
-    }
+    }    
+    
 
+    /// Request a key from the MPC contract
+    /// This function makes a cross-contract call to the MPC contract to derive a private key
+    /// The request must come from an approved keystore with a valid access key    
+    pub fn request_key(&self, request: CKDRequestArgs) -> PromiseOrValue<CKDResponse> {
+        // Make cross-contract call to MPC contract
+        // Attach all gas and 1 yoctoNEAR as required by MPC contract
+        let promise = ext_mpc::ext(self.mpc_contract_id.clone())
+            .with_static_gas(Gas::from_tgas(100)) // Use 100 TGas for the call
+            .with_attached_deposit(NearToken::from_yoctonear(1)) // Attach 1 yoctoNEAR
+            .request_app_private_key(request);
+
+        // Return the promise - NEAR will handle the callback automatically
+        PromiseOrValue::Promise(promise)
+    }
+}
+
+impl KeystoreDao {
     // ===== Internal Methods =====
 
     /// Verify TDX quote and extract RTMR3 + public key
@@ -469,9 +539,7 @@ impl KeystoreDao {
 
         (rtmr3, public_key)
     }
-}
 
-impl KeystoreDao {
     fn assert_owner(&self) {
         assert_eq!(
             env::predecessor_account_id(),
@@ -489,20 +557,14 @@ impl KeystoreDao {
         );
 
         // Add public key to this contract's account
-        // Permission: full, to attach 1 yocto to request_app_private_key calls
-        /*
-        Code below: add functional key, gives an error InvalidAccessKeyError(DepositWithFunctionCall)
-        let allowance = Allowance::limited(NearToken::from_near(10)).unwrap(); // 10 NEAR for MPC operations
+        // Permission: functional key, only allows to request key from the MPC network
+        let allowance = Allowance::limited(NearToken::from_near(1)).unwrap(); // 10 NEAR for MPC operations
         Promise::new(env::current_account_id()).add_access_key_allowance(
             proposal.public_key.clone(),
             allowance,
-            self.mpc_contract_id.clone(),
-            "request_app_private_key".to_string(),
-        );
-         */
-        Promise::new(env::current_account_id()).add_full_access_key(
-            proposal.public_key.clone()
-        );
+            env::current_account_id(),
+            "request_key".to_string(),
+        );         
 
         // Mark as executed
         proposal.status = ProposalStatus::Executed;

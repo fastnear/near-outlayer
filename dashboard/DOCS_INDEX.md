@@ -2,6 +2,14 @@
 
 This file describes the dashboard documentation structure and source → rendered docs mapping.
 
+## Quick Reference
+
+- **Main Docs**: `/dashboard/app/docs/` - All documentation pages
+- **Sections**: `/dashboard/app/docs/sections/` - Reusable documentation components
+- **Examples**: `/wasi-examples/*/README.md` - Source for example documentation
+- **Navigation**: `/dashboard/app/docs/layout.tsx` - Sidebar menu configuration
+- **Live Site**: https://dashboard.outlayer.io/docs
+
 ## Documentation Structure
 
 ```
@@ -142,18 +150,18 @@ dashboard/app/docs/
 
 ## Source Files for Each Page
 
-| Dashboard Page | Primary Source | Secondary Sources |
-|----------------|---------------|-------------------|
-| `/docs` | `dashboard/app/docs/page.tsx` | - |
-| `/docs/getting-started` | `dashboard/app/docs/sections/GettingStarted.tsx` | - |
-| `/docs/architecture` | `dashboard/app/docs/architecture/page.tsx` | - |
-| `/docs/contract-integration` | `dashboard/app/docs/contract-integration/page.tsx` | `contract/README.md` |
-| `/docs/dev-guide` | `dashboard/app/docs/sections/DeveloperGuide.tsx` | - |
-| `/docs/wasi` | `dashboard/app/docs/sections/index.tsx` (WasiSection) | `wasi-examples/WASI_TUTORIAL.md`, `worker/wit/world.wit` |
-| `/docs/secrets` | `dashboard/app/docs/sections/index.tsx` (SecretsSection) | - |
-| `/docs/pricing` | `dashboard/app/docs/sections/index.tsx` (PricingSection) | - |
-| `/docs/tee-attestation` | `dashboard/app/docs/sections/TeeAttestation.tsx` | `TEE_ATTESTATION_FLOW.md` |
-| `/docs/examples` | `dashboard/app/docs/examples/page.tsx` | `wasi-examples/*/README.md` |
+| Dashboard Page | Primary Source | Secondary Sources | Key Topics |
+|----------------|---------------|-------------------|------------|
+| `/docs` | `dashboard/app/docs/page.tsx` | - | Overview, getting started |
+| `/docs/getting-started` | `dashboard/app/docs/sections/GettingStarted.tsx` | - | Quick start guide, first contract |
+| `/docs/architecture` | `dashboard/app/docs/architecture/page.tsx` | - | System design, components |
+| `/docs/contract-integration` | `dashboard/app/docs/contract-integration/page.tsx` | `contract/README.md` | Contract API, integration |
+| `/docs/dev-guide` | `dashboard/app/docs/sections/DeveloperGuide.tsx` | - | Development workflow, best practices |
+| `/docs/wasi` | `dashboard/app/docs/sections/index.tsx` (WasiSection) | `wasi-examples/WASI_TUTORIAL.md`, `worker/wit/world.wit` | WASI programming, host functions |
+| `/docs/secrets` | `dashboard/app/docs/sections/index.tsx` (SecretsSection) | `keystore-dao-contract/README.md` | Secrets management, CKD, Keystore DAO |
+| `/docs/pricing` | `dashboard/app/docs/sections/index.tsx` (PricingSection) | - | Cost model, resource limits |
+| `/docs/tee-attestation` | `dashboard/app/docs/sections/TeeAttestation.tsx` | `TEE_ATTESTATION_FLOW.md` | TEE verification, attestation |
+| `/docs/examples` | `dashboard/app/docs/examples/page.tsx` | `wasi-examples/*/README.md` | All example projects |
 
 ## Navigation (layout.tsx)
 
@@ -209,6 +217,29 @@ const pageStructure = {
 - `Network` - cyan badge (cyan-100/cyan-800)
 - `Transactions` - orange badge (orange-100/orange-800)
 - `Host Functions` - orange badge (orange-100/orange-800)
+
+## Key Security Features Documentation
+
+### Keystore DAO Architecture
+- **Location**: `/docs/secrets#confidential-key-derivation`
+- **Contract**: `keystore-dao.outlayer.testnet`
+- **Key Points**:
+  - Keystore uses functional keys (not full access keys)
+  - Can ONLY call MPC through DAO contract's `request_key` method
+  - All key derivation requests are auditable on-chain
+  - DAO governance controls keystore approval
+  - MPC Contract: `v1.signer-prod.testnet`
+
+### CKD (Confidential Key Derivation)
+- **Location**: `/docs/secrets#confidential-key-derivation`
+- **Purpose**: Deterministic key generation via NEAR MPC Network
+- **Flow**: Keystore TEE → DAO Contract → MPC Contract → MPC Network
+- **Security**: Keys never leave TEE, distributed computation
+
+### Access Control
+- **Manual Secrets**: User-provided, cannot use `PROTECTED_*` prefix
+- **Auto-Generated Secrets**: TEE-generated, must use `PROTECTED_*` prefix
+- **Validation**: Keystore validates access conditions before decryption
 
 ## Documentation Update Checklist
 
