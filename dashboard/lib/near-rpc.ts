@@ -91,27 +91,35 @@ export async function fetchTransaction(
 }
 
 /**
- * Extract output from transaction (from last successful receipt)
+ * Extract output from transaction (from outlayer contract receipt)
+ * @param tx - Transaction outcome
+ * @param network - Network type to determine correct contract ID
  */
-export function extractOutputFromTransaction(tx: TransactionOutcome): string | null {
-  // Find last receipt with SuccessValue (this is the final output)
-  const receiptsWithOutput = tx.receipts_outcome.filter(
-    receipt => receipt.outcome.status.SuccessValue
+export function extractOutputFromTransaction(
+  tx: TransactionOutcome,
+  network: NetworkType = 'testnet'
+): string | null {
+  // Get the outlayer contract ID based on network
+  const outlayerContractId = network === 'testnet'
+    ? process.env.NEXT_PUBLIC_TESTNET_CONTRACT_ID || 'outlayer.testnet'
+    : process.env.NEXT_PUBLIC_MAINNET_CONTRACT_ID || 'outlayer.near';
+
+  // Find receipt from outlayer contract - this contains the full JSON structure
+  const outlayerReceipt = tx.receipts_outcome.find(
+    receipt => receipt.outcome.status.SuccessValue &&
+              receipt.outcome.executor_id === outlayerContractId
   );
 
-  if (receiptsWithOutput.length === 0) {
+  if (!outlayerReceipt) {
+    // No receipt from outlayer contract found
     return null;
   }
 
-  // Get last receipt (final result after all promises)
-  const lastReceipt = receiptsWithOutput[receiptsWithOutput.length - 1];
-  const outputBase64 = lastReceipt.outcome.status.SuccessValue;
-
+  const outputBase64 = outlayerReceipt.outcome.status.SuccessValue;
   if (!outputBase64) {
     return null;
   }
 
-  // Decode base64 to string
   try {
     const outputStr = atob(outputBase64);
     return outputStr;
