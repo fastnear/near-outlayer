@@ -281,8 +281,28 @@ export default function AttestationView({
                     );
                     const inputData = extractInputFromTransaction(tx) ?? '';
                     const outputData = extractOutputFromTransaction(tx) ?? '';
+
+                    // Debug: Log what we got from transaction
+                    console.log('=== ATTESTATION VERIFICATION DEBUG ===');
+                    console.log('Transaction hash:', attestation.transaction_hash);
+                    console.log('Raw output from transaction:', outputData);
+
+                    // Try to parse the output as JSON to see structure
+                    try {
+                      const parsed = JSON.parse(outputData);
+                      console.log('Parsed output structure:', JSON.stringify(parsed, null, 2));
+                    } catch {
+                      console.log('Output is not valid JSON');
+                    }
+
+                    console.log('Attestation expects hash:', attestation.output_hash);
+
                     const inputHash = await sha256(inputData);
                     const outputHash = await sha256(outputData);
+                    console.log('Calculated output hash:', outputHash);
+                    console.log('Hash match?', outputHash === attestation.output_hash);
+                    console.log('======================================');
+
                     const inputMatch = inputHash === (attestation.input_hash || '');
                     const outputMatch = outputHash === attestation.output_hash;
                     setIoValidation({
