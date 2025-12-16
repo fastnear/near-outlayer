@@ -6,12 +6,17 @@ import { randomBytes } from '@stablelib/random';
 import { AccessConditionBuilder } from './AccessConditionBuilder';
 import { AccessCondition, FormData, SecretSourceType } from './types';
 import { convertAccessToContractFormat } from './utils';
+import { useNearWallet } from '@/contexts/NearWalletContext';
+
+// Update mode for existing secrets - preserves PROTECTED_ secrets
+type UpdateMode = 'append' | 'reset';
 
 interface SecretsFormProps {
   isConnected: boolean;
   accountId: string | null;
   onSubmit: (formData: FormData, encryptedSecrets: number[]) => Promise<void>;
   coordinatorUrl: string;
+  // For edit mode (replace all secrets - old behavior)
   initialData?: {
     sourceType?: SecretSourceType;
     repo: string;
@@ -19,6 +24,18 @@ interface SecretsFormProps {
     wasmHash?: string;
     profile: string;
   };
+  // For update mode (preserve PROTECTED_ secrets via signMessage)
+  updateMode?: {
+    accessor: {
+      type: 'Repo' | 'WasmHash';
+      repo?: string;
+      branch?: string | null;
+      hash?: string;
+    };
+    profile: string;
+  };
+  onUpdateComplete?: () => void;
+  onCancelUpdate?: () => void;
 }
 
 interface SecretToGenerate {
@@ -39,7 +56,21 @@ const GENERATION_TYPES = [
   { value: 'password:128', label: 'Password (128 chars)' },
 ];
 
-export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, initialData }: SecretsFormProps) {
+export function SecretsForm({
+  isConnected,
+  accountId,
+  onSubmit,
+  coordinatorUrl,
+  initialData,
+  updateMode,
+  onUpdateComplete,
+  onCancelUpdate,
+}: SecretsFormProps) {
+  const { signMessage } = useNearWallet();
+
+  // Determine if we're in update mode (preserve PROTECTED_ secrets)
+  const isUpdateMode = !!updateMode;
+
   const [sourceType, setSourceType] = useState<SecretSourceType>('repo');
   const [repo, setRepo] = useState('');
   const [branch, setBranch] = useState('');
@@ -52,6 +83,16 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
   const [secretsToGenerate, setSecretsToGenerate] = useState<SecretToGenerate[]>([]);
   const [generatedKeys, setGeneratedKeys] = useState<string[]>([]);
 
+  // Pending update data (after keystore processed, waiting for contract store)
+  const [pendingUpdate, setPendingUpdate] = useState<{
+    encryptedArray: number[];
+    formData: FormData;
+    summary: { protected_preserved: number; updated: number; removed: number };
+  } | null>(null);
+
+  // Update mode specific state
+  const [secretsUpdateMode, setSecretsUpdateMode] = useState<UpdateMode>('append');
+
   // Load initial data if provided (for edit mode)
   useEffect(() => {
     if (initialData) {
@@ -63,6 +104,41 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
       setPlaintextSecrets('{\n  "API_KEY": "your-new-api-key"\n}');
     }
   }, [initialData]);
+
+  // Load update mode data
+  useEffect(() => {
+    if (updateMode) {
+      if (updateMode.accessor.type === 'Repo') {
+        setSourceType('repo');
+        setRepo(updateMode.accessor.repo || '');
+        setBranch(updateMode.accessor.branch || '');
+      } else {
+        setSourceType('wasm_hash');
+        setWasmHash(updateMode.accessor.hash || '');
+      }
+      setProfile(updateMode.profile);
+      setPlaintextSecrets('{\n  "API_KEY": "your-new-api-key"\n}');
+    }
+  }, [updateMode]);
+
+  // Check if accessor or profile was changed in update mode (will create new secret instead of updating)
+  const isAccessorChanged = (): boolean => {
+    if (!updateMode) return false;
+
+    // Profile change = new secret
+    if (profile !== updateMode.profile) return true;
+
+    if (updateMode.accessor.type === 'Repo') {
+      const originalRepo = updateMode.accessor.repo || '';
+      const originalBranch = updateMode.accessor.branch || '';
+      return sourceType !== 'repo' || repo !== originalRepo || branch !== originalBranch;
+    } else {
+      const originalHash = updateMode.accessor.hash || '';
+      return sourceType !== 'wasm_hash' || wasmHash !== originalHash;
+    }
+  };
+
+  const accessorChanged = isUpdateMode && isAccessorChanged();
 
   const addSecretRow = () => {
     const newId = String(Date.now());
@@ -353,6 +429,203 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
     }
   };
 
+  // Handle update mode with signMessage (preserves PROTECTED_ secrets)
+  const handleUpdateWithSignature = async () => {
+    if (!updateMode || !accountId || !signMessage) {
+      setError('Wallet not connected or update mode not active');
+      return;
+    }
+
+    setError(null);
+    setEncrypting(true);
+
+    try {
+      // Parse manual secrets
+      const hasManualSecrets = plaintextSecrets.trim() !== '' &&
+        plaintextSecrets.trim() !== '{\n  "API_KEY": "your-api-key"\n}' &&
+        plaintextSecrets.trim() !== '{\n  "API_KEY": "your-new-api-key"\n}';
+
+      let secretsObj: Record<string, string> = {};
+      if (hasManualSecrets) {
+        try {
+          secretsObj = JSON.parse(plaintextSecrets);
+          if (typeof secretsObj !== 'object' || Array.isArray(secretsObj)) {
+            throw new Error('Secrets must be a JSON object');
+          }
+          // Check for PROTECTED_ prefix in user secrets
+          for (const key of Object.keys(secretsObj)) {
+            if (key.startsWith('PROTECTED_')) {
+              throw new Error('Cannot manually add PROTECTED_ secrets. Use the generation section below.');
+            }
+          }
+        } catch (err) {
+          setError(`Invalid JSON format: ${(err as Error).message}`);
+          setEncrypting(false);
+          return;
+        }
+      }
+
+      // Get generated secrets
+      const validSecretsToGenerate = secretsToGenerate.filter(s => s.name.trim() !== '');
+
+      // Allow empty secrets only if accessor changed (migration mode)
+      // In migration mode, user may just want to move existing secrets to new accessor
+      const accessorWasChanged = isAccessorChanged();
+      if (Object.keys(secretsObj).length === 0 && validSecretsToGenerate.length === 0 && !accessorWasChanged) {
+        setError('Please provide either manual secrets or secrets to generate (or change accessor to migrate existing secrets)');
+        setEncrypting(false);
+        return;
+      }
+
+      // 1. Generate nonce
+      const nonceBytes = new Uint8Array(32);
+      crypto.getRandomValues(nonceBytes);
+      const nonce = btoa(String.fromCharCode(...nonceBytes));
+
+      // 2. Create message to sign with secrets payload for verification
+      // Backend will reconstruct this message from request data and verify signature
+      const secretKeys = Object.keys(secretsObj).sort();
+      const protectedNames = validSecretsToGenerate.map(s => s.name.trim()).sort();
+
+      // Format: "Update Outlayer secrets for {owner}:{profile}\nkeys:{key1,key2}\nprotected:{PROTECTED_A,PROTECTED_B}"
+      let messageToSign = `Update Outlayer secrets for ${accountId}:${profile}`;
+      if (secretKeys.length > 0) {
+        messageToSign += `\nkeys:${secretKeys.join(',')}`;
+      }
+      if (protectedNames.length > 0) {
+        messageToSign += `\nprotected:${protectedNames.join(',')}`;
+      }
+
+      // 3. Sign with NEAR wallet (NEP-413)
+      console.log('📝 Message to sign:', messageToSign);
+      console.log('📝 Secret keys in message:', secretKeys);
+      console.log('📝 Protected names in message:', protectedNames);
+
+      const signed = await signMessage({
+        message: messageToSign,
+        recipient: 'keystore.outlayer.near',
+        nonce: nonce,
+      });
+
+      if (!signed) {
+        throw new Error('User cancelled signature');
+      }
+
+      // 4. Call keystore API via coordinator proxy
+      // Build current accessor from form values
+      const currentAccessor = sourceType === 'wasm_hash'
+        ? { type: 'WasmHash', hash: wasmHash.trim() }
+        : { type: 'Repo', repo: repo.trim(), branch: branch.trim() || null };
+
+      // Build original accessor from updateMode (for decryption)
+      const originalAccessor = updateMode.accessor.type === 'WasmHash'
+        ? { type: 'WasmHash', hash: updateMode.accessor.hash || '' }
+        : { type: 'Repo', repo: updateMode.accessor.repo || '', branch: updateMode.accessor.branch || null };
+
+      // Determine if this is a migration (accessor or profile changed)
+      const isMigration = accessorChanged;
+
+      const recipient = 'keystore.outlayer.near';
+      const response = await fetch(`${coordinatorUrl}/secrets/update_user_secrets`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          // Always send original accessor for decryption
+          accessor: originalAccessor,
+          // If accessor changed, send new_accessor for encryption
+          new_accessor: isMigration ? currentAccessor : undefined,
+          profile: profile.trim(),
+          owner: accountId,
+          mode: secretsUpdateMode,
+          secrets: secretsObj,
+          generate_protected: validSecretsToGenerate.length > 0
+            ? validSecretsToGenerate.map(s => ({
+                name: s.name.trim(),
+                generation_type: s.generationType,
+              }))
+            : undefined,
+          signed_message: messageToSign,
+          signature: signed.signature,
+          public_key: signed.publicKey,
+          nonce,
+          recipient,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        throw new Error(errorData.error || `Failed to update secrets: ${response.statusText}`);
+      }
+
+      const result = await response.json();
+
+      // 5. Prepare data for contract storage (will be triggered by user click)
+      const encryptedArray = Array.from(atob(result.encrypted_secrets_base64), c => c.charCodeAt(0));
+      const contractAccess = convertAccessToContractFormat(accessCondition);
+
+      // Use current form values (user may have changed accessor)
+      const formData: FormData = {
+        sourceType,
+        repo: repo.trim(),
+        branch: branch.trim() || null,
+        wasmHash: wasmHash.trim(),
+        profile: profile.trim(),
+        access: contractAccess,
+      };
+
+      // Store pending update - user needs to click again to store in contract
+      // This avoids popup blocker since the wallet popup will open on direct user action
+      // Note: keystore returns arrays, convert to counts
+      const summary = result.summary || {};
+      setPendingUpdate({
+        encryptedArray,
+        formData,
+        summary: {
+          protected_preserved: Array.isArray(summary.protected_keys_preserved)
+            ? summary.protected_keys_preserved.length
+            : (summary.protected_preserved || 0),
+          updated: Array.isArray(summary.updated_keys)
+            ? summary.updated_keys.length
+            : (summary.updated || 0),
+          removed: Array.isArray(summary.removed_keys)
+            ? summary.removed_keys.length
+            : (summary.removed || 0),
+        },
+      });
+
+    } catch (err) {
+      console.error('Update error:', err);
+      setError(`Failed to update secrets: ${(err as Error).message}`);
+    } finally {
+      setEncrypting(false);
+    }
+  };
+
+  // Step 2: Store pending update in contract (triggered by user click)
+  const handleStorePendingUpdate = async () => {
+    if (!pendingUpdate) return;
+
+    setEncrypting(true);
+    setError(null);
+
+    try {
+      await onSubmit(pendingUpdate.formData, pendingUpdate.encryptedArray);
+
+      // Clear pending, reset form, and call completion callback
+      setPendingUpdate(null);
+      setSecretsToGenerate([]);
+      setPlaintextSecrets('{\n  "API_KEY": "your-api-key"\n}');
+      if (onUpdateComplete) {
+        onUpdateComplete();
+      }
+    } catch (err) {
+      console.error('Store error:', err);
+      setError(`Failed to store in contract: ${(err as Error).message}`);
+    } finally {
+      setEncrypting(false);
+    }
+  };
+
   const hexToBytes = (hex: string): Uint8Array => {
     const bytes = new Uint8Array(hex.length / 2);
     for (let i = 0; i < hex.length; i += 2) {
@@ -364,9 +637,54 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
   return (
     <div className="bg-white shadow sm:rounded-lg">
       <div className="px-4 py-5 sm:p-6">
-        <h2 className="text-lg font-medium text-gray-900 mb-4">
-          {initialData ? 'Update Secrets' : 'Create New Secrets'}
-        </h2>
+        {/* Header with cancel button for update mode */}
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-lg font-medium text-gray-900">
+            {isUpdateMode ? 'Update Secrets (Preserve PROTECTED_)' : initialData ? 'Replace Secrets' : 'Create New Secrets'}
+          </h2>
+          {isUpdateMode && onCancelUpdate && (
+            <button
+              onClick={onCancelUpdate}
+              disabled={encrypting}
+              className="text-sm text-gray-500 hover:text-gray-700"
+            >
+              Cancel
+            </button>
+          )}
+        </div>
+
+        {/* Update mode info banner */}
+        {isUpdateMode && (
+          <div className="mb-4 p-3 bg-purple-50 border border-purple-200 rounded-lg">
+            <p className="text-sm text-purple-800">
+              <strong>Update Mode:</strong> Your existing <code className="bg-purple-100 px-1 rounded">PROTECTED_*</code> entries will remain unchanged and cannot be modified.
+              You can add or update user secrets (non-PROTECTED) and generate new <code className="bg-purple-100 px-1 rounded">PROTECTED_*</code> secrets.
+            </p>
+          </div>
+        )}
+
+        {/* Update mode selector (append/reset) - only in update mode */}
+        {isUpdateMode && (
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Update Mode *
+            </label>
+            <select
+              value={secretsUpdateMode}
+              onChange={(e) => setSecretsUpdateMode(e.target.value as UpdateMode)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+              disabled={encrypting}
+            >
+              <option value="append">Append - Add or update secrets, keep existing user secrets</option>
+              <option value="reset">Reset - Replace all user secrets (keeps PROTECTED_)</option>
+            </select>
+            {secretsUpdateMode === 'reset' && (
+              <p className="mt-1 text-xs text-amber-600">
+                ⚠️ This will remove all current user secrets except PROTECTED_ ones
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Source Type Selector */}
         <div className="mb-4">
@@ -403,6 +721,19 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
               : 'Bind secrets to a WASM binary hash (for CodeSource::WasmUrl)'}
           </p>
         </div>
+
+        {/* Warning when accessor changed in update mode */}
+        {accessorChanged && (
+          <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+            <p className="text-sm text-amber-800">
+              ⚠️ <strong>Migration mode!</strong> Accessor changed - secrets will be decrypted with old accessor and re-encrypted with new accessor.
+              This will create a <strong>new</strong> secret entry. You can delete the old secret manually after saving.
+            </p>
+            <p className="text-xs text-amber-700 mt-1">
+              💡 You can leave secrets empty to just migrate existing secrets to the new accessor.
+            </p>
+          </div>
+        )}
 
         {/* Repository fields - shown when sourceType is 'repo' */}
         {sourceType === 'repo' && (
@@ -589,22 +920,100 @@ export function SecretsForm({ isConnected, accountId, onSubmit, coordinatorUrl, 
           </div>
         )}
 
-        {/* Submit Button */}
-        <div className="flex items-center justify-between">
-          <button
-            onClick={handleEncryptAndSubmit}
-            disabled={!isConnected || encrypting}
-            className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-gray-300 disabled:cursor-not-allowed"
-          >
-            {encrypting ? '🔄 Encrypting & Storing...' : initialData ? '💾 Update Secrets' : '🔐 Encrypt & Store Secrets'}
-          </button>
-
-          {!isConnected && (
-            <p className="text-sm text-red-600">
-              Please connect your wallet to create secrets
+        {/* Pending Update Banner - Step 2 */}
+        {pendingUpdate && (
+          <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg">
+            <h4 className="text-sm font-semibold text-green-900 mb-2">
+              ✅ Secrets encrypted by TEE keystore. Ready to store in contract.
+            </h4>
+            <p className="text-xs text-green-800 mb-3">
+              PROTECTED_ preserved: {pendingUpdate.summary.protected_preserved} |
+              Updated/added: {pendingUpdate.summary.updated} |
+              Removed: {pendingUpdate.summary.removed}
             </p>
-          )}
-        </div>
+            <div className="flex space-x-3">
+              <button
+                onClick={handleStorePendingUpdate}
+                disabled={encrypting}
+                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:bg-gray-300"
+              >
+                {encrypting ? '🔄 Storing...' : '🔐 Store Secrets'}
+              </button>
+              <button
+                onClick={() => setPendingUpdate(null)}
+                disabled={encrypting}
+                className="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 disabled:bg-gray-100"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Submit Button */}
+        {!pendingUpdate && (
+          <div className="flex items-center justify-between">
+            <button
+              onClick={isUpdateMode ? handleUpdateWithSignature : handleEncryptAndSubmit}
+              disabled={!isConnected || encrypting}
+              className={`inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:bg-gray-300 disabled:cursor-not-allowed ${
+                isUpdateMode
+                  ? 'bg-purple-600 hover:bg-purple-700 focus:ring-purple-500'
+                  : 'bg-blue-600 hover:bg-blue-700 focus:ring-blue-500'
+              }`}
+            >
+              {encrypting
+                ? '🔄 Processing...'
+                : isUpdateMode
+                ? '✍️ Sign Message to Update'
+                : initialData
+                ? '💾 Replace Secrets'
+                : '🔐 Encrypt & Store Secrets'}
+            </button>
+
+            {!isConnected && (
+              <p className="text-sm text-red-600">
+                Please connect your wallet to {isUpdateMode ? 'update' : 'create'} secrets
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Step indicator for update mode */}
+        {isUpdateMode && isConnected && !pendingUpdate && (
+          <div className="mt-4 p-3 bg-purple-50 border border-purple-200 rounded-lg">
+            <p className="text-xs text-purple-700 mb-2 font-medium">Update requires 2 steps:</p>
+            <div className="flex items-center space-x-3">
+              <div className="flex items-center space-x-2">
+                <span className="flex items-center justify-center w-6 h-6 rounded-full bg-purple-600 text-white text-xs font-bold">1</span>
+                <span className="text-sm font-medium text-purple-800">Sign message</span>
+              </div>
+              <span className="text-purple-400">→</span>
+              <div className="flex items-center space-x-2">
+                <span className="flex items-center justify-center w-6 h-6 rounded-full bg-gray-300 text-gray-600 text-xs font-bold">2</span>
+                <span className="text-sm text-gray-500">Store in contract</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Step 2 indicator when pending */}
+        {pendingUpdate && (
+          <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-lg">
+            <p className="text-xs text-green-700 mb-2 font-medium">Step 2 of 2:</p>
+            <div className="flex items-center space-x-3">
+              <div className="flex items-center space-x-2">
+                <span className="flex items-center justify-center w-6 h-6 rounded-full bg-green-500 text-white text-xs">✓</span>
+                <span className="text-sm text-green-700">Signed</span>
+              </div>
+              <span className="text-green-400">→</span>
+              <div className="flex items-center space-x-2">
+                <span className="flex items-center justify-center w-6 h-6 rounded-full bg-green-600 text-white text-xs font-bold">2</span>
+                <span className="text-sm font-medium text-green-800">Store in contract</span>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Info Box */}
         <div className="mt-6 bg-blue-50 border border-blue-200 rounded-lg p-4">

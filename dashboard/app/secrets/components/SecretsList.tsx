@@ -8,11 +8,12 @@ interface SecretsListProps {
   loading: boolean;
   isConnected: boolean;
   onEdit: (secret: UserSecret) => void;
+  onUpdate?: (secret: UserSecret) => void;
   onDelete: (secret: UserSecret) => void;
   onRefresh: () => void;
 }
 
-export function SecretsList({ secrets, loading, isConnected, onEdit, onDelete, onRefresh }: SecretsListProps) {
+export function SecretsList({ secrets, loading, isConnected, onEdit, onUpdate, onDelete, onRefresh }: SecretsListProps) {
   return (
     <div className="mt-8 bg-white shadow sm:rounded-lg">
       <div className="px-4 py-5 sm:p-6">
@@ -59,6 +60,7 @@ export function SecretsList({ secrets, loading, isConnected, onEdit, onDelete, o
                 key={idx}
                 secret={secret}
                 onEdit={() => onEdit(secret)}
+                onUpdate={onUpdate ? () => onUpdate(secret) : undefined}
                 onDelete={() => onDelete(secret)}
               />
             ))}
