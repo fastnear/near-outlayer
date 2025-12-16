@@ -1018,10 +1018,6 @@ async fn update_user_secrets_handler(
             "Successfully decrypted existing secrets"
         );
 
-        for secret in secrets.clone() {
-            tracing::info!("{:?}", secret);
-        }
-
         secrets
     } else {
         // No existing secrets
