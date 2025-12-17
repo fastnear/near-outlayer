@@ -25,6 +25,9 @@ export default function SecretsPage() {
   // Edit mode
   const [editingSecret, setEditingSecret] = useState<UserSecret | null>(null);
 
+  // Update mode (preserves PROTECTED_ secrets)
+  const [updatingSecret, setUpdatingSecret] = useState<UserSecret | null>(null);
+
   const loadUserSecrets = useCallback(async () => {
     if (!accountId) return;
 
@@ -169,6 +172,18 @@ export default function SecretsPage() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  const handleUpdateSecret = (secret: UserSecret) => {
+    // Validate accessor exists
+    if (!secret.accessor) {
+      setError('Invalid secret: accessor is missing');
+      return;
+    }
+
+    setUpdatingSecret(secret);
+    // Scroll to form
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   const handleDeleteSecret = async (secret: UserSecret) => {
     // Validate accessor exists
     if (!secret.accessor) {
@@ -290,6 +305,29 @@ export default function SecretsPage() {
                 : undefined
               : undefined
           }
+          updateMode={
+            updatingSecret && updatingSecret.accessor
+              ? {
+                  accessor: isRepoAccessor(updatingSecret.accessor)
+                    ? {
+                        type: 'Repo',
+                        repo: updatingSecret.accessor.Repo.repo,
+                        branch: updatingSecret.accessor.Repo.branch || null,
+                      }
+                    : {
+                        type: 'WasmHash',
+                        hash: ('WasmHash' in updatingSecret.accessor && updatingSecret.accessor.WasmHash?.hash) || '',
+                      },
+                  profile: updatingSecret.profile,
+                }
+              : undefined
+          }
+          onUpdateComplete={() => {
+            setUpdatingSecret(null);
+            loadUserSecrets();
+            setSuccess('Secrets updated successfully!');
+          }}
+          onCancelUpdate={() => setUpdatingSecret(null)}
         />
       </div>
 
@@ -299,6 +337,7 @@ export default function SecretsPage() {
         loading={loadingSecrets}
         isConnected={isConnected}
         onEdit={handleEditSecret}
+        onUpdate={handleUpdateSecret}
         onDelete={handleDeleteSecret}
         onRefresh={loadUserSecrets}
       />

@@ -16,7 +16,7 @@ use std::str::FromStr;
 /// - "http://github.com/alice/project" → "github.com/alice/project"
 /// - "github.com/alice/project" → "github.com/alice/project"
 /// - "gitlab.com/alice/project" → "gitlab.com/alice/project"
-fn normalize_repo_url(repo: &str) -> String {
+pub fn normalize_repo_url(repo: &str) -> String {
     let repo = repo.trim();
 
     // Remove protocol (https:// or http://)
@@ -110,9 +110,21 @@ impl NearClient {
             _ => anyhow::bail!("Unexpected query response"),
         };
 
+        // Log raw response for debugging
+        tracing::debug!(
+            raw_response = ?String::from_utf8_lossy(&result),
+            raw_len = result.len(),
+            "Raw contract response for get_secrets"
+        );
+
         // Parse response (Option<SecretProfile>)
         let secret_profile: Option<serde_json::Value> = serde_json::from_slice(&result)
             .context("Failed to parse contract response")?;
+
+        tracing::debug!(
+            is_some = secret_profile.is_some(),
+            "Parsed get_secrets response"
+        );
 
         Ok(secret_profile)
     }

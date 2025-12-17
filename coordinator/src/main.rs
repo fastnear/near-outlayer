@@ -108,6 +108,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize rate limiter for API keys
     let rate_limiter = Arc::new(middleware::rate_limit::RateLimiter::new());
 
+    // Initialize IP rate limiter for public endpoints (10 requests/minute)
+    // Protects keystore (which runs in TEE) from spam/DoS
+    // Cleanup happens lazily when HashMap exceeds 1000 entries
+    let ip_rate_limiter = Arc::new(middleware::ip_rate_limit::IpRateLimiter::new(10));
+    info!("IP rate limiter initialized (10 req/min for /secrets/*)");
+
+
     // Build protected routes (require auth)
     let protected = Router::new()
         // Job endpoints (protected)
@@ -134,10 +141,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         // Attestation storage endpoint (worker-protected)
         .route("/attestations", post(handlers::attestations::store_attestation))
+        // GitHub API endpoint (protected - only workers need it)
+        .route("/github/resolve-branch", get(handlers::github::resolve_branch))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::auth_middleware,
         ));
+
+    // Build secrets routes (rate limited to protect keystore)
+    // These endpoints proxy to keystore which runs in TEE and may be slow
+    let secrets_routes = Router::new()
+        .route("/secrets/pubkey", post(handlers::github::get_secrets_pubkey))
+        .route("/secrets/add_generated_secret", post(handlers::github::add_generated_secret))
+        .route("/secrets/update_user_secrets", post(handlers::github::update_user_secrets))
+        .layer(axum::middleware::from_fn_with_state(
+            ip_rate_limiter.clone(),
+            middleware::ip_rate_limit::ip_rate_limit_middleware,
+        ))
+        .with_state(state.clone());
 
     // Build public routes (no auth required)
     let public = Router::new()
@@ -155,9 +176,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         // TODO Fix
         // .route("/public/api-keys", post(handlers::public::create_api_key))
-        .route("/github/resolve-branch", get(handlers::github::resolve_branch))
-        .route("/secrets/pubkey", post(handlers::github::get_secrets_pubkey))
-        .route("/secrets/add_generated_secret", post(handlers::github::add_generated_secret))
         .route("/health", get(|| async { "OK" }));
 
     // Build internal routes (no auth - for worker communication only)
@@ -208,6 +226,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         .merge(protected)
         .merge(public)
+        .merge(secrets_routes)
         .merge(api_key_protected)
         .merge(internal)
         .merge(admin)

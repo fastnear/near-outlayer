@@ -11,6 +11,18 @@ import '@near-wallet-selector/modal-ui/styles.css';
 
 export type NetworkType = 'testnet' | 'mainnet';
 
+interface SignMessageParams {
+  message: string;
+  recipient: string;
+  nonce: string;
+}
+
+interface SignedMessage {
+  signature: string;
+  publicKey: string;
+  accountId: string;
+}
+
 interface NearWalletContextType {
   accountId: string | null;
   isConnected: boolean;
@@ -24,6 +36,7 @@ interface NearWalletContextType {
   disconnect: () => void;
   switchNetwork: (network: NetworkType) => void;
   signAndSendTransaction: (params: any) => Promise<any>;
+  signMessage: (params: SignMessageParams) => Promise<SignedMessage | null>;
   viewMethod: (params: { contractId: string; method: string; args?: Record<string, unknown> }) => Promise<unknown>;
 }
 
@@ -166,6 +179,58 @@ export function NearWalletProvider({ children }: { children: ReactNode }) {
     return await wallet.signAndSendTransaction(params);
   };
 
+  const signMessage = async (params: SignMessageParams): Promise<SignedMessage | null> => {
+    if (!selector || !accountId) throw new Error('Wallet not connected');
+
+    const wallet = await selector.wallet();
+
+    // Check if wallet supports signMessage (NEP-413)
+    if (!wallet.signMessage) {
+      throw new Error('Current wallet does not support message signing. Please use a wallet that supports NEP-413 (e.g., MyNearWallet, Meteor, Here Wallet)');
+    }
+
+    try {
+      const result = await wallet.signMessage({
+        message: params.message,
+        recipient: params.recipient,
+        nonce: Buffer.from(params.nonce, 'base64'),
+      });
+
+      if (!result) {
+        return null;
+      }
+
+      // Handle signature format - it can be Uint8Array or base64 string depending on wallet
+      let signatureBase64: string;
+      if (result.signature instanceof Uint8Array) {
+        signatureBase64 = Buffer.from(result.signature).toString('base64');
+      } else if (typeof result.signature === 'string') {
+        // Already a string - assume it's base64
+        signatureBase64 = result.signature;
+      } else {
+        // Array-like object
+        signatureBase64 = Buffer.from(result.signature as ArrayLike<number>).toString('base64');
+      }
+
+      console.log('signMessage result:', {
+        signatureType: typeof result.signature,
+        signatureIsUint8Array: result.signature instanceof Uint8Array,
+        signatureLength: result.signature?.length,
+        signatureBase64Length: signatureBase64.length,
+        publicKey: result.publicKey,
+      });
+
+      return {
+        signature: signatureBase64,
+        publicKey: result.publicKey,
+        accountId: result.accountId,
+      };
+    } catch (error) {
+      console.error('Error signing message:', error);
+      throw error;
+    }
+  };
+
   const viewMethod = async (params: { contractId: string; method: string; args?: Record<string, unknown> }) => {
     if (!selector) throw new Error('Wallet not initialized');
 
@@ -217,6 +282,7 @@ export function NearWalletProvider({ children }: { children: ReactNode }) {
         disconnect,
         switchNetwork,
         signAndSendTransaction,
+        signMessage,
         viewMethod,
       }}
     >

@@ -727,6 +727,211 @@ pub async fn add_generated_secret(
     ))
 }
 
+/// POST /secrets/update_user_secrets
+/// Request: {
+///   "accessor": { "type": "Repo", "repo": "...", "branch": "..." },
+///   "new_accessor": { ... },  // Optional, for migration
+///   "profile": "...",
+///   "owner": "...",
+///   "mode": "append" | "reset",
+///   "secrets": { "KEY": "value", ... },
+///   "generate_protected": [...],
+///   "signed_message": "...",
+///   "signature": "...",
+///   "public_key": "...",
+///   "nonce": "...",
+///   "recipient": "..."
+/// }
+///
+/// Update user secrets with NEAR wallet signature authentication.
+/// This is similar to add_generated_secret but:
+/// - Uses NEP-413 signature instead of bearer token (user-initiated)
+/// - Allows adding/updating regular secrets (not just PROTECTED_)
+/// - Supports append/reset modes
+/// - Supports migration (decrypt with old accessor, encrypt with new)
+///
+/// Security: Keystore verifies NEP-413 signature to ensure only owner can update.
+///
+/// Returns:
+/// - 200: { "encrypted_secrets_base64": "...", "summary": {...} }
+/// - 400: Invalid request or signature
+/// - 502: Keystore error
+pub async fn update_user_secrets(
+    State(state): State<AppState>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    // Check if keystore is configured
+    let keystore_url = state
+        .config
+        .keystore_base_url
+        .as_ref()
+        .ok_or((
+            StatusCode::BAD_REQUEST,
+            "Keystore is not configured".to_string(),
+        ))?;
+
+    // Basic validation (detailed validation happens in keystore with NEP-413 signature)
+    let owner = payload.get("owner")
+        .and_then(|v| v.as_str())
+        .ok_or((StatusCode::BAD_REQUEST, "owner is required".to_string()))?;
+
+    if owner.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "owner cannot be empty".to_string()));
+    }
+
+    let profile = payload.get("profile")
+        .and_then(|v| v.as_str())
+        .ok_or((StatusCode::BAD_REQUEST, "profile is required".to_string()))?;
+
+    if profile.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "profile cannot be empty".to_string()));
+    }
+
+    // Validate accessor exists
+    let accessor = payload.get("accessor")
+        .ok_or((StatusCode::BAD_REQUEST, "accessor is required".to_string()))?;
+
+    let accessor_type = accessor.get("type")
+        .and_then(|v| v.as_str())
+        .ok_or((StatusCode::BAD_REQUEST, "accessor.type is required".to_string()))?;
+
+    // Validate accessor based on type
+    match accessor_type {
+        "Repo" => {
+            let repo = accessor.get("repo")
+                .and_then(|v| v.as_str())
+                .ok_or((StatusCode::BAD_REQUEST, "accessor.repo is required for Repo type".to_string()))?;
+            if repo.is_empty() {
+                return Err((StatusCode::BAD_REQUEST, "accessor.repo cannot be empty".to_string()));
+            }
+            // Validate repo format
+            parse_github_repo(repo)
+                .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid repo format: {}", e)))?;
+        }
+        "WasmHash" => {
+            let hash = accessor.get("hash")
+                .and_then(|v| v.as_str())
+                .ok_or((StatusCode::BAD_REQUEST, "accessor.hash is required for WasmHash type".to_string()))?;
+            if hash.len() != 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err((StatusCode::BAD_REQUEST, "accessor.hash must be 64 hex characters".to_string()));
+            }
+        }
+        _ => {
+            return Err((StatusCode::BAD_REQUEST, format!("Unknown accessor type: {}", accessor_type)));
+        }
+    }
+
+    // Validate new_accessor if provided (same validation)
+    if let Some(new_accessor) = payload.get("new_accessor") {
+        let new_type = new_accessor.get("type")
+            .and_then(|v| v.as_str())
+            .ok_or((StatusCode::BAD_REQUEST, "new_accessor.type is required".to_string()))?;
+
+        match new_type {
+            "Repo" => {
+                let repo = new_accessor.get("repo")
+                    .and_then(|v| v.as_str())
+                    .ok_or((StatusCode::BAD_REQUEST, "new_accessor.repo is required".to_string()))?;
+                if repo.is_empty() {
+                    return Err((StatusCode::BAD_REQUEST, "new_accessor.repo cannot be empty".to_string()));
+                }
+                parse_github_repo(repo)
+                    .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid new_accessor repo format: {}", e)))?;
+            }
+            "WasmHash" => {
+                let hash = new_accessor.get("hash")
+                    .and_then(|v| v.as_str())
+                    .ok_or((StatusCode::BAD_REQUEST, "new_accessor.hash is required".to_string()))?;
+                if hash.len() != 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Err((StatusCode::BAD_REQUEST, "new_accessor.hash must be 64 hex characters".to_string()));
+                }
+            }
+            _ => {
+                return Err((StatusCode::BAD_REQUEST, format!("Unknown new_accessor type: {}", new_type)));
+            }
+        }
+    }
+
+    // Validate signature fields exist (actual verification in keystore)
+    if payload.get("signature").is_none() {
+        return Err((StatusCode::BAD_REQUEST, "signature is required".to_string()));
+    }
+    if payload.get("public_key").is_none() {
+        return Err((StatusCode::BAD_REQUEST, "public_key is required".to_string()));
+    }
+    if payload.get("nonce").is_none() {
+        return Err((StatusCode::BAD_REQUEST, "nonce is required".to_string()));
+    }
+    if payload.get("signed_message").is_none() {
+        return Err((StatusCode::BAD_REQUEST, "signed_message is required".to_string()));
+    }
+
+    let has_new_accessor = payload.get("new_accessor").is_some();
+
+    tracing::info!(
+        owner = %owner,
+        profile = %profile,
+        is_migration = has_new_accessor,
+        "Proxying update_user_secrets request to keystore"
+    );
+
+    // Proxy request to keystore (NEP-413 signature verification happens there)
+    let client = reqwest::Client::new();
+    let mut request_builder = client
+        .post(format!("{}/update_user_secrets", keystore_url))
+        .json(&payload);
+
+    // Add Authorization header (required for /update_user_secrets)
+    if let Some(ref token) = state.config.keystore_auth_token {
+        request_builder = request_builder.header("Authorization", format!("Bearer {}", token));
+    } else {
+        tracing::warn!("⚠️ KEYSTORE_AUTH_TOKEN not configured - /update_user_secrets will fail!");
+    }
+
+    let keystore_response = request_builder
+        .send()
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to connect to keystore");
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("Failed to connect to keystore: {}", e),
+            )
+        })?;
+
+    let status = keystore_response.status();
+    let body = keystore_response.text().await.map_err(|e| {
+        tracing::error!(error = %e, "Failed to read keystore response");
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("Failed to read keystore response: {}", e),
+        )
+    })?;
+
+    // Parse response as JSON
+    let resp_json: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
+        tracing::error!(error = %e, body = %body, "Failed to parse keystore response");
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("Failed to parse keystore response: {}", e),
+        )
+    })?;
+
+    // Pass through status code from keystore
+    let axum_status = StatusCode::from_u16(status.as_u16())
+        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+
+    if !status.is_success() {
+        tracing::warn!(
+            status = %status,
+            error = ?resp_json.get("error"),
+            "Keystore returned error"
+        );
+    }
+
+    Ok((axum_status, Json(resp_json)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

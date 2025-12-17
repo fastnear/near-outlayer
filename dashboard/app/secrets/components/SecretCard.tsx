@@ -6,10 +6,11 @@ import { formatAccessCondition } from './utils';
 interface SecretCardProps {
   secret: UserSecret;
   onEdit: () => void;
+  onUpdate?: () => void;
   onDelete: () => void;
 }
 
-export function SecretCard({ secret, onEdit, onDelete }: SecretCardProps) {
+export function SecretCard({ secret, onEdit, onUpdate, onDelete }: SecretCardProps) {
   // Validate accessor exists
   if (!secret.accessor) {
     return (
@@ -84,6 +85,15 @@ export function SecretCard({ secret, onEdit, onDelete }: SecretCardProps) {
           >
             🔄 Replace
           </button>
+          {onUpdate && (
+            <button
+              onClick={onUpdate}
+              className="inline-flex items-center px-3 py-1.5 border border-green-300 text-xs font-medium rounded text-green-700 bg-green-50 hover:bg-green-100 transition-colors"
+              title="Update secrets (preserves PROTECTED_ keys)"
+            >
+              ✏️ Update
+            </button>
+          )}
           <button
             onClick={onDelete}
             className="inline-flex items-center px-3 py-1.5 border border-red-300 text-xs font-medium rounded text-red-700 bg-red-50 hover:bg-red-100 transition-colors"

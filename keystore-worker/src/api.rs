@@ -6,7 +6,8 @@
 //!
 //! Protected endpoints (require bearer token auth):
 //! - POST /decrypt - Decrypt secrets from contract (worker only)
-//! - POST /add_generated_secret - Add generated secrets (worker only)
+//! - POST /add_generated_secret - Add generated secrets (coordinator only)
+//! - POST /update_user_secrets - Update user secrets with NEP-413 signature (coordinator only)
 
 use axum::{
     extract::State,
@@ -195,6 +196,82 @@ pub struct AddGeneratedSecretResponse {
     pub all_keys: Vec<String>,
 }
 
+/// Mode for updating user secrets
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateMode {
+    /// Add/update secrets, keeping existing ones
+    Append,
+    /// Replace all non-PROTECTED secrets
+    Reset,
+}
+
+/// Request to update user secrets (with NEAR signature)
+#[derive(Debug, Deserialize)]
+pub struct UpdateUserSecretsRequest {
+    /// Current accessor for the secrets
+    pub accessor: SecretAccessor,
+
+    /// Optional new accessor (for migration)
+    pub new_accessor: Option<SecretAccessor>,
+
+    /// Profile name
+    pub profile: String,
+
+    /// Owner account ID
+    pub owner: String,
+
+    /// Update mode
+    pub mode: UpdateMode,
+
+    /// User secrets to add/update (cannot contain PROTECTED_ prefix)
+    /// Values can be strings, numbers, booleans, or null - preserved as-is
+    pub secrets: std::collections::HashMap<String, serde_json::Value>,
+
+    /// Optional PROTECTED_ secrets to generate
+    pub generate_protected: Option<Vec<GeneratedSecretSpec>>,
+
+    /// Signed message (format: "Update Outlayer secrets for owner:profile")
+    pub signed_message: String,
+
+    /// Ed25519 signature
+    pub signature: String,
+
+    /// Public key (ed25519:base58...)
+    pub public_key: String,
+
+    /// Nonce for NEP-413
+    pub nonce: String,
+
+    /// Recipient for NEP-413 signature verification
+    pub recipient: String,
+}
+
+/// Response after updating user secrets
+#[derive(Debug, Serialize)]
+pub struct UpdateUserSecretsResponse {
+    /// Updated encrypted secrets (base64) for storing in contract
+    pub encrypted_secrets_base64: String,
+
+    /// Summary of changes
+    pub summary: UpdateSummary,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UpdateSummary {
+    /// PROTECTED_ keys that were preserved
+    pub protected_keys_preserved: Vec<String>,
+
+    /// Keys that were updated/added
+    pub updated_keys: Vec<String>,
+
+    /// Keys that were removed (only in reset mode)
+    pub removed_keys: Vec<String>,
+
+    /// Total number of secrets after update
+    pub total_keys: usize,
+}
+
 /// Health check response
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
@@ -203,13 +280,14 @@ pub struct HealthResponse {
 }
 
 /// Create the API router with all endpoints
-/// Only /decrypt and /add_generated_secret require auth (for worker access)
-/// /pubkey and /health are public (for dashboard/coordinator access)
+/// Protected endpoints require Bearer token auth (for coordinator/worker access)
+/// /pubkey and /health are public (for dashboard access)
 pub fn create_router(state: AppState) -> Router {
     // Protected routes (require auth token)
     let protected_routes = Router::new()
         .route("/decrypt", post(decrypt_handler))
         .route("/add_generated_secret", post(add_generated_secret_handler))
+        .route("/update_user_secrets", post(update_user_secrets_handler)) // Protected + NEP-413 signature
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
@@ -723,6 +801,482 @@ async fn add_generated_secret_handler(
         encrypted_data_base64: encrypted_base64,
         all_keys: all_secret_keys,
     }))
+}
+
+/// Update user secrets with NEAR signature authentication
+async fn update_user_secrets_handler(
+    State(state): State<AppState>,
+    Json(req): Json<UpdateUserSecretsRequest>,
+) -> Result<Json<UpdateUserSecretsResponse>, ApiError> {
+    // Check if keystore is ready
+    if !state.is_ready() {
+        tracing::warn!("Update secrets request rejected - keystore not ready");
+        return Err(ApiError::Unauthorized(
+            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string()
+        ));
+    }
+
+    tracing::info!(
+        owner = %req.owner,
+        profile = %req.profile,
+        mode = ?req.mode,
+        "Received update_user_secrets request"
+    );
+
+    // 1. Verify message format
+    // New format includes secrets payload for verification:
+    // "Update Outlayer secrets for {owner}:{profile}\nkeys:{key1,key2}\nprotected:{PROTECTED_A,PROTECTED_B}"
+    let mut expected_message = format!("Update Outlayer secrets for {}:{}", req.owner, req.profile);
+
+    // Add sorted secret keys to message (must match dashboard serialization)
+    let mut secret_keys: Vec<&String> = req.secrets.keys().collect();
+    secret_keys.sort();
+    if !secret_keys.is_empty() {
+        expected_message.push_str("\nkeys:");
+        expected_message.push_str(&secret_keys.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(","));
+    }
+
+    // Add sorted PROTECTED_ names to message
+    if let Some(ref generate) = req.generate_protected {
+        let mut protected_names: Vec<&str> = generate.iter().map(|g| g.name.as_str()).collect();
+        protected_names.sort();
+        if !protected_names.is_empty() {
+            expected_message.push_str("\nprotected:");
+            expected_message.push_str(&protected_names.join(","));
+        }
+    }
+
+    if req.signed_message != expected_message {
+        tracing::warn!(
+            expected = %expected_message,
+            received = %req.signed_message,
+            "Message format mismatch"
+        );
+        return Err(ApiError::BadRequest(format!(
+            "Invalid message format. Expected payload to match request data. Expected: '{}', Got: '{}'",
+            expected_message, req.signed_message
+        )));
+    }
+
+    // 2. Verify NEAR signature (NEP-413)
+    tracing::info!(
+        message = %req.signed_message,
+        public_key = %req.public_key,
+        nonce = %req.nonce,
+        recipient = %req.recipient,
+        signature_len = req.signature.len(),
+        "Verifying NEP-413 signature"
+    );
+
+    match verify_near_signature(&req.signed_message, &req.signature, &req.public_key, &req.nonce, &req.recipient) {
+        Ok(()) => {
+            tracing::info!(
+                owner = %req.owner,
+                public_key = %req.public_key,
+                "✅ NEP-413 signature verified successfully"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                message = %req.signed_message,
+                public_key = %req.public_key,
+                nonce = %req.nonce,
+                recipient = %req.recipient,
+                "❌ NEP-413 signature verification failed"
+            );
+            return Err(ApiError::Unauthorized(format!("Invalid signature: {}", e)));
+        }
+    }
+
+    // 3. Verify public key belongs to owner
+    // TODO: For now we trust the signature, but ideally should verify via NEAR RPC
+    // that the public_key belongs to req.owner account
+
+    // 4. Validate user secrets don't contain PROTECTED_ prefix
+    let protected_in_user_secrets: Vec<&String> = req.secrets.keys()
+        .filter(|k| k.starts_with("PROTECTED_"))
+        .collect();
+
+    if !protected_in_user_secrets.is_empty() {
+        return Err(ApiError::BadRequest(format!(
+            "User secrets cannot use 'PROTECTED_' prefix: {}",
+            protected_in_user_secrets.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(", ")
+        )));
+    }
+
+    // 5. Determine if this is a migration (accessor change)
+    let is_migration = req.new_accessor.is_some();
+    if is_migration {
+        tracing::info!(
+            owner = %req.owner,
+            profile = %req.profile,
+            "Migration mode: will decrypt with old accessor, encrypt with new accessor"
+        );
+    }
+
+    // 6. Get current encrypted secrets from contract using OLD accessor
+    // (new_accessor is only for encryption target, not for fetching)
+    let near_client = state.near_client.as_ref()
+        .ok_or_else(|| ApiError::InternalError("NEAR client not configured".to_string()))?;
+
+    let secret_profile = match &req.accessor {
+        SecretAccessor::Repo { repo, branch } => {
+            near_client
+                .get_secrets(repo, branch.as_deref(), &req.profile, &req.owner)
+                .await
+                .map_err(|e| {
+                    tracing::warn!(error = %e, "Failed to fetch secrets from contract");
+                    ApiError::InternalError(format!("Failed to fetch secrets: {}", e))
+                })?
+        }
+        SecretAccessor::WasmHash { hash } => {
+            near_client
+                .get_secrets_by_wasm_hash(hash, &req.profile, &req.owner)
+                .await
+                .map_err(|e| {
+                    tracing::warn!(error = %e, "Failed to fetch secrets from contract");
+                    ApiError::InternalError(format!("Failed to fetch secrets: {}", e))
+                })?
+        }
+    };
+
+    // 7. Decrypt existing secrets (if any) using OLD accessor seed
+    let mut current_secrets: serde_json::Map<String, serde_json::Value> = if let Some(profile) = secret_profile {
+        tracing::info!(
+            profile_data = ?profile,
+            "Found existing secrets in contract, attempting to decrypt"
+        );
+
+        // Extract encrypted_secrets field from JSON
+        let encrypted_secrets_str = profile
+            .get("encrypted_secrets")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                tracing::error!("Missing encrypted_secrets field in profile data");
+                ApiError::InternalError("Missing encrypted_secrets field".to_string())
+            })?;
+
+        // Decode from base64
+        let encrypted_bytes = base64::decode(encrypted_secrets_str)
+            .map_err(|e| {
+                tracing::error!(error = %e, "Invalid base64 in stored secrets");
+                ApiError::BadRequest(format!("Invalid base64 in stored secrets: {}", e))
+            })?;
+
+        // Generate seed for decryption (must match format used during encryption)
+        // Format: normalized_repo:owner[:branch] - same as /pubkey endpoint
+        let seed = match &req.accessor {
+            SecretAccessor::Repo { repo, branch } => {
+                let normalized_repo = crate::utils::normalize_repo_url(repo);
+                if let Some(b) = branch.as_deref().filter(|s| !s.is_empty()) {
+                    format!("{}:{}:{}", normalized_repo, req.owner, b)
+                } else {
+                    format!("{}:{}", normalized_repo, req.owner)
+                }
+            }
+            SecretAccessor::WasmHash { hash } => {
+                format!("wasm_hash:{}:{}", hash, req.owner)
+            }
+        };
+
+        tracing::debug!(
+            seed = %seed,
+            encrypted_len = encrypted_bytes.len(),
+            "Attempting to decrypt existing secrets"
+        );
+
+        // Decrypt
+        let keystore = state.keystore.read().await;
+        let plaintext_bytes = keystore
+            .decrypt(&seed, &encrypted_bytes)
+            .map_err(|e| {
+                tracing::error!(
+                    error = %e,
+                    seed = %seed,
+                    "Failed to decrypt existing secrets - possibly encrypted with different key or corrupted"
+                );
+                ApiError::InternalError(format!("Failed to decrypt existing secrets: {}", e))
+            })?;
+        drop(keystore);
+
+        // Parse JSON
+        let plaintext_str = String::from_utf8(plaintext_bytes)
+            .map_err(|e| {
+                tracing::error!(error = %e, "Decrypted data is not valid UTF-8");
+                ApiError::InternalError(format!("Decrypted data is not valid UTF-8: {}", e))
+            })?;
+
+        let secrets: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&plaintext_str)
+            .map_err(|e| {
+                tracing::error!(error = %e, "Decrypted data is not valid JSON");
+                ApiError::InternalError(format!("Decrypted data is not valid JSON: {}", e))
+            })?;
+
+        tracing::info!(
+            num_existing_secrets = secrets.len(),
+            "Successfully decrypted existing secrets"
+        );
+
+        secrets
+    } else {
+        // No existing secrets
+        tracing::info!("No existing secrets found in contract, starting fresh");
+        serde_json::Map::new()
+    };
+
+    // Track changes for summary
+    let mut protected_keys_preserved: Vec<String> = Vec::new();
+    let mut updated_keys: Vec<String> = Vec::new();
+    let mut removed_keys: Vec<String> = Vec::new();
+
+    // 7. Apply update mode
+    match req.mode {
+        UpdateMode::Reset => {
+            // Remove all non-PROTECTED keys
+            let keys_to_remove: Vec<String> = current_secrets.keys()
+                .filter(|k| !k.starts_with("PROTECTED_"))
+                .cloned()
+                .collect();
+
+            for key in &keys_to_remove {
+                current_secrets.remove(key);
+                removed_keys.push(key.clone());
+            }
+
+            // Preserve PROTECTED_ keys
+            for key in current_secrets.keys() {
+                if key.starts_with("PROTECTED_") {
+                    protected_keys_preserved.push(key.clone());
+                }
+            }
+        }
+        UpdateMode::Append => {
+            // Just preserve existing PROTECTED_ keys
+            for key in current_secrets.keys() {
+                if key.starts_with("PROTECTED_") {
+                    protected_keys_preserved.push(key.clone());
+                }
+            }
+        }
+    }
+
+    // 8. Add/update user secrets (values are already serde_json::Value)
+    for (key, value) in req.secrets {
+        current_secrets.insert(key.clone(), value);
+        updated_keys.push(key);
+    }
+
+    // 9. Generate new PROTECTED_ secrets if requested
+    if let Some(generate_specs) = req.generate_protected {
+        for spec in generate_specs {
+            // Validate name starts with PROTECTED_
+            if !spec.name.starts_with("PROTECTED_") {
+                return Err(ApiError::BadRequest(format!(
+                    "Generated secret '{}' must start with 'PROTECTED_' prefix",
+                    spec.name
+                )));
+            }
+
+            // Check it doesn't already exist (PROTECTED_ are immutable)
+            if current_secrets.contains_key(&spec.name) {
+                return Err(ApiError::BadRequest(format!(
+                    "Cannot regenerate existing PROTECTED_ secret: {}. These secrets are immutable once created.",
+                    spec.name
+                )));
+            }
+
+            // Generate secret
+            let directive = format!("generate_outlayer_secret:{}", spec.generation_type);
+            let generated_value = crate::secret_generation::generate_secret(&directive)
+                .map_err(|e| ApiError::BadRequest(format!(
+                    "Failed to generate secret '{}' with type '{}': {}",
+                    spec.name, spec.generation_type, e
+                )))?;
+
+            tracing::info!(
+                key = %spec.name,
+                gen_type = %spec.generation_type,
+                "Generated PROTECTED_ secret"
+            );
+
+            current_secrets.insert(spec.name.clone(), serde_json::Value::String(generated_value));
+            updated_keys.push(spec.name);
+        }
+    }
+
+    // 10. Re-encrypt updated secrets with NEW accessor seed (if migrating)
+    let final_secrets_json = serde_json::to_string(&current_secrets)
+        .map_err(|e| ApiError::InternalError(format!("Failed to serialize secrets: {}", e)))?;
+
+    // Generate seed for encryption - use new_accessor if provided (migration), otherwise use original accessor
+    // Format: normalized_repo:owner[:branch] - same as /pubkey endpoint
+    let final_accessor = req.new_accessor.as_ref().unwrap_or(&req.accessor);
+    let encryption_seed = match final_accessor {
+        SecretAccessor::Repo { repo, branch } => {
+            let normalized_repo = crate::utils::normalize_repo_url(repo);
+            if let Some(b) = branch.as_deref().filter(|s| !s.is_empty()) {
+                format!("{}:{}:{}", normalized_repo, req.owner, b)
+            } else {
+                format!("{}:{}", normalized_repo, req.owner)
+            }
+        }
+        SecretAccessor::WasmHash { hash } => {
+            format!("wasm_hash:{}:{}", hash, req.owner)
+        }
+    };
+
+    if is_migration {
+        tracing::info!(
+            encryption_seed = %encryption_seed,
+            "Migration: encrypting with NEW accessor seed"
+        );
+    }
+
+    let keystore = state.keystore.read().await;
+    let encrypted_bytes = keystore
+        .encrypt(&encryption_seed, final_secrets_json.as_bytes())
+        .map_err(|e| ApiError::InternalError(format!("Failed to encrypt secrets: {}", e)))?;
+    drop(keystore);
+
+    let encrypted_base64 = base64::encode(&encrypted_bytes);
+
+    // Prepare summary
+    let summary = UpdateSummary {
+        protected_keys_preserved,
+        updated_keys,
+        removed_keys,
+        total_keys: current_secrets.len(),
+    };
+
+    tracing::info!(
+        owner = %req.owner,
+        profile = %req.profile,
+        total_keys = summary.total_keys,
+        protected_preserved = summary.protected_keys_preserved.len(),
+        updated = summary.updated_keys.len(),
+        removed = summary.removed_keys.len(),
+        "Successfully updated user secrets"
+    );
+
+    Ok(Json(UpdateUserSecretsResponse {
+        encrypted_secrets_base64: encrypted_base64,
+        summary,
+    }))
+}
+
+/// NEP-413 payload structure for Borsh serialization
+/// See: https://github.com/near/NEPs/blob/master/neps/nep-0413.md
+#[derive(borsh::BorshSerialize)]
+struct Nep413Payload {
+    /// The message that was requested to be signed
+    message: String,
+    /// 32-byte nonce
+    nonce: [u8; 32],
+    /// The recipient to whom the signature is intended for
+    recipient: String,
+    /// Optional callback URL (always None for our use case)
+    callback_url: Option<String>,
+}
+
+/// NEP-413 tag: 2^31 + 413
+const NEP413_TAG: u32 = 2147484061;
+
+/// Verify NEAR signature (NEP-413)
+///
+/// NEP-413 specifies that the signed payload is:
+/// SHA256(NEP413_TAG || Borsh(Nep413Payload))
+fn verify_near_signature(
+    message: &str,
+    signature: &str,
+    public_key: &str,
+    nonce: &str,
+    recipient: &str,
+) -> Result<(), anyhow::Error> {
+    use sha2::{Sha256, Digest};
+
+    // Parse public key (format: "ed25519:base58...")
+    let pubkey_parts: Vec<&str> = public_key.split(':').collect();
+    if pubkey_parts.len() != 2 || pubkey_parts[0] != "ed25519" {
+        anyhow::bail!("Invalid public key format, expected 'ed25519:base58...'");
+    }
+
+    let pubkey_bytes = bs58::decode(pubkey_parts[1])
+        .into_vec()
+        .map_err(|e| anyhow::anyhow!("Failed to decode public key: {}", e))?;
+
+    if pubkey_bytes.len() != 32 {
+        anyhow::bail!("Invalid public key length: {}", pubkey_bytes.len());
+    }
+
+    // Decode signature (base64)
+    let signature_bytes = base64::decode(signature)
+        .map_err(|e| anyhow::anyhow!("Failed to decode signature: {}", e))?;
+
+    if signature_bytes.len() != 64 {
+        anyhow::bail!("Invalid signature length: {}", signature_bytes.len());
+    }
+
+    // Decode nonce (base64) - must be exactly 32 bytes
+    let nonce_bytes = base64::decode(nonce)
+        .map_err(|e| anyhow::anyhow!("Failed to decode nonce: {}", e))?;
+
+    let nonce_len = nonce_bytes.len();
+    if nonce_len != 32 {
+        anyhow::bail!("Invalid nonce length: {} (expected 32)", nonce_len);
+    }
+
+    let nonce_array: [u8; 32] = nonce_bytes.try_into()
+        .map_err(|_| anyhow::anyhow!("Failed to convert nonce to array"))?;
+
+    // Build NEP-413 payload
+    let payload = Nep413Payload {
+        message: message.to_string(),
+        nonce: nonce_array,
+        recipient: recipient.to_string(),
+        callback_url: None,
+    };
+
+    // Serialize payload with Borsh
+    let payload_bytes = borsh::to_vec(&payload)
+        .map_err(|e| anyhow::anyhow!("Failed to serialize NEP-413 payload: {}", e))?;
+
+    // Build final message: tag (4 bytes LE) + payload
+    let mut to_hash = Vec::with_capacity(4 + payload_bytes.len());
+    to_hash.extend_from_slice(&NEP413_TAG.to_le_bytes());
+    to_hash.extend_from_slice(&payload_bytes);
+
+    // SHA256 hash the combined data
+    let hash = Sha256::digest(&to_hash);
+
+    tracing::debug!(
+        message = %message,
+        recipient = %recipient,
+        nonce_len = nonce_len,
+        payload_len = payload_bytes.len(),
+        hash_hex = %hex::encode(&hash),
+        "NEP-413 signature verification"
+    );
+
+    // Verify using ed25519
+    use ed25519_dalek::{Signature, VerifyingKey, Verifier};
+
+    let verifying_key = VerifyingKey::from_bytes(
+        &<[u8; 32]>::try_from(pubkey_bytes.as_slice())
+            .map_err(|_| anyhow::anyhow!("Invalid public key bytes"))?
+    ).map_err(|e| anyhow::anyhow!("Invalid public key: {}", e))?;
+
+    let signature = Signature::from_bytes(
+        &<[u8; 64]>::try_from(signature_bytes.as_slice())
+            .map_err(|_| anyhow::anyhow!("Invalid signature bytes"))?
+    );
+
+    // Verify signature against the hash
+    verifying_key
+        .verify(&hash, &signature)
+        .map_err(|e| anyhow::anyhow!("Signature verification failed: {}", e))?;
+
+    Ok(())
 }
 
 /// Authentication middleware (only for /decrypt and /add_generated_secret)
