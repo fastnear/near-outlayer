@@ -53,3 +53,5 @@ prod_configs
 docker/.phala
 .tasks
 docker/.env.*
+.ignore
+package-lock.json
