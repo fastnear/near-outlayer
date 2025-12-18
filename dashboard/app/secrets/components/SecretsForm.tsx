@@ -732,6 +732,9 @@ export function SecretsForm({
             <p className="text-xs text-amber-700 mt-1">
               💡 You can leave secrets empty to just migrate existing secrets to the new accessor.
             </p>
+            <p className="text-xs text-amber-700 mt-1">
+              ℹ️ Note: Migration only works between different repos/branches or WASM files. To copy secrets to a different profile, create a new secret manually.
+            </p>
           </div>
         )}
 
