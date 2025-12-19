@@ -69,16 +69,103 @@ Health check and public key info (no auth required)
 }
 ```
 
-### `GET /pubkey`
-Get keystore public key (no auth required)
+### `POST /pubkey`
+Get keystore public key for client-side encryption (no auth required)
+
+**Request:**
+```json
+{
+  "seed": "github.com/user/repo:owner.near",
+  "secrets_json": "{\"API_KEY\": \"value\"}"
+}
+```
 
 **Response:**
 ```json
 {
-  "public_key_hex": "a1b2c3d4...",
-  "public_key_base58": "Ed25519:..."
+  "pubkey": "a1b2c3d4..."
 }
 ```
+
+### `POST /encrypt`
+Server-side encryption (secure alternative to client-side XOR). No auth required - TLS + TEE provides security.
+
+User sends plaintext secrets over HTTPS, keystore encrypts with ChaCha20-Poly1305, returns encrypted blob for on-chain storage.
+
+Supports two binding modes:
+1. **Repo-based** - Secrets bound to GitHub repo + branch (mutable, can update code)
+2. **WasmHash-based** - Secrets bound to specific WASM binary hash (immutable, production)
+
+#### Repo-Based Encryption (for GitHub sources)
+
+**Request:**
+```json
+{
+  "secrets_json": "{\"API_KEY\": \"value\", \"PRIVATE_KEY\": \"0x...\"}",
+  "repo": "user/repo",
+  "owner": "owner.near",
+  "branch": "main"
+}
+```
+
+**Response:**
+```json
+{
+  "encrypted_secrets_base64": "base64-encoded-ciphertext",
+  "seed": "github.com/user/repo:owner.near:main",
+  "pubkey": "a1b2c3d4..."
+}
+```
+
+#### WasmHash-Based Encryption (for WasmUrl sources)
+
+For production deployments where you want secrets bound to a specific immutable WASM binary:
+
+**Request:**
+```json
+{
+  "secrets_json": "{\"MASTER_SECRET\": \"your_64_hex_chars\"}",
+  "repo": "wasm:a1b2c3d4e5f6...",
+  "owner": "owner.near"
+}
+```
+
+The `repo` field uses the special `wasm:` prefix followed by the SHA256 hash of your WASM binary.
+
+**Response:**
+```json
+{
+  "encrypted_secrets_base64": "base64-encoded-ciphertext",
+  "seed": "wasm_hash:a1b2c3d4e5f6...:owner.near",
+  "pubkey": "a1b2c3d4..."
+}
+```
+
+#### Calculate WASM Hash
+
+```bash
+# Get SHA256 hash of your compiled WASM
+sha256sum your-worker.wasm
+# Output: a1b2c3d4e5f6789... your-worker.wasm (use the hash part)
+```
+
+#### Seed Format
+
+The `seed` is used for deterministic key derivation:
+
+| Binding Type | Input `repo` | Internal Seed | Example Seed |
+|--------------|--------------|---------------|--------------|
+| Repo (with branch) | `github.com/alice/project` | `{repo}:{owner}:{branch}` | `github.com/alice/project:alice.near:main` |
+| Repo (all branches) | `github.com/alice/project` | `{repo}:{owner}` | `github.com/alice/project:alice.near` |
+| WasmHash | `wasm:a1b2c3d4...` | `wasm_hash:{hash}:{owner}` | `wasm_hash:a1b2c3d4...:alice.near` |
+
+**Security model:**
+- Plaintext travels over TLS (HTTPS)
+- Keystore runs in TEE (Intel TDX)
+- Encryption uses ChaCha20-Poly1305 AEAD with random nonce
+- Keystore does NOT store secrets - only encrypts and returns
+- Only this keystore can decrypt (using derived key from master secret)
+- WasmHash binding ensures secrets only work with exact binary (tamper-proof)
 
 ### `POST /decrypt`
 Decrypt secrets for verified TEE worker (requires auth)

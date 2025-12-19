@@ -3,6 +3,7 @@
 //! Public endpoints (no auth required):
 //! - GET /health - Health check
 //! - POST /pubkey - Get public key for encryption (used by dashboard)
+//! - POST /encrypt - Server-side encryption (secure alternative to client-side XOR)
 //!
 //! Protected endpoints (require bearer token auth):
 //! - POST /decrypt - Decrypt secrets from contract (worker only)
@@ -21,6 +22,26 @@ use serde::{Deserialize, Serialize};
 use tower_http::trace::TraceLayer;
 
 use crate::attestation::Attestation;
+
+/// Reserved environment variable names that cannot be used as secret keys.
+/// These are automatically set by the OutLayer worker at runtime.
+const RESERVED_KEYWORDS: &[&str] = &[
+    "NEAR_SENDER_ID",
+    "NEAR_CONTRACT_ID",
+    "NEAR_BLOCK_HEIGHT",
+    "NEAR_BLOCK_TIMESTAMP",
+    "NEAR_RECEIPT_ID",
+    "NEAR_PREDECESSOR_ID",
+    "NEAR_SIGNER_PUBLIC_KEY",
+    "NEAR_GAS_BURNT",
+    "NEAR_USER_ACCOUNT_ID",
+    "NEAR_PAYMENT_YOCTO",
+    "NEAR_TRANSACTION_HASH",
+    "NEAR_MAX_INSTRUCTIONS",
+    "NEAR_MAX_MEMORY_MB",
+    "NEAR_MAX_EXECUTION_SECONDS",
+    "NEAR_REQUEST_ID",
+];
 
 /// Application state shared across all handlers
 #[derive(Clone)]
@@ -279,6 +300,39 @@ pub struct HealthResponse {
     pub tee_mode: String,
 }
 
+/// Request to encrypt secrets server-side (secure alternative to client-side encryption)
+///
+/// User sends plaintext secrets over TLS, keystore encrypts with ChaCha20-Poly1305,
+/// and returns encrypted blob for on-chain storage. No auth required - TLS + TEE is the security.
+#[derive(Debug, Deserialize)]
+pub struct EncryptRequest {
+    /// Secrets as JSON string (e.g., '{"API_KEY":"value", "PRIVATE_KEY":"0x..."}')
+    pub secrets_json: String,
+
+    /// Repository (e.g., "github.com/user/repo" or "user/repo")
+    pub repo: String,
+
+    /// Owner account ID (NEAR account that will own these secrets)
+    pub owner: String,
+
+    /// Optional branch name (omit for all branches)
+    #[serde(default)]
+    pub branch: Option<String>,
+}
+
+/// Response with encrypted secrets
+#[derive(Debug, Serialize)]
+pub struct EncryptResponse {
+    /// Encrypted secrets (base64 encoded, ChaCha20-Poly1305)
+    pub encrypted_secrets_base64: String,
+
+    /// Seed used for encryption (for verification)
+    pub seed: String,
+
+    /// Public key used for encryption (hex)
+    pub pubkey: String,
+}
+
 /// Create the API router with all endpoints
 /// Protected endpoints require Bearer token auth (for coordinator/worker access)
 /// /pubkey and /health are public (for dashboard access)
@@ -297,6 +351,7 @@ pub fn create_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health_handler))
         .route("/pubkey", post(pubkey_handler)) // Public for dashboard encryption
+        .route("/encrypt", post(encrypt_handler)) // Public: server-side encryption over TLS
         .merge(protected_routes)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -326,25 +381,6 @@ async fn pubkey_handler(
     // 1. Validate secrets JSON first (check for reserved keywords)
     let secrets_map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&req.secrets_json)
         .map_err(|e| ApiError::BadRequest(format!("Invalid JSON format: {}", e)))?;
-
-    // Reserved keywords that should not be overridden by user secrets
-    const RESERVED_KEYWORDS: &[&str] = &[
-        "NEAR_SENDER_ID",
-        "NEAR_CONTRACT_ID",
-        "NEAR_BLOCK_HEIGHT",
-        "NEAR_BLOCK_TIMESTAMP",
-        "NEAR_RECEIPT_ID",
-        "NEAR_PREDECESSOR_ID",
-        "NEAR_SIGNER_PUBLIC_KEY",
-        "NEAR_GAS_BURNT",
-        "NEAR_USER_ACCOUNT_ID",
-        "NEAR_PAYMENT_YOCTO",
-        "NEAR_TRANSACTION_HASH",
-        "NEAR_MAX_INSTRUCTIONS",
-        "NEAR_MAX_MEMORY_MB",
-        "NEAR_MAX_EXECUTION_SECONDS",
-        "NEAR_REQUEST_ID",
-    ];
 
     // Check for reserved keywords
     let reserved_found: Vec<&str> = secrets_map.keys()
@@ -396,6 +432,109 @@ async fn pubkey_handler(
     );
 
     Ok(Json(PubkeyResponse { pubkey: pubkey_hex }))
+}
+
+/// Encrypt secrets server-side (secure alternative to client-side XOR encryption)
+///
+/// This endpoint allows users to send plaintext secrets over TLS, have the keystore
+/// encrypt them with ChaCha20-Poly1305, and receive the encrypted blob for on-chain storage.
+///
+/// Security model:
+/// - User sends plaintext over HTTPS (TLS protects in transit)
+/// - Keystore runs in TEE (Intel TDX) - verified via attestation at registration
+/// - Encryption uses ChaCha20-Poly1305 AEAD with random nonce
+/// - Keystore does NOT store secrets - only encrypts and returns
+/// - Only the keystore can decrypt (using derived key from master secret)
+async fn encrypt_handler(
+    State(state): State<AppState>,
+    Json(req): Json<EncryptRequest>,
+) -> Result<Json<EncryptResponse>, ApiError> {
+    // Check if keystore is ready
+    if !state.is_ready() {
+        tracing::warn!("Encrypt request rejected - keystore not ready");
+        return Err(ApiError::Unauthorized(
+            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string()
+        ));
+    }
+
+    // 1. Validate secrets JSON
+    let secrets_map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&req.secrets_json)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid JSON format: {}", e)))?;
+
+    // Check for reserved keywords
+    let reserved_found: Vec<&str> = secrets_map.keys()
+        .filter(|k| RESERVED_KEYWORDS.contains(&k.as_str()))
+        .map(|k| k.as_str())
+        .collect();
+
+    if !reserved_found.is_empty() {
+        tracing::warn!(
+            reserved_keys = ?reserved_found,
+            "Rejected secrets with reserved keywords"
+        );
+        return Err(ApiError::BadRequest(format!(
+            "Cannot use reserved system keywords as secret keys: {}",
+            reserved_found.join(", ")
+        )));
+    }
+
+    // Check for PROTECTED_ prefix (reserved for TEE-generated secrets)
+    let protected_keys: Vec<&str> = secrets_map.keys()
+        .filter(|k| k.starts_with("PROTECTED_"))
+        .map(|k| k.as_str())
+        .collect();
+
+    if !protected_keys.is_empty() {
+        tracing::warn!(
+            protected_keys = ?protected_keys,
+            "Rejected manual secrets with PROTECTED_ prefix"
+        );
+        return Err(ApiError::BadRequest(format!(
+            "Manual secrets cannot use 'PROTECTED_' prefix (reserved for auto-generated secrets): {}",
+            protected_keys.join(", ")
+        )));
+    }
+
+    // 2. Build seed from repo/owner/branch
+    // Handle WasmHash vs Repo differently to match decrypt handler format
+    let seed = if req.repo.starts_with("wasm:") {
+        // WasmHash binding: extract hash and format as "wasm_hash:{hash}:{owner}"
+        let hash = req.repo.strip_prefix("wasm:").unwrap();
+        format!("wasm_hash:{}:{}", hash, req.owner)
+    } else {
+        // Repo binding: normalize and format as "{repo}:{owner}" or "{repo}:{owner}:{branch}"
+        let normalized_repo = crate::utils::normalize_repo_url(&req.repo);
+        match &req.branch {
+            Some(branch) if !branch.is_empty() => format!("{}:{}:{}", normalized_repo, req.owner, branch),
+            _ => format!("{}:{}", normalized_repo, req.owner),
+        }
+    };
+
+    // 3. Encrypt with ChaCha20-Poly1305
+    let keystore = state.keystore.read().await;
+
+    let pubkey_hex = keystore
+        .public_key_hex(&seed)
+        .map_err(|e| ApiError::InternalError(format!("Failed to derive public key: {}", e)))?;
+
+    let encrypted = keystore
+        .encrypt(&seed, req.secrets_json.as_bytes())
+        .map_err(|e| ApiError::InternalError(format!("Encryption failed: {}", e)))?;
+
+    let encrypted_base64 = base64::encode(&encrypted);
+
+    tracing::info!(
+        seed = %seed,
+        num_secrets = secrets_map.len(),
+        encrypted_size = encrypted.len(),
+        "Encrypted secrets server-side"
+    );
+
+    Ok(Json(EncryptResponse {
+        encrypted_secrets_base64: encrypted_base64,
+        seed,
+        pubkey: pubkey_hex,
+    }))
 }
 
 /// Decrypt secrets from contract for authorized TEE worker
@@ -743,24 +882,6 @@ async fn add_generated_secret_handler(
     }
 
     // 4. Validate no reserved keywords (final check)
-    const RESERVED_KEYWORDS: &[&str] = &[
-        "NEAR_SENDER_ID",
-        "NEAR_CONTRACT_ID",
-        "NEAR_BLOCK_HEIGHT",
-        "NEAR_BLOCK_TIMESTAMP",
-        "NEAR_RECEIPT_ID",
-        "NEAR_PREDECESSOR_ID",
-        "NEAR_SIGNER_PUBLIC_KEY",
-        "NEAR_GAS_BURNT",
-        "NEAR_USER_ACCOUNT_ID",
-        "NEAR_PAYMENT_YOCTO",
-        "NEAR_TRANSACTION_HASH",
-        "NEAR_MAX_INSTRUCTIONS",
-        "NEAR_MAX_MEMORY_MB",
-        "NEAR_MAX_EXECUTION_SECONDS",
-        "NEAR_REQUEST_ID",
-    ];
-
     let reserved_found: Vec<&str> = secrets_map.keys()
         .filter(|k| RESERVED_KEYWORDS.contains(&k.as_str()))
         .map(|k| k.as_str())
