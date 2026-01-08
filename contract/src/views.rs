@@ -45,6 +45,12 @@ impl Contract {
         (self.owner_id.clone(), self.operator_id.clone())
     }
 
+    /// Get event metadata (standard name and version)
+    /// Used by workers to filter events
+    pub fn get_event_metadata(&self) -> (String, String) {
+        (self.event_standard.clone(), self.event_version.clone())
+    }
+
     /// Get pending output data for a given request_id
     /// Used by coordinator to check if large output was submitted
     pub fn get_pending_output(&self, request_id: u64) -> Option<ExecutionOutput> {

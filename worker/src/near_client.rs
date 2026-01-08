@@ -606,7 +606,6 @@ impl NearClient {
 
         Ok(outcome)
     }
-
 }
 
 #[cfg(test)]

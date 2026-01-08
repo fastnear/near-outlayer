@@ -24,19 +24,22 @@ use wasmtime_wasi::bindings::Command;
 use wasmtime_wasi_http::{WasiHttpCtx, WasiHttpView};
 
 use crate::api_client::ResourceLimits;
-use crate::outlayer_rpc::{RpcHostState, RpcProxy};
+use crate::outlayer_rpc::RpcHostState;
+use crate::outlayer_storage::{StorageClient, StorageHostState, add_storage_to_linker};
 
 use super::ExecutionContext;
 
 /// Host state for WASI P2 execution
 ///
-/// Contains WASI context, HTTP context, and optionally RPC proxy state.
+/// Contains WASI context, HTTP context, and optionally RPC proxy and storage state.
 struct HostState {
     wasi_ctx: WasiCtx,
     wasi_http_ctx: WasiHttpCtx,
     table: ResourceTable,
     /// RPC proxy state (only present if ExecutionContext has outlayer_rpc)
     rpc_state: Option<RpcHostState>,
+    /// Storage state (only present if ExecutionContext has storage_config)
+    storage_state: Option<StorageHostState>,
 }
 
 impl WasiView for HostState {
@@ -63,6 +66,11 @@ impl HostState {
     /// Get RPC host state (for host function callbacks)
     fn rpc_state_mut(&mut self) -> &mut RpcHostState {
         self.rpc_state.as_mut().expect("RPC state not initialized")
+    }
+
+    /// Get storage host state (for host function callbacks)
+    fn storage_state_mut(&mut self) -> &mut StorageHostState {
+        self.storage_state.as_mut().expect("Storage state not initialized")
     }
 }
 
@@ -101,6 +109,55 @@ pub async fn execute(
 
     debug!("Loaded as WASI Preview 2 component");
 
+    // Check for storage import if running as project
+    // For P2 components, we check if they import `near:storage/api` interface
+    // This indicates the WASM is built with OutLayer SDK and knows about project context
+    // Note: The `__outlayer_get_metadata` export doesn't work in component model
+    // because #[no_mangle] exports are not visible in component WIT
+    let has_storage_import = component.component_type().imports(&engine)
+        .any(|(name, _)| name.contains("near:storage/api"));
+
+    let storage_config = exec_ctx.and_then(|ctx| ctx.storage_config.as_ref());
+
+    // For P2 components: if running as project, WASM must import storage interface
+    // This ensures the WASM was built with OutLayer SDK
+    if storage_config.is_some() && !has_storage_import {
+        anyhow::bail!(
+            "WASM running in project context must import `near:storage/api` interface.\n\
+            This import is provided by the `outlayer` crate.\n\
+            Without this import, persistent storage is not available.\n\
+            \n\
+            To fix:\n\
+            1. Add `outlayer` crate to your dependencies\n\
+            2. Use storage functions from `outlayer::storage` module\n\
+            \n\
+            Or run this WASM as standalone (without project) if you don't need persistent storage."
+        );
+    }
+
+    // If WASM imports storage but we don't have storage config, fail early with helpful message
+    if has_storage_import && storage_config.is_none() {
+        anyhow::bail!(
+            "WASM imports `near:storage/api` but storage is not configured.\n\
+            \n\
+            This WASM was built with the `outlayer` crate and expects persistent storage.\n\
+            \n\
+            Possible causes:\n\
+            1. WASM is running standalone (not as part of a project)\n\
+            2. Keystore is not configured (KEYSTORE_BASE_URL/KEYSTORE_AUTH_TOKEN)\n\
+            3. Project UUID is missing from execution request\n\
+            \n\
+            To fix:\n\
+            1. Run this WASM through a project (request_execution_version with project_id)\n\
+            2. Ensure keystore is properly configured in worker environment\n\
+            3. Or rebuild WASM without `outlayer` crate if you don't need storage"
+        );
+    }
+
+    if storage_config.is_some() && has_storage_import {
+        tracing::debug!("✅ Project WASM imports near:storage/api interface");
+    }
+
     // Create linker with WASI and HTTP support
     let mut linker: Linker<HostState> = Linker::new(&engine);
     wasmtime_wasi::add_to_linker_async(&mut linker)?;
@@ -132,6 +189,29 @@ pub async fn execute(
         }
     } else {
         debug!("No execution context provided");
+        None
+    };
+
+    // Add storage host functions if context has storage config
+    let storage_state = if let Some(ctx) = exec_ctx {
+        if let Some(storage_config) = &ctx.storage_config {
+            debug!("Adding storage host functions to linker");
+
+            // Create storage client
+            let storage_client = StorageClient::new(storage_config.clone())
+                .context("Failed to create storage client")?;
+
+            // Add storage host functions to linker
+            add_storage_to_linker(&mut linker, |state: &mut HostState| {
+                state.storage_state_mut()
+            })?;
+
+            Some(StorageHostState::from_client(storage_client))
+        } else {
+            debug!("No storage config in execution context");
+            None
+        }
+    } else {
         None
     };
 
@@ -174,6 +254,7 @@ pub async fn execute(
         wasi_http_ctx: WasiHttpCtx::new(),
         table: ResourceTable::new(),
         rpc_state,
+        storage_state,
     };
 
     // Create store with fuel limit

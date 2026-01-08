@@ -19,7 +19,7 @@ fn test_estimate_storage_cost() {
     let context = get_context(accounts(1));
     testing_env!(context.build());
 
-    let contract = Contract::new(accounts(0), Some(accounts(0)));
+    let contract = Contract::new(accounts(0), Some(accounts(0)), None, None);
 
     // Estimate cost for small secrets
     let small_data = "test_encrypted_data";
@@ -47,7 +47,7 @@ fn test_storage_deposit_theft_attack_large_to_small() {
     let mut context = get_context(accounts(1));
     testing_env!(context.build());
 
-    let mut contract = Contract::new(accounts(0), Some(accounts(0)));
+    let mut contract = Contract::new(accounts(0), Some(accounts(0)), None, None);
 
     // 1. Create large secret (1KB encrypted data)
     let large_data = "a".repeat(1000);
@@ -140,7 +140,7 @@ fn test_storage_deposit_increase_requires_payment() {
     let mut context = get_context(accounts(1));
     testing_env!(context.build());
 
-    let mut contract = Contract::new(accounts(0), Some(accounts(0)));
+    let mut contract = Contract::new(accounts(0), Some(accounts(0)), None, None);
 
     // 1. Create small secret
     let small_data = "small";
@@ -228,7 +228,7 @@ fn test_multiple_secrets_separate_deposits() {
     let mut context = get_context(accounts(1));
     testing_env!(context.build());
 
-    let mut contract = Contract::new(accounts(0), Some(accounts(0)));
+    let mut contract = Contract::new(accounts(0), Some(accounts(0)), None, None);
 
     // Create secret 1: repo1/main/profile1
     let data1 = "secret_one_data";
@@ -337,7 +337,7 @@ fn test_delete_refunds_exact_amount() {
     let mut context = get_context(accounts(1));
     testing_env!(context.build());
 
-    let mut contract = Contract::new(accounts(0), Some(accounts(0)));
+    let mut contract = Contract::new(accounts(0), Some(accounts(0)), None, None);
 
     // Create secret
     let data = "test_secret_for_deletion";
@@ -391,7 +391,7 @@ fn test_access_condition_size_affects_cost() {
     let context = get_context(accounts(1));
     testing_env!(context.build());
 
-    let contract = Contract::new(accounts(0), Some(accounts(0)));
+    let contract = Contract::new(accounts(0), Some(accounts(0)), None, None);
 
     let data = "same_data_for_both";
 

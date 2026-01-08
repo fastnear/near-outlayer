@@ -45,6 +45,10 @@ pub enum SecretAccessor {
     WasmHash {
         hash: String,
     },
+    /// Secrets bound to a project (available to all versions)
+    Project {
+        project_id: String,
+    },
 }
 
 /// Client for keystore worker API
@@ -68,12 +72,11 @@ impl KeystoreClient {
 
     /// Generate TEE attestation for this worker
     ///
-    /// In production TEE:
+    /// TEE modes:
+    /// - TDX: Uses simulated attestation (TDX quote only used for worker registration)
     /// - SGX: Use sgx_create_report() + sgx_get_quote()
     /// - SEV: Use SNP guest tools to generate attestation
-    ///
-    /// For MVP (simulated/none):
-    /// - Generate fake attestation for testing
+    /// - simulated/none: Generate test attestation for development
     pub fn generate_attestation(&self) -> Result<Attestation> {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -217,6 +220,9 @@ impl KeystoreClient {
             SecretAccessor::WasmHash { hash } => {
                 format!("WasmHash({})", hash)
             }
+            SecretAccessor::Project { project_id } => {
+                format!("Project({})", project_id)
+            }
         };
 
         tracing::info!(
@@ -277,6 +283,7 @@ impl KeystoreClient {
             let context = match &accessor {
                 SecretAccessor::Repo { .. } => "repository, branch, and profile",
                 SecretAccessor::WasmHash { .. } => "WASM hash and profile",
+                SecretAccessor::Project { .. } => "project ID and profile",
             };
 
             let user_message = if status == 400 {
@@ -372,6 +379,24 @@ impl KeystoreClient {
     ) -> Result<std::collections::HashMap<String, String>> {
         let accessor = SecretAccessor::WasmHash {
             hash: wasm_hash.to_string(),
+        };
+        self.decrypt_secrets(accessor, profile, owner, user_account_id, task_id).await
+    }
+
+    /// Decrypt secrets from contract by project ID (convenience wrapper for Project accessor)
+    ///
+    /// This is a convenience method that wraps decrypt_secrets with Project accessor.
+    /// All versions of the project can use the same secrets.
+    pub async fn decrypt_secrets_by_project(
+        &self,
+        project_id: &str,
+        profile: &str,
+        owner: &str,
+        user_account_id: &str,
+        task_id: Option<&str>,
+    ) -> Result<std::collections::HashMap<String, String>> {
+        let accessor = SecretAccessor::Project {
+            project_id: project_id.to_string(),
         };
         self.decrypt_secrets(accessor, profile, owner, user_account_id, task_id).await
     }

@@ -6,6 +6,47 @@ mod tests {
     use near_sdk::test_utils::accounts;
     use near_sdk::{testing_env, NearToken};
 
+    /// Helper to create test ExecutionRequest
+    fn test_execution_request(request_id: u64, sender: AccountId, timestamp: u64) -> ExecutionRequest {
+        test_execution_request_with_data_id(request_id, sender, timestamp, [0; 32])
+    }
+
+    fn test_execution_request_with_data_id(request_id: u64, sender: AccountId, timestamp: u64, data_id: [u8; 32]) -> ExecutionRequest {
+        let code_source = CodeSource::GitHub {
+            repo: "https://github.com/test/repo".to_string(),
+            commit: "abc123".to_string(),
+            build_target: Some("wasm32-wasi".to_string()),
+        };
+        ExecutionRequest {
+            request_id,
+            data_id,
+            sender_id: sender.clone(),
+            execution_source: ExecutionSource::GitHub {
+                repo: "https://github.com/test/repo".to_string(),
+                commit: "abc123".to_string(),
+                build_target: Some("wasm32-wasi".to_string()),
+            },
+            resolved_source: code_source,
+            resource_limits: ResourceLimits::default(),
+            payment: 100_000_000_000_000_000_000_000, // 0.1 NEAR
+            timestamp,
+            secrets_ref: None,
+            input_data: None,
+            response_format: ResponseFormat::default(),
+            payer_account_id: sender,
+            pending_output: None,
+            output_submitted: false,
+        }
+    }
+
+    fn test_execution_source() -> ExecutionSource {
+        ExecutionSource::GitHub {
+            repo: "https://github.com/test/repo".to_string(),
+            commit: "main".to_string(),
+            build_target: Some("wasm32-wasi".to_string()),
+        }
+    }
+
     #[test]
     fn test_cancel_stale_execution_success() {
         let mut contract = setup_contract();
@@ -13,25 +54,7 @@ mod tests {
         let initial_timestamp = env::block_timestamp();
 
         // Manually add a pending execution request
-        let execution_request = ExecutionRequest {
-            request_id: 0,
-            data_id: [0; 32],
-            sender_id: sender.clone(),
-            code_source: CodeSource::GitHub {
-                repo: "https://github.com/test/repo".to_string(),
-                commit: "abc123".to_string(),
-                build_target: Some("wasm32-wasi".to_string()),
-            },
-            resource_limits: ResourceLimits::default(),
-            payment: 100_000_000_000_000_000_000_000, // 0.1 NEAR
-            timestamp: initial_timestamp,
-            secrets_ref: None,
-            input_data: None,
-            response_format: ResponseFormat::default(),
-            payer_account_id: sender.clone(),
-            pending_output: None,
-            output_submitted: false,
-        };
+        let execution_request = test_execution_request(0, sender.clone(), initial_timestamp);
         contract.pending_requests.insert(&0, &execution_request);
         assert!(contract.get_request(0).is_some());
 
@@ -61,25 +84,7 @@ mod tests {
         let initial_timestamp = env::block_timestamp();
 
         // Add a pending execution from `sender`
-        let execution_request = ExecutionRequest {
-            request_id: 0,
-            data_id: [0; 32],
-            sender_id: sender.clone(),
-            code_source: CodeSource::GitHub {
-                repo: "https://github.com/test/repo".to_string(),
-                commit: "abc123".to_string(),
-                build_target: Some("wasm32-wasi".to_string()),
-            },
-            resource_limits: ResourceLimits::default(),
-            payment: 100_000_000_000_000_000_000_000,
-            timestamp: initial_timestamp,
-            secrets_ref: None,
-            input_data: None,
-            response_format: ResponseFormat::default(),
-            payer_account_id: sender.clone(),
-            pending_output: None,
-            output_submitted: false,
-        };
+        let execution_request = test_execution_request(0, sender.clone(), initial_timestamp);
         contract.pending_requests.insert(&0, &execution_request);
 
         // Set up context:
@@ -96,16 +101,12 @@ mod tests {
     #[test]
     fn test_response_format_default() {
         let mut contract = setup_contract();
-        let code_source = CodeSource::GitHub {
-            repo: "https://github.com/test/repo".to_string(),
-            commit: "main".to_string(),
-            build_target: Some("wasm32-wasi".to_string()),
-        };
+        let source = test_execution_source();
 
         let context = get_context(accounts(1), NearToken::from_near(1));
         testing_env!(context.build());
 
-        contract.request_execution(code_source.clone(), None, None, None, None, None, None);
+        contract.request_execution(source.clone(), None, None, None, None, None, None);
 
         // Check that response_format defaults to Text
         let request = contract.get_request(0).expect("Request should exist");
@@ -115,16 +116,12 @@ mod tests {
     #[test]
     fn test_response_format_json() {
         let mut contract = setup_contract();
-        let code_source = CodeSource::GitHub {
-            repo: "https://github.com/test/repo".to_string(),
-            commit: "main".to_string(),
-            build_target: Some("wasm32-wasi".to_string()),
-        };
+        let source = test_execution_source();
 
         let context = get_context(accounts(1), NearToken::from_near(1));
         testing_env!(context.build());
 
-        contract.request_execution(code_source.clone(), None, None, None, Some(ResponseFormat::Json), None, None);
+        contract.request_execution(source.clone(), None, None, None, Some(ResponseFormat::Json), None, None);
 
         // Check that response_format is Json
         let request = contract.get_request(0).expect("Request should exist");
@@ -134,16 +131,12 @@ mod tests {
     #[test]
     fn test_response_format_bytes() {
         let mut contract = setup_contract();
-        let code_source = CodeSource::GitHub {
-            repo: "https://github.com/test/repo".to_string(),
-            commit: "main".to_string(),
-            build_target: Some("wasm32-wasi".to_string()),
-        };
+        let source = test_execution_source();
 
         let context = get_context(accounts(1), NearToken::from_near(1));
         testing_env!(context.build());
 
-        contract.request_execution(code_source.clone(), None, None, None, Some(ResponseFormat::Bytes), None, None);
+        contract.request_execution(source.clone(), None, None, None, Some(ResponseFormat::Bytes), None, None);
 
         // Check that response_format is Bytes
         let request = contract.get_request(0).expect("Request should exist");
@@ -158,25 +151,7 @@ mod tests {
         let initial_timestamp = env::block_timestamp();
 
         // Add a pending execution
-        let execution_request = ExecutionRequest {
-            request_id: 0,
-            data_id: [0; 32],
-            sender_id: sender.clone(),
-            code_source: CodeSource::GitHub {
-                repo: "https://github.com/test/repo".to_string(),
-                commit: "abc123".to_string(),
-                build_target: Some("wasm32-wasi".to_string()),
-            },
-            resource_limits: ResourceLimits::default(),
-            payment: 100_000_000_000_000_000_000_000,
-            timestamp: initial_timestamp,
-            secrets_ref: None,
-            input_data: None,
-            response_format: ResponseFormat::default(),
-            payer_account_id: sender.clone(),
-            pending_output: None,
-            output_submitted: false,
-        };
+        let execution_request = test_execution_request(0, sender.clone(), initial_timestamp);
         contract.pending_requests.insert(&0, &execution_request);
 
         // Set up context:
@@ -283,13 +258,8 @@ mod tests {
         let context = get_context(accounts(2), NearToken::from_millinear(100));
         testing_env!(context.build());
 
-        let code_source = CodeSource::GitHub {
-            repo: "https://github.com/test/repo".to_string(),
-            commit: "abc123".to_string(),
-            build_target: Some("wasm32-wasi".to_string()),
-        };
-
-        contract.request_execution(code_source, None, None, None, None, None, None);
+        let source = test_execution_source();
+        contract.request_execution(source, None, None, None, None, None, None);
     }
 
     #[test]
@@ -301,13 +271,8 @@ mod tests {
         let context = get_context(accounts(2), NearToken::from_yoctonear(1000));
         testing_env!(context.build());
 
-        let code_source = CodeSource::GitHub {
-            repo: "https://github.com/test/repo".to_string(),
-            commit: "abc123".to_string(),
-            build_target: Some("wasm32-wasi".to_string()),
-        };
-
-        contract.request_execution(code_source, None, None, None, None, None, None);
+        let source = test_execution_source();
+        contract.request_execution(source, None, None, None, None, None, None);
     }
 
     #[test]
@@ -317,25 +282,7 @@ mod tests {
         let sender = accounts(3);
 
         // Manually create a pending request
-        let execution_request = ExecutionRequest {
-            request_id: 0,
-            data_id: [1; 32],
-            sender_id: sender.clone(),
-            code_source: CodeSource::GitHub {
-                repo: "https://github.com/test/repo".to_string(),
-                commit: "abc123".to_string(),
-                build_target: Some("wasm32-wasi".to_string()),
-            },
-            resource_limits: ResourceLimits::default(),
-            payment: 100_000_000_000_000_000_000_000,
-            timestamp: env::block_timestamp(),
-            secrets_ref: None,
-            input_data: None,
-            response_format: ResponseFormat::Text,
-            payer_account_id: sender.clone(),
-            pending_output: None,
-            output_submitted: false,
-        };
+        let execution_request = test_execution_request_with_data_id(0, sender.clone(), env::block_timestamp(), [1; 32]);
         contract.pending_requests.insert(&0, &execution_request);
 
         // Operator submits large output
@@ -365,25 +312,7 @@ mod tests {
         let sender = accounts(3);
 
         // Create a pending request
-        let execution_request = ExecutionRequest {
-            request_id: 0,
-            data_id: [1; 32],
-            sender_id: sender.clone(),
-            code_source: CodeSource::GitHub {
-                repo: "https://github.com/test/repo".to_string(),
-                commit: "abc123".to_string(),
-                build_target: Some("wasm32-wasi".to_string()),
-            },
-            resource_limits: ResourceLimits::default(),
-            payment: 100_000_000_000_000_000_000_000,
-            timestamp: env::block_timestamp(),
-            secrets_ref: None,
-            input_data: None,
-            response_format: ResponseFormat::Text,
-            payer_account_id: sender.clone(),
-            pending_output: None,
-            output_submitted: false,
-        };
+        let execution_request = test_execution_request_with_data_id(0, sender.clone(), env::block_timestamp(), [1; 32]);
         contract.pending_requests.insert(&0, &execution_request);
 
         // Unauthorized user tries to submit output
@@ -401,15 +330,21 @@ mod tests {
         let sender = accounts(3);
 
         // Create a pending request with output already submitted
+        let code_source = CodeSource::GitHub {
+            repo: "https://github.com/test/repo".to_string(),
+            commit: "abc123".to_string(),
+            build_target: Some("wasm32-wasi".to_string()),
+        };
         let execution_request = ExecutionRequest {
             request_id: 0,
             data_id: [1; 32],
             sender_id: sender.clone(),
-            code_source: CodeSource::GitHub {
+            execution_source: ExecutionSource::GitHub {
                 repo: "https://github.com/test/repo".to_string(),
                 commit: "abc123".to_string(),
                 build_target: Some("wasm32-wasi".to_string()),
             },
+            resolved_source: code_source,
             resource_limits: ResourceLimits::default(),
             payment: 100_000_000_000_000_000_000_000,
             timestamp: env::block_timestamp(),
@@ -437,15 +372,21 @@ mod tests {
 
         // Create a pending request with submitted output
         let large_text = "B".repeat(2000);
+        let code_source = CodeSource::GitHub {
+            repo: "https://github.com/test/repo".to_string(),
+            commit: "abc123".to_string(),
+            build_target: Some("wasm32-wasi".to_string()),
+        };
         let execution_request = ExecutionRequest {
             request_id: 0,
             data_id: [1; 32],
             sender_id: sender.clone(),
-            code_source: CodeSource::GitHub {
+            execution_source: ExecutionSource::GitHub {
                 repo: "https://github.com/test/repo".to_string(),
                 commit: "abc123".to_string(),
                 build_target: Some("wasm32-wasi".to_string()),
             },
+            resolved_source: code_source,
             resource_limits: ResourceLimits::default(),
             payment: 100_000_000_000_000_000_000_000,
             timestamp: env::block_timestamp(),
@@ -527,25 +468,7 @@ mod tests {
         let sender = accounts(3);
 
         // Create a pending request
-        let execution_request = ExecutionRequest {
-            request_id: 0,
-            data_id: [1; 32],
-            sender_id: sender.clone(),
-            code_source: CodeSource::GitHub {
-                repo: "https://github.com/test/repo".to_string(),
-                commit: "abc123".to_string(),
-                build_target: Some("wasm32-wasi".to_string()),
-            },
-            resource_limits: ResourceLimits::default(),
-            payment: 100_000_000_000_000_000_000_000,
-            timestamp: env::block_timestamp(),
-            secrets_ref: None,
-            input_data: None,
-            response_format: ResponseFormat::Text,
-            payer_account_id: sender.clone(),
-            pending_output: None,
-            output_submitted: false,
-        };
+        let execution_request = test_execution_request_with_data_id(0, sender.clone(), env::block_timestamp(), [1; 32]);
         contract.pending_requests.insert(&0, &execution_request);
 
         // Operator calls the internal method (we can't test full flow with promise_yield_resume in unit tests)
@@ -578,25 +501,7 @@ mod tests {
         let sender = accounts(3);
 
         // Create a pending request
-        let execution_request = ExecutionRequest {
-            request_id: 0,
-            data_id: [1; 32],
-            sender_id: sender.clone(),
-            code_source: CodeSource::GitHub {
-                repo: "https://github.com/test/repo".to_string(),
-                commit: "abc123".to_string(),
-                build_target: Some("wasm32-wasi".to_string()),
-            },
-            resource_limits: ResourceLimits::default(),
-            payment: 100_000_000_000_000_000_000_000,
-            timestamp: env::block_timestamp(),
-            secrets_ref: None,
-            input_data: None,
-            response_format: ResponseFormat::Text,
-            payer_account_id: sender.clone(),
-            pending_output: None,
-            output_submitted: false,
-        };
+        let execution_request = test_execution_request_with_data_id(0, sender.clone(), env::block_timestamp(), [1; 32]);
         contract.pending_requests.insert(&0, &execution_request);
 
         // Unauthorized user tries to call combined method

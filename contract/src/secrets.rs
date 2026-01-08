@@ -43,6 +43,16 @@ impl Contract {
                     "WASM hash must be hex encoded"
                 );
             }
+            SecretAccessor::Project { project_id } => {
+                assert!(!project_id.is_empty(), "Project ID cannot be empty");
+                assert!(project_id.contains('/'), "Project ID must be in format 'owner.near/name'");
+                // Verify project exists
+                assert!(
+                    self.projects.get(project_id).is_some(),
+                    "Project '{}' does not exist",
+                    project_id
+                );
+            }
         }
 
         // Validate common inputs
@@ -263,6 +273,10 @@ impl Contract {
                 1 + // enum discriminant
                 4 + hash.len() // String with u32 length prefix
             }
+            SecretAccessor::Project { project_id } => {
+                1 + // enum discriminant
+                4 + project_id.len() // String with u32 length prefix
+            }
         };
 
         // Key size
@@ -447,6 +461,16 @@ impl Contract {
     }
 }
 
+/// Project secrets storage info
+#[derive(Clone, Debug)]
+#[near(serializers = [json])]
+pub struct ProjectSecretsStorage {
+    pub project_id: String,
+    pub owner: AccountId,
+    pub total_bytes: u64,
+    pub profiles_count: u32,
+}
+
 /// User secret metadata for list view
 #[derive(Clone, Debug)]
 #[near(serializers = [json])]
@@ -482,7 +506,7 @@ mod tests {
         let context = get_context(owner.clone(), NearToken::from_near(0));
         testing_env!(context.build());
 
-        let mut contract = Contract::new(owner.clone(), Some(operator));
+        let mut contract = Contract::new(owner.clone(), Some(operator), None, None);
 
         // Store secrets with sufficient deposit
         let context = get_context(user.clone(), NearToken::from_near(1));
@@ -517,7 +541,7 @@ mod tests {
         let context = get_context(owner.clone(), NearToken::from_near(0));
         testing_env!(context.build());
 
-        let mut contract = Contract::new(owner.clone(), None);
+        let mut contract = Contract::new(owner.clone(), None, None, None);
 
         // Store secrets by wasm hash
         let context = get_context(user.clone(), NearToken::from_near(1));
@@ -562,7 +586,7 @@ mod tests {
         let context = get_context(owner.clone(), NearToken::from_near(0));
         testing_env!(context.build());
 
-        let mut contract = Contract::new(owner.clone(), None);
+        let mut contract = Contract::new(owner.clone(), None, None, None);
 
         let context = get_context(user.clone(), NearToken::from_near(1));
         testing_env!(context.build());
@@ -586,7 +610,7 @@ mod tests {
         let context = get_context(owner.clone(), NearToken::from_near(0));
         testing_env!(context.build());
 
-        let mut contract = Contract::new(owner.clone(), None);
+        let mut contract = Contract::new(owner.clone(), None, None, None);
 
         let context = get_context(user.clone(), NearToken::from_near(1));
         testing_env!(context.build());
@@ -610,7 +634,7 @@ mod tests {
         let context = get_context(owner.clone(), NearToken::from_near(0));
         testing_env!(context.build());
 
-        let mut contract = Contract::new(owner.clone(), None);
+        let mut contract = Contract::new(owner.clone(), None, None, None);
 
         // Store secrets
         let context = get_context(user.clone(), NearToken::from_near(1));
@@ -654,7 +678,7 @@ mod tests {
         let context = get_context(owner.clone(), NearToken::from_near(0));
         testing_env!(context.build());
 
-        let mut contract = Contract::new(owner.clone(), None);
+        let mut contract = Contract::new(owner.clone(), None, None, None);
 
         // Store secrets by wasm hash
         let context = get_context(user.clone(), NearToken::from_near(1));
@@ -696,7 +720,7 @@ mod tests {
         let context = get_context(owner.clone(), NearToken::from_near(0));
         testing_env!(context.build());
 
-        let mut contract = Contract::new(owner.clone(), None);
+        let mut contract = Contract::new(owner.clone(), None, None, None);
 
         // Store both repo and wasm_hash secrets
         let context = get_context(user.clone(), NearToken::from_near(1));

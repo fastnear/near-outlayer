@@ -162,6 +162,8 @@ pub async fn claim_job(
                     compile_cost_yocto: None, // Not applicable for compile jobs
                     compile_error: None,
                     compile_time_ms: None, // Will be set after compilation
+                    project_uuid: payload.project_uuid.clone(),
+                    project_id: payload.project_id.clone(),
                 });
             }
             Err(e) => {
@@ -284,6 +286,8 @@ pub async fn claim_job(
                     compile_cost_yocto,
                     compile_error,
                     compile_time_ms,
+                    project_uuid: payload.project_uuid.clone(),
+                    project_id: payload.project_id.clone(),
                 });
             }
             Err(e) => {
@@ -461,7 +465,7 @@ pub async fn complete_job(
                    context_sender_id, context_block_height, context_block_timestamp,
                    context_contract_id, context_transaction_hash, context_receipt_id,
                    context_predecessor_id, context_signer_public_key, context_gas_burnt,
-                   compile_only, force_rebuild, store_on_fastfs
+                   compile_only, force_rebuild, store_on_fastfs, project_uuid, project_id
             FROM execution_requests
             WHERE request_id = $1
             "#,
@@ -538,6 +542,8 @@ pub async fn complete_job(
                     force_rebuild: req.force_rebuild,
                     store_on_fastfs: req.store_on_fastfs,
                     compile_result: payload.compile_result.clone(),
+                    project_uuid: req.project_uuid.clone(),
+                    project_id: req.project_id.clone(),
                 }
             }
             Ok(None) => {
@@ -564,6 +570,8 @@ pub async fn complete_job(
                     force_rebuild: false,
                     store_on_fastfs: false,
                     compile_result: None,
+                    project_uuid: None,
+                    project_id: None,
                 }
             }
             Err(e) => {
@@ -589,6 +597,8 @@ pub async fn complete_job(
                     force_rebuild: false,
                     store_on_fastfs: false,
                     compile_result: None,
+                    project_uuid: None,
+                    project_id: None,
                 }
             }
         };
@@ -645,6 +655,17 @@ pub async fn complete_job(
             return StatusCode::INTERNAL_SERVER_ERROR;
         };
 
+        // Fetch project_uuid from execution_requests for storage support
+        let project_uuid = sqlx::query_scalar!(
+            "SELECT project_uuid FROM execution_requests WHERE request_id = $1",
+            job.request_id
+        )
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .flatten();
+
         // Create minimal execution request - executor will see compile_error and just report it
         let execution_request = ExecutionRequest {
             request_id: job.request_id as u64,
@@ -666,6 +687,8 @@ pub async fn complete_job(
             force_rebuild: false,
             store_on_fastfs: false,
             compile_result: None,
+            project_uuid,
+            project_id: None, // Not needed for failed compile reporting
         };
 
         let request_json = match serde_json::to_string(&execution_request) {

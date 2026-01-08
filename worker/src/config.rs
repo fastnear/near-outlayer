@@ -27,6 +27,11 @@ pub struct Config {
     pub poll_timeout_seconds: u64,
     pub scan_interval_ms: u64,
 
+    // Event filter (filter events by standard, function name and min version)
+    pub event_filter_standard_name: String,   // default: "near-outlayer"
+    pub event_filter_function_name: String,   // default: "execution_requested"
+    pub event_filter_min_version: Option<String>, // e.g., "1.0.0" - only process events >= this version
+
     // Compilation mode
     // "docker" - use Docker containers (requires Docker socket)
     // "native" - use native Rust toolchain with bubblewrap (for TEE/Phala)
@@ -250,6 +255,13 @@ impl Config {
             .parse::<u64>()
             .context("SCAN_INTERVAL_MS must be a valid number")?;
 
+        // Event filter (filter events by standard, function name and min version)
+        let event_filter_standard_name = env::var("EVENT_FILTER_STANDARD_NAME")
+            .unwrap_or_else(|_| "near-outlayer".to_string());
+        let event_filter_function_name = env::var("EVENT_FILTER_FUNCTION_NAME")
+            .unwrap_or_else(|_| "execution_requested".to_string());
+        let event_filter_min_version = env::var("EVENT_FILTER_MIN_VERSION").ok();
+
         // Compilation mode: docker (default) or native (bubblewrap)
         let compilation_mode = env::var("COMPILATION_MODE")
             .unwrap_or_else(|_| "docker".to_string())
@@ -437,6 +449,9 @@ impl Config {
             enable_event_monitor,
             poll_timeout_seconds,
             scan_interval_ms,
+            event_filter_standard_name,
+            event_filter_function_name,
+            event_filter_min_version,
             compilation_mode,
             docker_image,
             compile_timeout_seconds,
@@ -574,6 +589,9 @@ mod tests {
             enable_event_monitor: false,
             poll_timeout_seconds: 60,
             scan_interval_ms: 0,
+            event_filter_standard_name: "near-outlayer".to_string(),
+            event_filter_function_name: "execution_requested".to_string(),
+            event_filter_min_version: None,
             compilation_mode: "docker".to_string(),
             docker_image: "rust:1.75".to_string(),
             compile_timeout_seconds: 300,

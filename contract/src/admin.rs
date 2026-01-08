@@ -90,6 +90,21 @@ impl Contract {
         }
     }
 
+    /// Set event metadata (only owner can call)
+    /// Used to customize event standard name and version for different deployments
+    pub fn set_event_metadata(&mut self, standard: Option<String>, version: Option<String>) {
+        self.assert_owner();
+
+        if let Some(s) = standard {
+            self.event_standard = s.clone();
+            log!("Event standard updated to {}", s);
+        }
+        if let Some(v) = version {
+            self.event_version = v.clone();
+            log!("Event version updated to {}", v);
+        }
+    }
+
     /// Admin method to clear all pending requests (only owner can call)
     /// Used for emergency cleanup or testing
     ///

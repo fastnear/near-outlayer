@@ -9,6 +9,13 @@ use tracing::{error, info, warn};
 
 use crate::api_client::{ApiClient, CreateTaskParams, ResourceLimits as ApiResourceLimits};
 
+/// Enum for different event types from contract
+#[derive(Debug, Clone)]
+pub enum ContractEvent {
+    ExecutionRequested(ExecutionRequestedEvent),
+    ProjectStorageCleanup(ProjectStorageCleanupEvent),
+}
+
 /// ExecutionRequested event data from contract (matches contract's event structure)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionRequestedEvent {
@@ -27,6 +34,14 @@ pub struct ExecutionRequestedEvent {
     pub signer_public_key: Option<String>,  // Signer public key from neardata
     #[serde(skip)]
     pub gas_burnt: Option<u64>,  // Gas burnt from neardata
+}
+
+/// ProjectStorageCleanup event data from contract (emitted when project is deleted)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectStorageCleanupEvent {
+    pub project_id: String,
+    pub project_uuid: String,
+    pub timestamp: u64,
 }
 
 /// Parsed request data from the JSON string
@@ -49,6 +64,12 @@ pub struct RequestData {
     pub force_rebuild: bool,
     #[serde(default)]
     pub store_on_fastfs: bool,
+    /// Project UUID for persistent storage (passed from request_execution_project)
+    #[serde(default)]
+    pub project_uuid: Option<String>,
+    /// Project ID for project-based secrets (e.g., "alice.near/my-app")
+    #[serde(default)]
+    pub project_id: Option<String>,
 }
 
 /// Code source - either GitHub repo or pre-compiled WASM URL
@@ -205,7 +226,7 @@ struct FastNearStatus {
     sync_block_height: u64,
 }
 
-/// NEAR event monitor that watches neardata.xyz for execution_requested events
+/// NEAR event monitor that watches neardata.xyz for execution_requested and version_requested events
 pub struct EventMonitor {
     api_client: ApiClient,
     neardata_api_url: String,
@@ -218,9 +239,39 @@ pub struct EventMonitor {
     event_json_regex: Regex,
     blocks_scanned: u64,
     events_found: u64,
+    // Event filters
+    event_filter_standard_name: String,
+    #[allow(dead_code)]
+    event_filter_function_name: String, // Kept for compatibility but we now handle multiple events
+    event_filter_min_version: Option<(u64, u64, u64)>, // Parsed semver (major, minor, patch)
 }
 
 impl EventMonitor {
+    /// Parse semver string like "1.2.3" into (major, minor, patch)
+    fn parse_semver(version: &str) -> Option<(u64, u64, u64)> {
+        let parts: Vec<&str> = version.split('.').collect();
+        if parts.len() >= 3 {
+            let major = parts[0].parse().ok()?;
+            let minor = parts[1].parse().ok()?;
+            let patch = parts[2].parse().ok()?;
+            Some((major, minor, patch))
+        } else if parts.len() == 2 {
+            let major = parts[0].parse().ok()?;
+            let minor = parts[1].parse().ok()?;
+            Some((major, minor, 0))
+        } else if parts.len() == 1 {
+            let major = parts[0].parse().ok()?;
+            Some((major, 0, 0))
+        } else {
+            None
+        }
+    }
+
+    /// Compare two semver tuples: returns true if actual >= required
+    fn semver_gte(actual: (u64, u64, u64), required: (u64, u64, u64)) -> bool {
+        actual >= required
+    }
+
     pub async fn new(
         api_client: ApiClient,
         neardata_api_url: String,
@@ -228,6 +279,9 @@ impl EventMonitor {
         contract_id: AccountId,
         start_block: u64,
         scan_interval_ms: u64,
+        event_filter_standard_name: String,
+        event_filter_function_name: String,
+        event_filter_min_version: Option<String>,
     ) -> Result<Self> {
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
@@ -242,6 +296,16 @@ impl EventMonitor {
             start_block
         };
 
+        // Parse min version if provided
+        let parsed_min_version = event_filter_min_version
+            .as_ref()
+            .and_then(|v| Self::parse_semver(v));
+
+        info!(
+            "Event filter: standard={}, function={}, min_version={:?}",
+            event_filter_standard_name, event_filter_function_name, event_filter_min_version
+        );
+
         Ok(Self {
             api_client,
             neardata_api_url,
@@ -254,6 +318,9 @@ impl EventMonitor {
                 .context("Failed to compile regex")?,
             blocks_scanned: 0,
             events_found: 0,
+            event_filter_standard_name,
+            event_filter_function_name,
+            event_filter_min_version: parsed_min_version,
         })
     }
 
@@ -306,7 +373,7 @@ impl EventMonitor {
                     if !events.is_empty() {
                         self.events_found += events.len() as u64;
                         info!(
-                            "📦 Block {}: Found {} execution_requested events (total: {} events in {} blocks)",
+                            "📦 Block {}: Found {} contract events (total: {} events in {} blocks)",
                             self.current_block,
                             events.len(),
                             self.events_found,
@@ -316,8 +383,17 @@ impl EventMonitor {
 
                     // Process found events
                     for event in events {
-                        if let Err(e) = self.handle_execution_requested(event).await {
-                            error!("Failed to handle execution_requested event: {}", e);
+                        match event {
+                            ContractEvent::ExecutionRequested(exec_event) => {
+                                if let Err(e) = self.handle_execution_requested(exec_event).await {
+                                    error!("Failed to handle execution_requested event: {}", e);
+                                }
+                            }
+                            ContractEvent::ProjectStorageCleanup(cleanup_event) => {
+                                if let Err(e) = self.handle_project_storage_cleanup(cleanup_event).await {
+                                    error!("Failed to handle project_storage_cleanup event: {}", e);
+                                }
+                            }
                         }
                     }
 
@@ -365,8 +441,8 @@ impl EventMonitor {
         }
     }
 
-    /// Scan a single block for execution_requested events
-    async fn scan_single_block(&self, block_id: u64) -> Result<Vec<ExecutionRequestedEvent>> {
+    /// Scan a single block for contract events
+    async fn scan_single_block(&self, block_id: u64) -> Result<Vec<ContractEvent>> {
         let block_data = self.load_block(block_id).await?;
 
         if block_data.shards.is_none() {
@@ -377,7 +453,7 @@ impl EventMonitor {
 
         if !events.is_empty() {
             info!(
-                "Block {}: found {} execution_requested events",
+                "Block {}: found {} contract events",
                 block_id,
                 events.len()
             );
@@ -443,7 +519,7 @@ impl EventMonitor {
         &self,
         shards: &[ShardData],
         block_height: u64,
-    ) -> Result<Vec<ExecutionRequestedEvent>> {
+    ) -> Result<Vec<ContractEvent>> {
         let mut events = Vec::new();
         let mut receipts_checked = 0;
         let mut contract_receipts = 0;
@@ -496,11 +572,14 @@ impl EventMonitor {
                                     if let Some(mut event) =
                                         self.process_log(log, block_height)
                                     {
-                                        event.transaction_hash = transaction_hash.clone();
-                                        event.receipt_id = receipt_id.clone();
-                                        event.predecessor_id = predecessor_id.clone();
-                                        event.signer_public_key = signer_public_key.clone();
-                                        event.gas_burnt = gas_burnt;
+                                        // Add transaction metadata only for ExecutionRequested events
+                                        if let ContractEvent::ExecutionRequested(ref mut exec_event) = event {
+                                            exec_event.transaction_hash = transaction_hash.clone();
+                                            exec_event.receipt_id = receipt_id.clone();
+                                            exec_event.predecessor_id = predecessor_id.clone();
+                                            exec_event.signer_public_key = signer_public_key.clone();
+                                            exec_event.gas_burnt = gas_burnt;
+                                        }
                                         events.push(event);
                                     }
                                 }
@@ -526,8 +605,8 @@ impl EventMonitor {
         Ok(events)
     }
 
-    /// Process individual log entry
-    fn process_log(&self, log: &str, block_height: u64) -> Option<ExecutionRequestedEvent> {
+    /// Process individual log entry - handles multiple event types
+    fn process_log(&self, log: &str, block_height: u64) -> Option<ContractEvent> {
         // Extract EVENT_JSON from log
         let captures = self.event_json_regex.captures(log)?;
         let event_json_str = captures.get(1)?.as_str();
@@ -535,55 +614,80 @@ impl EventMonitor {
         // Parse JSON
         let event: Value = serde_json::from_str(event_json_str).ok()?;
 
-        // Check if this is our execution_requested event
-        if event.get("standard")?.as_str()? != "near-outlayer" {
+        // Check standard name
+        let standard = event.get("standard")?.as_str()?;
+        if standard != self.event_filter_standard_name {
             return None;
         }
 
-        if event.get("event")?.as_str()? != "execution_requested" {
-            return None;
+        // Check min version (>= comparison)
+        if let Some(required_version) = self.event_filter_min_version {
+            let event_version_str = event.get("version").and_then(|v| v.as_str());
+            match event_version_str.and_then(|v| Self::parse_semver(v)) {
+                Some(actual_version) if Self::semver_gte(actual_version, required_version) => {}
+                _ => return None,
+            }
         }
 
+        let event_name = event.get("event")?.as_str()?;
         let data_array = event.get("data")?.as_array()?;
         if data_array.is_empty() {
             return None;
         }
 
-        // Parse the first data entry
-        let mut event_data: ExecutionRequestedEvent =
-            serde_json::from_value(data_array[0].clone()).ok()?;
+        // Handle different event types
+        match event_name {
+            "execution_requested" => {
+                // Only process if matches the configured filter (for backwards compatibility)
+                if event_name != self.event_filter_function_name {
+                    return None;
+                }
 
-        // Set block_height from parameter
-        event_data.block_height = block_height;
+                let mut event_data: ExecutionRequestedEvent =
+                    serde_json::from_value(data_array[0].clone()).ok()?;
+                event_data.block_height = block_height;
 
-        // Parse the nested request_data JSON string
-        let mut request_data: RequestData = match serde_json::from_str(&event_data.request_data) {
-            Ok(data) => data,
-            Err(e) => {
-                error!(
-                    "Failed to parse request_data JSON at block {}: {}. Raw: {}",
-                    block_height, e, event_data.request_data
+                // Parse and validate request_data
+                let mut request_data: RequestData = match serde_json::from_str(&event_data.request_data) {
+                    Ok(data) => data,
+                    Err(e) => {
+                        error!(
+                            "Failed to parse request_data JSON at block {}: {}. Raw: {}",
+                            block_height, e, event_data.request_data
+                        );
+                        return None;
+                    }
+                };
+
+                info!("request_data secrets_ref: {:?}", request_data.secrets_ref);
+
+                if request_data.code_source.build_target().is_none() {
+                    request_data.code_source.set_build_target("wasm32-wasi".to_string());
+                    info!("⚠️  No build_target specified, defaulting to wasm32-wasi");
+                } else {
+                    info!("📦 build_target specified: {}", request_data.code_source.build_target().unwrap());
+                }
+
+                info!(
+                    "✅ Found execution_requested event at block {}: request_id={} source={}",
+                    block_height, request_data.request_id, request_data.code_source.display()
                 );
-                return None;
+
+                Some(ContractEvent::ExecutionRequested(event_data))
             }
-        };
+            "project_storage_cleanup" => {
+                let event_data: ProjectStorageCleanupEvent =
+                    serde_json::from_value(data_array[0].clone()).ok()?;
 
-        info!("request_data secrets_ref: {:?}", request_data.secrets_ref);
+                info!(
+                    "✅ Found project_storage_cleanup event at block {}: project_id={} uuid={}",
+                    block_height, event_data.project_id, event_data.project_uuid
+                );
 
-        // Default to wasm32-wasi if not specified (will be normalized to wasm32-wasip1 by compiler)
-        if request_data.code_source.build_target().is_none() {
-            request_data.code_source.set_build_target("wasm32-wasi".to_string());
-            info!("⚠️  No build_target specified, defaulting to wasm32-wasi");
-        } else {
-            info!("📦 build_target specified: {}", request_data.code_source.build_target().unwrap());
+                Some(ContractEvent::ProjectStorageCleanup(event_data))
+            }
+            _ => None,
         }
-
-        info!(
-            "✅ Found execution_requested event at block {}: request_id={} source={}",
-            block_height, request_data.request_id, request_data.code_source.display()
-        );
-
-        Some(event_data)
     }
 
     /// Handle execution_requested event by creating task in coordinator
@@ -641,6 +745,8 @@ impl EventMonitor {
             compile_only: request_data.compile_only,
             force_rebuild: request_data.force_rebuild,
             store_on_fastfs: request_data.store_on_fastfs,
+            project_uuid: request_data.project_uuid.clone(),
+            project_id: request_data.project_id.clone(),
         };
 
         match self.api_client.create_task(params).await
@@ -662,5 +768,30 @@ impl EventMonitor {
         }
 
         Ok(())
+    }
+
+    /// Handle project_storage_cleanup event by clearing storage in coordinator
+    async fn handle_project_storage_cleanup(&self, event: ProjectStorageCleanupEvent) -> Result<()> {
+        info!(
+            "🧹 Clearing storage for deleted project: project_id={} uuid={}",
+            event.project_id, event.project_uuid
+        );
+
+        match self.api_client.clear_project_storage(&event.project_uuid).await {
+            Ok(()) => {
+                info!(
+                    "✅ Successfully cleared storage for project: uuid={}",
+                    event.project_uuid
+                );
+                Ok(())
+            }
+            Err(e) => {
+                error!(
+                    "❌ Failed to clear storage for project uuid={}: {}",
+                    event.project_uuid, e
+                );
+                Err(e)
+            }
+        }
     }
 }

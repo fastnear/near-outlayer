@@ -224,7 +224,7 @@ npm run build
 
       <SecurityNotesSection items={[
         'Master secret must be highly secured (hardware wallet, multi-sig, etc.)',
-        'TEE attestation currently uses MVP mode - upgrade to SGX/SEV for production',
+        'TEE attestation uses Intel TDX via Phala Network',
         'Frontend must correctly compute vote hash (BigInt for u64 precision!)',
         'Vote hash saved by user is CRITICAL for later verification'
       ]} />

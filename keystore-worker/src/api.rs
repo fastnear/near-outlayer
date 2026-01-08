@@ -113,6 +113,10 @@ pub enum SecretAccessor {
     WasmHash {
         hash: String,
     },
+    /// Secrets bound to a project (available to all versions)
+    Project {
+        project_id: String,
+    },
 }
 
 /// Request to decrypt secrets from contract
@@ -279,6 +283,62 @@ pub struct HealthResponse {
     pub tee_mode: String,
 }
 
+// ==================== Storage Encryption API ====================
+
+/// Request to encrypt data for persistent storage
+#[derive(Debug, Deserialize)]
+pub struct StorageEncryptRequest {
+    /// Project UUID (None for standalone WASM - use wasm_hash instead)
+    pub project_uuid: Option<String>,
+    /// WASM hash (used when project_uuid is None)
+    pub wasm_hash: String,
+    /// Account ID (user account or "@worker" for private storage)
+    pub account_id: String,
+    /// Plaintext key (will be encrypted)
+    pub key: String,
+    /// Plaintext value (base64 encoded)
+    pub value_base64: String,
+    /// TEE attestation proving worker identity
+    pub attestation: Attestation,
+}
+
+/// Response with encrypted storage data
+#[derive(Debug, Serialize)]
+pub struct StorageEncryptResponse {
+    /// Encrypted key (base64)
+    pub encrypted_key_base64: String,
+    /// Encrypted value (base64)
+    pub encrypted_value_base64: String,
+    /// Key hash for unique constraint (SHA256 of plaintext key)
+    pub key_hash: String,
+}
+
+/// Request to decrypt data from persistent storage
+#[derive(Debug, Deserialize)]
+pub struct StorageDecryptRequest {
+    /// Project UUID (None for standalone WASM - use wasm_hash instead)
+    pub project_uuid: Option<String>,
+    /// WASM hash (used when project_uuid is None)
+    pub wasm_hash: String,
+    /// Account ID (user account or "@worker" for private storage)
+    pub account_id: String,
+    /// Encrypted key (base64)
+    pub encrypted_key_base64: String,
+    /// Encrypted value (base64)
+    pub encrypted_value_base64: String,
+    /// TEE attestation proving worker identity
+    pub attestation: Attestation,
+}
+
+/// Response with decrypted storage data
+#[derive(Debug, Serialize)]
+pub struct StorageDecryptResponse {
+    /// Decrypted key
+    pub key: String,
+    /// Decrypted value (base64)
+    pub value_base64: String,
+}
+
 /// Create the API router with all endpoints
 /// Protected endpoints require Bearer token auth (for coordinator/worker access)
 /// /pubkey and /health are public (for dashboard access)
@@ -288,6 +348,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/decrypt", post(decrypt_handler))
         .route("/add_generated_secret", post(add_generated_secret_handler))
         .route("/update_user_secrets", post(update_user_secrets_handler)) // Protected + NEP-413 signature
+        .route("/storage/encrypt", post(storage_encrypt_handler))
+        .route("/storage/decrypt", post(storage_decrypt_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
@@ -344,6 +406,8 @@ async fn pubkey_handler(
         "NEAR_MAX_MEMORY_MB",
         "NEAR_MAX_EXECUTION_SECONDS",
         "NEAR_REQUEST_ID",
+        "OUTLAYER_PROJECT_ID",
+        "OUTLAYER_PROJECT_UUID",
     ];
 
     // Check for reserved keywords
@@ -436,6 +500,16 @@ async fn decrypt_handler(
                 "Received decrypt request (WasmHash)"
             );
         }
+        SecretAccessor::Project { project_id } => {
+            tracing::info!(
+                task_id = %task_id_str,
+                tee_type = %req.attestation.tee_type,
+                project_id = %project_id,
+                profile = %req.profile,
+                owner = %req.owner,
+                "Received decrypt request (Project)"
+            );
+        }
     }
 
     // 1. Verify TEE attestation
@@ -487,6 +561,25 @@ async fn decrypt_handler(
                     tracing::warn!(
                         task_id = %task_id_str,
                         wasm_hash = %hash,
+                        profile = %req.profile,
+                        owner = %req.owner,
+                        "Secrets not found in contract"
+                    );
+                    ApiError::BadRequest("Secrets not found in contract".to_string())
+                })?
+        }
+        SecretAccessor::Project { project_id } => {
+            near_client
+                .get_secrets_by_project(project_id, &req.profile, &req.owner)
+                .await
+                .map_err(|e| {
+                    tracing::error!(task_id = %task_id_str, error = %e, "Failed to read secrets from contract");
+                    ApiError::InternalError(format!("Failed to read secrets from contract: {}", e))
+                })?
+                .ok_or_else(|| {
+                    tracing::warn!(
+                        task_id = %task_id_str,
+                        project_id = %project_id,
                         profile = %req.profile,
                         owner = %req.owner,
                         "Secrets not found in contract"
@@ -587,6 +680,19 @@ async fn decrypt_handler(
                 owner = %req.owner,
                 seed = %seed,
                 "🔓 DECRYPTION SEED (WasmHash)"
+            );
+
+            seed
+        }
+        SecretAccessor::Project { project_id } => {
+            let seed = format!("project:{}:{}", project_id, req.owner);
+
+            tracing::info!(
+                task_id = %task_id_str,
+                project_id = %project_id,
+                owner = %req.owner,
+                seed = %seed,
+                "🔓 DECRYPTION SEED (Project)"
             );
 
             seed
@@ -759,6 +865,8 @@ async fn add_generated_secret_handler(
         "NEAR_MAX_MEMORY_MB",
         "NEAR_MAX_EXECUTION_SECONDS",
         "NEAR_REQUEST_ID",
+        "OUTLAYER_PROJECT_ID",
+        "OUTLAYER_PROJECT_UUID",
     ];
 
     let reserved_found: Vec<&str> = secrets_map.keys()
@@ -939,6 +1047,15 @@ async fn update_user_secrets_handler(
                     ApiError::InternalError(format!("Failed to fetch secrets: {}", e))
                 })?
         }
+        SecretAccessor::Project { project_id } => {
+            near_client
+                .get_secrets_by_project(project_id, &req.profile, &req.owner)
+                .await
+                .map_err(|e| {
+                    tracing::warn!(error = %e, "Failed to fetch secrets from contract");
+                    ApiError::InternalError(format!("Failed to fetch secrets: {}", e))
+                })?
+        }
     };
 
     // 7. Decrypt existing secrets (if any) using OLD accessor seed
@@ -977,6 +1094,9 @@ async fn update_user_secrets_handler(
             }
             SecretAccessor::WasmHash { hash } => {
                 format!("wasm_hash:{}:{}", hash, req.owner)
+            }
+            SecretAccessor::Project { project_id } => {
+                format!("project:{}:{}", project_id, req.owner)
             }
         };
 
@@ -1124,6 +1244,9 @@ async fn update_user_secrets_handler(
         SecretAccessor::WasmHash { hash } => {
             format!("wasm_hash:{}:{}", hash, req.owner)
         }
+        SecretAccessor::Project { project_id } => {
+            format!("project:{}:{}", project_id, req.owner)
+        }
     };
 
     if is_migration {
@@ -1162,6 +1285,154 @@ async fn update_user_secrets_handler(
     Ok(Json(UpdateUserSecretsResponse {
         encrypted_secrets_base64: encrypted_base64,
         summary,
+    }))
+}
+
+// ==================== Storage Encryption Handlers ====================
+
+/// Encrypt data for persistent storage
+///
+/// Uses derived key from: `storage:{project_uuid|wasm_hash}:{account_id}`
+/// This keeps encryption keys isolated per project/wasm and per account.
+async fn storage_encrypt_handler(
+    State(state): State<AppState>,
+    Json(req): Json<StorageEncryptRequest>,
+) -> Result<Json<StorageEncryptResponse>, ApiError> {
+    // Check if keystore is ready
+    if !state.is_ready() {
+        return Err(ApiError::Unauthorized(
+            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string()
+        ));
+    }
+
+    // Verify TEE attestation
+    crate::attestation::verify_attestation(
+        &req.attestation,
+        &state.config.tee_mode,
+        &state.expected_measurements,
+    )
+    .map_err(|e| {
+        tracing::warn!(error = %e, "Storage encrypt attestation verification failed");
+        ApiError::Unauthorized(format!("Attestation verification failed: {}", e))
+    })?;
+
+    // Build seed for key derivation
+    // For projects: storage:{project_uuid}:{account_id}
+    // For standalone WASM: storage:wasm:{wasm_hash}:{account_id}
+    let seed = if let Some(ref project_uuid) = req.project_uuid {
+        format!("storage:{}:{}", project_uuid, req.account_id)
+    } else {
+        format!("storage:wasm:{}:{}", req.wasm_hash, req.account_id)
+    };
+
+    tracing::debug!(
+        seed = %seed,
+        project_uuid = ?req.project_uuid,
+        wasm_hash = %req.wasm_hash,
+        account_id = %req.account_id,
+        key = %req.key,
+        "Encrypting storage data"
+    );
+
+    // Decode value from base64
+    let value_bytes = base64::decode(&req.value_base64)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid base64 in value: {}", e)))?;
+
+    // Encrypt key and value
+    let keystore = state.keystore.read().await;
+
+    let encrypted_key = keystore
+        .encrypt(&seed, req.key.as_bytes())
+        .map_err(|e| ApiError::InternalError(format!("Failed to encrypt key: {}", e)))?;
+
+    let encrypted_value = keystore
+        .encrypt(&seed, &value_bytes)
+        .map_err(|e| ApiError::InternalError(format!("Failed to encrypt value: {}", e)))?;
+
+    // Calculate key hash for unique constraint
+    use sha2::{Sha256, Digest};
+    let key_hash = hex::encode(Sha256::digest(req.key.as_bytes()));
+
+    tracing::info!(
+        project_uuid = ?req.project_uuid,
+        wasm_hash = %req.wasm_hash,
+        account_id = %req.account_id,
+        key_hash = %key_hash,
+        encrypted_key_len = encrypted_key.len(),
+        encrypted_value_len = encrypted_value.len(),
+        "Successfully encrypted storage data"
+    );
+
+    Ok(Json(StorageEncryptResponse {
+        encrypted_key_base64: base64::encode(&encrypted_key),
+        encrypted_value_base64: base64::encode(&encrypted_value),
+        key_hash,
+    }))
+}
+
+/// Decrypt data from persistent storage
+async fn storage_decrypt_handler(
+    State(state): State<AppState>,
+    Json(req): Json<StorageDecryptRequest>,
+) -> Result<Json<StorageDecryptResponse>, ApiError> {
+    // Check if keystore is ready
+    if !state.is_ready() {
+        return Err(ApiError::Unauthorized(
+            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string()
+        ));
+    }
+
+    // Verify TEE attestation
+    crate::attestation::verify_attestation(
+        &req.attestation,
+        &state.config.tee_mode,
+        &state.expected_measurements,
+    )
+    .map_err(|e| {
+        tracing::warn!(error = %e, "Storage decrypt attestation verification failed");
+        ApiError::Unauthorized(format!("Attestation verification failed: {}", e))
+    })?;
+
+    // Build seed for key derivation (same as encrypt)
+    let seed = if let Some(ref project_uuid) = req.project_uuid {
+        format!("storage:{}:{}", project_uuid, req.account_id)
+    } else {
+        format!("storage:wasm:{}:{}", req.wasm_hash, req.account_id)
+    };
+
+    // Decode encrypted data from base64
+    let encrypted_key = base64::decode(&req.encrypted_key_base64)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid base64 in encrypted_key: {}", e)))?;
+
+    let encrypted_value = base64::decode(&req.encrypted_value_base64)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid base64 in encrypted_value: {}", e)))?;
+
+    // Decrypt key and value
+    let keystore = state.keystore.read().await;
+
+    let key_bytes = keystore
+        .decrypt(&seed, &encrypted_key)
+        .map_err(|e| ApiError::InternalError(format!("Failed to decrypt key: {}", e)))?;
+
+    let value_bytes = keystore
+        .decrypt(&seed, &encrypted_value)
+        .map_err(|e| ApiError::InternalError(format!("Failed to decrypt value: {}", e)))?;
+
+    // Convert key to string
+    let key = String::from_utf8(key_bytes)
+        .map_err(|e| ApiError::InternalError(format!("Decrypted key is not valid UTF-8: {}", e)))?;
+
+    tracing::debug!(
+        project_uuid = ?req.project_uuid,
+        wasm_hash = %req.wasm_hash,
+        account_id = %req.account_id,
+        key = %key,
+        "Successfully decrypted storage data"
+    );
+
+    Ok(Json(StorageDecryptResponse {
+        key,
+        value_base64: base64::encode(&value_bytes),
     }))
 }
 

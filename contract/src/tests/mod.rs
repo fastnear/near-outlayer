@@ -25,7 +25,7 @@ pub fn setup_contract() -> Contract {
     let context = get_context(accounts(0), NearToken::from_near(0));
     testing_env!(context.build());
 
-    Contract::new(accounts(0), Some(accounts(1)))
+    Contract::new(accounts(0), Some(accounts(1)), None, None)
 }
 
 #[cfg(test)]

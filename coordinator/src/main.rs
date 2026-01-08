@@ -143,6 +143,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/attestations", post(handlers::attestations::store_attestation))
         // GitHub API endpoint (protected - only workers need it)
         .route("/github/resolve-branch", get(handlers::github::resolve_branch))
+        // Storage endpoints (worker-protected)
+        .route("/storage/set", post(handlers::storage::storage_set))
+        .route("/storage/get", post(handlers::storage::storage_get))
+        .route("/storage/get-by-version", post(handlers::storage::storage_get_by_version))
+        .route("/storage/has", post(handlers::storage::storage_has))
+        .route("/storage/delete", post(handlers::storage::storage_delete))
+        .route("/storage/list", get(handlers::storage::storage_list))
+        .route("/storage/usage", get(handlers::storage::storage_usage))
+        .route("/storage/clear-all", post(handlers::storage::storage_clear_all))
+        .route("/storage/clear-version", post(handlers::storage::storage_clear_version))
+        .route("/storage/clear-project", post(handlers::storage::storage_clear_project))
+        // Project endpoints (worker-protected)
+        .route("/projects/uuid", get(handlers::projects::resolve_project_uuid))
+        .route("/projects/cache", delete(handlers::projects::invalidate_project_cache))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::auth_middleware,
@@ -176,6 +190,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         // TODO Fix
         // .route("/public/api-keys", post(handlers::public::create_api_key))
+        .route("/public/projects/storage", get(handlers::public::get_project_storage))
         .route("/health", get(|| async { "OK" }));
 
     // Build internal routes (no auth - for worker communication only)

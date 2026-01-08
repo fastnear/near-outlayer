@@ -318,7 +318,7 @@ export default function GettingStartedSection() {
               </p>
               <pre className="text-xs bg-gray-100 p-2 rounded mt-1 overflow-x-auto">
 {`near call outlayer.testnet request_execution '\\
-  {"code_source": {"repo": "github.com/you/project", "commit": "main"}, \\
+  {"source": {"GitHub": {"repo": "github.com/you/project", "commit": "main"}}, \\
    "input_data": "{\\"param\\":123}"}' \\
   --accountId you.testnet --deposit 0.1`}
               </pre>

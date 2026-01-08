@@ -89,6 +89,12 @@ pub struct ExecutionRequest {
     /// When set, executor should call resolve_execution with this value without running WASM
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compile_result: Option<String>,
+    /// Project UUID for persistent storage (None for standalone WASM)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_uuid: Option<String>,
+    /// Project ID for project-based secrets (e.g., "alice.near/my-app")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,6 +191,10 @@ pub struct CreateTaskParams {
     pub compile_only: bool,
     pub force_rebuild: bool,
     pub store_on_fastfs: bool,
+    /// Project UUID for persistent storage (from request_execution_project)
+    pub project_uuid: Option<String>,
+    /// Project ID for project-based secrets (e.g., "alice.near/my-app")
+    pub project_id: Option<String>,
 }
 
 /// Execution output - can be bytes, text, or parsed JSON
@@ -193,6 +203,15 @@ pub enum ExecutionOutput {
     Bytes(Vec<u8>),
     Text(String),
     Json(serde_json::Value),
+}
+
+/// Project UUID info from coordinator
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectUuidInfo {
+    pub project_id: String,
+    pub uuid: String,
+    pub active_version: String,
+    pub cached: bool,
 }
 
 /// Execution result to send back to coordinator
@@ -232,6 +251,12 @@ pub struct JobInfo {
     /// Compilation time in milliseconds from compile job
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compile_time_ms: Option<u64>,
+    /// Project UUID for persistent storage (None for standalone WASM)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_uuid: Option<String>,
+    /// Project ID for project-based secrets (e.g., "alice.near/my-app")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
 }
 
 /// Pricing configuration from coordinator (fetched from NEAR contract)
@@ -469,6 +494,8 @@ impl ApiClient {
         compile_only: bool,
         force_rebuild: bool,
         has_compile_result: bool,
+        project_uuid: Option<String>,
+        project_id: Option<String>,
     ) -> Result<ClaimJobResponse> {
         let url = format!("{}/jobs/claim", self.base_url);
 
@@ -489,6 +516,10 @@ impl ApiClient {
             compile_only: bool,
             force_rebuild: bool,
             has_compile_result: bool,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            project_uuid: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            project_id: Option<String>,
         }
 
         let request = ClaimRequest {
@@ -504,6 +535,8 @@ impl ApiClient {
             compile_only,
             force_rebuild,
             has_compile_result,
+            project_uuid,
+            project_id,
         };
 
         tracing::debug!("🎯 Claiming job for request_id={}", request_id);
@@ -939,6 +972,10 @@ impl ApiClient {
             compile_only: bool,
             force_rebuild: bool,
             store_on_fastfs: bool,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            project_uuid: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            project_id: Option<String>,
         }
 
         #[derive(Deserialize)]
@@ -961,6 +998,8 @@ impl ApiClient {
             compile_only: params.compile_only,
             force_rebuild: params.force_rebuild,
             store_on_fastfs: params.store_on_fastfs,
+            project_uuid: params.project_uuid,
+            project_id: params.project_id,
         };
 
         let response = self
@@ -1095,6 +1134,53 @@ impl ApiClient {
         }
     }
 
+    /// Resolve project_id to project_uuid via coordinator
+    ///
+    /// Calls coordinator's project API with Redis caching.
+    /// UUIDs are cached forever since they never change.
+    ///
+    /// # Arguments
+    /// * `project_id` - Project ID in format "owner.near/name"
+    ///
+    /// # Returns
+    /// * `Ok(Some(ProjectInfo))` - Project found with UUID and active version
+    /// * `Ok(None)` - Project not found
+    /// * `Err(_)` - API error
+    pub async fn resolve_project_uuid(&self, project_id: &str) -> Result<Option<ProjectUuidInfo>> {
+        let url = format!("{}/projects/uuid", self.base_url);
+
+        let response = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.auth_token))
+            .query(&[("project_id", project_id)])
+            .send()
+            .await
+            .context("Failed to send resolve-project-uuid request")?;
+
+        match response.status() {
+            StatusCode::OK => {
+                let data: ProjectUuidInfo = response
+                    .json()
+                    .await
+                    .context("Failed to parse project-uuid response")?;
+                Ok(Some(data))
+            }
+            StatusCode::NOT_FOUND => Ok(None),
+            status => {
+                let error_text = response
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "Unknown error".to_string());
+                anyhow::bail!(
+                    "Resolve-project-uuid failed with status {}: {}",
+                    status,
+                    error_text
+                )
+            }
+        }
+    }
+
     /// Store task attestation in coordinator
     ///
     /// Sends TDX quote and task metadata to coordinator for public verification.
@@ -1150,6 +1236,49 @@ impl ApiClient {
                     .unwrap_or_else(|_| "Unknown error".to_string());
                 anyhow::bail!(
                     "Failed to store attestation with status {}: {}",
+                    status,
+                    error_text
+                )
+            }
+        }
+    }
+
+    /// Clear all storage for a project (called when project is deleted)
+    pub async fn clear_project_storage(&self, project_uuid: &str) -> Result<()> {
+        let url = format!("{}/storage/clear-project", self.base_url);
+
+        tracing::info!(
+            project_uuid = project_uuid,
+            "Clearing project storage in coordinator"
+        );
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.auth_token))
+            .json(&serde_json::json!({ "project_uuid": project_uuid }))
+            .send()
+            .await
+            .context("Failed to send clear-project request to coordinator")?;
+
+        match response.status() {
+            StatusCode::OK => {
+                tracing::info!(
+                    project_uuid = project_uuid,
+                    "Successfully cleared project storage"
+                );
+                Ok(())
+            }
+            StatusCode::UNAUTHORIZED => {
+                anyhow::bail!("Worker authentication failed - check API_AUTH_TOKEN")
+            }
+            status => {
+                let error_text = response
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "Unknown error".to_string());
+                anyhow::bail!(
+                    "Failed to clear project storage with status {}: {}",
                     status,
                     error_text
                 )

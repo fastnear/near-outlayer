@@ -333,6 +333,61 @@ impl NearClient {
         Ok(secret_profile)
     }
 
+    /// Read secrets from contract by project ID
+    ///
+    /// Calls: contract.get_secrets(accessor: Project { project_id }, profile, owner)
+    /// Returns: SecretProfile { encrypted_secrets, access, ... }
+    pub async fn get_secrets_by_project(
+        &self,
+        project_id: &str,
+        profile: &str,
+        owner: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        tracing::debug!(
+            contract = %self.contract_id,
+            project_id = %project_id,
+            profile = %profile,
+            owner = %owner,
+            "Reading secrets by project_id from contract"
+        );
+
+        let args = json!({
+            "accessor": {
+                "Project": {
+                    "project_id": project_id
+                }
+            },
+            "profile": profile,
+            "owner": owner,
+        });
+
+        let query = methods::query::RpcQueryRequest {
+            block_reference: BlockReference::latest(),
+            request: near_primitives::views::QueryRequest::CallFunction {
+                account_id: self.contract_id.clone(),
+                method_name: "get_secrets".to_string(),
+                args: args.to_string().into_bytes().into(),
+            },
+        };
+
+        let response = self
+            .rpc_client
+            .call(query)
+            .await
+            .context("Failed to query contract")?;
+
+        let result = match response.kind {
+            QueryResponseKind::CallResult(result) => result.result,
+            _ => anyhow::bail!("Unexpected query response"),
+        };
+
+        // Parse response (Option<SecretProfile>)
+        let secret_profile: Option<serde_json::Value> = serde_json::from_slice(&result)
+            .context("Failed to parse contract response")?;
+
+        Ok(secret_profile)
+    }
+
     /// Check if account is member of DAO role (Sputnik v2 compatible)
     ///
     /// Calls: dao_contract.get_policy()
@@ -426,17 +481,14 @@ impl NearClient {
                 return Ok(is_member);
             }
 
-            // Check if it's "Member" variant { "Member": "1000000" }
-            if let Some(threshold_value) = kind.get("Member") {
-                // Member variant requires checking DAO token balance
-                // This would require calling dao_contract.delegation_total_supply() or similar
-                // For MVP, we'll deny access and log a warning
-                tracing::warn!(
-                    role_kind = "Member",
-                    threshold = %threshold_value,
-                    "Member role kind requires token balance check - not implemented yet, denying access"
+            // "Member" variant requires token balance check - not supported
+            // Use "Group" role with explicit account list instead
+            if kind.get("Member").is_some() {
+                anyhow::bail!(
+                    "DAO role '{}' uses Member kind which requires token balance checking. \
+                    This is not supported. Please use a Group role with explicit account list instead.",
+                    role_name
                 );
-                return Ok(false);
             }
 
             // Unknown role kind

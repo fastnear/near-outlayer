@@ -44,6 +44,7 @@ const pageStructure = {
     { id: 'what-are-secrets', title: 'What are Secrets?' },
     { id: 'creating-secrets', title: 'Creating Secrets' },
     { id: 'secrets-binding', title: 'Secrets Binding Types' },
+    { id: 'project-binding', title: 'Project Binding' },
     { id: 'access-control', title: 'Access Control' },
     { id: 'using-secrets', title: 'Using Secrets in Code' },
     { id: 'storage-costs', title: 'Storage Costs' },
@@ -51,6 +52,22 @@ const pageStructure = {
     { id: 'confidential-key-derivation', title: 'Confidential Key Derivation (CKD)' },
     { id: 'dao-governance', title: 'DAO Governance & Keystore' },
     { id: 'ckd-faq', title: 'CKD & MPC FAQ' },
+  ],
+  '/docs/projects': [
+    { id: 'what-are-projects', title: 'What are Projects?' },
+    { id: 'project-id', title: 'Project ID Format' },
+    { id: 'creating-project', title: 'Creating a Project' },
+    { id: 'managing-versions', title: 'Managing Versions' },
+    { id: 'persistent-storage', title: 'Persistent Storage' },
+    { id: 'storage-api', title: 'Storage API' },
+    { id: 'storage-methods', title: 'Storage Methods Reference' },
+    { id: 'storage-example', title: 'Usage Example' },
+    { id: 'storage-security', title: 'Storage Security' },
+    { id: 'user-data-isolation', title: 'User Data Isolation' },
+    { id: 'worker-storage', title: 'Worker Storage' },
+    { id: 'project-secrets', title: 'Project Secrets' },
+    { id: 'use-cases', title: 'Use Cases' },
+    { id: 'best-practices', title: 'Best Practices' },
   ],
   '/docs/pricing': [
     { id: 'dynamic-pricing', title: 'Dynamic Pricing Model' },
@@ -348,6 +365,44 @@ export default function DocsLayout({
                 {expandedPages['/docs/secrets'] && pageStructure['/docs/secrets'] && (
                   <div className="ml-4 mt-1 space-y-1">
                     {pageStructure['/docs/secrets'].map(section => (
+                      <button
+                        key={section.id}
+                        onClick={() => scrollToSection(section.id)}
+                        className="block w-full text-left px-3 py-1.5 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
+                      >
+                        {section.title}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Projects & Versions */}
+              <div>
+                <Link
+                  href="/docs/projects"
+                  className={`flex items-center justify-between w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                    isActive('/docs/projects')
+                      ? 'bg-[var(--primary-orange)] text-white'
+                      : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                  onClick={(e) => {
+                    if (isActive('/docs/projects')) {
+                      e.preventDefault();
+                      toggleExpand('/docs/projects');
+                    }
+                  }}
+                >
+                  <span>Projects</span>
+                  {pageStructure['/docs/projects'] && (
+                    <svg className={`w-4 h-4 transition-transform ${expandedPages['/docs/projects'] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  )}
+                </Link>
+                {expandedPages['/docs/projects'] && pageStructure['/docs/projects'] && (
+                  <div className="ml-4 mt-1 space-y-1">
+                    {pageStructure['/docs/projects'].map(section => (
                       <button
                         key={section.id}
                         onClick={() => scrollToSection(section.id)}

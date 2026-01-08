@@ -42,6 +42,55 @@ See `wasi-examples/WASI_TUTORIAL.md` section "WASI vs NEAR Smart Contracts" for 
 - Always consider: what will change during this delay? If nothing - don't delay
 - Better alternatives: exponential backoff, lock TTL, event-driven waiting
 - If you add latency, document WHY in comments and discuss with human first
+
+**CRITICAL - NO MVP CODE**: This is a PRODUCTION project, NOT an MVP. NEVER:
+- Write "MVP" or "for MVP" comments in code
+- Leave TODO comments saying "fix for production"
+- Implement simplified/temporary solutions marked as MVP
+- Use placeholder encryption or security (like XOR "for MVP")
+- Skip proper error handling "for MVP simplicity"
+All code must be production-ready. If something requires proper implementation, implement it properly or discuss with human first.
+
+**CRITICAL - NO LIMITED FUNCTIONALITY**: NEVER implement features with reduced functionality for one platform/target without explicit user approval. Examples:
+- DO NOT say "P1 doesn't support X, so we skip it" without asking
+- DO NOT implement feature for P2 but leave P1 without it
+- DO NOT assume one target is "less important" or can have fewer features
+- If technical limitations exist (e.g., P1 vs P2 differences), EXPLAIN the situation and ASK how to proceed
+- Always aim for feature parity across all supported targets unless user explicitly says otherwise
+
+**CRITICAL - NO STUB IMPLEMENTATIONS**: NEVER write stub/placeholder implementations that return empty data or log warnings like "not implemented". This is STRICTLY FORBIDDEN:
+- DO NOT write functions that return `vec![]` with a "TODO" or "requires implementation" comment
+- DO NOT write functions that just `log!("WARNING: X requires Y implementation")`
+- DO NOT add public API methods that don't actually work
+- If a feature requires different data structures - implement them properly or ASK human first
+- If you're not sure how to implement something - ASK, don't stub
+- Every public function MUST be fully functional when written
+- Example of FORBIDDEN code:
+  ```rust
+  pub fn list_items(&self) -> Vec<Item> {
+      // TODO: need to add index
+      log!("WARNING: requires indexing implementation");
+      vec![]  // <-- THIS IS FORBIDDEN
+  }
+  ```
+- If the data structure doesn't support iteration - either change the structure or don't expose the method
+
+**CRITICAL - ERROR PROPAGATION TO USERS**: When writing code that needs to inform users about errors:
+- `tracing::debug!()` / `tracing::warn!()` / `tracing::error!()` go to SERVER LOGS ONLY - users never see them
+- To propagate errors to users, use `anyhow::bail!("descriptive message")` or `return Err(...)`
+- In keystore-worker: errors from `validate()` propagate via `?` to API handlers → `ApiError::InternalError(format!("...: {}", e))`
+- In worker: errors propagate to coordinator → stored in job result → visible in dashboard
+- Example - WRONG (user sees nothing):
+  ```rust
+  tracing::debug!("Feature X not supported");
+  return Ok(false);  // User just sees "Access denied" with no explanation
+  ```
+- Example - CORRECT (user sees the reason):
+  ```rust
+  anyhow::bail!("Feature X is not supported. Please use Y instead.");
+  // User sees: "Access validation failed: Feature X is not supported. Please use Y instead."
+  ```
+- Rule: If user needs to know WHY something failed to fix their configuration, use `Err()` not `Ok(false)` + log
 </CRITICAL>
 
 # NEAR OutLayer Production Development - Context

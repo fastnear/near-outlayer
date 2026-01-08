@@ -16,7 +16,8 @@ export type AccessCondition =
 // Secret accessor - defines what code can access/decrypt the secret
 export type SecretAccessor =
   | { Repo: { repo: string; branch: string | null } }
-  | { WasmHash: { hash: string } };
+  | { WasmHash: { hash: string } }
+  | { Project: { project_id: string } };
 
 export interface UserSecret {
   accessor: SecretAccessor;
@@ -28,7 +29,7 @@ export interface UserSecret {
 }
 
 // Form data for creating secrets
-export type SecretSourceType = 'repo' | 'wasm_hash';
+export type SecretSourceType = 'repo' | 'wasm_hash' | 'project';
 
 export interface FormData {
   sourceType: SecretSourceType;
@@ -37,6 +38,8 @@ export interface FormData {
   branch: string | null;
   // WasmHash-based fields
   wasmHash: string;
+  // Project-based fields
+  projectId: string;
   // Common fields
   profile: string;
   access: unknown; // Contract format
@@ -51,6 +54,10 @@ export function isWasmHashAccessor(accessor: SecretAccessor): accessor is { Wasm
   return 'WasmHash' in accessor;
 }
 
+export function isProjectAccessor(accessor: SecretAccessor): accessor is { Project: { project_id: string } } {
+  return 'Project' in accessor;
+}
+
 export function getAccessorLabel(accessor: SecretAccessor): string {
   if (isRepoAccessor(accessor)) {
     const { repo, branch } = accessor.Repo;
@@ -58,6 +65,8 @@ export function getAccessorLabel(accessor: SecretAccessor): string {
   } else if (isWasmHashAccessor(accessor)) {
     const hash = accessor.WasmHash.hash;
     return `WASM: ${hash.substring(0, 8)}...${hash.substring(hash.length - 8)}`;
+  } else if (isProjectAccessor(accessor)) {
+    return `Project: ${accessor.Project.project_id}`;
   }
   return 'Unknown';
 }

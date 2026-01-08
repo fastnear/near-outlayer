@@ -2,6 +2,14 @@
 
 This file describes the dashboard documentation structure and source → rendered docs mapping.
 
+> **IMPORTANT**: This file is an INDEX only - it describes the documentation structure but is NOT the documentation itself.
+> When adding new features or updating docs, you MUST:
+> 1. Create/update the actual documentation pages in `/dashboard/app/docs/`
+> 2. Update navigation in `/dashboard/app/docs/layout.tsx`
+> 3. Then update this index to reflect the changes
+>
+> Users read documentation at https://dashboard.outlayer.io/docs, not this file!
+
 ## Quick Reference
 
 - **Main Docs**: `/dashboard/app/docs/` - All documentation pages
@@ -22,6 +30,7 @@ dashboard/app/docs/
 ├── dev-guide/page.tsx            # Developer Guide (from sections/DeveloperGuide.tsx)
 ├── wasi/page.tsx                 # Writing WASI Code (comprehensive guide)
 ├── secrets/page.tsx              # Secrets Management
+├── projects/page.tsx             # ✨ Projects & Versions (NEW)
 ├── pricing/page.tsx              # Pricing model
 ├── tee-attestation/page.tsx      # TEE Attestation (from sections/TeeAttestation.tsx)
 ├── examples/page.tsx             # ✨ Example Projects (all examples)
@@ -48,6 +57,8 @@ dashboard/app/docs/
 | **captcha-ark** | `wasi-examples/captcha-ark/` | ✅ | `/docs/examples#captcha-ark` | ✅ Shown | P2 | Advanced |
 | **test-secrets-ark** | `wasi-examples/test-secrets-ark/` | ✅ | - | ❌ Hidden (test) | P2 | - |
 | **rpc-test-ark** | `wasi-examples/rpc-test-ark/` | ✅ | - | ❌ Hidden (test) | P2 | - |
+| **test-storage-ark** | `wasi-examples/test-storage-ark/` | ✅ | - | ❌ Hidden (test) | P2 | - |
+| **private-token-ark** | `wasi-examples/private-token-ark/` | ✅ | `/docs/examples#private-token-ark` | ✅ Shown | P2 | Advanced |
 | **wasi-test-runner** | `wasi-examples/wasi-test-runner/` | ❌ | - | ❌ Hidden (infra) | - | - |
 
 ## Example Block Format in examples/page.tsx
@@ -159,6 +170,7 @@ dashboard/app/docs/
 | `/docs/dev-guide` | `dashboard/app/docs/sections/DeveloperGuide.tsx` | - | Development workflow, best practices |
 | `/docs/wasi` | `dashboard/app/docs/sections/index.tsx` (WasiSection) | `wasi-examples/WASI_TUTORIAL.md`, `worker/wit/world.wit` | WASI programming, host functions |
 | `/docs/secrets` | `dashboard/app/docs/sections/index.tsx` (SecretsSection) | `keystore-dao-contract/README.md` | Secrets management, CKD, Keystore DAO |
+| `/docs/projects` | `dashboard/app/docs/projects/page.tsx` | `contract/src/projects.rs` | Projects, versions, persistent storage, project secrets |
 | `/docs/pricing` | `dashboard/app/docs/sections/index.tsx` (PricingSection) | - | Cost model, resource limits |
 | `/docs/tee-attestation` | `dashboard/app/docs/sections/TeeAttestation.tsx` | `TEE_ATTESTATION_FLOW.md` | TEE verification, attestation |
 | `/docs/examples` | `dashboard/app/docs/examples/page.tsx` | `wasi-examples/*/README.md` | All example projects |
@@ -240,6 +252,166 @@ const pageStructure = {
 - **Manual Secrets**: User-provided, cannot use `PROTECTED_*` prefix
 - **Auto-Generated Secrets**: TEE-generated, must use `PROTECTED_*` prefix
 - **Validation**: Keystore validates access conditions before decryption
+
+## Projects & Versions (NEW)
+
+### Overview
+Projects allow users to organize WASM code versions with shared persistent storage and secrets.
+
+### Key Features
+- **Versioning**: Multiple WASM versions per project, switch active version anytime
+- **Persistent Storage**: Data persists across version updates (same encryption key)
+- **Project Secrets**: Secrets bound to project, accessible by all versions
+- **Storage Deposit**: Pay for on-chain storage, refunded when deleted
+
+### Project ID Format
+```
+{owner_account_id}/{project_name}
+```
+Example: `alice.near/my-app`
+
+### Dashboard Pages
+- `/projects` - List, create, manage projects
+- `/secrets` (Project tab) - Create secrets bound to a project
+
+### Contract Methods
+- `create_project(name, source)` - Create project with first version
+- `add_version(project_name, source, set_active)` - Add new version
+- `set_active_version(project_name, wasm_hash)` - Switch active version
+- `remove_version(project_name, wasm_hash)` - Remove a version
+- `delete_project(project_name)` - Delete entire project
+- `list_user_projects(account_id)` - List user's projects
+- `get_project(project_id)` - Get project details
+- `get_version(project_id, wasm_hash)` - Get version details
+
+### Secrets with SecretAccessor::Project
+When creating secrets for a project, use:
+```json
+{
+  "accessor": { "Project": { "project_id": "alice.near/my-app" } },
+  "profile": "production",
+  ...
+}
+```
+
+### Documentation Status
+- **Dashboard page**: `/projects` - ✅ Implemented
+- **Secrets page update**: Project accessor - ✅ Implemented
+- **Docs page**: `/docs/projects` - ✅ Created (`dashboard/app/docs/projects/page.tsx`)
+
+## Persistent Storage (NEW)
+
+### Overview
+OutLayer provides encrypted persistent storage for WASM modules via host functions.
+
+### Architecture
+```
+WASM Code
+    │ WIT host function calls (near:rpc/storage)
+    ▼
+OutLayer Worker (host_functions.rs)
+    │ calls StorageClient
+    ▼
+StorageClient → Keystore (encrypt/decrypt via TEE)
+    │ encrypted data
+    ▼
+Coordinator API (/storage/*)
+    │
+    ▼
+PostgreSQL (storage_data table)
+```
+
+### Storage API (WIT Interface)
+Located at: `worker/wit/world.wit`
+
+```wit
+interface storage {
+    set: func(key: string, value: list<u8>) -> string;
+    get: func(key: string) -> tuple<list<u8>, string>;
+    has: func(key: string) -> bool;
+    delete: func(key: string) -> bool;
+    list-keys: func(prefix: string) -> tuple<string, string>;
+
+    // Worker-private storage (not accessible by users)
+    set-worker: func(key: string, value: list<u8>) -> string;
+    get-worker: func(key: string) -> tuple<list<u8>, string>;
+
+    // Version migration
+    get-by-version: func(key: string, wasm-hash: string) -> tuple<list<u8>, string>;
+
+    // Cleanup
+    clear-all: func() -> string;
+    clear-version: func(wasm-hash: string) -> string;
+}
+```
+
+### Storage Key Structure
+
+Understanding how storage keys work is essential for using OutLayer storage correctly.
+
+**User Storage (isolated per account)**
+
+When a user calls `storage::set("balance", "100")`, the actual database key includes the account ID:
+
+```
+// alice.near calls execution:
+storage::set("balance", "100")
+// Database key: project_uuid:alice.near:balance = "100"
+
+// bob.near calls execution:
+storage::set("balance", "200")
+// Database key: project_uuid:bob.near:balance = "200"
+
+// alice.near reads:
+storage::get("balance")  // → "100" (her data)
+
+// bob.near reads:
+storage::get("balance")  // → "200" (his data)
+```
+
+**Key points:**
+- WASM code CANNOT read another user's data
+- There is no function like `storage::get_for_account("bob.near", "balance")`
+- User data is only accessible when that user triggers the execution
+
+**Worker Storage (shared across all users)**
+
+When WASM calls `storage::set_worker("key", value)`, the account is replaced with `@worker`:
+
+```
+// Any user calls execution:
+storage::set_worker("total_count", "100")
+// Database key: project_uuid:@worker:total_count = "100"
+
+// Any other user reads:
+storage::get_worker("total_count")  // → "100" (same data)
+```
+
+**Key point:** Worker storage is shared, but users cannot directly access it. Only WASM code can call `get_worker`/`set_worker`. Users interact with worker data only through WASM logic (e.g., calling a method that returns aggregated stats).
+
+### Version Migration
+
+The `wasm_hash` is stored with each record but NOT included in the unique key constraint. This means:
+- New WASM versions automatically read data written by old versions
+- Use `storage::get_by_version("key", "old_wasm_hash")` to explicitly read old version's data
+
+### Encryption
+- **Project-based**: `storage:{project_uuid}:{account_id}`
+- **Worker-private**: Uses `@worker` as account_id
+- All encryption handled by Keystore TEE (not local worker)
+- User isolation is automatic at protocol level
+
+### Test Example
+- **test-storage-ark**: `wasi-examples/test-storage-ark/`
+- Tests all storage host functions
+- Commands: set, get, delete, has, list, set_worker, get_worker, clear_all, test_all
+
+### Use Cases
+- User preferences across executions
+- Counters and state persistence
+- Caching expensive computations
+- Session data storage
+- Private WASM-only state
 
 ## Documentation Update Checklist
 

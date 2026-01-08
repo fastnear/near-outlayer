@@ -42,6 +42,9 @@ export default function RootLayout({
                       <Link href="/executions" className="text-gray-700 hover:text-[#cc6600] px-3 py-2 rounded-md text-sm font-medium transition-colors">
                         Executions
                       </Link>
+                      <Link href="/projects" className="text-gray-700 hover:text-[#cc6600] px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                        Projects
+                      </Link>
                       <Link href="/secrets" className="text-gray-700 hover:text-[#5a8f3a] px-3 py-2 rounded-md text-sm font-medium transition-colors">
                         Secrets
                       </Link>
@@ -91,6 +94,13 @@ export default function RootLayout({
                         className="text-gray-700 hover:text-[#cc6600] px-3 py-2 rounded-md text-sm font-medium transition-colors"
                       >
                         Executions
+                      </Link>
+                      <Link
+                        href="/projects"
+                        onClick={() => setMobileMenuOpen(false)}
+                        className="text-gray-700 hover:text-[#cc6600] px-3 py-2 rounded-md text-sm font-medium transition-colors"
+                      >
+                        Projects
                       </Link>
                       <Link
                         href="/secrets"

@@ -558,3 +558,46 @@ pub async fn create_api_key(
         created_at: result.created_at.map(|dt| dt.and_utc().timestamp()).unwrap_or(0),
     }))
 }
+
+/// Public endpoint: Get project persistent storage size
+/// Reads from PostgreSQL storage_usage table
+#[derive(Debug, Serialize)]
+pub struct ProjectStorageResponse {
+    pub project_uuid: String,
+    pub total_bytes: i64,
+    pub key_count: i32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ProjectStorageQuery {
+    pub project_uuid: String,
+}
+
+pub async fn get_project_storage(
+    State(state): State<AppState>,
+    Query(params): Query<ProjectStorageQuery>,
+) -> Result<Json<ProjectStorageResponse>, (StatusCode, String)> {
+    // Query storage_usage table for this project (sum across all accounts)
+    let result = sqlx::query_as::<_, (i64, i32)>(
+        r#"
+        SELECT
+            COALESCE(SUM(total_bytes), 0)::BIGINT,
+            COALESCE(SUM(key_count), 0)::INT
+        FROM storage_usage
+        WHERE project_uuid = $1
+        "#,
+    )
+    .bind(&params.project_uuid)
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| {
+        error!("Failed to query storage_usage: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e))
+    })?;
+
+    Ok(Json(ProjectStorageResponse {
+        project_uuid: params.project_uuid,
+        total_bytes: result.0,
+        key_count: result.1,
+    }))
+}

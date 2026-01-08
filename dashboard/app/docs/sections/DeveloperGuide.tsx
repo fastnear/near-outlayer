@@ -179,10 +179,12 @@ path = "src/main.rs"`}
           <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
 {`# Option 1: GitHub source (compiles from source code)
 near call outlayer.testnet request_execution '{
-  "code_source": {
-    "repo": "https://github.com/zavodil/random-ark",
-    "commit": "main",
-    "build_target": "wasm32-wasip1"
+  "source": {
+    "GitHub": {
+      "repo": "https://github.com/zavodil/random-ark",
+      "commit": "main",
+      "build_target": "wasm32-wasip1"
+    }
   },
   "input_data": "{\\"min\\": 1, \\"max\\": 100}",
   "resource_limits": {
@@ -195,12 +197,26 @@ near call outlayer.testnet request_execution '{
 
 # Option 2: WasmUrl source (pre-compiled WASM, instant execution)
 near call outlayer.testnet request_execution '{
-  "code_source": {
-    "url": "https://wasmhub.testnet.fastfs.io/fastfs.testnet/abc123...wasm",
-    "hash": "41c1c7b3528565f3fd139943f439d61c0768e9abdb9b579bd0921ecbfcabeded",
-    "build_target": "wasm32-wasip1"
+  "source": {
+    "WasmUrl": {
+      "url": "https://wasmhub.testnet.fastfs.io/fastfs.testnet/abc123...wasm",
+      "hash": "41c1c7b3528565f3fd139943f439d61c0768e9abdb9b579bd0921ecbfcabeded",
+      "build_target": "wasm32-wasip1"
+    }
   },
   "input_data": "{\\"min\\": 1, \\"max\\": 100}",
+  "response_format": "Json"
+}' --accountId alice.testnet --deposit 0.1 --gas 300000000000000
+
+# Option 3: Project source (registered project with persistent storage)
+near call outlayer.testnet request_execution '{
+  "source": {
+    "Project": {
+      "project_id": "alice.testnet/my-app",
+      "version_key": null
+    }
+  },
+  "input_data": "{}",
   "response_format": "Json"
 }' --accountId alice.testnet --deposit 0.1 --gas 300000000000000`}
           </SyntaxHighlighter>
@@ -257,12 +273,13 @@ const MIN_DEPOSIT: u128 = 10_000_000_000_000_000_000_000; // 0.01 NEAR
 trait OutLayer {
     fn request_execution(
         &mut self,
-        code_source: serde_json::Value,
+        source: serde_json::Value,  // ExecutionSource: GitHub, WasmUrl, or Project
         resource_limits: serde_json::Value,
         input_data: String,
         secrets_ref: Option<serde_json::Value>,
         response_format: String,
         payer_account_id: Option<AccountId>,
+        params: Option<serde_json::Value>,
     );
 }
 

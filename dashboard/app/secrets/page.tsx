@@ -6,7 +6,7 @@ import { actionCreators } from '@near-js/transactions';
 import WalletConnectionModal from '@/components/WalletConnectionModal';
 import { SecretsForm } from './components/SecretsForm';
 import { SecretsList } from './components/SecretsList';
-import { UserSecret, FormData, isRepoAccessor } from './components/types';
+import { UserSecret, FormData, isRepoAccessor, isWasmHashAccessor, isProjectAccessor } from './components/types';
 import { getCoordinatorApiUrl } from '@/lib/api';
 
 export default function SecretsPage() {
@@ -84,6 +84,8 @@ export default function SecretsPage() {
       // Build accessor based on source type
       const accessor = formData.sourceType === 'wasm_hash'
         ? { WasmHash: { hash: formData.wasmHash } }
+        : formData.sourceType === 'project'
+        ? { Project: { project_id: formData.projectId } }
         : { Repo: { repo: formData.repo, branch: formData.branch || null } };
 
       // Unified API - same method for both types
@@ -157,8 +159,10 @@ export default function SecretsPage() {
     let label: string;
     if (isRepoAccessor(secret.accessor)) {
       label = `${secret.accessor.Repo.repo}:${secret.profile}`;
-    } else if ('WasmHash' in secret.accessor && secret.accessor.WasmHash?.hash) {
+    } else if (isWasmHashAccessor(secret.accessor)) {
       label = `WASM(${secret.accessor.WasmHash.hash.substring(0, 8)}...):${secret.profile}`;
+    } else if (isProjectAccessor(secret.accessor)) {
+      label = `Project(${secret.accessor.Project.project_id}):${secret.profile}`;
     } else {
       setError('Invalid secret: unknown accessor type');
       return;
@@ -195,8 +199,10 @@ export default function SecretsPage() {
     let label: string;
     if (isRepoAccessor(secret.accessor)) {
       label = `${secret.accessor.Repo.repo}:${secret.profile}`;
-    } else if ('WasmHash' in secret.accessor && secret.accessor.WasmHash?.hash) {
+    } else if (isWasmHashAccessor(secret.accessor)) {
       label = `WASM(${secret.accessor.WasmHash.hash.substring(0, 8)}...):${secret.profile}`;
+    } else if (isProjectAccessor(secret.accessor)) {
+      label = `Project(${secret.accessor.Project.project_id}):${secret.profile}`;
     } else {
       setError('Invalid secret: unknown accessor type');
       return;
@@ -294,12 +300,20 @@ export default function SecretsPage() {
                     wasmHash: '',
                     profile: editingSecret.profile,
                   }
-                : 'WasmHash' in editingSecret.accessor && editingSecret.accessor.WasmHash?.hash
+                : isWasmHashAccessor(editingSecret.accessor)
                 ? {
                     sourceType: 'wasm_hash' as const,
                     repo: '',
                     branch: '',
                     wasmHash: editingSecret.accessor.WasmHash.hash,
+                    profile: editingSecret.profile,
+                  }
+                : isProjectAccessor(editingSecret.accessor)
+                ? {
+                    sourceType: 'project' as const,
+                    repo: '',
+                    branch: '',
+                    wasmHash: '',
                     profile: editingSecret.profile,
                   }
                 : undefined
@@ -310,13 +324,24 @@ export default function SecretsPage() {
               ? {
                   accessor: isRepoAccessor(updatingSecret.accessor)
                     ? {
-                        type: 'Repo',
+                        type: 'Repo' as const,
                         repo: updatingSecret.accessor.Repo.repo,
                         branch: updatingSecret.accessor.Repo.branch || null,
                       }
+                    : isWasmHashAccessor(updatingSecret.accessor)
+                    ? {
+                        type: 'WasmHash' as const,
+                        hash: updatingSecret.accessor.WasmHash.hash,
+                      }
+                    : isProjectAccessor(updatingSecret.accessor)
+                    ? {
+                        type: 'Project' as const,
+                        project_id: updatingSecret.accessor.Project.project_id,
+                      }
                     : {
-                        type: 'WasmHash',
-                        hash: ('WasmHash' in updatingSecret.accessor && updatingSecret.accessor.WasmHash?.hash) || '',
+                        type: 'Repo' as const,
+                        repo: '',
+                        branch: null,
                       },
                   profile: updatingSecret.profile,
                 }
@@ -372,10 +397,12 @@ export default function SecretsPage() {
           <h4 className="text-xs font-semibold text-blue-900 mb-2">Example: Request Execution with Secrets</h4>
           <pre className="text-xs text-blue-800 overflow-x-auto">
 {`near call outlayer.testnet request_execution '{
-  "code_source": {
-    "repo": "https://github.com/alice/myproject",
-    "commit": "main",
-    "build_target": "wasm32-wasip1"
+  "source": {
+    "GitHub": {
+      "repo": "https://github.com/alice/myproject",
+      "commit": "main",
+      "build_target": "wasm32-wasip1"
+    }
   },
   "secrets_ref": {
     "profile": "production",

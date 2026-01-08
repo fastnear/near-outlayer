@@ -9,6 +9,7 @@ mod keystore_client;
 mod near_client;
 mod registration;
 mod outlayer_rpc;
+mod outlayer_storage;
 mod tdx_attestation;
 
 use anyhow::{Context, Result};
@@ -22,6 +23,7 @@ use event_monitor::EventMonitor;
 use executor::{Executor, ExecutionContext};
 use keystore_client::KeystoreClient;
 use near_client::NearClient;
+use outlayer_storage::StorageConfig;
 use tdx_attestation::TdxClient;
 
 /// Generate a dummy TDX quote and fetch collateral from Phala Cloud API
@@ -299,6 +301,9 @@ async fn main() -> Result<()> {
         let contract_id = config.offchainvm_contract_id.clone();
         let start_block = config.start_block_height;
         let scan_interval_ms = config.scan_interval_ms;
+        let event_filter_standard_name = config.event_filter_standard_name.clone();
+        let event_filter_function_name = config.event_filter_function_name.clone();
+        let event_filter_min_version = config.event_filter_min_version.clone();
 
         tokio::spawn(async move {
             info!("Starting event monitor...");
@@ -309,6 +314,9 @@ async fn main() -> Result<()> {
                 contract_id,
                 start_block,
                 scan_interval_ms,
+                event_filter_standard_name,
+                event_filter_function_name,
+                event_filter_min_version,
             )
             .await
             {
@@ -404,8 +412,12 @@ async fn worker_iteration(
         warn!("⚠️ Task with force_rebuild=true but no compile_result routed to executor - may be waiting for compiler");
     }
 
-    info!("🎯 Claiming jobs for request_id={} data_id={} with capabilities={:?} compile_only={} force_rebuild={} has_compile_result={}",
-          request_id, data_id, config.capabilities.to_array(), compile_only, force_rebuild, has_compile_result);
+    // Get project_uuid and project_id from execution request
+    let project_uuid = execution_request.project_uuid.clone();
+    let project_id = execution_request.project_id.clone();
+
+    info!("🎯 Claiming jobs for request_id={} data_id={} with capabilities={:?} compile_only={} force_rebuild={} has_compile_result={} project_uuid={:?}",
+          request_id, data_id, config.capabilities.to_array(), compile_only, force_rebuild, has_compile_result, project_uuid);
     let claim_response = match api_client
         .claim_job(
             request_id,
@@ -420,6 +432,8 @@ async fn worker_iteration(
             compile_only,
             force_rebuild,
             has_compile_result,
+            project_uuid,
+            project_id,
         )
         .await
     {
@@ -518,6 +532,7 @@ async fn worker_iteration(
                     compile_result.as_ref(), // Pass compile_result (published_url or result for compile_only)
                     compile_only,
                     config.use_tee_registration,
+                    config,
                 )
                 .await?;
             }
@@ -539,6 +554,8 @@ fn merge_env_vars(
     user_account_id: Option<&String>,
     near_payment_yocto: Option<&String>,
     transaction_hash: Option<&String>,
+    project_id: Option<&String>,
+    project_uuid: Option<&String>,
 ) -> std::collections::HashMap<String, String> {
 
     let mut env_vars = user_secrets.unwrap_or_default();
@@ -587,6 +604,14 @@ fn merge_env_vars(
 
     // Add request ID
     env_vars.insert("NEAR_REQUEST_ID".to_string(), request_id.to_string());
+
+    // Add project context (for WASM to validate it's running in correct project)
+    if let Some(proj_id) = project_id {
+        env_vars.insert("OUTLAYER_PROJECT_ID".to_string(), proj_id.clone());
+    }
+    if let Some(proj_uuid) = project_uuid {
+        env_vars.insert("OUTLAYER_PROJECT_UUID".to_string(), proj_uuid.clone());
+    }
 
     env_vars
 }
@@ -1002,6 +1027,7 @@ async fn handle_execute_job(
     compile_result: Option<&String>, // Result from compile job (published_url or result for compile_only)
     compile_only: bool,
     use_tee_registration: bool,
+    config: &Config, // For storage config
 ) -> Result<()> {
     info!("⚙️ Starting execution job_id={}", job.job_id);
 
@@ -1010,7 +1036,7 @@ async fn handle_execute_job(
     let published_url_from_compile_result = compile_result.cloned();
 
     // Check if this is a result-only task (compile_only=true)
-    // Compiler passed the result (e.g., FastFS URL) for executor to send to contract
+    // Compiler passed the result (e.g., FastFS URL or wasm_hash) for executor to send to contract
     if compile_only && compile_result.is_some() {
         let result_to_send = compile_result.unwrap();
         info!("📤 Result-only execute task: sending compile_result to contract: {}", result_to_send);
@@ -1240,6 +1266,126 @@ async fn handle_execute_job(
         (bytes, job.compile_time_ms, created_at, None) // No published_url when downloading from coordinator
     };
 
+    // Extract metadata from WASM
+    let wasm_metadata = executor::extract_metadata(&wasm_bytes);
+
+    // STRICT VALIDATION: If job has project_id and WASM has metadata, they MUST match
+    // This prevents using WASM built for one project with execution requests for another project
+    if let (Some(ref job_project_id), Some(ref metadata)) = (&job.project_id, &wasm_metadata) {
+        if job_project_id != &metadata.project {
+            let error_msg = format!(
+                "Project mismatch: WASM declares project '{}' in metadata but execution was requested for project '{}'. \
+                 Either rebuild WASM with correct metadata! {{ project: \"{}\" }} or use the correct project_id in request.",
+                metadata.project, job_project_id, job_project_id
+            );
+            error!("❌ {}", error_msg);
+
+            // Fail the job - report to contract
+            let error_result = ExecutionResult {
+                success: false,
+                output: None,
+                error: Some(error_msg.clone()),
+                execution_time_ms: 0,
+                instructions: 0,
+                compile_time_ms: None,
+                compilation_note: None,
+            };
+
+            let _ = near_client.submit_execution_result(request_id, &error_result).await;
+            api_client
+                .complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None)
+                .await?;
+            return Ok(());
+        }
+        info!("✅ Project ID validated: WASM metadata '{}' matches request '{}'", metadata.project, job_project_id);
+    }
+
+    // Resolve project UUID - either from job or from WASM metadata
+    let project_uuid = if let Some(ref job_uuid) = job.project_uuid {
+        // Job has project_uuid - verify it matches WASM metadata if present
+        if let Some(ref metadata) = wasm_metadata {
+            // Resolve metadata.project to UUID and compare
+            match api_client.resolve_project_uuid(&metadata.project).await {
+                Ok(Some(project_info)) => {
+                    if &project_info.uuid != job_uuid {
+                        let error_msg = format!(
+                            "Project mismatch: WASM metadata declares project '{}' (uuid={}) but execution requested for uuid={}",
+                            metadata.project, project_info.uuid, job_uuid
+                        );
+                        error!("❌ {}", error_msg);
+
+                        // Fail the job
+                        let error_result = ExecutionResult {
+                            success: false,
+                            output: None,
+                            error: Some(error_msg.clone()),
+                            execution_time_ms: 0,
+                            instructions: 0,
+                            compile_time_ms: None,
+                            compilation_note: None,
+                        };
+
+                        let _ = near_client.submit_execution_result(request_id, &error_result).await;
+                        api_client
+                            .complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None)
+                            .await?;
+                        return Ok(());
+                    }
+                    info!("✅ Project metadata verified: {} -> {}", metadata.project, job_uuid);
+                }
+                Ok(None) => {
+                    let error_msg = format!(
+                        "Project '{}' from WASM metadata not found on contract",
+                        metadata.project
+                    );
+                    error!("❌ {}", error_msg);
+
+                    let error_result = ExecutionResult {
+                        success: false,
+                        output: None,
+                        error: Some(error_msg.clone()),
+                        execution_time_ms: 0,
+                        instructions: 0,
+                        compile_time_ms: None,
+                        compilation_note: None,
+                    };
+
+                    let _ = near_client.submit_execution_result(request_id, &error_result).await;
+                    api_client
+                        .complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None)
+                        .await?;
+                    return Ok(());
+                }
+                Err(e) => {
+                    warn!("⚠️ Failed to verify project metadata: {}. Continuing with job UUID.", e);
+                }
+            }
+        }
+        Some(job_uuid.clone())
+    } else if let Some(ref metadata) = wasm_metadata {
+        // No job UUID but WASM has metadata - resolve from metadata
+        info!("📋 Extracted WASM metadata: project={}, version={}", metadata.project, metadata.version);
+
+        match api_client.resolve_project_uuid(&metadata.project).await {
+            Ok(Some(project_info)) => {
+                info!("✅ Resolved project UUID: {} -> {}", metadata.project, project_info.uuid);
+                Some(project_info.uuid)
+            }
+            Ok(None) => {
+                warn!("⚠️ Project '{}' not found on contract. Storage will be disabled.", metadata.project);
+                None
+            }
+            Err(e) => {
+                warn!("⚠️ Failed to resolve project UUID: {}. Storage will be disabled.", e);
+                None
+            }
+        }
+    } else {
+        // No job UUID and no metadata - standalone WASM without project
+        debug!("No project context - running as standalone WASM (storage disabled)");
+        None
+    };
+
     // Decrypt secrets from contract if provided (new repo-based system)
     info!("🔍 DEBUG secrets_ref: {:?}", secrets_ref);
     info!("🔍 DEBUG keystore_client: {}", if keystore_client.is_some() { "Some" } else { "None" });
@@ -1250,35 +1396,42 @@ async fn handle_execute_job(
         // user_account_id is the account that requested execution (used for access control)
         let caller = user_account_id.map(|s| s.as_str()).unwrap_or(&secrets_ref.account_id);
 
-        // Decrypt secrets based on code_source type
-        let secrets_result = match code_source {
-            CodeSource::GitHub { repo, commit, .. } => {
-                info!("📦 Decrypting repo-based secrets for GitHub source");
+        // Decrypt secrets based on project_id (if present) or code_source type
+        let secrets_result = if let Some(ref proj_id) = job.project_id {
+            // Project-based execution: use project-scoped secrets
+            info!("📦 Decrypting project-based secrets for project: {}", proj_id);
+            keystore.decrypt_secrets_by_project(proj_id, &secrets_ref.profile, &secrets_ref.account_id, caller, Some(data_id)).await
+        } else {
+            // Non-project execution: use code_source type for secrets
+            match code_source {
+                CodeSource::GitHub { repo, commit, .. } => {
+                    info!("📦 Decrypting repo-based secrets for GitHub source");
 
-                // Resolve branch from commit via coordinator API (with caching)
-                let branch = match api_client.resolve_branch(repo, commit).await {
-                    Ok(b) => {
-                        if let Some(ref branch_name) = b {
-                            info!("✅ Coordinator resolved '{}' → branch '{}'", commit, branch_name);
-                        } else {
-                            info!("⚠️  Coordinator: commit '{}' not found, using wildcard (branch=None)", commit);
+                    // Resolve branch from commit via coordinator API (with caching)
+                    let branch = match api_client.resolve_branch(repo, commit).await {
+                        Ok(b) => {
+                            if let Some(ref branch_name) = b {
+                                info!("✅ Coordinator resolved '{}' → branch '{}'", commit, branch_name);
+                            } else {
+                                info!("⚠️  Coordinator: commit '{}' not found, using wildcard (branch=None)", commit);
+                            }
+                            b
                         }
-                        b
-                    }
-                    Err(e) => {
-                        warn!("⚠️  Coordinator API failed: {}, using wildcard (branch=None)", e);
-                        None
-                    }
-                };
+                        Err(e) => {
+                            warn!("⚠️  Coordinator API failed: {}, using wildcard (branch=None)", e);
+                            None
+                        }
+                    };
 
-                // Call keystore to decrypt secrets by repo
-                keystore.decrypt_secrets_from_contract(repo, branch.as_deref(), &secrets_ref.profile, &secrets_ref.account_id, caller, Some(data_id)).await
-            }
-            CodeSource::WasmUrl { hash, .. } => {
-                info!("📦 Decrypting wasm_hash-based secrets for WasmUrl source: {}", hash);
+                    // Call keystore to decrypt secrets by repo
+                    keystore.decrypt_secrets_from_contract(repo, branch.as_deref(), &secrets_ref.profile, &secrets_ref.account_id, caller, Some(data_id)).await
+                }
+                CodeSource::WasmUrl { hash, .. } => {
+                    info!("📦 Decrypting wasm_hash-based secrets for WasmUrl source: {}", hash);
 
-                // Call keystore to decrypt secrets by wasm_hash
-                keystore.decrypt_secrets_by_wasm_hash(hash, &secrets_ref.profile, &secrets_ref.account_id, caller, Some(data_id)).await
+                    // Call keystore to decrypt secrets by wasm_hash
+                    keystore.decrypt_secrets_by_wasm_hash(hash, &secrets_ref.profile, &secrets_ref.account_id, caller, Some(data_id)).await
+                }
             }
         };
 
@@ -1353,12 +1506,57 @@ async fn handle_execute_job(
     };
 
     // Merge environment variables
-    let env_vars = merge_env_vars(user_secrets, context, resource_limits, request_id, user_account_id, near_payment_yocto, transaction_hash);
+    let env_vars = merge_env_vars(
+        user_secrets,
+        context,
+        resource_limits,
+        request_id,
+        user_account_id,
+        near_payment_yocto,
+        transaction_hash,
+        job.project_id.as_ref(),
+        project_uuid.as_ref(),
+    );
 
     // Get build target from code source
     let build_target = match code_source {
         CodeSource::GitHub { build_target, .. } => Some(build_target.as_str()),
         CodeSource::WasmUrl { build_target, .. } => Some(build_target.as_str()),
+    };
+
+    // Create storage config if keystore is configured AND project_uuid exists
+    // Storage requires both: keystore for encryption/decryption AND project for data organization
+    let storage_config = match (&config.keystore_base_url, &config.keystore_auth_token, &project_uuid) {
+        (Some(keystore_url), Some(keystore_token), Some(uuid)) => {
+            // Determine account_id for storage (user who triggered execution)
+            let storage_account_id = user_account_id
+                .cloned()
+                .unwrap_or_else(|| "anonymous".to_string());
+
+            info!(
+                "📦 Storage enabled: project_uuid={}, wasm_hash={}, account={}",
+                uuid, wasm_checksum, storage_account_id
+            );
+
+            Some(StorageConfig {
+                coordinator_url: config.api_base_url.clone(),
+                coordinator_token: config.api_auth_token.clone(),
+                keystore_url: keystore_url.clone(),
+                keystore_token: keystore_token.clone(),
+                project_uuid: uuid.clone(),
+                wasm_hash: wasm_checksum.clone(),
+                account_id: storage_account_id,
+                tee_mode: config.tee_mode.clone(),
+            })
+        }
+        (None, _, _) | (_, None, _) => {
+            debug!("Storage not enabled (keystore not configured)");
+            None
+        }
+        (_, _, None) => {
+            debug!("Storage not enabled (no project - WASM running standalone)");
+            None
+        }
     };
 
     // Execute WASM
@@ -1371,6 +1569,7 @@ async fn handle_execute_job(
             Some(env_vars),
             build_target,
             response_format,
+            storage_config,
         )
         .await;
 

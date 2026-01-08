@@ -355,6 +355,10 @@ pub enum SecretAccessor {
     WasmHash {
         hash: String,
     },
+    /// Secrets bound to a project (available to all versions)
+    Project {
+        project_id: String,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -377,6 +381,9 @@ pub enum PubkeyResponseAccessor {
     },
     WasmHash {
         hash: String,
+    },
+    Project {
+        project_id: String,
     },
 }
 
@@ -459,6 +466,31 @@ pub async fn get_secrets_pubkey(
 
             let accessor = PubkeyResponseAccessor::WasmHash {
                 hash: hash.clone(),
+            };
+
+            (seed, accessor)
+        }
+        SecretAccessor::Project { project_id } => {
+            // Validate project_id format (account.near/name)
+            if !project_id.contains('/') {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "Invalid project_id format: must be 'account/name'".to_string(),
+                ));
+            }
+
+            // Build seed: project:project_id:owner
+            let seed = format!("project:{}:{}", project_id, req.owner);
+
+            tracing::info!(
+                "🔐 ENCRYPTION SEED (Project): project_id={}, owner={}, seed={}",
+                project_id,
+                req.owner,
+                seed
+            );
+
+            let accessor = PubkeyResponseAccessor::Project {
+                project_id: project_id.clone(),
             };
 
             (seed, accessor)
@@ -658,6 +690,31 @@ pub async fn add_generated_secret(
 
             (seed, accessor)
         }
+        SecretAccessor::Project { project_id } => {
+            // Validate project_id format
+            if !project_id.contains('/') {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "Invalid project_id format: must be 'account/name'".to_string(),
+                ));
+            }
+
+            let seed = format!("project:{}:{}", project_id, req.owner);
+
+            tracing::info!(
+                "🔑 GENERATE SECRETS (Project): project_id={}, owner={}, seed={}, new_secrets_count={}",
+                project_id,
+                req.owner,
+                seed,
+                req.new_secrets.len()
+            );
+
+            let accessor = PubkeyResponseAccessor::Project {
+                project_id: project_id.clone(),
+            };
+
+            (seed, accessor)
+        }
     };
 
     // Call keystore to generate and re-encrypt secrets
@@ -816,6 +873,14 @@ pub async fn update_user_secrets(
                 return Err((StatusCode::BAD_REQUEST, "accessor.hash must be 64 hex characters".to_string()));
             }
         }
+        "Project" => {
+            let project_id = accessor.get("project_id")
+                .and_then(|v| v.as_str())
+                .ok_or((StatusCode::BAD_REQUEST, "accessor.project_id is required for Project type".to_string()))?;
+            if project_id.is_empty() {
+                return Err((StatusCode::BAD_REQUEST, "accessor.project_id cannot be empty".to_string()));
+            }
+        }
         _ => {
             return Err((StatusCode::BAD_REQUEST, format!("Unknown accessor type: {}", accessor_type)));
         }
@@ -844,6 +909,14 @@ pub async fn update_user_secrets(
                     .ok_or((StatusCode::BAD_REQUEST, "new_accessor.hash is required".to_string()))?;
                 if hash.len() != 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
                     return Err((StatusCode::BAD_REQUEST, "new_accessor.hash must be 64 hex characters".to_string()));
+                }
+            }
+            "Project" => {
+                let project_id = new_accessor.get("project_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or((StatusCode::BAD_REQUEST, "new_accessor.project_id is required".to_string()))?;
+                if project_id.is_empty() {
+                    return Err((StatusCode::BAD_REQUEST, "new_accessor.project_id cannot be empty".to_string()));
                 }
             }
             _ => {

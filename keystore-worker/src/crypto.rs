@@ -254,32 +254,6 @@ impl Keystore {
     }
 }
 
-/// Encrypt data for the keystore with a specific public key (used by clients)
-///
-/// This should be implemented on the client side (executor workers, contract callers)
-#[allow(dead_code)]
-pub fn encrypt_for_keystore(pubkey_hex: &str, plaintext: &[u8]) -> Result<Vec<u8>> {
-    let pubkey_bytes = hex::decode(pubkey_hex).context("Invalid hex public key")?;
-
-    if pubkey_bytes.len() != 32 {
-        anyhow::bail!("Invalid public key length: {}", pubkey_bytes.len());
-    }
-
-    // Derive symmetric key from public key
-    let mut hasher = <Sha256 as Digest>::new();
-    hasher.update(&pubkey_bytes);
-    hasher.update(b"keystore-encryption-v1");
-    let derived_key = hasher.finalize();
-
-    // Simple XOR encryption (matches decrypt)
-    let ciphertext: Vec<u8> = plaintext
-        .iter()
-        .enumerate()
-        .map(|(i, &byte)| byte ^ derived_key[i % derived_key.len()])
-        .collect();
-
-    Ok(ciphertext)
-}
 
 #[cfg(test)]
 mod tests {

@@ -132,6 +132,12 @@ pub struct ExecutionRequest {
     /// When set, executor should call resolve_execution with this value without running WASM
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compile_result: Option<String>,
+    /// Project UUID for persistent storage (None for standalone WASM)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_uuid: Option<String>,
+    /// Project ID for project-based secrets (e.g., "alice.near/my-app")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -159,11 +165,35 @@ impl CodeSource {
     /// - "github.com/user/repo" -> "https://github.com/user/repo"
     /// - "https://github.com/user/repo" -> "https://github.com/user/repo" (unchanged)
     /// - "user/repo" -> "https://github.com/user/repo"
+    /// - "git@github.com:user/repo.git" -> "https://github.com/user/repo"
+    /// - "ssh://git@github.com/user/repo" -> "https://github.com/user/repo"
     pub fn normalize(mut self) -> Self {
         match &mut self {
             CodeSource::GitHub { repo, .. } => {
-                // Skip if already has protocol
+                // Skip if already has https/http protocol
                 if repo.starts_with("https://") || repo.starts_with("http://") {
+                    return self;
+                }
+
+                // Handle SSH format: git@github.com:user/repo.git
+                if repo.starts_with("git@github.com:") {
+                    let path = repo.strip_prefix("git@github.com:").unwrap();
+                    let path = path.strip_suffix(".git").unwrap_or(path);
+                    *repo = format!("https://github.com/{}", path);
+                    return self;
+                }
+
+                // Handle SSH URL format: ssh://git@github.com/user/repo
+                if repo.starts_with("ssh://git@github.com/") {
+                    let path = repo.strip_prefix("ssh://git@github.com/").unwrap();
+                    let path = path.strip_suffix(".git").unwrap_or(path);
+                    *repo = format!("https://github.com/{}", path);
+                    return self;
+                }
+
+                // Handle ssh:// without git@ prefix
+                if repo.starts_with("ssh://") {
+                    // Leave as is, will fail later with better error
                     return self;
                 }
 
@@ -278,6 +308,48 @@ mod tests {
         match normalized {
             // Invalid format should remain unchanged
             CodeSource::GitHub { repo, .. } => assert_eq!(repo, "invalid"),
+            _ => panic!("Expected GitHub variant"),
+        }
+    }
+
+    #[test]
+    fn test_normalize_repo_url_ssh_format() {
+        let source = CodeSource::GitHub {
+            repo: "git@github.com:zavodil/private-ft.git".to_string(),
+            commit: "main".to_string(),
+            build_target: "wasm32-wasip1".to_string(),
+        };
+        let normalized = source.normalize();
+        match normalized {
+            CodeSource::GitHub { repo, .. } => assert_eq!(repo, "https://github.com/zavodil/private-ft"),
+            _ => panic!("Expected GitHub variant"),
+        }
+    }
+
+    #[test]
+    fn test_normalize_repo_url_ssh_format_no_git_suffix() {
+        let source = CodeSource::GitHub {
+            repo: "git@github.com:alice/project".to_string(),
+            commit: "main".to_string(),
+            build_target: "wasm32-wasip1".to_string(),
+        };
+        let normalized = source.normalize();
+        match normalized {
+            CodeSource::GitHub { repo, .. } => assert_eq!(repo, "https://github.com/alice/project"),
+            _ => panic!("Expected GitHub variant"),
+        }
+    }
+
+    #[test]
+    fn test_normalize_repo_url_ssh_url_format() {
+        let source = CodeSource::GitHub {
+            repo: "ssh://git@github.com/alice/project.git".to_string(),
+            commit: "main".to_string(),
+            build_target: "wasm32-wasip1".to_string(),
+        };
+        let normalized = source.normalize();
+        match normalized {
+            CodeSource::GitHub { repo, .. } => assert_eq!(repo, "https://github.com/alice/project"),
             _ => panic!("Expected GitHub variant"),
         }
     }
@@ -424,6 +496,12 @@ pub struct ClaimJobRequest {
     /// When true, executor should accept the task even with compile_only=true
     #[serde(default)]
     pub has_compile_result: bool,
+    /// Project UUID for persistent storage (None for standalone WASM)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_uuid: Option<String>,
+    /// Project ID for project-based secrets (e.g., "alice.near/my-app")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -448,6 +526,12 @@ pub struct JobInfo {
     /// Compilation time in milliseconds from compile job
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compile_time_ms: Option<u64>,
+    /// Project UUID for storage (None for standalone WASM)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_uuid: Option<String>,
+    /// Project ID for project-based secrets (e.g., "alice.near/my-app")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
 }
 
 /// Create task request (event monitor)
@@ -479,6 +563,12 @@ pub struct CreateTaskRequest {
     /// Store compiled WASM to FastFS after compilation
     #[serde(default)]
     pub store_on_fastfs: bool,
+    /// Project UUID for persistent storage (None for standalone WASM)
+    #[serde(default)]
+    pub project_uuid: Option<String>,
+    /// Project ID for project-based secrets (e.g., "alice.near/my-app")
+    #[serde(default)]
+    pub project_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

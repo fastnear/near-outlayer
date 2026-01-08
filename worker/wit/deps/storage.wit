@@ -1,0 +1,59 @@
+package near:storage@0.1.0;
+
+/// Persistent storage API for OutLayer projects
+///
+/// Storage is encrypted and persisted across executions.
+/// For projects: Storage is shared across versions (same encryption key)
+/// For standalone WASM: Storage is per WASM hash
+interface api {
+    // ==================== Basic Storage ====================
+
+    /// Store a value by key
+    /// Returns empty string on success or error message on failure
+    set: func(key: string, value: list<u8>) -> string;
+
+    /// Get a value by key
+    /// Returns (value, error) - value is empty list if not found
+    get: func(key: string) -> tuple<list<u8>, string>;
+
+    /// Check if a key exists
+    has: func(key: string) -> bool;
+
+    /// Delete a key
+    /// Returns true if key existed and was deleted
+    delete: func(key: string) -> bool;
+
+    /// List all keys with optional prefix filter
+    /// Returns JSON array of key strings
+    list-keys: func(prefix: string) -> tuple<string, string>;
+
+    // ==================== Worker-Private Storage ====================
+    // These functions store data with "@worker" as account_id
+    // This data is only accessible within WASM, not by the user
+
+    /// Store worker-private data
+    set-worker: func(key: string, value: list<u8>) -> string;
+
+    /// Get worker-private data
+    get-worker: func(key: string) -> tuple<list<u8>, string>;
+
+    // ==================== Version Migration ====================
+
+    /// Get data from a specific WASM version (for migration)
+    /// wasm-hash: SHA256 hash of the specific version's WASM
+    get-by-version: func(key: string, wasm-hash: string) -> tuple<list<u8>, string>;
+
+    // ==================== Cleanup ====================
+
+    /// Clear all storage for the current project/account
+    /// This is called by __outlayer_clear_all_storage export
+    clear-all: func() -> string;
+
+    /// Clear storage written by a specific WASM version
+    /// This is called by __outlayer_clear_storage_for_version export
+    clear-version: func(wasm-hash: string) -> string;
+}
+
+world storage-host {
+    import api;
+}

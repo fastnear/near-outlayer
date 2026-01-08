@@ -304,7 +304,19 @@ Emitted when execution is completed.
 ### Deploy with init
 
 ```bash
-near contract deploy outlayer.testnet use-file res/local/outlayer_contract.wasm with-init-call new json-args '{"owner_id":"owner.outlayer.testnet","operator_id":"worker.outlayer.testnet"}' prepaid-gas '100.0 Tgas' attached-deposit '0 NEAR' network-config testnet sign-with-keychain send
+near contract deploy dev.outlayer.testnet use-file res/local/outlayer_contract.wasm with-init-call new json-args '{"owner_id":"owner.outlayer.testnet","operator_id":"worker.outlayer.testnet"}' prepaid-gas '100.0 Tgas' attached-deposit '0 NEAR' network-config testnet sign-with-keychain send
+```
+
+### Set event standard
+
+```
+near contract call-function as-transaction dev.outlayer.testnet set_event_metadata json-args '{"standard":"near-outlayer-dev"}' prepaid-gas '100.0 Tgas' attached-deposit '0 NEAR' sign-as owner.outlayer.testnet network-config testnet sign-with-keychain send
+```
+
+### Set operator account
+
+```
+near contract call-function as-transaction dev.outlayer.testnet set_operator json-args '{"new_operator_id":"dev.outlayer.testnet"}' prepaid-gas '100.0 Tgas' attached-deposit '0 NEAR' sign-as owner.outlayer.testnet network-config testnet sign-with-keychain send
 ```
 
 ### Deploy without init
