@@ -104,6 +104,59 @@ Examples:
         </div>
       </section>
 
+      {/* Project Binding in WASM Code */}
+      <section className="mb-12">
+        <AnchorHeading id="wasm-metadata">Project Binding in WASM Code</AnchorHeading>
+
+        <p className="text-gray-700 mb-4">
+          For storage to work correctly, your WASM code <strong>must declare which project it belongs to</strong> using
+          the <code>metadata!</code> macro from the OutLayer SDK:
+        </p>
+
+        <SyntaxHighlighter language="rust" style={vscDarkPlus} className="rounded-lg mb-4">
+          {`use outlayer::{metadata, storage};
+
+// REQUIRED for project-based execution and storage
+// project must match your project_id on the OutLayer contract!
+metadata! {
+    project: "alice.near/my-app",  // Format: {owner_account_id}/{project_name}
+    version: "1.0.0",               // Optional: for tracking
+}`}
+        </SyntaxHighlighter>
+
+        <div className="bg-red-50 border-l-4 border-red-400 p-4 mb-6">
+          <p className="text-sm text-red-800">
+            <strong>Critical:</strong> The <code>project</code> field <strong>must exactly match</strong> your project ID
+            on the contract (e.g., <code>alice.near/my-app</code>). If they don&apos;t match, storage operations will fail
+            or use the wrong namespace.
+          </p>
+        </div>
+
+        <h4 className="font-semibold text-gray-900 mb-2">Why is this needed?</h4>
+
+        <ul className="list-disc list-inside text-gray-700 space-y-2 mb-6">
+          <li><strong>Storage namespace</strong>: The project ID determines which storage namespace your code uses</li>
+          <li><strong>Encryption key</strong>: Storage encryption keys are derived from <code>storage:{'{'}project_uuid{'}'}</code></li>
+          <li><strong>Version continuity</strong>: All versions of the same project share storage because they have the same project ID</li>
+          <li><strong>Secrets access</strong>: Project secrets are only accessible to WASM with matching project ID</li>
+        </ul>
+
+        <h4 className="font-semibold text-gray-900 mb-2">What happens without metadata?</h4>
+
+        <ul className="list-disc list-inside text-gray-700 space-y-2 mb-6">
+          <li>Storage calls will fail with &quot;project not found&quot; error</li>
+          <li>Secrets won&apos;t be decrypted (project binding validation fails)</li>
+          <li>Each WASM hash gets isolated storage instead of shared project storage</li>
+        </ul>
+
+        <div className="bg-blue-50 border-l-4 border-blue-400 p-4 mb-6">
+          <p className="text-sm text-blue-800">
+            <strong>Tip:</strong> Copy the exact project ID from the <Link href="/projects" className="text-[var(--primary-orange)] hover:underline">Projects dashboard</Link> to
+            avoid typos. The format is always <code>{'{'}owner_account_id{'}'}/{'{'}project_name{'}'}</code>.
+          </p>
+        </div>
+      </section>
+
       {/* Managing Versions */}
       <section className="mb-12">
         <AnchorHeading id="managing-versions">Managing Versions</AnchorHeading>
@@ -195,6 +248,12 @@ Examples:
     delete: func(key: string) -> bool;
     list-keys: func(prefix: string) -> tuple<string, string>;
 
+    // Conditional writes (atomic operations)
+    set-if-absent: func(key: string, value: list<u8>) -> tuple<bool, string>;
+    set-if-equals: func(key: string, expected: list<u8>, new-value: list<u8>) -> tuple<bool, list<u8>, string>;
+    increment: func(key: string, delta: s64) -> tuple<s64, string>;
+    decrement: func(key: string, delta: s64) -> tuple<s64, string>;
+
     // Worker-private storage (not accessible by users)
     set-worker: func(key: string, value: list<u8>) -> string;
     get-worker: func(key: string) -> tuple<list<u8>, string>;
@@ -244,6 +303,26 @@ Examples:
                 <td className="px-4 py-3 text-sm font-mono">list-keys(prefix)</td>
                 <td className="px-4 py-3 text-sm text-gray-600">List keys with prefix</td>
                 <td className="px-4 py-3 text-sm text-gray-600">(JSON array string, error)</td>
+              </tr>
+              <tr className="bg-purple-50">
+                <td className="px-4 py-3 text-sm font-mono">set-if-absent(key, value)</td>
+                <td className="px-4 py-3 text-sm text-gray-600">Set only if key doesn&apos;t exist</td>
+                <td className="px-4 py-3 text-sm text-gray-600">(inserted: bool, error)</td>
+              </tr>
+              <tr className="bg-purple-50">
+                <td className="px-4 py-3 text-sm font-mono">set-if-equals(key, expected, new)</td>
+                <td className="px-4 py-3 text-sm text-gray-600">Compare-and-swap (atomic update)</td>
+                <td className="px-4 py-3 text-sm text-gray-600">(success, current, error)</td>
+              </tr>
+              <tr className="bg-purple-50">
+                <td className="px-4 py-3 text-sm font-mono">increment(key, delta)</td>
+                <td className="px-4 py-3 text-sm text-gray-600">Atomic increment (i64)</td>
+                <td className="px-4 py-3 text-sm text-gray-600">(new_value: i64, error)</td>
+              </tr>
+              <tr className="bg-purple-50">
+                <td className="px-4 py-3 text-sm font-mono">decrement(key, delta)</td>
+                <td className="px-4 py-3 text-sm text-gray-600">Atomic decrement (i64)</td>
+                <td className="px-4 py-3 text-sm text-gray-600">(new_value: i64, error)</td>
               </tr>
               <tr>
                 <td className="px-4 py-3 text-sm font-mono">set-worker(key, value)</td>
@@ -303,6 +382,116 @@ let (old_data, err) = storage::get_by_version("legacy_key", "abc123...");
 // Worker-private storage (other users cannot read this)
 storage::set_worker("internal_state", state_bytes);`}
         </SyntaxHighlighter>
+
+        <AnchorHeading id="conditional-writes" level={3}>Conditional Writes (Atomic Operations)</AnchorHeading>
+
+        <p className="text-gray-700 mb-4">
+          OutLayer provides atomic operations for concurrent-safe storage updates. These are essential for counters, rate limiters, and any state that multiple executions might modify.
+        </p>
+
+        <div className="bg-green-50 border-l-4 border-green-400 p-4 mb-6">
+          <p className="text-sm text-green-800">
+            <strong>Why use conditional writes?</strong> Regular <code>set()</code> can cause race conditions when multiple users execute simultaneously.
+            Conditional writes use optimistic locking to ensure data integrity without explicit locks.
+          </p>
+        </div>
+
+        <SyntaxHighlighter language="rust" style={vscDarkPlus} className="rounded-lg mb-4">
+          {`use outlayer::storage;
+
+// ==================== set_if_absent ====================
+// Only inserts if key doesn't exist - perfect for initialization
+
+if storage::set_if_absent("counter", &0i64.to_le_bytes())? {
+    println!("Counter initialized to 0");
+} else {
+    println!("Counter already exists, not overwritten");
+}
+
+// ==================== increment / decrement ====================
+// Atomic counters - handles concurrent updates automatically
+
+// Increment page views (creates key with delta if not exists)
+let views = storage::increment("page_views", 1)?;
+println!("Page views: {}", views);
+
+// Decrement inventory
+let stock = storage::decrement("stock:item_123", 1)?;
+if stock < 0 {
+    println!("Out of stock!");
+}
+
+// Use negative delta for decrement via increment
+let credits = storage::increment("credits", -10)?;
+
+// ==================== set_if_equals (Compare-and-Swap) ====================
+// Update only if current value matches expected - for complex updates
+
+// Read current value
+let current = storage::get("balance")?.unwrap_or(vec![0; 8]);
+let balance = i64::from_le_bytes(current.clone().try_into().unwrap());
+
+// Calculate new value
+let new_balance = balance + 100;
+
+// Atomic update with retry on conflict
+match storage::set_if_equals("balance", &current, &new_balance.to_le_bytes())? {
+    (true, _) => println!("Balance updated!"),
+    (false, Some(actual)) => println!("Concurrent update! Retry with {:?}", actual),
+    (false, None) => println!("Key was deleted"),
+}`}
+        </SyntaxHighlighter>
+
+        <h4 className="font-semibold text-gray-900 mb-2">Method Details</h4>
+
+        <div className="space-y-4 mb-6">
+          <div className="border border-purple-200 rounded-lg p-4 bg-purple-50">
+            <h5 className="font-mono font-semibold text-purple-900 mb-2">set_if_absent(key, value) → bool</h5>
+            <p className="text-sm text-gray-700 mb-2">
+              Inserts value only if key doesn&apos;t exist. Returns <code>true</code> if inserted, <code>false</code> if key already existed.
+            </p>
+            <p className="text-xs text-gray-500">
+              <strong>Use case:</strong> One-time initialization, ensuring default values aren&apos;t overwritten.
+            </p>
+          </div>
+
+          <div className="border border-purple-200 rounded-lg p-4 bg-purple-50">
+            <h5 className="font-mono font-semibold text-purple-900 mb-2">set_if_equals(key, expected, new_value) → (bool, Option&lt;Vec&lt;u8&gt;&gt;)</h5>
+            <p className="text-sm text-gray-700 mb-2">
+              Updates value only if current value equals expected (compare-and-swap). On failure, returns the actual current value for retry.
+            </p>
+            <p className="text-xs text-gray-500">
+              <strong>Use case:</strong> Complex state transitions, optimistic locking, concurrent-safe updates.
+            </p>
+          </div>
+
+          <div className="border border-purple-200 rounded-lg p-4 bg-purple-50">
+            <h5 className="font-mono font-semibold text-purple-900 mb-2">increment(key, delta) → i64</h5>
+            <p className="text-sm text-gray-700 mb-2">
+              Atomically increments a numeric value (i64, little-endian). If key doesn&apos;t exist, creates it with <code>delta</code> as initial value.
+            </p>
+            <p className="text-xs text-gray-500">
+              <strong>Use case:</strong> Page counters, rate limiters, vote counts, any numeric accumulator.
+            </p>
+          </div>
+
+          <div className="border border-purple-200 rounded-lg p-4 bg-purple-50">
+            <h5 className="font-mono font-semibold text-purple-900 mb-2">decrement(key, delta) → i64</h5>
+            <p className="text-sm text-gray-700 mb-2">
+              Atomically decrements a numeric value. Equivalent to <code>increment(key, -delta)</code>. Creates key with <code>-delta</code> if not exists.
+            </p>
+            <p className="text-xs text-gray-500">
+              <strong>Use case:</strong> Inventory management, countdown timers, credit deduction.
+            </p>
+          </div>
+        </div>
+
+        <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-6">
+          <p className="text-sm text-yellow-800">
+            <strong>Important:</strong> <code>increment</code>/<code>decrement</code> expect values stored as 8-byte little-endian i64.
+            If you store a counter differently (e.g., as string), use <code>set_if_equals</code> instead.
+          </p>
+        </div>
 
         <AnchorHeading id="storage-monitoring" level={3}>Storage Monitoring</AnchorHeading>
 
@@ -458,6 +647,12 @@ storage::set_worker("balances", balances_json);  // Shared across all users
               Use <code>set_worker</code>/<code>get_worker</code> for internal WASM state that users cannot access directly.
             </p>
           </div>
+          <div className="border border-purple-200 rounded-lg p-4 bg-purple-50">
+            <h4 className="font-semibold text-purple-900 mb-2">Atomic Counters & CAS</h4>
+            <p className="text-sm text-gray-600">
+              Use <code>increment</code>/<code>decrement</code> for concurrent-safe counters, or <code>set_if_equals</code> for compare-and-swap operations.
+            </p>
+          </div>
         </div>
       </section>
 
@@ -474,6 +669,8 @@ storage::set_worker("balances", balances_json);  // Shared across all users
           <li>Use project secrets for shared credentials instead of repo-based secrets</li>
           <li>Document your storage key format for data migrations</li>
           <li>Use key prefixes (e.g., <code>user:alice:</code>) for organization</li>
+          <li>Use <code>increment</code>/<code>decrement</code> for counters instead of get+set (race-safe)</li>
+          <li>Use <code>set_if_absent</code> for one-time initialization to avoid overwriting</li>
         </ul>
       </section>
 

@@ -27,6 +27,29 @@ interface api {
     /// Returns JSON array of key strings
     list-keys: func(prefix: string) -> tuple<string, string>;
 
+    // ==================== Conditional Writes ====================
+
+    /// Set a key only if it doesn't already exist
+    /// Returns (inserted: bool, error: string)
+    /// inserted=true if value was stored, false if key already existed
+    set-if-absent: func(key: string, value: list<u8>) -> tuple<bool, string>;
+
+    /// Set a key only if current value equals expected (compare-and-swap)
+    /// Returns (success: bool, current_value: list<u8>, error: string)
+    /// success=true if value was updated
+    /// On failure, current_value contains the actual current value for retry
+    set-if-equals: func(key: string, expected: list<u8>, new-value: list<u8>) -> tuple<bool, list<u8>, string>;
+
+    /// Atomically increment a numeric value
+    /// If key doesn't exist, creates it with the delta as initial value
+    /// Returns (new_value: s64, error: string)
+    increment: func(key: string, delta: s64) -> tuple<s64, string>;
+
+    /// Atomically decrement a numeric value
+    /// If key doesn't exist, creates it with -delta as initial value
+    /// Returns (new_value: s64, error: string)
+    decrement: func(key: string, delta: s64) -> tuple<s64, string>;
+
     // ==================== Worker-Private Storage ====================
     // These functions store data with "@worker" as account_id
     // This data is only accessible within WASM, not by the user

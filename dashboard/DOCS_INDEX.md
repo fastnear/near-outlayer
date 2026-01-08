@@ -270,6 +270,25 @@ Projects allow users to organize WASM code versions with shared persistent stora
 ```
 Example: `alice.near/my-app`
 
+### Project Binding in WASM (CRITICAL)
+
+For storage to work, your WASM code **must declare which project it belongs to** using the `metadata!` macro:
+
+```rust
+use outlayer::{metadata, storage};
+
+// REQUIRED for project-based execution and storage
+metadata! {
+    project: "alice.near/my-app",  // Must match your project_id!
+    version: "1.0.0",
+}
+```
+
+**Why is this needed?**
+- Storage namespace is determined by project ID
+- Encryption keys are derived from `storage:{project_uuid}`
+- Without metadata, storage calls will fail
+
 ### Dashboard Pages
 - `/projects` - List, create, manage projects
 - `/secrets` (Project tab) - Create secrets bound to a project
@@ -322,15 +341,22 @@ PostgreSQL (storage_data table)
 ```
 
 ### Storage API (WIT Interface)
-Located at: `worker/wit/world.wit`
+Located at: `worker/wit/deps/storage.wit`
 
 ```wit
 interface storage {
+    // Basic operations
     set: func(key: string, value: list<u8>) -> string;
     get: func(key: string) -> tuple<list<u8>, string>;
     has: func(key: string) -> bool;
     delete: func(key: string) -> bool;
     list-keys: func(prefix: string) -> tuple<string, string>;
+
+    // Conditional writes (atomic operations)
+    set-if-absent: func(key: string, value: list<u8>) -> tuple<bool, string>;
+    set-if-equals: func(key: string, expected: list<u8>, new-value: list<u8>) -> tuple<bool, list<u8>, string>;
+    increment: func(key: string, delta: s64) -> tuple<s64, string>;
+    decrement: func(key: string, delta: s64) -> tuple<s64, string>;
 
     // Worker-private storage (not accessible by users)
     set-worker: func(key: string, value: list<u8>) -> string;
@@ -344,6 +370,20 @@ interface storage {
     clear-version: func(wasm-hash: string) -> string;
 }
 ```
+
+### Conditional Writes (Atomic Operations)
+
+| Method | Description | Returns |
+|--------|-------------|---------|
+| `set_if_absent(key, value)` | Insert only if key doesn't exist | `(inserted: bool, error)` |
+| `set_if_equals(key, expected, new)` | Compare-and-swap (CAS) | `(success, current_value, error)` |
+| `increment(key, delta)` | Atomic i64 increment | `(new_value: i64, error)` |
+| `decrement(key, delta)` | Atomic i64 decrement | `(new_value: i64, error)` |
+
+**Use cases:**
+- `set_if_absent`: One-time initialization, default values
+- `set_if_equals`: Optimistic locking, complex state transitions
+- `increment`/`decrement`: Counters, rate limiters, inventory management
 
 ### Storage Key Structure
 

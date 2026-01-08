@@ -111,6 +111,47 @@ pub struct StorageHasResponse {
     pub exists: bool,
 }
 
+/// Request for set_if_absent (insert only if key doesn't exist)
+#[derive(Debug, Deserialize)]
+pub struct StorageSetIfAbsentRequest {
+    pub project_uuid: String,
+    pub wasm_hash: String,
+    pub account_id: String,
+    pub key_hash: String,
+    pub encrypted_key: Vec<u8>,
+    pub encrypted_value: Vec<u8>,
+}
+
+/// Response for set_if_absent
+#[derive(Debug, Serialize)]
+pub struct StorageSetIfAbsentResponse {
+    /// true if value was inserted, false if key already existed
+    pub inserted: bool,
+}
+
+/// Request for set_if_equals (update only if current value matches expected)
+#[derive(Debug, Deserialize)]
+pub struct StorageSetIfEqualsRequest {
+    pub project_uuid: String,
+    pub wasm_hash: String,
+    pub account_id: String,
+    pub key_hash: String,
+    pub expected_encrypted_value: Vec<u8>,  // Expected current value
+    pub new_encrypted_key: Vec<u8>,         // New key (for re-encryption)
+    pub new_encrypted_value: Vec<u8>,       // New value
+}
+
+/// Response for set_if_equals
+#[derive(Debug, Serialize)]
+pub struct StorageSetIfEqualsResponse {
+    /// true if value was updated, false if current value didn't match expected
+    pub updated: bool,
+    /// Current encrypted value (for retry on failure)
+    pub current_encrypted_value: Option<Vec<u8>>,
+    /// Current encrypted key (for retry on failure)
+    pub current_encrypted_key: Option<Vec<u8>>,
+}
+
 /// Set a storage key
 pub async fn storage_set(
     State(state): State<AppState>,
@@ -157,6 +198,149 @@ pub async fn storage_set(
         req.project_uuid, req.account_id, req.key_hash, data_size
     );
     Ok(StatusCode::OK)
+}
+
+/// Set a storage key only if it doesn't already exist
+pub async fn storage_set_if_absent(
+    State(state): State<AppState>,
+    Json(req): Json<StorageSetIfAbsentRequest>,
+) -> Json<StorageSetIfAbsentResponse> {
+    debug!(
+        "storage_set_if_absent: project_uuid={}, account={}, key_hash={}",
+        req.project_uuid, req.account_id, req.key_hash
+    );
+
+    // Try to insert, do nothing on conflict
+    let result = sqlx::query(
+        r#"
+        INSERT INTO storage_data (project_uuid, wasm_hash, account_id, key_hash, encrypted_key, encrypted_value)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (project_uuid, account_id, key_hash) DO NOTHING
+        "#,
+    )
+    .bind(&req.project_uuid)
+    .bind(&req.wasm_hash)
+    .bind(&req.account_id)
+    .bind(&req.key_hash)
+    .bind(&req.encrypted_key)
+    .bind(&req.encrypted_value)
+    .execute(&state.db)
+    .await;
+
+    match result {
+        Ok(res) => {
+            let inserted = res.rows_affected() > 0;
+            if inserted {
+                update_project_usage(&state.db, &req.project_uuid, &req.account_id).await;
+                info!(
+                    "storage_set_if_absent: inserted key_hash={} for project={}",
+                    req.key_hash, req.project_uuid
+                );
+            } else {
+                debug!(
+                    "storage_set_if_absent: key already exists key_hash={} for project={}",
+                    req.key_hash, req.project_uuid
+                );
+            }
+            Json(StorageSetIfAbsentResponse { inserted })
+        }
+        Err(e) => {
+            error!("storage_set_if_absent error: {}", e);
+            Json(StorageSetIfAbsentResponse { inserted: false })
+        }
+    }
+}
+
+/// Set a storage key only if current value matches expected value (compare-and-swap)
+pub async fn storage_set_if_equals(
+    State(state): State<AppState>,
+    Json(req): Json<StorageSetIfEqualsRequest>,
+) -> Json<StorageSetIfEqualsResponse> {
+    debug!(
+        "storage_set_if_equals: project_uuid={}, account={}, key_hash={}",
+        req.project_uuid, req.account_id, req.key_hash
+    );
+
+    // Try to update only if encrypted_value matches expected
+    let result = sqlx::query(
+        r#"
+        UPDATE storage_data
+        SET encrypted_key = $5,
+            encrypted_value = $6,
+            wasm_hash = $7,
+            updated_at = NOW()
+        WHERE project_uuid = $1
+          AND account_id = $2
+          AND key_hash = $3
+          AND encrypted_value = $4
+        "#,
+    )
+    .bind(&req.project_uuid)
+    .bind(&req.account_id)
+    .bind(&req.key_hash)
+    .bind(&req.expected_encrypted_value)
+    .bind(&req.new_encrypted_key)
+    .bind(&req.new_encrypted_value)
+    .bind(&req.wasm_hash)
+    .execute(&state.db)
+    .await;
+
+    match result {
+        Ok(res) => {
+            if res.rows_affected() > 0 {
+                // Update succeeded - value matched
+                update_project_usage(&state.db, &req.project_uuid, &req.account_id).await;
+                info!(
+                    "storage_set_if_equals: updated key_hash={} for project={}",
+                    req.key_hash, req.project_uuid
+                );
+                Json(StorageSetIfEqualsResponse {
+                    updated: true,
+                    current_encrypted_value: None,
+                    current_encrypted_key: None,
+                })
+            } else {
+                // Update failed - fetch current value for retry
+                debug!(
+                    "storage_set_if_equals: value mismatch for key_hash={}, fetching current",
+                    req.key_hash
+                );
+                let current = sqlx::query_as::<_, (Vec<u8>, Vec<u8>)>(
+                    r#"
+                    SELECT encrypted_key, encrypted_value
+                    FROM storage_data
+                    WHERE project_uuid = $1 AND account_id = $2 AND key_hash = $3
+                    "#,
+                )
+                .bind(&req.project_uuid)
+                .bind(&req.account_id)
+                .bind(&req.key_hash)
+                .fetch_optional(&state.db)
+                .await;
+
+                match current {
+                    Ok(Some((enc_key, enc_value))) => Json(StorageSetIfEqualsResponse {
+                        updated: false,
+                        current_encrypted_value: Some(enc_value),
+                        current_encrypted_key: Some(enc_key),
+                    }),
+                    _ => Json(StorageSetIfEqualsResponse {
+                        updated: false,
+                        current_encrypted_value: None,
+                        current_encrypted_key: None,
+                    }),
+                }
+            }
+        }
+        Err(e) => {
+            error!("storage_set_if_equals error: {}", e);
+            Json(StorageSetIfEqualsResponse {
+                updated: false,
+                current_encrypted_value: None,
+                current_encrypted_key: None,
+            })
+        }
+    }
 }
 
 /// Get a storage key

@@ -522,6 +522,217 @@ impl StorageClient {
     pub fn get_worker(&self, key: &str) -> Result<Option<Vec<u8>>> {
         self.get_for_account(key, "@worker")
     }
+
+    // ==================== Conditional Write Operations ====================
+
+    /// Set a key only if it doesn't already exist
+    /// Returns true if value was inserted, false if key already existed
+    pub fn set_if_absent(&self, key: &str, value: &[u8]) -> Result<bool> {
+        // Encrypt via keystore
+        let encrypted = self.encrypt_via_keystore(key, value, &self.config.account_id)?;
+
+        debug!(
+            "storage_set_if_absent: key_hash={}, account={}, value_size={}",
+            encrypted.key_hash,
+            self.config.account_id,
+            value.len()
+        );
+
+        // Try to insert via coordinator
+        let body = serde_json::json!({
+            "project_uuid": &self.config.project_uuid,
+            "wasm_hash": self.config.wasm_hash,
+            "account_id": self.config.account_id,
+            "key_hash": encrypted.key_hash,
+            "encrypted_key": encrypted.encrypted_key,
+            "encrypted_value": encrypted.encrypted_value,
+        });
+
+        let response = self
+            .client
+            .post(format!("{}/storage/set-if-absent", self.config.coordinator_url))
+            .header("Authorization", format!("Bearer {}", self.config.coordinator_token))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .context("Failed to send storage set-if-absent request")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().unwrap_or_default();
+            anyhow::bail!("Storage set-if-absent failed: {} - {}", status, error_text);
+        }
+
+        #[derive(Deserialize)]
+        struct SetIfAbsentResponse {
+            inserted: bool,
+        }
+
+        let resp: SetIfAbsentResponse = response.json().context("Failed to parse set-if-absent response")?;
+        Ok(resp.inserted)
+    }
+
+    /// Set a key only if current value equals expected (compare-and-swap)
+    /// Returns (success, current_value) where current_value is provided for retry on failure
+    pub fn set_if_equals(&self, key: &str, expected: &[u8], new_value: &[u8]) -> Result<(bool, Option<Vec<u8>>)> {
+        // First, get current encrypted value to pass to coordinator
+        let key_hash = self.hash_key(key);
+
+        let get_body = serde_json::json!({
+            "project_uuid": &self.config.project_uuid,
+            "account_id": self.config.account_id,
+            "key_hash": key_hash,
+        });
+
+        let get_response = self
+            .client
+            .post(format!("{}/storage/get", self.config.coordinator_url))
+            .header("Authorization", format!("Bearer {}", self.config.coordinator_token))
+            .header("Content-Type", "application/json")
+            .json(&get_body)
+            .send()
+            .context("Failed to send storage get request for set_if_equals")?;
+
+        if !get_response.status().is_success() {
+            anyhow::bail!("Storage get failed during set_if_equals");
+        }
+
+        #[derive(Deserialize)]
+        struct GetResponse {
+            exists: bool,
+            encrypted_key: Option<Vec<u8>>,
+            encrypted_value: Option<Vec<u8>>,
+        }
+
+        let get_resp: GetResponse = get_response.json().context("Failed to parse get response")?;
+
+        if !get_resp.exists {
+            // Key doesn't exist - can't do CAS
+            return Ok((false, None));
+        }
+
+        let (current_enc_key, current_enc_value) = match (get_resp.encrypted_key, get_resp.encrypted_value) {
+            (Some(k), Some(v)) => (k, v),
+            _ => return Ok((false, None)),
+        };
+
+        // Decrypt current value to compare with expected
+        let decrypted = self.decrypt_via_keystore(&current_enc_key, &current_enc_value, &self.config.account_id)?;
+
+        if decrypted.value != expected {
+            // Current value doesn't match expected - return current value for retry
+            return Ok((false, Some(decrypted.value)));
+        }
+
+        // Values match - encrypt new value and try to update
+        let new_encrypted = self.encrypt_via_keystore(key, new_value, &self.config.account_id)?;
+
+        let update_body = serde_json::json!({
+            "project_uuid": &self.config.project_uuid,
+            "wasm_hash": self.config.wasm_hash,
+            "account_id": self.config.account_id,
+            "key_hash": key_hash,
+            "expected_encrypted_value": current_enc_value,
+            "new_encrypted_key": new_encrypted.encrypted_key,
+            "new_encrypted_value": new_encrypted.encrypted_value,
+        });
+
+        let update_response = self
+            .client
+            .post(format!("{}/storage/set-if-equals", self.config.coordinator_url))
+            .header("Authorization", format!("Bearer {}", self.config.coordinator_token))
+            .header("Content-Type", "application/json")
+            .json(&update_body)
+            .send()
+            .context("Failed to send storage set-if-equals request")?;
+
+        if !update_response.status().is_success() {
+            let status = update_response.status();
+            let error_text = update_response.text().unwrap_or_default();
+            anyhow::bail!("Storage set-if-equals failed: {} - {}", status, error_text);
+        }
+
+        #[derive(Deserialize)]
+        struct SetIfEqualsResponse {
+            updated: bool,
+            current_encrypted_value: Option<Vec<u8>>,
+            current_encrypted_key: Option<Vec<u8>>,
+        }
+
+        let update_resp: SetIfEqualsResponse = update_response.json().context("Failed to parse set-if-equals response")?;
+
+        if update_resp.updated {
+            Ok((true, None))
+        } else {
+            // Concurrent modification - decrypt current value for retry
+            if let (Some(enc_key), Some(enc_value)) = (update_resp.current_encrypted_key, update_resp.current_encrypted_value) {
+                let current = self.decrypt_via_keystore(&enc_key, &enc_value, &self.config.account_id)?;
+                Ok((false, Some(current.value)))
+            } else {
+                Ok((false, None))
+            }
+        }
+    }
+
+    /// Atomically increment a numeric value
+    /// If key doesn't exist, creates it with delta as initial value
+    /// Returns the new value after increment
+    pub fn increment(&self, key: &str, delta: i64) -> Result<i64> {
+        // MAX_RETRIES needed for CAS (compare-and-swap) pattern: if another execution
+        // modifies the same key concurrently, our expected value won't match and we
+        // retry with the new value. Common for worker storage shared across executions.
+        const MAX_RETRIES: usize = 5;
+
+        for attempt in 0..MAX_RETRIES {
+            // Get current value
+            let current_opt = self.get(key)?;
+
+            match current_opt {
+                None => {
+                    // Key doesn't exist - try to create with initial value
+                    let new_value = delta;
+                    let value_bytes = new_value.to_le_bytes().to_vec();
+
+                    if self.set_if_absent(key, &value_bytes)? {
+                        debug!("increment: created key={} with initial value={}", key, new_value);
+                        return Ok(new_value);
+                    }
+                    // Key was created by someone else - retry
+                    debug!("increment: concurrent create detected, retrying (attempt {})", attempt + 1);
+                }
+                Some(current_bytes) => {
+                    // Parse current value as i64
+                    let current_value = if current_bytes.len() == 8 {
+                        i64::from_le_bytes(current_bytes.clone().try_into().unwrap())
+                    } else {
+                        anyhow::bail!("increment: invalid value format, expected 8 bytes (i64), got {}", current_bytes.len());
+                    };
+
+                    let new_value = current_value.checked_add(delta)
+                        .context("increment: overflow")?;
+                    let new_bytes = new_value.to_le_bytes().to_vec();
+
+                    let (success, _) = self.set_if_equals(key, &current_bytes, &new_bytes)?;
+                    if success {
+                        debug!("increment: updated key={} from {} to {}", key, current_value, new_value);
+                        return Ok(new_value);
+                    }
+                    // Concurrent modification - retry
+                    debug!("increment: concurrent modification detected, retrying (attempt {})", attempt + 1);
+                }
+            }
+        }
+
+        anyhow::bail!("increment: max retries ({}) exceeded for key={}", MAX_RETRIES, key)
+    }
+
+    /// Atomically decrement a numeric value
+    /// If key doesn't exist, creates it with -delta as initial value
+    /// Returns the new value after decrement
+    pub fn decrement(&self, key: &str, delta: i64) -> Result<i64> {
+        // decrement(delta) is just increment(-delta)
+        self.increment(key, -delta)
+    }
 }
 
 /// Encrypted data from keystore

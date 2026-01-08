@@ -424,3 +424,138 @@ pub fn get_json<T: serde::de::DeserializeOwned>(key: &str) -> Result<Option<T>> 
         None => Ok(None),
     }
 }
+
+// ==================== Conditional Write Operations ====================
+
+/// Set a key only if it doesn't already exist
+///
+/// # Arguments
+/// * `key` - The key to store the value under
+/// * `value` - The value to store (as bytes)
+///
+/// # Returns
+/// * `Ok(true)` - Value was inserted (key didn't exist)
+/// * `Ok(false)` - Key already existed (value not changed)
+/// * `Err(StorageError)` - Storage operation failed
+///
+/// # Example
+/// ```rust,ignore
+/// // Initialize counter only if not exists
+/// if storage::set_if_absent("counter", &0i64.to_le_bytes())? {
+///     println!("Counter initialized to 0");
+/// } else {
+///     println!("Counter already exists");
+/// }
+/// ```
+pub fn set_if_absent(key: &str, value: &[u8]) -> Result<bool> {
+    let (inserted, error) = raw::set_if_absent(key, value);
+    if !error.is_empty() {
+        return Err(StorageError(error));
+    }
+    Ok(inserted)
+}
+
+/// Set a key only if current value equals expected (compare-and-swap)
+///
+/// This is useful for atomic updates when multiple processes might be
+/// modifying the same key concurrently.
+///
+/// # Arguments
+/// * `key` - The key to update
+/// * `expected` - The expected current value
+/// * `new_value` - The new value to set if current matches expected
+///
+/// # Returns
+/// * `Ok((true, None))` - Value was updated
+/// * `Ok((false, Some(current)))` - Current value didn't match, returns actual current value for retry
+/// * `Ok((false, None))` - Key doesn't exist
+/// * `Err(StorageError)` - Storage operation failed
+///
+/// # Example
+/// ```rust,ignore
+/// // Atomically update a value
+/// loop {
+///     let current = storage::get("balance")?.unwrap_or(vec![0; 8]);
+///     let balance = i64::from_le_bytes(current.clone().try_into().unwrap());
+///     let new_balance = balance + 100;
+///
+///     match storage::set_if_equals("balance", &current, &new_balance.to_le_bytes())? {
+///         (true, _) => break,  // Success
+///         (false, Some(actual)) => continue,  // Retry with actual value
+///         (false, None) => break,  // Key was deleted
+///     }
+/// }
+/// ```
+pub fn set_if_equals(key: &str, expected: &[u8], new_value: &[u8]) -> Result<(bool, Option<Vec<u8>>)> {
+    let (success, current, error) = raw::set_if_equals(key, expected, new_value);
+    if !error.is_empty() {
+        return Err(StorageError(error));
+    }
+    if success {
+        Ok((true, None))
+    } else if current.is_empty() {
+        Ok((false, None))
+    } else {
+        Ok((false, Some(current)))
+    }
+}
+
+/// Atomically increment a numeric value
+///
+/// If the key doesn't exist, creates it with delta as the initial value.
+/// Uses compare-and-swap internally with automatic retries.
+///
+/// # Arguments
+/// * `key` - The key to increment
+/// * `delta` - The amount to add (can be negative)
+///
+/// # Returns
+/// * `Ok(new_value)` - The new value after increment
+/// * `Err(StorageError)` - Storage operation failed or value is not a valid i64
+///
+/// # Example
+/// ```rust,ignore
+/// // Increment a counter
+/// let new_count = storage::increment("page_views", 1)?;
+/// println!("Page views: {}", new_count);
+///
+/// // Decrement (using negative delta)
+/// let remaining = storage::increment("credits", -10)?;
+/// println!("Remaining credits: {}", remaining);
+/// ```
+pub fn increment(key: &str, delta: i64) -> Result<i64> {
+    let (new_value, error) = raw::increment(key, delta);
+    if !error.is_empty() {
+        return Err(StorageError(error));
+    }
+    Ok(new_value)
+}
+
+/// Atomically decrement a numeric value
+///
+/// If the key doesn't exist, creates it with -delta as the initial value.
+/// This is equivalent to `increment(key, -delta)`.
+///
+/// # Arguments
+/// * `key` - The key to decrement
+/// * `delta` - The amount to subtract
+///
+/// # Returns
+/// * `Ok(new_value)` - The new value after decrement
+/// * `Err(StorageError)` - Storage operation failed or value is not a valid i64
+///
+/// # Example
+/// ```rust,ignore
+/// // Decrement inventory
+/// let remaining = storage::decrement("stock:item123", 1)?;
+/// if remaining < 0 {
+///     println!("Out of stock!");
+/// }
+/// ```
+pub fn decrement(key: &str, delta: i64) -> Result<i64> {
+    let (new_value, error) = raw::decrement(key, delta);
+    if !error.is_empty() {
+        return Err(StorageError(error));
+    }
+    Ok(new_value)
+}

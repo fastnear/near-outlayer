@@ -109,6 +109,40 @@ impl near::storage::api::Host for StorageHostState {
             Err(e) => e.to_string(),
         }
     }
+
+    // ==================== Conditional Write Operations ====================
+
+    fn set_if_absent(&mut self, key: String, value: Vec<u8>) -> (bool, String) {
+        debug!("storage::set_if_absent key={}, value_len={}", key, value.len());
+        match self.client.set_if_absent(&key, &value) {
+            Ok(inserted) => (inserted, String::new()),
+            Err(e) => (false, e.to_string()),
+        }
+    }
+
+    fn set_if_equals(&mut self, key: String, expected: Vec<u8>, new_value: Vec<u8>) -> (bool, Vec<u8>, String) {
+        debug!("storage::set_if_equals key={}, expected_len={}, new_len={}", key, expected.len(), new_value.len());
+        match self.client.set_if_equals(&key, &expected, &new_value) {
+            Ok((success, current)) => (success, current.unwrap_or_default(), String::new()),
+            Err(e) => (false, Vec::new(), e.to_string()),
+        }
+    }
+
+    fn increment(&mut self, key: String, delta: i64) -> (i64, String) {
+        debug!("storage::increment key={}, delta={}", key, delta);
+        match self.client.increment(&key, delta) {
+            Ok(new_value) => (new_value, String::new()),
+            Err(e) => (0, e.to_string()),
+        }
+    }
+
+    fn decrement(&mut self, key: String, delta: i64) -> (i64, String) {
+        debug!("storage::decrement key={}, delta={}", key, delta);
+        match self.client.decrement(&key, delta) {
+            Ok(new_value) => (new_value, String::new()),
+            Err(e) => (0, e.to_string()),
+        }
+    }
 }
 
 /// Add storage host functions to a wasmtime component linker

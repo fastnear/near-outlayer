@@ -145,6 +145,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/github/resolve-branch", get(handlers::github::resolve_branch))
         // Storage endpoints (worker-protected)
         .route("/storage/set", post(handlers::storage::storage_set))
+        .route("/storage/set-if-absent", post(handlers::storage::storage_set_if_absent))
+        .route("/storage/set-if-equals", post(handlers::storage::storage_set_if_equals))
         .route("/storage/get", post(handlers::storage::storage_get))
         .route("/storage/get-by-version", post(handlers::storage::storage_get_by_version))
         .route("/storage/has", post(handlers::storage::storage_has))

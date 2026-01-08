@@ -21,6 +21,10 @@ struct Input {
     value: String,
     #[serde(default)]
     prefix: String,
+    #[serde(default)]
+    expected: String,        // For set_if_equals
+    #[serde(default)]
+    delta: i64,              // For increment/decrement
 }
 
 #[derive(Debug, Serialize)]
@@ -35,6 +39,14 @@ struct Output {
     deleted: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     keys: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    inserted: Option<bool>,      // For set_if_absent
+    #[serde(skip_serializing_if = "Option::is_none")]
+    updated: Option<bool>,       // For set_if_equals
+    #[serde(skip_serializing_if = "Option::is_none")]
+    current: Option<String>,     // For set_if_equals (current value on failure)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    numeric_value: Option<i64>,  // For increment/decrement
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -60,29 +72,29 @@ struct TestResult {
 fn main() {
     let output = match env::input_json::<Input>() {
         Ok(Some(input)) => process_command(&input),
-        Ok(None) => Output {
-            success: false,
-            command: "parse".to_string(),
-            value: None,
-            exists: None,
-            deleted: None,
-            keys: None,
-            error: Some("No input provided".to_string()),
-            tests: None,
-        },
-        Err(e) => Output {
-            success: false,
-            command: "parse".to_string(),
-            value: None,
-            exists: None,
-            deleted: None,
-            keys: None,
-            error: Some(format!("Failed to parse input: {}", e)),
-            tests: None,
-        },
+        Ok(None) => error_output("parse", "No input provided"),
+        Err(e) => error_output("parse", &format!("Failed to parse input: {}", e)),
     };
 
     let _ = env::output_json(&output);
+}
+
+/// Helper to create an error Output
+fn error_output(command: &str, error: &str) -> Output {
+    Output {
+        success: false,
+        command: command.to_string(),
+        value: None,
+        exists: None,
+        deleted: None,
+        keys: None,
+        inserted: None,
+        updated: None,
+        current: None,
+        numeric_value: None,
+        error: Some(error.to_string()),
+        tests: None,
+    }
 }
 
 fn process_command(input: &Input) -> Output {
@@ -95,17 +107,14 @@ fn process_command(input: &Input) -> Output {
         "set_worker" => cmd_set_worker(&input.key, &input.value),
         "get_worker" => cmd_get_worker(&input.key),
         "clear_all" => cmd_clear_all(),
+        // Conditional write commands
+        "set_if_absent" => cmd_set_if_absent(&input.key, &input.value),
+        "set_if_equals" => cmd_set_if_equals(&input.key, &input.expected, &input.value),
+        "increment" => cmd_increment(&input.key, input.delta),
+        "decrement" => cmd_decrement(&input.key, input.delta),
+        // Tests
         "test_all" => cmd_test_all(),
-        _ => Output {
-            success: false,
-            command: input.command.clone(),
-            value: None,
-            exists: None,
-            deleted: None,
-            keys: None,
-            error: Some(format!("Unknown command: {}", input.command)),
-            tests: None,
-        },
+        _ => error_output(&input.command, &format!("Unknown command: {}", input.command)),
     }
 }
 
@@ -118,19 +127,14 @@ fn cmd_set(key: &str, value: &str) -> Output {
             exists: None,
             deleted: None,
             keys: None,
+            inserted: None,
+            updated: None,
+            current: None,
+            numeric_value: None,
             error: None,
             tests: None,
         },
-        Err(e) => Output {
-            success: false,
-            command: "set".to_string(),
-            value: None,
-            exists: None,
-            deleted: None,
-            keys: None,
-            error: Some(e.to_string()),
-            tests: None,
-        },
+        Err(e) => error_output("set", &e.to_string()),
     }
 }
 
@@ -146,6 +150,10 @@ fn cmd_get(key: &str) -> Output {
                 exists: Some(true),
                 deleted: None,
                 keys: None,
+                inserted: None,
+                updated: None,
+                current: None,
+                numeric_value: None,
                 error: None,
                 tests: None,
             }
@@ -157,19 +165,14 @@ fn cmd_get(key: &str) -> Output {
             exists: Some(false),
             deleted: None,
             keys: None,
+            inserted: None,
+            updated: None,
+            current: None,
+            numeric_value: None,
             error: None,
             tests: None,
         },
-        Err(e) => Output {
-            success: false,
-            command: "get".to_string(),
-            value: None,
-            exists: None,
-            deleted: None,
-            keys: None,
-            error: Some(e.to_string()),
-            tests: None,
-        },
+        Err(e) => error_output("get", &e.to_string()),
     }
 }
 
@@ -182,6 +185,10 @@ fn cmd_delete(key: &str) -> Output {
         exists: None,
         deleted: Some(deleted),
         keys: None,
+        inserted: None,
+        updated: None,
+        current: None,
+        numeric_value: None,
         error: None,
         tests: None,
     }
@@ -196,6 +203,10 @@ fn cmd_has(key: &str) -> Output {
         exists: Some(exists),
         deleted: None,
         keys: None,
+        inserted: None,
+        updated: None,
+        current: None,
+        numeric_value: None,
         error: None,
         tests: None,
     }
@@ -210,19 +221,14 @@ fn cmd_list(prefix: &str) -> Output {
             exists: None,
             deleted: None,
             keys: Some(keys),
+            inserted: None,
+            updated: None,
+            current: None,
+            numeric_value: None,
             error: None,
             tests: None,
         },
-        Err(e) => Output {
-            success: false,
-            command: "list".to_string(),
-            value: None,
-            exists: None,
-            deleted: None,
-            keys: None,
-            error: Some(e.to_string()),
-            tests: None,
-        },
+        Err(e) => error_output("list", &e.to_string()),
     }
 }
 
@@ -235,19 +241,14 @@ fn cmd_set_worker(key: &str, value: &str) -> Output {
             exists: None,
             deleted: None,
             keys: None,
+            inserted: None,
+            updated: None,
+            current: None,
+            numeric_value: None,
             error: None,
             tests: None,
         },
-        Err(e) => Output {
-            success: false,
-            command: "set_worker".to_string(),
-            value: None,
-            exists: None,
-            deleted: None,
-            keys: None,
-            error: Some(e.to_string()),
-            tests: None,
-        },
+        Err(e) => error_output("set_worker", &e.to_string()),
     }
 }
 
@@ -263,6 +264,10 @@ fn cmd_get_worker(key: &str) -> Output {
                 exists: Some(true),
                 deleted: None,
                 keys: None,
+                inserted: None,
+                updated: None,
+                current: None,
+                numeric_value: None,
                 error: None,
                 tests: None,
             }
@@ -274,19 +279,14 @@ fn cmd_get_worker(key: &str) -> Output {
             exists: Some(false),
             deleted: None,
             keys: None,
+            inserted: None,
+            updated: None,
+            current: None,
+            numeric_value: None,
             error: None,
             tests: None,
         },
-        Err(e) => Output {
-            success: false,
-            command: "get_worker".to_string(),
-            value: None,
-            exists: None,
-            deleted: None,
-            keys: None,
-            error: Some(e.to_string()),
-            tests: None,
-        },
+        Err(e) => error_output("get_worker", &e.to_string()),
     }
 }
 
@@ -299,19 +299,111 @@ fn cmd_clear_all() -> Output {
             exists: None,
             deleted: None,
             keys: None,
+            inserted: None,
+            updated: None,
+            current: None,
+            numeric_value: None,
             error: None,
             tests: None,
         },
-        Err(e) => Output {
-            success: false,
-            command: "clear_all".to_string(),
-            value: None,
+        Err(e) => error_output("clear_all", &e.to_string()),
+    }
+}
+
+// ==================== Conditional Write Commands ====================
+
+fn cmd_set_if_absent(key: &str, value: &str) -> Output {
+    match storage::set_if_absent(key, value.as_bytes()) {
+        Ok(inserted) => Output {
+            success: true,
+            command: "set_if_absent".to_string(),
+            value: if inserted {
+                Some(format!("Inserted {} bytes at key '{}'", value.len(), key))
+            } else {
+                Some(format!("Key '{}' already exists, not modified", key))
+            },
             exists: None,
             deleted: None,
             keys: None,
-            error: Some(e.to_string()),
+            inserted: Some(inserted),
+            updated: None,
+            current: None,
+            numeric_value: None,
+            error: None,
             tests: None,
         },
+        Err(e) => error_output("set_if_absent", &e.to_string()),
+    }
+}
+
+fn cmd_set_if_equals(key: &str, expected: &str, new_value: &str) -> Output {
+    match storage::set_if_equals(key, expected.as_bytes(), new_value.as_bytes()) {
+        Ok((updated, current)) => {
+            let current_str = current.map(|bytes| {
+                String::from_utf8(bytes).unwrap_or_else(|e| format!("<binary, {} bytes>", e.as_bytes().len()))
+            });
+            Output {
+                success: true,
+                command: "set_if_equals".to_string(),
+                value: if updated {
+                    Some(format!("Updated key '{}' to new value", key))
+                } else if current_str.is_some() {
+                    Some(format!("Key '{}' has different value, not modified", key))
+                } else {
+                    Some(format!("Key '{}' does not exist", key))
+                },
+                exists: None,
+                deleted: None,
+                keys: None,
+                inserted: None,
+                updated: Some(updated),
+                current: current_str,
+                numeric_value: None,
+                error: None,
+                tests: None,
+            }
+        },
+        Err(e) => error_output("set_if_equals", &e.to_string()),
+    }
+}
+
+fn cmd_increment(key: &str, delta: i64) -> Output {
+    match storage::increment(key, delta) {
+        Ok(new_value) => Output {
+            success: true,
+            command: "increment".to_string(),
+            value: Some(format!("Key '{}' incremented by {}, new value: {}", key, delta, new_value)),
+            exists: None,
+            deleted: None,
+            keys: None,
+            inserted: None,
+            updated: None,
+            current: None,
+            numeric_value: Some(new_value),
+            error: None,
+            tests: None,
+        },
+        Err(e) => error_output("increment", &e.to_string()),
+    }
+}
+
+fn cmd_decrement(key: &str, delta: i64) -> Output {
+    match storage::decrement(key, delta) {
+        Ok(new_value) => Output {
+            success: true,
+            command: "decrement".to_string(),
+            value: Some(format!("Key '{}' decremented by {}, new value: {}", key, delta, new_value)),
+            exists: None,
+            deleted: None,
+            keys: None,
+            inserted: None,
+            updated: None,
+            current: None,
+            numeric_value: Some(new_value),
+            error: None,
+            tests: None,
+        },
+        Err(e) => error_output("decrement", &e.to_string()),
     }
 }
 
@@ -386,7 +478,70 @@ fn cmd_test_all() -> Output {
     if test.success { passed += 1; } else { failed += 1; }
     results.push(test);
 
-    // Test 13: Clear all and verify
+    // ==================== Conditional Write Tests ====================
+
+    // Test 13: set_if_absent on new key (should insert)
+    let test = test_set_if_absent("new-key-absent", "first-value", true);
+    if test.success { passed += 1; } else { failed += 1; }
+    results.push(test);
+
+    // Test 14: set_if_absent on existing key (should NOT insert)
+    let test = test_set_if_absent("new-key-absent", "second-value", false);
+    if test.success { passed += 1; } else { failed += 1; }
+    results.push(test);
+
+    // Test 15: Verify set_if_absent didn't overwrite
+    let test = test_get("new-key-absent", Some("first-value"));
+    if test.success { passed += 1; } else { failed += 1; }
+    results.push(test);
+
+    // Test 16: set_if_equals with correct expected value
+    let _ = storage::set("cas-key", b"value-a");
+    let test = test_set_if_equals("cas-key", "value-a", "value-b", true, None);
+    if test.success { passed += 1; } else { failed += 1; }
+    results.push(test);
+
+    // Test 17: Verify set_if_equals updated
+    let test = test_get("cas-key", Some("value-b"));
+    if test.success { passed += 1; } else { failed += 1; }
+    results.push(test);
+
+    // Test 18: set_if_equals with wrong expected value (should NOT update)
+    let test = test_set_if_equals("cas-key", "wrong-expected", "value-c", false, Some("value-b"));
+    if test.success { passed += 1; } else { failed += 1; }
+    results.push(test);
+
+    // Test 19: set_if_equals on non-existent key
+    let test = test_set_if_equals("non-existent-cas", "any", "new-value", false, None);
+    if test.success { passed += 1; } else { failed += 1; }
+    results.push(test);
+
+    // Test 20: increment on new key (starts from delta)
+    let test = test_increment("counter-new", 10, 10);
+    if test.success { passed += 1; } else { failed += 1; }
+    results.push(test);
+
+    // Test 21: increment existing counter
+    let test = test_increment("counter-new", 5, 15);
+    if test.success { passed += 1; } else { failed += 1; }
+    results.push(test);
+
+    // Test 22: decrement
+    let test = test_decrement("counter-new", 3, 12);
+    if test.success { passed += 1; } else { failed += 1; }
+    results.push(test);
+
+    // Test 23: increment with negative delta (same as decrement)
+    let test = test_increment("counter-new", -2, 10);
+    if test.success { passed += 1; } else { failed += 1; }
+    results.push(test);
+
+    // Test 24: decrement new key (starts from -delta)
+    let test = test_decrement("counter-dec", 5, -5);
+    if test.success { passed += 1; } else { failed += 1; }
+    results.push(test);
+
+    // Test 25: Clear all and verify
     let test = test_clear_all_and_verify();
     if test.success { passed += 1; } else { failed += 1; }
     results.push(test);
@@ -398,6 +553,10 @@ fn cmd_test_all() -> Output {
         exists: None,
         deleted: None,
         keys: None,
+        inserted: None,
+        updated: None,
+        current: None,
+        numeric_value: None,
         error: if failed > 0 { Some(format!("{} tests failed", failed)) } else { None },
         tests: Some(TestResults {
             total: passed + failed,
@@ -554,5 +713,130 @@ fn test_clear_all_and_verify() -> TestResult {
             }
         }
         Err(e) => TestResult { name: "clear_all() + verify empty".to_string(), success: false, error: Some(e.to_string()) },
+    }
+}
+
+// ==================== Conditional Write Test Functions ====================
+
+fn test_set_if_absent(key: &str, value: &str, expected_inserted: bool) -> TestResult {
+    match storage::set_if_absent(key, value.as_bytes()) {
+        Ok(inserted) => {
+            if inserted == expected_inserted {
+                TestResult {
+                    name: format!("set_if_absent({}) -> {}", key, expected_inserted),
+                    success: true,
+                    error: None,
+                }
+            } else {
+                TestResult {
+                    name: format!("set_if_absent({}) -> {}", key, expected_inserted),
+                    success: false,
+                    error: Some(format!("Expected inserted={} but got {}", expected_inserted, inserted)),
+                }
+            }
+        }
+        Err(e) => TestResult {
+            name: format!("set_if_absent({})", key),
+            success: false,
+            error: Some(e.to_string()),
+        },
+    }
+}
+
+fn test_set_if_equals(
+    key: &str,
+    expected_value: &str,
+    new_value: &str,
+    expect_updated: bool,
+    expect_current: Option<&str>,
+) -> TestResult {
+    match storage::set_if_equals(key, expected_value.as_bytes(), new_value.as_bytes()) {
+        Ok((updated, current)) => {
+            if updated != expect_updated {
+                return TestResult {
+                    name: format!("set_if_equals({}) updated", key),
+                    success: false,
+                    error: Some(format!("Expected updated={} but got {}", expect_updated, updated)),
+                };
+            }
+
+            // Check current value if expected
+            let current_str = current.map(|bytes| {
+                String::from_utf8(bytes).unwrap_or_else(|_| "<binary>".to_string())
+            });
+
+            match (current_str.as_deref(), expect_current) {
+                (None, None) => TestResult {
+                    name: format!("set_if_equals({}) -> updated={}", key, updated),
+                    success: true,
+                    error: None,
+                },
+                (Some(got), Some(exp)) if got == exp => TestResult {
+                    name: format!("set_if_equals({}) -> updated={}, current={}", key, updated, got),
+                    success: true,
+                    error: None,
+                },
+                (got, exp) => TestResult {
+                    name: format!("set_if_equals({}) current", key),
+                    success: false,
+                    error: Some(format!("Expected current={:?} but got {:?}", exp, got)),
+                },
+            }
+        }
+        Err(e) => TestResult {
+            name: format!("set_if_equals({})", key),
+            success: false,
+            error: Some(e.to_string()),
+        },
+    }
+}
+
+fn test_increment(key: &str, delta: i64, expected_value: i64) -> TestResult {
+    match storage::increment(key, delta) {
+        Ok(new_value) => {
+            if new_value == expected_value {
+                TestResult {
+                    name: format!("increment({}, {}) -> {}", key, delta, expected_value),
+                    success: true,
+                    error: None,
+                }
+            } else {
+                TestResult {
+                    name: format!("increment({}, {}) -> {}", key, delta, expected_value),
+                    success: false,
+                    error: Some(format!("Expected {} but got {}", expected_value, new_value)),
+                }
+            }
+        }
+        Err(e) => TestResult {
+            name: format!("increment({}, {})", key, delta),
+            success: false,
+            error: Some(e.to_string()),
+        },
+    }
+}
+
+fn test_decrement(key: &str, delta: i64, expected_value: i64) -> TestResult {
+    match storage::decrement(key, delta) {
+        Ok(new_value) => {
+            if new_value == expected_value {
+                TestResult {
+                    name: format!("decrement({}, {}) -> {}", key, delta, expected_value),
+                    success: true,
+                    error: None,
+                }
+            } else {
+                TestResult {
+                    name: format!("decrement({}, {}) -> {}", key, delta, expected_value),
+                    success: false,
+                    error: Some(format!("Expected {} but got {}", expected_value, new_value)),
+                }
+            }
+        }
+        Err(e) => TestResult {
+            name: format!("decrement({}, {})", key, delta),
+            success: false,
+            error: Some(e.to_string()),
+        },
     }
 }
