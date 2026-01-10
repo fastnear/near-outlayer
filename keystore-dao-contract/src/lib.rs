@@ -162,6 +162,7 @@ pub struct DomainId(pub u64);
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(crate = "near_sdk::serde")]
 pub struct CKDRequestArgs {
+    pub derivation_path: String,
     pub app_public_key: dtos::Bls12381G1PublicKey,
     pub domain_id: DomainId,
 }

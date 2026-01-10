@@ -84,7 +84,8 @@ pub struct CkdRequestArgs {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CkdArgs {
-    pub app_public_key: String,  // BLS12-381 G1 public key in NEAR format
+    pub derivation_path: String,  // Empty string "" for keystore master key
+    pub app_public_key: String,   // BLS12-381 G1 public key in NEAR format
     pub domain_id: u64,
 }
 
@@ -137,6 +138,7 @@ impl MpcCkdClient {
         // Create CKD request
         let request_args = CkdRequestArgs {
             request: CkdArgs {
+                derivation_path: "".to_string(),  // Empty path for keystore master key
                 app_public_key,
                 domain_id: self.config.mpc_domain_id,
             },
