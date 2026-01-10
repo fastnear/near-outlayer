@@ -1,6 +1,6 @@
 use axum::{extract::State, http::StatusCode, Json};
 use redis::AsyncCommands;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::models::{ClaimJobRequest, ClaimJobResponse, CompleteJobRequest, ExecutionRequest, JobInfo, JobType, CodeSource, ResourceLimits, SecretsReference, ResponseFormat, ExecutionContext};
 use crate::AppState;
@@ -476,6 +476,8 @@ pub async fn complete_job(
 
         let execution_request = match original_request {
             Ok(Some(req)) => {
+                info!("📋 Fetched execution_requests for request_id={}: project_uuid={:?} project_id={:?}",
+                    job.request_id, req.project_uuid, req.project_id);
                 // Check if this was compile-only request
                 if req.compile_only {
                     // If compile_result is provided, create execute task for executor to send result to contract
@@ -557,7 +559,7 @@ pub async fn complete_job(
             Ok(None) => {
                 // Fallback: create minimal request with defaults
                 // This happens if execution_requests table doesn't have the data
-                info!("⚠️ No execution_requests record for request_id={}, using defaults", job.request_id);
+                warn!("⚠️ No execution_requests record for request_id={}, using defaults (project_uuid=None, project_id=None)", job.request_id);
                 ExecutionRequest {
                     request_id: job.request_id as u64,
                     data_id: job.data_id.clone(),
@@ -591,7 +593,7 @@ pub async fn complete_job(
                 }
             }
             Err(e) => {
-                error!("Failed to fetch original execution request: {}", e);
+                error!("Failed to fetch original execution request for request_id={}: {} (project_uuid=None, project_id=None)", job.request_id, e);
                 // Continue with defaults rather than failing
                 ExecutionRequest {
                     request_id: job.request_id as u64,
@@ -635,6 +637,7 @@ pub async fn complete_job(
                 return StatusCode::INTERNAL_SERVER_ERROR;
             }
         };
+        debug!("📤 Execute task JSON: {}", request_json);
 
         let mut conn = match state.redis.get_multiplexed_async_connection().await {
             Ok(c) => c,

@@ -123,8 +123,9 @@ pub async fn create_task(
     State(state): State<AppState>,
     Json(payload): Json<CreateTaskRequest>,
 ) -> Result<(StatusCode, Json<CreateTaskResponse>), StatusCode> {
-    info!("📥 Creating task for request_id={} data_id={} compile_only={} force_rebuild={} store_on_fastfs={}",
-        payload.request_id, payload.data_id, payload.compile_only, payload.force_rebuild, payload.store_on_fastfs);
+    info!("📥 Creating task for request_id={} data_id={} compile_only={} force_rebuild={} store_on_fastfs={} project_uuid={:?} project_id={:?}",
+        payload.request_id, payload.data_id, payload.compile_only, payload.force_rebuild, payload.store_on_fastfs,
+        payload.project_uuid, payload.project_id);
 
     let request_id = payload.request_id;
 
@@ -295,6 +296,9 @@ pub async fn create_task(
     )
     .execute(&state.db)
     .await
+    .map(|result| {
+        info!("📝 Stored execution_requests: request_id={} rows_affected={}", request_id, result.rows_affected());
+    })
     .map_err(|e| {
         error!("Failed to store execution request: {}", e);
         // Don't fail - task is already in queue
