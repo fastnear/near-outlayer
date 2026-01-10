@@ -336,7 +336,7 @@ async fn main() -> Result<()> {
     // This handles contract business logic that requires yield/resume (TopUp, Delete, etc.)
     // Separated from main worker loop to avoid blocking WASM execution tasks
     // Only workers with "execution" capability should poll system callbacks
-    {
+    if config.capabilities.to_array().contains(&"execution".to_string()) {
         let callbacks_api_client = api_client.clone();
         let callbacks_keystore_client = keystore_client.clone();
         let callbacks_near_client = near_client.clone();
@@ -352,6 +352,8 @@ async fn main() -> Result<()> {
             .await;
         });
         info!("📋 Contract System Callbacks Handler started");
+    } else {
+        info!("📋 Contract System Callbacks Handler skipped (no 'execution' capability)");
     }
 
     // Main worker loop
@@ -2326,12 +2328,6 @@ async fn run_contract_system_callbacks_handler(
     capabilities: Vec<String>,
 ) {
     use api_client::SystemCallbackTask;
-
-    // Only poll if worker has execution capability
-    if !capabilities.contains(&"execution".to_string()) {
-        info!("📋 Contract System Callbacks Handler skipped (worker has no 'execution' capability)");
-        return;
-    }
 
     info!("📋 Contract System Callbacks Handler loop started (unified queue, 60s timeout)");
 
