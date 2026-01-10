@@ -1439,8 +1439,9 @@ impl ApiClient {
     /// * `Ok(Some(task))` - Task received, dispatch based on task_type
     /// * `Ok(None)` - No tasks available (timeout)
     /// * `Err(_)` - Request failed
-    pub async fn poll_system_callback_task(&self, timeout: u64) -> Result<Option<SystemCallbackTask>> {
-        let url = format!("{}/system-callbacks/poll?timeout={}", self.base_url, timeout);
+    pub async fn poll_system_callback_task(&self, timeout: u64, capabilities: &[String]) -> Result<Option<SystemCallbackTask>> {
+        let capabilities_param = capabilities.join(",");
+        let url = format!("{}/system-callbacks/poll?timeout={}&capabilities={}", self.base_url, timeout, capabilities_param);
 
         let response = self
             .client

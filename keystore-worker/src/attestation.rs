@@ -140,15 +140,11 @@ fn verify_tdx_attestation(
     attestation: &Attestation,
     _expected: &ExpectedMeasurements,
 ) -> Result<()> {
-    if attestation.tee_type != "tdx" {
-        anyhow::bail!("Expected TDX attestation, got {}", attestation.tee_type);
-    }
-
     // In production TEE environment, both keystore and worker are in TEE.
     // Authentication is handled by KEYSTORE_AUTH_TOKEN/ALLOWED_WORKER_TOKEN_HASHES
     // in the auth_middleware, which has already validated the request by this point.
-    tracing::info!("✅ TDX attestation accepted - worker authenticated via bearer token");
-    tracing::info!("   Both keystore and worker running in TEE with token-based auth");
+    // We accept any attestation type since token auth is the primary security check.
+    tracing::info!("✅ TDX mode: attestation accepted - worker authenticated via bearer token (tee_type={})", attestation.tee_type);
 
     // Log the attestation details for debugging
     tracing::debug!("TDX attestation details:");

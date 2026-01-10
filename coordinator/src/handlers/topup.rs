@@ -15,9 +15,21 @@ use axum::{
 };
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::AppState;
+
+/// Custom deserializer for comma-separated capabilities
+fn deserialize_capabilities<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s: Option<String> = serde::Deserialize::deserialize(deserializer)?;
+    match s {
+        Some(s) if !s.is_empty() => Ok(s.split(',').map(|s| s.trim().to_string()).collect()),
+        _ => Ok(Vec::new()),
+    }
+}
 
 /// Queue name for all system callback tasks
 const SYSTEM_CALLBACKS_QUEUE: &str = "system_callbacks_queue";
@@ -436,6 +448,10 @@ pub struct PollSystemCallbacksQuery {
     /// Timeout in seconds (default: 60, max: 120)
     #[serde(default = "default_poll_timeout")]
     timeout: u64,
+    /// Worker capabilities: "compilation,execution" or "compilation" or "execution"
+    /// System callbacks require "execution" capability
+    #[serde(default, deserialize_with = "deserialize_capabilities")]
+    capabilities: Vec<String>,
 }
 
 /// Poll for ANY system callback task (TopUp, Delete, etc.) from unified queue
@@ -453,6 +469,24 @@ pub async fn poll_system_callback_task(
     State(state): State<AppState>,
     Query(params): Query<PollSystemCallbacksQuery>,
 ) -> Result<Json<Option<SystemCallbackTask>>, StatusCode> {
+    // System callbacks require "execution" capability
+    // Compile-only workers should not process TopUp/Delete tasks
+    let has_execution = params.capabilities.contains(&"execution".to_string());
+
+    if !has_execution && !params.capabilities.is_empty() {
+        // Worker has capabilities specified but no "execution" - reject
+        warn!(
+            "Worker with capabilities {:?} tried to poll system callbacks (requires 'execution')",
+            params.capabilities
+        );
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // If capabilities is empty, allow (backwards compatibility) but log warning
+    if params.capabilities.is_empty() {
+        debug!("Worker polling system callbacks without capabilities specified");
+    }
+
     let mut conn = state.redis.get_async_connection().await.map_err(|e| {
         error!("Failed to get Redis connection: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR

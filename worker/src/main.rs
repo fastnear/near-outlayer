@@ -335,16 +335,19 @@ async fn main() -> Result<()> {
     // Start Contract System Callbacks Handler
     // This handles contract business logic that requires yield/resume (TopUp, Delete, etc.)
     // Separated from main worker loop to avoid blocking WASM execution tasks
+    // Only workers with "execution" capability should poll system callbacks
     {
         let callbacks_api_client = api_client.clone();
         let callbacks_keystore_client = keystore_client.clone();
         let callbacks_near_client = near_client.clone();
+        let callbacks_capabilities = config.capabilities.to_array();
 
         tokio::spawn(async move {
             run_contract_system_callbacks_handler(
                 callbacks_api_client,
                 callbacks_keystore_client,
                 callbacks_near_client,
+                callbacks_capabilities,
             )
             .await;
         });
@@ -2320,14 +2323,21 @@ async fn run_contract_system_callbacks_handler(
     api_client: ApiClient,
     keystore_client: Option<KeystoreClient>,
     near_client: NearClient,
+    capabilities: Vec<String>,
 ) {
     use api_client::SystemCallbackTask;
+
+    // Only poll if worker has execution capability
+    if !capabilities.contains(&"execution".to_string()) {
+        info!("📋 Contract System Callbacks Handler skipped (worker has no 'execution' capability)");
+        return;
+    }
 
     info!("📋 Contract System Callbacks Handler loop started (unified queue, 60s timeout)");
 
     loop {
         // Poll unified queue for any system callback task (blocking, 60s timeout like execution queue)
-        match api_client.poll_system_callback_task(60).await {
+        match api_client.poll_system_callback_task(60, &capabilities).await {
             Ok(Some(task)) => {
                 match task {
                     // =================================================================
