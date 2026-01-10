@@ -347,7 +347,7 @@ impl MpcCkdClient {
         Ok(secret.to_compressed())
     }
 
-    /// Verify MPC signature using pairing (from Bowen's example)
+    /// Verify MPC signature using pairing (from NEAR MPC ckd-example-cli)
     fn verify_signature(&self, public_key: &G2Projective, app_id: &[u8], signature: &G1Projective) -> bool {
         let element1: G1Affine = signature.into();
         if (!element1.is_on_curve() | !element1.is_torsion_free() | element1.is_identity()).into() {
@@ -359,8 +359,9 @@ impl MpcCkdClient {
             return false;
         }
 
-        // Hash app_id to curve
-        let base1 = G1Projective::hash_to_curve(app_id, NEAR_CKD_DOMAIN, &[]).into();
+        // Hash input = MPC public key || app_id (must match MPC contract)
+        let hash_input = [public_key.to_compressed().as_slice(), app_id].concat();
+        let base1 = G1Projective::hash_to_curve(&hash_input, NEAR_CKD_DOMAIN, &[]).into();
         let base2 = G2Affine::generator();
 
         // Verify pairing equation
