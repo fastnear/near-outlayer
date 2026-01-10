@@ -355,6 +355,20 @@ pub enum SecretAccessor {
     WasmHash {
         hash: String,
     },
+    /// Secrets bound to a project (available to all versions)
+    Project {
+        project_id: String,
+    },
+    /// System secrets (Payment Keys, etc.)
+    System {
+        #[serde(flatten)]
+        kind: SystemSecretKind,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+pub enum SystemSecretKind {
+    PaymentKey {},
 }
 
 #[derive(Debug, Deserialize)]
@@ -363,6 +377,9 @@ pub struct GetPubkeyRequest {
     pub accessor: SecretAccessor,
     /// NEAR account ID that will own these secrets (REQUIRED)
     pub owner: String,
+    /// Profile (nonce) for Payment Keys
+    #[serde(default)]
+    pub profile: Option<String>,
     /// Secrets JSON to validate before encryption
     pub secrets_json: String,
 }
@@ -377,6 +394,13 @@ pub enum PubkeyResponseAccessor {
     },
     WasmHash {
         hash: String,
+    },
+    Project {
+        project_id: String,
+    },
+    System {
+        kind: String,
+        profile: String,
     },
 }
 
@@ -459,6 +483,62 @@ pub async fn get_secrets_pubkey(
 
             let accessor = PubkeyResponseAccessor::WasmHash {
                 hash: hash.clone(),
+            };
+
+            (seed, accessor)
+        }
+        SecretAccessor::Project { project_id } => {
+            // Validate project_id format (account.near/name)
+            if !project_id.contains('/') {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "Invalid project_id format: must be 'account/name'".to_string(),
+                ));
+            }
+
+            // Build seed: project:project_id:owner
+            let seed = format!("project:{}:{}", project_id, req.owner);
+
+            tracing::info!(
+                "🔐 ENCRYPTION SEED (Project): project_id={}, owner={}, seed={}",
+                project_id,
+                req.owner,
+                seed
+            );
+
+            let accessor = PubkeyResponseAccessor::Project {
+                project_id: project_id.clone(),
+            };
+
+            (seed, accessor)
+        }
+        SecretAccessor::System { kind } => {
+            // Get profile (nonce) for Payment Keys
+            let profile = req.profile.clone().ok_or((
+                StatusCode::BAD_REQUEST,
+                "Profile (nonce) is required for System secrets".to_string(),
+            ))?;
+
+            // Build seed based on system secret kind
+            let (seed, kind_str) = match kind {
+                SystemSecretKind::PaymentKey {} => {
+                    // Build seed: system:payment_key:owner:nonce
+                    let seed = format!("system:payment_key:{}:{}", req.owner, profile);
+                    (seed, "payment_key".to_string())
+                }
+            };
+
+            tracing::info!(
+                "🔐 ENCRYPTION SEED (System): kind={}, owner={}, profile={}, seed={}",
+                kind_str,
+                req.owner,
+                profile,
+                seed
+            );
+
+            let accessor = PubkeyResponseAccessor::System {
+                kind: kind_str,
+                profile,
             };
 
             (seed, accessor)
@@ -557,6 +637,7 @@ pub struct AddGeneratedSecretRequest {
     /// What code can access these secrets
     pub accessor: SecretAccessor,
     pub owner: String,
+    pub profile: Option<String>, // Required for System accessor (nonce for Payment Keys)
     pub encrypted_secrets_base64: Option<String>, // Existing encrypted secrets (optional)
     pub new_secrets: Vec<GeneratedSecretSpec>,
 }
@@ -654,6 +735,61 @@ pub async fn add_generated_secret(
 
             let accessor = PubkeyResponseAccessor::WasmHash {
                 hash: hash.clone(),
+            };
+
+            (seed, accessor)
+        }
+        SecretAccessor::Project { project_id } => {
+            // Validate project_id format
+            if !project_id.contains('/') {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "Invalid project_id format: must be 'account/name'".to_string(),
+                ));
+            }
+
+            let seed = format!("project:{}:{}", project_id, req.owner);
+
+            tracing::info!(
+                "🔑 GENERATE SECRETS (Project): project_id={}, owner={}, seed={}, new_secrets_count={}",
+                project_id,
+                req.owner,
+                seed,
+                req.new_secrets.len()
+            );
+
+            let accessor = PubkeyResponseAccessor::Project {
+                project_id: project_id.clone(),
+            };
+
+            (seed, accessor)
+        }
+        SecretAccessor::System { kind } => {
+            // Get profile (nonce) for System secrets
+            let profile = req.profile.clone().ok_or((
+                StatusCode::BAD_REQUEST,
+                "Profile (nonce) is required for System secrets".to_string(),
+            ))?;
+
+            let (seed, kind_str) = match kind {
+                SystemSecretKind::PaymentKey {} => {
+                    let seed = format!("system:payment_key:{}:{}", req.owner, profile);
+                    (seed, "payment_key".to_string())
+                }
+            };
+
+            tracing::info!(
+                "🔑 GENERATE SECRETS (System): kind={}, owner={}, profile={}, seed={}, new_secrets_count={}",
+                kind_str,
+                req.owner,
+                profile,
+                seed,
+                req.new_secrets.len()
+            );
+
+            let accessor = PubkeyResponseAccessor::System {
+                kind: kind_str,
+                profile,
             };
 
             (seed, accessor)
@@ -816,6 +952,14 @@ pub async fn update_user_secrets(
                 return Err((StatusCode::BAD_REQUEST, "accessor.hash must be 64 hex characters".to_string()));
             }
         }
+        "Project" => {
+            let project_id = accessor.get("project_id")
+                .and_then(|v| v.as_str())
+                .ok_or((StatusCode::BAD_REQUEST, "accessor.project_id is required for Project type".to_string()))?;
+            if project_id.is_empty() {
+                return Err((StatusCode::BAD_REQUEST, "accessor.project_id cannot be empty".to_string()));
+            }
+        }
         _ => {
             return Err((StatusCode::BAD_REQUEST, format!("Unknown accessor type: {}", accessor_type)));
         }
@@ -844,6 +988,14 @@ pub async fn update_user_secrets(
                     .ok_or((StatusCode::BAD_REQUEST, "new_accessor.hash is required".to_string()))?;
                 if hash.len() != 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
                     return Err((StatusCode::BAD_REQUEST, "new_accessor.hash must be 64 hex characters".to_string()));
+                }
+            }
+            "Project" => {
+                let project_id = new_accessor.get("project_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or((StatusCode::BAD_REQUEST, "new_accessor.project_id is required".to_string()))?;
+                if project_id.is_empty() {
+                    return Err((StatusCode::BAD_REQUEST, "new_accessor.project_id cannot be empty".to_string()));
                 }
             }
             _ => {

@@ -43,30 +43,67 @@ impl Contract {
     }
 
     /// Update pricing (only owner can call)
+    /// Supports both NEAR pricing (for blockchain transactions) and USD pricing (for HTTPS API)
     pub fn set_pricing(
         &mut self,
+        // NEAR pricing
         base_fee: Option<U128>,
         per_million_instructions_fee: Option<U128>,
         per_ms_fee: Option<U128>,
         per_compile_ms_fee: Option<U128>,
+        // USD pricing (for HTTPS API)
+        base_fee_usd: Option<U128>,
+        per_million_instructions_fee_usd: Option<U128>,
+        per_ms_fee_usd: Option<U128>,
+        per_compile_ms_fee_usd: Option<U128>,
     ) {
         self.assert_owner();
 
+        // NEAR pricing
         if let Some(fee) = base_fee {
             self.base_fee = fee.0;
-            log!("Base fee updated to {}", fee.0);
+            log!("Base fee (NEAR) updated to {}", fee.0);
         }
         if let Some(fee) = per_million_instructions_fee {
             self.per_million_instructions_fee = fee.0;
-            log!("Per million instructions fee updated to {}", fee.0);
+            log!("Per million instructions fee (NEAR) updated to {}", fee.0);
         }
         if let Some(fee) = per_ms_fee {
             self.per_ms_fee = fee.0;
-            log!("Per millisecond fee (execution) updated to {}", fee.0);
+            log!("Per millisecond fee (NEAR, execution) updated to {}", fee.0);
         }
         if let Some(fee) = per_compile_ms_fee {
             self.per_compile_ms_fee = fee.0;
-            log!("Per millisecond fee (compilation) updated to {}", fee.0);
+            log!("Per millisecond fee (NEAR, compilation) updated to {}", fee.0);
+        }
+
+        // USD pricing
+        if let Some(fee) = base_fee_usd {
+            self.base_fee_usd = fee.0;
+            log!("Base fee (USD) updated to {}", fee.0);
+        }
+        if let Some(fee) = per_million_instructions_fee_usd {
+            self.per_million_instructions_fee_usd = fee.0;
+            log!("Per million instructions fee (USD) updated to {}", fee.0);
+        }
+        if let Some(fee) = per_ms_fee_usd {
+            self.per_ms_fee_usd = fee.0;
+            log!("Per millisecond fee (USD, execution) updated to {}", fee.0);
+        }
+        if let Some(fee) = per_compile_ms_fee_usd {
+            self.per_compile_ms_fee_usd = fee.0;
+            log!("Per millisecond fee (USD, compilation) updated to {}", fee.0);
+        }
+    }
+
+    /// Set payment token contract for HTTPS API (only owner can call)
+    /// This is the stablecoin contract used for Payment Keys (e.g., "usdt.tether-token.near")
+    pub fn set_payment_token_contract(&mut self, token_contract: Option<AccountId>) {
+        self.assert_owner();
+        self.payment_token_contract = token_contract.clone();
+        match token_contract {
+            Some(contract) => log!("Payment token contract set to {}", contract),
+            None => log!("Payment token contract cleared"),
         }
     }
 
@@ -87,6 +124,21 @@ impl Contract {
             );
         } else {
             env::panic_str("Execution request not found");
+        }
+    }
+
+    /// Set event metadata (only owner can call)
+    /// Used to customize event standard name and version for different deployments
+    pub fn set_event_metadata(&mut self, standard: Option<String>, version: Option<String>) {
+        self.assert_owner();
+
+        if let Some(s) = standard {
+            self.event_standard = s.clone();
+            log!("Event standard updated to {}", s);
+        }
+        if let Some(v) = version {
+            self.event_version = v.clone();
+            log!("Event version updated to {}", v);
         }
     }
 

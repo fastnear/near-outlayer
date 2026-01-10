@@ -1,9 +1,6 @@
 use crate::*;
 use near_sdk::serde_json::json;
 
-const EVENT_STANDARD: &str = "near-outlayer";
-const EVENT_STANDARD_VERSION: &str = "1.0.0";
-
 pub mod emit {
     use super::*;
     use near_sdk::{env, log};
@@ -30,10 +27,10 @@ pub mod emit {
         pub timestamp: u64,
     }
 
-    fn log_event<T: Serialize>(event: &str, data: T) {
+    fn log_event<T: Serialize>(standard: &str, version: &str, event: &str, data: T) {
         let event = json!({
-            "standard": EVENT_STANDARD,
-            "version": EVENT_STANDARD_VERSION,
+            "standard": standard,
+            "version": version,
             "event": event,
             "data": [data]
         });
@@ -42,8 +39,10 @@ pub mod emit {
     }
 
     /// Emit event when worker should process execution request
-    pub fn execution_requested(request_data: &String, data_id: CryptoHash) {
+    pub fn execution_requested(standard: &str, version: &str, request_data: &String, data_id: CryptoHash) {
         log_event(
+            standard,
+            version,
             "execution_requested",
             ExecutionRequestedEventData {
                 request_data,
@@ -55,6 +54,8 @@ pub mod emit {
 
     /// Emit event when execution is completed (success or failure)
     pub fn execution_completed(
+        standard: &str,
+        version: &str,
         sender_id: &AccountId,
         code_source: &CodeSource,
         resources_used: &ResourceMetrics,
@@ -65,6 +66,8 @@ pub mod emit {
         compilation_note: Option<&str>,
     ) {
         log_event(
+            standard,
+            version,
             "execution_completed",
             ExecutionCompletedEventData {
                 sender_id,
@@ -79,4 +82,25 @@ pub mod emit {
             },
         );
     }
+}
+
+
+pub fn emit_project_storage_cleanup(
+    standard: &str,
+    version: &str,
+    project_id: &str,
+    project_uuid: &str,
+) {
+    let event = near_sdk::serde_json::json!({
+        "standard": standard,
+        "version": version,
+        "event": "project_storage_cleanup",
+        "data": [{
+            "project_id": project_id,
+            "project_uuid": project_uuid,
+            "timestamp": near_sdk::env::block_timestamp(),
+        }]
+    });
+
+    near_sdk::log!("EVENT_JSON:{}", event.to_string());
 }

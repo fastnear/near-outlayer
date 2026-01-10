@@ -76,6 +76,9 @@ pub struct JobHistoryEntry {
     pub github_commit: Option<String>,
     pub transaction_hash: Option<String>,
     pub created_at: String,
+    // HTTPS call fields
+    pub is_https_call: bool,
+    pub call_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -121,7 +124,12 @@ pub async fn list_jobs(
                 eh.github_repo,
                 eh.github_commit,
                 eh.transaction_hash,
-                to_char(eh.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as created_at
+                to_char(eh.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as created_at,
+                (eh.transaction_hash IS NULL AND eh.data_id IS NOT NULL) as is_https_call,
+                CASE WHEN eh.transaction_hash IS NULL AND eh.data_id IS NOT NULL
+                     THEN eh.data_id
+                     ELSE NULL
+                END as call_id
             FROM execution_history eh
             LEFT JOIN jobs j ON eh.job_id = j.job_id
             WHERE eh.user_account_id = $1
@@ -158,7 +166,12 @@ pub async fn list_jobs(
                 eh.github_repo,
                 eh.github_commit,
                 eh.transaction_hash,
-                to_char(eh.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as created_at
+                to_char(eh.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as created_at,
+                (eh.transaction_hash IS NULL AND eh.data_id IS NOT NULL) as is_https_call,
+                CASE WHEN eh.transaction_hash IS NULL AND eh.data_id IS NOT NULL
+                     THEN eh.data_id
+                     ELSE NULL
+                END as call_id
             FROM execution_history eh
             LEFT JOIN jobs j ON eh.job_id = j.job_id
             ORDER BY eh.created_at DESC
@@ -556,5 +569,211 @@ pub async fn create_api_key(
         near_account_id: req.near_account_id,
         rate_limit_per_minute: rate_limit,
         created_at: result.created_at.map(|dt| dt.and_utc().timestamp()).unwrap_or(0),
+    }))
+}
+
+/// Public endpoint: Get project persistent storage size
+/// Reads from PostgreSQL storage_usage table
+#[derive(Debug, Serialize)]
+pub struct ProjectStorageResponse {
+    pub project_uuid: String,
+    pub total_bytes: i64,
+    pub key_count: i32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ProjectStorageQuery {
+    pub project_uuid: String,
+}
+
+pub async fn get_project_storage(
+    State(state): State<AppState>,
+    Query(params): Query<ProjectStorageQuery>,
+) -> Result<Json<ProjectStorageResponse>, (StatusCode, String)> {
+    // Query storage_usage table for this project (sum across all accounts)
+    let result = sqlx::query_as::<_, (i64, i32)>(
+        r#"
+        SELECT
+            COALESCE(SUM(total_bytes), 0)::BIGINT,
+            COALESCE(SUM(key_count), 0)::INT
+        FROM storage_usage
+        WHERE project_uuid = $1
+        "#,
+    )
+    .bind(&params.project_uuid)
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| {
+        error!("Failed to query storage_usage: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e))
+    })?;
+
+    Ok(Json(ProjectStorageResponse {
+        project_uuid: params.project_uuid,
+        total_bytes: result.0,
+        key_count: result.1,
+    }))
+}
+
+// ============================================================================
+// Project Owner Earnings Endpoints
+// ============================================================================
+
+/// Response for project owner earnings balance
+#[derive(Debug, Serialize)]
+pub struct ProjectOwnerEarningsResponse {
+    pub project_owner: String,
+    pub balance: String,        // Current withdrawable balance (USD minimal units)
+    pub total_earned: String,   // Total ever earned (USD minimal units)
+    pub updated_at: Option<i64>,
+}
+
+/// Get project owner earnings (balance and total earned)
+pub async fn get_project_owner_earnings(
+    State(state): State<AppState>,
+    Path(project_owner): Path<String>,
+) -> Result<Json<ProjectOwnerEarningsResponse>, (StatusCode, String)> {
+    let row = sqlx::query(
+        "SELECT balance, total_earned, updated_at FROM project_owner_earnings WHERE project_owner = $1"
+    )
+    .bind(&project_owner)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| {
+        error!("Failed to query project_owner_earnings: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e))
+    })?;
+
+    match row {
+        Some(row) => {
+            use sqlx::Row;
+            let balance: sqlx::types::BigDecimal = row.get("balance");
+            let total_earned: sqlx::types::BigDecimal = row.get("total_earned");
+            let updated_at: Option<chrono::DateTime<chrono::Utc>> = row.get("updated_at");
+
+            Ok(Json(ProjectOwnerEarningsResponse {
+                project_owner,
+                balance: balance.to_string(),
+                total_earned: total_earned.to_string(),
+                updated_at: updated_at.map(|dt| dt.timestamp()),
+            }))
+        }
+        None => {
+            // No earnings yet
+            Ok(Json(ProjectOwnerEarningsResponse {
+                project_owner,
+                balance: "0".to_string(),
+                total_earned: "0".to_string(),
+                updated_at: None,
+            }))
+        }
+    }
+}
+
+/// Single earning record from HTTPS API calls
+#[derive(Debug, Serialize)]
+pub struct EarningRecord {
+    pub id: i64,
+    pub call_id: String,
+    pub project_id: String,
+    pub payer_owner: String,       // Payment key owner who paid
+    pub payer_nonce: i32,
+    pub attached_deposit: String,  // Amount earned from this call (USD minimal units)
+    pub created_at: i64,
+}
+
+/// Response for earnings history
+#[derive(Debug, Serialize)]
+pub struct EarningsHistoryResponse {
+    pub project_owner: String,
+    pub earnings: Vec<EarningRecord>,
+    pub total_count: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EarningsHistoryQuery {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+/// Get earnings history for a project owner (from payment_key_usage where attached_deposit > 0)
+pub async fn get_project_owner_earnings_history(
+    State(state): State<AppState>,
+    Path(project_owner): Path<String>,
+    Query(params): Query<EarningsHistoryQuery>,
+) -> Result<Json<EarningsHistoryResponse>, (StatusCode, String)> {
+    let limit = params.limit.unwrap_or(50).min(100);
+    let offset = params.offset.unwrap_or(0);
+
+    // Get total count
+    // project_id format: "owner.near/project-name", extract owner with split_part
+    let count_row = sqlx::query(
+        r#"
+        SELECT COUNT(*)::BIGINT as count
+        FROM payment_key_usage u
+        JOIN https_calls c ON u.call_id = c.call_id
+        WHERE split_part(c.project_id, '/', 1) = $1 AND u.attached_deposit > 0
+        "#
+    )
+    .bind(&project_owner)
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| {
+        error!("Failed to count earnings: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e))
+    })?;
+
+    use sqlx::Row;
+    let total_count: i64 = count_row.get("count");
+
+    // Get earnings records
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            u.id,
+            u.call_id::TEXT as call_id,
+            u.project_id,
+            u.owner as payer_owner,
+            u.nonce as payer_nonce,
+            u.attached_deposit,
+            u.created_at
+        FROM payment_key_usage u
+        JOIN https_calls c ON u.call_id = c.call_id
+        WHERE split_part(c.project_id, '/', 1) = $1 AND u.attached_deposit > 0
+        ORDER BY u.created_at DESC
+        LIMIT $2 OFFSET $3
+        "#
+    )
+    .bind(&project_owner)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| {
+        error!("Failed to query earnings history: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e))
+    })?;
+
+    let earnings: Vec<EarningRecord> = rows
+        .iter()
+        .map(|row| {
+            let attached_deposit: sqlx::types::BigDecimal = row.get("attached_deposit");
+            let created_at: chrono::DateTime<chrono::Utc> = row.get("created_at");
+            EarningRecord {
+                id: row.get("id"),
+                call_id: row.get("call_id"),
+                project_id: row.get("project_id"),
+                payer_owner: row.get("payer_owner"),
+                payer_nonce: row.get("payer_nonce"),
+                attached_deposit: attached_deposit.to_string(),
+                created_at: created_at.timestamp(),
+            }
+        })
+        .collect();
+
+    Ok(Json(EarningsHistoryResponse {
+        project_owner,
+        earnings,
+        total_count,
     }))
 }

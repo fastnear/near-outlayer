@@ -3,6 +3,7 @@ use axum::{
     http::StatusCode,
     Extension, Json,
 };
+use sqlx::Row;
 
 use crate::auth::WorkerTokenHash;
 #[allow(unused_imports)]
@@ -16,11 +17,15 @@ pub async fn get_attestation(
     Path(job_id): Path<i64>,
     State(state): State<AppState>,
 ) -> Result<Json<AttestationResponse>, StatusCode> {
-    let attestation = sqlx::query_as!(
-        TaskAttestation,
-        "SELECT * FROM task_attestations WHERE task_id = $1",
-        job_id
+    let row = sqlx::query(
+        r#"SELECT id, task_id, task_type, tdx_quote, worker_measurement,
+                  request_id, caller_account_id, transaction_hash, block_height,
+                  call_id, payment_key_owner, payment_key_nonce,
+                  repo_url, commit_hash, build_target,
+                  wasm_hash, input_hash, output_hash, created_at
+           FROM task_attestations WHERE task_id = $1"#
     )
+    .bind(job_id)
     .fetch_optional(&state.db)
     .await
     .map_err(|e| {
@@ -32,7 +37,33 @@ pub async fn get_attestation(
         StatusCode::NOT_FOUND
     })?;
 
+    let attestation = row_to_attestation(&row);
     Ok(Json(attestation.into()))
+}
+
+/// Convert database row to TaskAttestation
+fn row_to_attestation(row: &sqlx::postgres::PgRow) -> TaskAttestation {
+    TaskAttestation {
+        id: row.get("id"),
+        task_id: row.get("task_id"),
+        task_type: row.get("task_type"),
+        tdx_quote: row.get("tdx_quote"),
+        worker_measurement: row.get("worker_measurement"),
+        request_id: row.get("request_id"),
+        caller_account_id: row.get("caller_account_id"),
+        transaction_hash: row.get("transaction_hash"),
+        block_height: row.get("block_height"),
+        call_id: row.get("call_id"),
+        payment_key_owner: row.get("payment_key_owner"),
+        payment_key_nonce: row.get("payment_key_nonce"),
+        repo_url: row.get("repo_url"),
+        commit_hash: row.get("commit_hash"),
+        build_target: row.get("build_target"),
+        wasm_hash: row.get("wasm_hash"),
+        input_hash: row.get("input_hash"),
+        output_hash: row.get("output_hash"),
+        created_at: row.get("created_at"),
+    }
 }
 
 /// Protected endpoint: Store attestation (from worker)
@@ -70,31 +101,40 @@ pub async fn store_attestation(
         req.task_type.as_str()
     );
 
+    // Parse call_id to UUID if present
+    let call_id_uuid = req.call_id.as_ref().and_then(|id| {
+        uuid::Uuid::parse_str(id).ok()
+    });
+
     // Store in database
     // Note: ON CONFLICT removed because task_attestations doesn't have UNIQUE(task_id)
     // Multiple attestations can exist for the same task (e.g., retries, different workers)
-    sqlx::query!(
+    sqlx::query(
         "INSERT INTO task_attestations
          (task_id, task_type, tdx_quote, worker_measurement,
           request_id, caller_account_id, transaction_hash, block_height,
+          call_id, payment_key_owner, payment_key_nonce,
           repo_url, commit_hash, build_target,
           wasm_hash, input_hash, output_hash)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
-        req.task_id,
-        req.task_type.as_str(),
-        quote_bytes,
-        worker_measurement,
-        req.request_id,
-        req.caller_account_id,
-        req.transaction_hash,
-        req.block_height.map(|h| h as i64),
-        req.repo_url,
-        req.commit_hash,
-        req.build_target,
-        req.wasm_hash,
-        req.input_hash,
-        req.output_hash
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)"
     )
+    .bind(req.task_id)
+    .bind(req.task_type.as_str())
+    .bind(&quote_bytes)
+    .bind(&worker_measurement)
+    .bind(req.request_id)
+    .bind(&req.caller_account_id)
+    .bind(&req.transaction_hash)
+    .bind(req.block_height.map(|h| h as i64))
+    .bind(call_id_uuid)
+    .bind(&req.payment_key_owner)
+    .bind(req.payment_key_nonce)
+    .bind(&req.repo_url)
+    .bind(&req.commit_hash)
+    .bind(&req.build_target)
+    .bind(&req.wasm_hash)
+    .bind(&req.input_hash)
+    .bind(&req.output_hash)
     .execute(&state.db)
     .await
     .map_err(|e| {
@@ -114,13 +154,13 @@ pub async fn store_attestation(
     let token_hash = worker_token.0.clone();
     let rtmr3 = worker_measurement.clone();
     tokio::spawn(async move {
-        let result = sqlx::query!(
+        let result = sqlx::query(
             "UPDATE worker_auth_tokens
              SET last_seen_rtmr3 = $1, last_attestation_at = NOW()
-             WHERE token_hash = $2",
-            rtmr3,
-            token_hash
+             WHERE token_hash = $2"
         )
+        .bind(&rtmr3)
+        .bind(&token_hash)
         .execute(&db)
         .await;
 

@@ -12,7 +12,7 @@ impl Contract {
         (self.total_executions, U128(self.total_fees_collected))
     }
 
-    /// Get current pricing
+    /// Get current NEAR pricing (for backward compatibility)
     /// Returns: (base_fee, per_million_instructions_fee, per_ms_fee, per_compile_ms_fee)
     pub fn get_pricing(&self) -> (U128, U128, U128, U128) {
         (
@@ -21,6 +21,28 @@ impl Contract {
             U128(self.per_ms_fee),
             U128(self.per_compile_ms_fee),
         )
+    }
+
+    /// Get full pricing (NEAR and USD)
+    /// USD pricing is for HTTPS API, values are in minimal token units (e.g., 1 = 0.000001 USDT)
+    pub fn get_pricing_full(&self) -> PricingView {
+        PricingView {
+            // NEAR pricing
+            base_fee: U128(self.base_fee),
+            per_million_instructions_fee: U128(self.per_million_instructions_fee),
+            per_ms_fee: U128(self.per_ms_fee),
+            per_compile_ms_fee: U128(self.per_compile_ms_fee),
+            // USD pricing
+            base_fee_usd: U128(self.base_fee_usd),
+            per_million_instructions_fee_usd: U128(self.per_million_instructions_fee_usd),
+            per_ms_fee_usd: U128(self.per_ms_fee_usd),
+            per_compile_ms_fee_usd: U128(self.per_compile_ms_fee_usd),
+        }
+    }
+
+    /// Get payment token contract for HTTPS API
+    pub fn get_payment_token_contract(&self) -> Option<AccountId> {
+        self.payment_token_contract.clone()
     }
 
     /// Estimate cost for given resource limits
@@ -43,6 +65,12 @@ impl Contract {
     /// Get owner and operator
     pub fn get_config(&self) -> (AccountId, AccountId) {
         (self.owner_id.clone(), self.operator_id.clone())
+    }
+
+    /// Get event metadata (standard name and version)
+    /// Used by workers to filter events
+    pub fn get_event_metadata(&self) -> (String, String) {
+        (self.event_standard.clone(), self.event_version.clone())
     }
 
     /// Get pending output data for a given request_id

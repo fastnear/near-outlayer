@@ -1,4 +1,5 @@
 mod auth;
+mod background_jobs;
 mod config;
 mod github;
 mod handlers;
@@ -80,6 +81,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     info!("LRU eviction task started");
 
+    // Start payment key cleanup background task
+    let db_for_cleanup = db.clone();
+    tokio::spawn(async move {
+        background_jobs::run_payment_key_cleanup(
+            db_for_cleanup,
+            background_jobs::PaymentKeyCleanupConfig::default(),
+        )
+        .await;
+    });
+    info!("Payment key cleanup task started (every 5 min, stale threshold 10 min)");
+
     // Fetch pricing from contract
     info!("📡 Fetching initial pricing from NEAR contract...");
     let initial_pricing = match near_client::fetch_pricing_from_contract(
@@ -143,6 +155,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/attestations", post(handlers::attestations::store_attestation))
         // GitHub API endpoint (protected - only workers need it)
         .route("/github/resolve-branch", get(handlers::github::resolve_branch))
+        // Storage endpoints (worker-protected)
+        .route("/storage/set", post(handlers::storage::storage_set))
+        .route("/storage/set-if-absent", post(handlers::storage::storage_set_if_absent))
+        .route("/storage/set-if-equals", post(handlers::storage::storage_set_if_equals))
+        .route("/storage/get", post(handlers::storage::storage_get))
+        .route("/storage/get-by-version", post(handlers::storage::storage_get_by_version))
+        .route("/storage/has", post(handlers::storage::storage_has))
+        .route("/storage/delete", post(handlers::storage::storage_delete))
+        .route("/storage/list", get(handlers::storage::storage_list))
+        .route("/storage/usage", get(handlers::storage::storage_usage))
+        .route("/storage/clear-all", post(handlers::storage::storage_clear_all))
+        .route("/storage/clear-version", post(handlers::storage::storage_clear_version))
+        .route("/storage/clear-project", post(handlers::storage::storage_clear_project))
+        // Project endpoints (worker-protected)
+        .route("/projects/uuid", get(handlers::projects::resolve_project_uuid))
+        .route("/projects/cache", delete(handlers::projects::invalidate_project_cache))
+        // TopUp endpoints (worker-protected)
+        .route("/topup/create", post(handlers::topup::create_topup_task))
+        .route("/topup/complete", post(handlers::topup::complete_topup))
+        // DeletePaymentKey task endpoints (worker-protected)
+        .route("/payment-keys/delete-task/create", post(handlers::topup::create_delete_payment_key_task))
+        // Unified system callbacks poll endpoint
+        .route("/system-callbacks/poll", get(handlers::topup::poll_system_callback_task))
+        // HTTPS call completion endpoint (worker-protected)
+        .route("/https-calls/complete", post(handlers::call::complete_https_call))
+        // Payment key deletion (worker-protected, called after Delete events)
+        .route("/payment-keys/delete", post(handlers::topup::delete_payment_key))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::auth_middleware,
@@ -176,6 +215,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         // TODO Fix
         // .route("/public/api-keys", post(handlers::public::create_api_key))
+        .route("/public/projects/storage", get(handlers::public::get_project_storage))
+        // Payment Key balance and usage (public - no auth required)
+        .route(
+            "/public/payment-keys/:owner/:nonce/balance",
+            get(handlers::call::get_payment_key_balance),
+        )
+        .route(
+            "/public/payment-keys/:owner/:nonce/usage",
+            get(handlers::call::get_payment_key_usage),
+        )
+        // Project Owner Earnings (public - no auth required)
+        .route(
+            "/public/project-earnings/:project_owner",
+            get(handlers::public::get_project_owner_earnings),
+        )
+        .route(
+            "/public/project-earnings/:project_owner/history",
+            get(handlers::public::get_project_owner_earnings_history),
+        )
         .route("/health", get(|| async { "OK" }));
 
     // Build internal routes (no auth - for worker communication only)
@@ -207,6 +265,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ))
         .with_state(state.clone());
 
+    // Build HTTPS API routes (Payment Key authenticated)
+    // Rate limited by IP (100 req/min) before payment key validation
+    let https_ip_rate_limiter = Arc::new(middleware::ip_rate_limit::IpRateLimiter::new(100));
+    let https_api = Router::new()
+        // HTTPS API call endpoint: POST /call/{project_owner}/{project_name}
+        .route("/call/:project_owner/:project_name", post(handlers::call::https_call))
+        // Poll for async call result: GET /calls/{call_id}
+        .route("/calls/:call_id", get(handlers::call::get_call_result))
+        .layer(axum::middleware::from_fn_with_state(
+            https_ip_rate_limiter.clone(),
+            middleware::ip_rate_limit::ip_rate_limit_middleware,
+        ))
+        .with_state(state.clone());
+    info!("HTTPS API routes initialized (100 req/min IP rate limit)");
+
     // Configure CORS with allowed origins from config
     let cors = CorsLayer::new()
         .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
@@ -214,6 +287,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             axum::http::header::CONTENT_TYPE,
             axum::http::header::AUTHORIZATION,
             axum::http::HeaderName::from_static("x-api-key"),
+            axum::http::HeaderName::from_static("x-payment-key"),
+            axum::http::HeaderName::from_static("x-compute-limit"),
+            axum::http::HeaderName::from_static("x-attached-deposit"),
         ])
         .allow_origin(
             config.cors_allowed_origins
@@ -230,6 +306,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(api_key_protected)
         .merge(internal)
         .merge(admin)
+        .merge(https_api)
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);

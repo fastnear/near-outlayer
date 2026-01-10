@@ -66,6 +66,9 @@ export interface JobHistoryEntry {
   github_commit: string | null;
   transaction_hash: string | null;
   created_at: string;
+  // HTTPS call fields
+  is_https_call: boolean;
+  call_id: string | null;
 }
 
 export interface ExecutionStats {
@@ -264,11 +267,16 @@ export interface AttestationResponse {
   tdx_quote: string; // base64 encoded
   worker_measurement: string;
 
-  // NEAR context
+  // NEAR context (for blockchain calls)
   request_id?: number;
   caller_account_id?: string;
   transaction_hash?: string;
   block_height?: number;
+
+  // HTTPS context (for HTTPS API calls)
+  call_id?: string;
+  payment_key_owner?: string;
+  payment_key_nonce?: number;
 
   // Code source
   repo_url?: string;
@@ -284,7 +292,7 @@ export interface AttestationResponse {
 }
 
 /**
- * Fetch attestation for a specific task (requires API key)
+ * Fetch attestation for a specific task by job ID (requires API key)
  * Returns null if attestation doesn't exist (backward compatibility)
  */
 export async function fetchAttestation(
@@ -308,3 +316,4 @@ export async function fetchAttestation(
     throw error;
   }
 }
+

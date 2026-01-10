@@ -45,9 +45,14 @@ pub enum SecretAccessor {
     WasmHash {
         hash: String,
     },
+    /// Secrets bound to a project (available to all versions)
+    Project {
+        project_id: String,
+    },
 }
 
 /// Client for keystore worker API
+#[derive(Clone)]
 pub struct KeystoreClient {
     base_url: String,
     auth_token: String,
@@ -68,12 +73,11 @@ impl KeystoreClient {
 
     /// Generate TEE attestation for this worker
     ///
-    /// In production TEE:
+    /// TEE modes:
+    /// - TDX: Uses simulated attestation (TDX quote only used for worker registration)
     /// - SGX: Use sgx_create_report() + sgx_get_quote()
     /// - SEV: Use SNP guest tools to generate attestation
-    ///
-    /// For MVP (simulated/none):
-    /// - Generate fake attestation for testing
+    /// - simulated/none: Generate test attestation for development
     pub fn generate_attestation(&self) -> Result<Attestation> {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -217,6 +221,9 @@ impl KeystoreClient {
             SecretAccessor::WasmHash { hash } => {
                 format!("WasmHash({})", hash)
             }
+            SecretAccessor::Project { project_id } => {
+                format!("Project({})", project_id)
+            }
         };
 
         tracing::info!(
@@ -277,6 +284,7 @@ impl KeystoreClient {
             let context = match &accessor {
                 SecretAccessor::Repo { .. } => "repository, branch, and profile",
                 SecretAccessor::WasmHash { .. } => "WASM hash and profile",
+                SecretAccessor::Project { .. } => "project ID and profile",
             };
 
             let user_message = if status == 400 {
@@ -374,6 +382,176 @@ impl KeystoreClient {
             hash: wasm_hash.to_string(),
         };
         self.decrypt_secrets(accessor, profile, owner, user_account_id, task_id).await
+    }
+
+    /// Decrypt secrets from contract by project ID (convenience wrapper for Project accessor)
+    ///
+    /// This is a convenience method that wraps decrypt_secrets with Project accessor.
+    /// All versions of the project can use the same secrets.
+    pub async fn decrypt_secrets_by_project(
+        &self,
+        project_id: &str,
+        profile: &str,
+        owner: &str,
+        user_account_id: &str,
+        task_id: Option<&str>,
+    ) -> Result<std::collections::HashMap<String, String>> {
+        let accessor = SecretAccessor::Project {
+            project_id: project_id.to_string(),
+        };
+        self.decrypt_secrets(accessor, profile, owner, user_account_id, task_id).await
+    }
+
+    /// Encrypt data using keystore's derived key
+    ///
+    /// Used for TopUp flow to re-encrypt Payment Key data with updated balance.
+    ///
+    /// # Arguments
+    /// * `seed` - Seed for key derivation (format: "system:payment_key:{owner}:{nonce}")
+    /// * `plaintext` - Raw bytes to encrypt
+    ///
+    /// # Returns
+    /// * `Ok(encrypted_base64)` - Base64 encoded encrypted data
+    pub async fn encrypt(&self, seed: &str, plaintext: &[u8]) -> Result<String> {
+        tracing::info!(
+            seed = %seed,
+            plaintext_len = plaintext.len(),
+            "🔐 Encrypting data via keystore"
+        );
+
+        // Generate attestation
+        let attestation = self.generate_attestation()
+            .context("Failed to generate attestation")?;
+
+        // Prepare request
+        #[derive(Debug, Serialize)]
+        struct EncryptRequest {
+            seed: String,
+            plaintext_base64: String,
+            attestation: Attestation,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct EncryptResponse {
+            encrypted_base64: String,
+        }
+
+        let request = EncryptRequest {
+            seed: seed.to_string(),
+            plaintext_base64: base64::encode(plaintext),
+            attestation,
+        };
+
+        // Send request to keystore
+        let url = format!("{}/encrypt", self.base_url);
+
+        let response = self
+            .http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.auth_token))
+            .json(&request)
+            .send()
+            .await
+            .context("Failed to send encrypt request")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            anyhow::bail!("Encrypt request failed ({}): {}", status, error_text);
+        }
+
+        let encrypt_response: EncryptResponse = response
+            .json()
+            .await
+            .context("Failed to parse encrypt response")?;
+
+        tracing::info!(
+            seed = %seed,
+            encrypted_len = encrypt_response.encrypted_base64.len(),
+            "Successfully encrypted data"
+        );
+
+        Ok(encrypt_response.encrypted_base64)
+    }
+
+    /// Decrypt raw encrypted data using keystore's derived key
+    ///
+    /// Used for TopUp flow to decrypt Payment Key data.
+    ///
+    /// # Arguments
+    /// * `seed` - Seed for key derivation (format: "system:payment_key:{owner}:{nonce}")
+    /// * `encrypted_base64` - Base64 encoded encrypted data
+    ///
+    /// # Returns
+    /// * `Ok(plaintext)` - Decrypted bytes
+    pub async fn decrypt_raw(&self, seed: &str, encrypted_base64: &str) -> Result<Vec<u8>> {
+        tracing::info!(
+            seed = %seed,
+            encrypted_len = encrypted_base64.len(),
+            "🔓 Decrypting raw data via keystore"
+        );
+
+        // For raw decryption, we need a different approach
+        // The keystore's /decrypt endpoint expects accessor/profile/owner
+        // For Payment Keys, we need to use the System accessor
+
+        // Generate attestation
+        let attestation = self.generate_attestation()
+            .context("Failed to generate attestation")?;
+
+        // For TopUp, we pass encrypted data directly (from the event)
+        // and keystore decrypts using the seed
+        #[derive(Debug, Serialize)]
+        struct DecryptRawRequest {
+            seed: String,
+            encrypted_base64: String,
+            attestation: Attestation,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct DecryptRawResponse {
+            plaintext_base64: String,
+        }
+
+        let request = DecryptRawRequest {
+            seed: seed.to_string(),
+            encrypted_base64: encrypted_base64.to_string(),
+            attestation,
+        };
+
+        // Send request to keystore (using /decrypt-raw endpoint for direct decryption)
+        let url = format!("{}/decrypt-raw", self.base_url);
+
+        let response = self
+            .http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.auth_token))
+            .json(&request)
+            .send()
+            .await
+            .context("Failed to send decrypt-raw request")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            anyhow::bail!("Decrypt-raw request failed ({}): {}", status, error_text);
+        }
+
+        let decrypt_response: DecryptRawResponse = response
+            .json()
+            .await
+            .context("Failed to parse decrypt-raw response")?;
+
+        let plaintext = base64::decode(&decrypt_response.plaintext_base64)
+            .context("Failed to decode plaintext from base64")?;
+
+        tracing::info!(
+            seed = %seed,
+            plaintext_len = plaintext.len(),
+            "Successfully decrypted raw data"
+        );
+
+        Ok(plaintext)
     }
 }
 

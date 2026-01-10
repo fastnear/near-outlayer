@@ -9,12 +9,13 @@ mod keystore_client;
 mod near_client;
 mod registration;
 mod outlayer_rpc;
+mod outlayer_storage;
 mod tdx_attestation;
 
 use anyhow::{Context, Result};
 use tracing::{debug, error, info, warn};
 
-use api_client::{ApiClient, CodeSource, ExecutionResult, JobInfo, JobType};
+use api_client::{ApiClient, CodeSource, ExecutionResult, JobInfo, JobStatus, JobType};
 use collateral_fetcher::fetch_collateral_from_phala;
 use compiler::Compiler;
 use config::Config;
@@ -22,6 +23,7 @@ use event_monitor::EventMonitor;
 use executor::{Executor, ExecutionContext};
 use keystore_client::KeystoreClient;
 use near_client::NearClient;
+use outlayer_storage::StorageConfig;
 use tdx_attestation::TdxClient;
 
 /// Generate a dummy TDX quote and fetch collateral from Phala Cloud API
@@ -299,6 +301,9 @@ async fn main() -> Result<()> {
         let contract_id = config.offchainvm_contract_id.clone();
         let start_block = config.start_block_height;
         let scan_interval_ms = config.scan_interval_ms;
+        let event_filter_standard_name = config.event_filter_standard_name.clone();
+        let event_filter_function_name = config.event_filter_function_name.clone();
+        let event_filter_min_version = config.event_filter_min_version.clone();
 
         tokio::spawn(async move {
             info!("Starting event monitor...");
@@ -309,6 +314,9 @@ async fn main() -> Result<()> {
                 contract_id,
                 start_block,
                 scan_interval_ms,
+                event_filter_standard_name,
+                event_filter_function_name,
+                event_filter_min_version,
             )
             .await
             {
@@ -322,6 +330,30 @@ async fn main() -> Result<()> {
                 }
             }
         });
+    }
+
+    // Start Contract System Callbacks Handler
+    // This handles contract business logic that requires yield/resume (TopUp, Delete, etc.)
+    // Separated from main worker loop to avoid blocking WASM execution tasks
+    // Only workers with "execution" capability should poll system callbacks
+    if config.capabilities.to_array().contains(&"execution".to_string()) {
+        let callbacks_api_client = api_client.clone();
+        let callbacks_keystore_client = keystore_client.clone();
+        let callbacks_near_client = near_client.clone();
+        let callbacks_capabilities = config.capabilities.to_array();
+
+        tokio::spawn(async move {
+            run_contract_system_callbacks_handler(
+                callbacks_api_client,
+                callbacks_keystore_client,
+                callbacks_near_client,
+                callbacks_capabilities,
+            )
+            .await;
+        });
+        info!("📋 Contract System Callbacks Handler started");
+    } else {
+        info!("📋 Contract System Callbacks Handler skipped (no 'execution' capability)");
     }
 
     // Main worker loop
@@ -382,7 +414,6 @@ async fn worker_iteration(
     // Extract request details
     let request_id = execution_request.request_id;
     let data_id = execution_request.data_id.clone();
-    let code_source = execution_request.code_source.clone();
     let resource_limits = execution_request.resource_limits.clone();
     let input_data = execution_request.input_data.clone();
     let secrets_ref = execution_request.secrets_ref.clone();
@@ -395,6 +426,89 @@ async fn worker_iteration(
     let compile_only = execution_request.compile_only;
     let force_rebuild = execution_request.force_rebuild;
     let compile_result = execution_request.compile_result.clone();
+    let is_https_call = execution_request.is_https_call;
+    let call_id = execution_request.call_id.clone();
+    let payment_key_owner = execution_request.payment_key_owner.clone();
+    let payment_key_nonce = execution_request.payment_key_nonce;
+    let usd_payment = execution_request.usd_payment.clone();
+
+    /// Result of resolving project: code_source + project_uuid
+    struct ResolvedProject {
+        code_source: api_client::CodeSource,
+        project_uuid: String,
+    }
+
+    // Helper to resolve code_source from project_id
+    async fn resolve_code_source_from_project(
+        near_client: &near_client::NearClient,
+        project_id: &str,
+    ) -> Result<ResolvedProject> {
+        info!("📦 Resolving code_source from project_id: {}", project_id);
+
+        // Fetch project from contract
+        let project = near_client.fetch_project(project_id).await?
+            .ok_or_else(|| anyhow::anyhow!("Project not found: {}", project_id))?;
+
+        let project_uuid = project.uuid.clone();
+
+        // Fetch version info
+        let version_view = near_client.fetch_project_version(project_id, &project.active_version).await?
+            .ok_or_else(|| anyhow::anyhow!("Project version not found: {} @ {}", project_id, project.active_version))?;
+
+        // Convert contract's CodeSource to worker's api_client::CodeSource
+        let code_source = match version_view.source {
+            near_client::ContractCodeSource::GitHub { repo, commit, build_target } => {
+                let build_target = build_target.unwrap_or_else(|| "wasm32-wasip1".to_string());
+                info!("✅ Resolved code_source: repo={} commit={} target={}", repo, commit, build_target);
+                api_client::CodeSource::GitHub { repo, commit, build_target }
+            }
+            near_client::ContractCodeSource::WasmUrl { url, hash, build_target } => {
+                let build_target = build_target.unwrap_or_else(|| "wasm32-wasip1".to_string());
+                info!("✅ Resolved code_source: url={} hash={} target={}", url, hash, build_target);
+                api_client::CodeSource::WasmUrl { url, hash, build_target }
+            }
+        };
+
+        Ok(ResolvedProject { code_source, project_uuid })
+    }
+
+    // Resolve code_source: either from request directly, or from project_id via contract
+    // Also resolve project_uuid if resolving from project
+    // Always normalize to ensure repo URL has https:// prefix
+    let (code_source, resolved_project_uuid): (api_client::CodeSource, Option<String>) = match execution_request.code_source.clone() {
+        Some(cs) => (cs.normalize(), None), // code_source provided directly, no uuid from resolution
+        None => {
+            // No code_source - resolve from project_id (HTTPS API flow)
+            let project_id = execution_request.project_id.as_ref()
+                .ok_or_else(|| anyhow::anyhow!("No code_source and no project_id in request"))?;
+
+            match resolve_code_source_from_project(near_client, project_id).await {
+                Ok(resolved) => {
+                    info!("✅ Resolved project_uuid={} from project_id={}", resolved.project_uuid, project_id);
+                    (resolved.code_source.normalize(), Some(resolved.project_uuid))
+                }
+                Err(e) => {
+                    // If this is an HTTPS call, report the error back to coordinator
+                    if is_https_call {
+                        if let Some(ref cid) = call_id {
+                            error!("❌ Failed to resolve project for HTTPS call {}: {}", cid, e);
+                            if let Err(report_err) = api_client.complete_https_call(
+                                cid,
+                                false,
+                                None,
+                                Some(format!("Failed to resolve project: {}", e)),
+                                0,
+                                0,
+                            ).await {
+                                error!("❌ Failed to report HTTPS call error: {}", report_err);
+                            }
+                        }
+                    }
+                    return Err(e);
+                }
+            }
+        }
+    };
 
     // Claim jobs for this task with worker capabilities
     let has_compile_result = compile_result.is_some();
@@ -404,8 +518,12 @@ async fn worker_iteration(
         warn!("⚠️ Task with force_rebuild=true but no compile_result routed to executor - may be waiting for compiler");
     }
 
-    info!("🎯 Claiming jobs for request_id={} data_id={} with capabilities={:?} compile_only={} force_rebuild={} has_compile_result={}",
-          request_id, data_id, config.capabilities.to_array(), compile_only, force_rebuild, has_compile_result);
+    // Get project_uuid: prefer resolved from contract, fallback to execution_request
+    let project_uuid = resolved_project_uuid.or(execution_request.project_uuid.clone());
+    let project_id = execution_request.project_id.clone();
+
+    info!("🎯 Claiming jobs for request_id={} data_id={} with capabilities={:?} compile_only={} force_rebuild={} has_compile_result={} project_uuid={:?}",
+          request_id, data_id, config.capabilities.to_array(), compile_only, force_rebuild, has_compile_result, project_uuid);
     let claim_response = match api_client
         .claim_job(
             request_id,
@@ -420,6 +538,8 @@ async fn worker_iteration(
             compile_only,
             force_rebuild,
             has_compile_result,
+            project_uuid,
+            project_id,
         )
         .await
     {
@@ -518,6 +638,12 @@ async fn worker_iteration(
                     compile_result.as_ref(), // Pass compile_result (published_url or result for compile_only)
                     compile_only,
                     config.use_tee_registration,
+                    config,
+                    is_https_call,
+                    call_id.as_ref(),
+                    payment_key_owner.as_ref(),
+                    payment_key_nonce,
+                    usd_payment.as_ref(),
                 )
                 .await?;
             }
@@ -531,6 +657,9 @@ async fn worker_iteration(
 }
 
 /// Merge user secrets with system environment variables
+///
+/// For HTTPS calls, blockchain-related env vars are set to empty strings
+/// and additional HTTPS-specific vars are added (OUTLAYER_EXECUTION_TYPE, USD_PAYMENT, etc.)
 fn merge_env_vars(
     user_secrets: Option<std::collections::HashMap<String, String>>,
     context: &api_client::ExecutionContext,
@@ -539,54 +668,118 @@ fn merge_env_vars(
     user_account_id: Option<&String>,
     near_payment_yocto: Option<&String>,
     transaction_hash: Option<&String>,
+    project_id: Option<&String>,
+    project_uuid: Option<&String>,
+    // HTTPS-specific parameters
+    is_https_call: bool,
+    call_id: Option<&String>,
+    payment_key_owner: Option<&String>,
+    usd_payment: Option<&String>,
 ) -> std::collections::HashMap<String, String> {
 
     let mut env_vars = user_secrets.unwrap_or_default();
 
-    // Add execution context
-    if let Some(ref sender_id) = context.sender_id {
-        env_vars.insert("NEAR_SENDER_ID".to_string(), sender_id.clone());
-    }
-    if let Some(ref contract_id) = context.contract_id {
-        env_vars.insert("NEAR_CONTRACT_ID".to_string(), contract_id.clone());
-    }
-    if let Some(block_height) = context.block_height {
-        env_vars.insert("NEAR_BLOCK_HEIGHT".to_string(), block_height.to_string());
-    }
-    if let Some(block_timestamp) = context.block_timestamp {
-        env_vars.insert("NEAR_BLOCK_TIMESTAMP".to_string(), block_timestamp.to_string());
-    }
-    if let Some(ref receipt_id) = context.receipt_id {
-        env_vars.insert("NEAR_RECEIPT_ID".to_string(), receipt_id.clone());
-    }
-    if let Some(ref predecessor_id) = context.predecessor_id {
-        env_vars.insert("NEAR_PREDECESSOR_ID".to_string(), predecessor_id.clone());
-    }
-    if let Some(ref signer_public_key) = context.signer_public_key {
-        env_vars.insert("NEAR_SIGNER_PUBLIC_KEY".to_string(), signer_public_key.clone());
-    }
-    if let Some(gas_burnt) = context.gas_burnt {
-        env_vars.insert("NEAR_GAS_BURNT".to_string(), gas_burnt.to_string());
+    // Set execution type
+    env_vars.insert(
+        "OUTLAYER_EXECUTION_TYPE".to_string(),
+        if is_https_call { "HTTPS".to_string() } else { "NEAR".to_string() }
+    );
+
+    if is_https_call {
+        // HTTPS mode: use payment key owner as sender, set blockchain vars to empty
+
+        // NEAR_SENDER_ID = Payment Key owner
+        if let Some(owner) = payment_key_owner {
+            env_vars.insert("NEAR_SENDER_ID".to_string(), owner.clone());
+            env_vars.insert("NEAR_USER_ACCOUNT_ID".to_string(), owner.clone());
+        }
+
+        // Blockchain vars = empty strings (not available for HTTPS)
+        env_vars.insert("NEAR_CONTRACT_ID".to_string(), "".to_string());
+        env_vars.insert("NEAR_BLOCK_HEIGHT".to_string(), "".to_string());
+        env_vars.insert("NEAR_BLOCK_TIMESTAMP".to_string(), "".to_string());
+        env_vars.insert("NEAR_RECEIPT_ID".to_string(), "".to_string());
+        env_vars.insert("NEAR_PREDECESSOR_ID".to_string(), "".to_string());
+        env_vars.insert("NEAR_SIGNER_PUBLIC_KEY".to_string(), "".to_string());
+        env_vars.insert("NEAR_GAS_BURNT".to_string(), "".to_string());
+        env_vars.insert("NEAR_TRANSACTION_HASH".to_string(), "".to_string());
+        env_vars.insert("NEAR_REQUEST_ID".to_string(), "".to_string());
+
+        // HTTPS has no NEAR payment
+        env_vars.insert("NEAR_PAYMENT_YOCTO".to_string(), "0".to_string());
+
+        // HTTPS-specific: USD payment to project owner
+        env_vars.insert(
+            "USD_PAYMENT".to_string(),
+            usd_payment.cloned().unwrap_or_else(|| "0".to_string())
+        );
+
+        // HTTPS-specific: call ID (UUID)
+        if let Some(cid) = call_id {
+            env_vars.insert("OUTLAYER_CALL_ID".to_string(), cid.clone());
+        } else {
+            env_vars.insert("OUTLAYER_CALL_ID".to_string(), "".to_string());
+        }
+    } else {
+        // NEAR transaction mode: use context values
+
+        // Add execution context
+        if let Some(ref sender_id) = context.sender_id {
+            env_vars.insert("NEAR_SENDER_ID".to_string(), sender_id.clone());
+        }
+        if let Some(ref contract_id) = context.contract_id {
+            env_vars.insert("NEAR_CONTRACT_ID".to_string(), contract_id.clone());
+        }
+        if let Some(block_height) = context.block_height {
+            env_vars.insert("NEAR_BLOCK_HEIGHT".to_string(), block_height.to_string());
+        }
+        if let Some(block_timestamp) = context.block_timestamp {
+            env_vars.insert("NEAR_BLOCK_TIMESTAMP".to_string(), block_timestamp.to_string());
+        }
+        if let Some(ref receipt_id) = context.receipt_id {
+            env_vars.insert("NEAR_RECEIPT_ID".to_string(), receipt_id.clone());
+        }
+        if let Some(ref predecessor_id) = context.predecessor_id {
+            env_vars.insert("NEAR_PREDECESSOR_ID".to_string(), predecessor_id.clone());
+        }
+        if let Some(ref signer_public_key) = context.signer_public_key {
+            env_vars.insert("NEAR_SIGNER_PUBLIC_KEY".to_string(), signer_public_key.clone());
+        }
+        if let Some(gas_burnt) = context.gas_burnt {
+            env_vars.insert("NEAR_GAS_BURNT".to_string(), gas_burnt.to_string());
+        }
+
+        // Add user account and payment info
+        if let Some(user_id) = user_account_id {
+            env_vars.insert("NEAR_USER_ACCOUNT_ID".to_string(), user_id.clone());
+        }
+        if let Some(payment) = near_payment_yocto {
+            env_vars.insert("NEAR_PAYMENT_YOCTO".to_string(), payment.clone());
+        }
+        if let Some(tx_hash) = transaction_hash {
+            env_vars.insert("NEAR_TRANSACTION_HASH".to_string(), tx_hash.clone());
+        }
+
+        // Add request ID
+        env_vars.insert("NEAR_REQUEST_ID".to_string(), request_id.to_string());
+
+        // NEAR mode doesn't have USD payment or call_id
+        env_vars.insert("USD_PAYMENT".to_string(), "0".to_string());
+        env_vars.insert("OUTLAYER_CALL_ID".to_string(), "".to_string());
     }
 
-    // Add user account and payment info
-    if let Some(user_id) = user_account_id {
-        env_vars.insert("NEAR_USER_ACCOUNT_ID".to_string(), user_id.clone());
-    }
-    if let Some(payment) = near_payment_yocto {
-        env_vars.insert("NEAR_PAYMENT_YOCTO".to_string(), payment.clone());
-    }
-    if let Some(tx_hash) = transaction_hash {
-        env_vars.insert("NEAR_TRANSACTION_HASH".to_string(), tx_hash.clone());
-    }
-
-    // Add resource limits
+    // Add resource limits (same for both modes)
     env_vars.insert("NEAR_MAX_INSTRUCTIONS".to_string(), resource_limits.max_instructions.to_string());
     env_vars.insert("NEAR_MAX_MEMORY_MB".to_string(), resource_limits.max_memory_mb.to_string());
     env_vars.insert("NEAR_MAX_EXECUTION_SECONDS".to_string(), resource_limits.max_execution_seconds.to_string());
 
-    // Add request ID
-    env_vars.insert("NEAR_REQUEST_ID".to_string(), request_id.to_string());
+    // Add project context (same for both modes)
+    if let Some(proj_id) = project_id {
+        env_vars.insert("OUTLAYER_PROJECT_ID".to_string(), proj_id.clone());
+    }
+    if let Some(proj_uuid) = project_uuid {
+        env_vars.insert("OUTLAYER_PROJECT_UUID".to_string(), proj_uuid.clone());
+    }
 
     env_vars
 }
@@ -900,6 +1093,10 @@ async fn handle_compile_job(
                             caller_account_id: user_account_id.clone(),
                             transaction_hash: context.transaction_hash.clone(),
                             block_height: context.block_height,
+                            // HTTPS call context - None for NEAR calls
+                            call_id: None,
+                            payment_key_owner: None,
+                            payment_key_nonce: None,
                             repo_url: Some(repo.to_string()),
                             commit_hash: Some(commit.to_string()),
                             build_target: Some(build_target.to_string()),
@@ -1002,6 +1199,12 @@ async fn handle_execute_job(
     compile_result: Option<&String>, // Result from compile job (published_url or result for compile_only)
     compile_only: bool,
     use_tee_registration: bool,
+    config: &Config, // For storage config
+    is_https_call: bool, // HTTPS API call - skip NEAR contract, call coordinator
+    call_id: Option<&String>, // HTTPS call ID for coordinator completion
+    payment_key_owner: Option<&String>, // Payment Key owner for HTTPS calls
+    payment_key_nonce: Option<i32>, // Payment Key nonce for HTTPS calls
+    usd_payment: Option<&String>, // USD payment amount for HTTPS calls
 ) -> Result<()> {
     info!("⚙️ Starting execution job_id={}", job.job_id);
 
@@ -1010,7 +1213,7 @@ async fn handle_execute_job(
     let published_url_from_compile_result = compile_result.cloned();
 
     // Check if this is a result-only task (compile_only=true)
-    // Compiler passed the result (e.g., FastFS URL) for executor to send to contract
+    // Compiler passed the result (e.g., FastFS URL or wasm_hash) for executor to send to contract
     if compile_only && compile_result.is_some() {
         let result_to_send = compile_result.unwrap();
         info!("📤 Result-only execute task: sending compile_result to contract: {}", result_to_send);
@@ -1240,6 +1443,126 @@ async fn handle_execute_job(
         (bytes, job.compile_time_ms, created_at, None) // No published_url when downloading from coordinator
     };
 
+    // Extract metadata from WASM
+    let wasm_metadata = executor::extract_metadata(&wasm_bytes);
+
+    // STRICT VALIDATION: If job has project_id and WASM has metadata, they MUST match
+    // This prevents using WASM built for one project with execution requests for another project
+    if let (Some(ref job_project_id), Some(ref metadata)) = (&job.project_id, &wasm_metadata) {
+        if job_project_id != &metadata.project {
+            let error_msg = format!(
+                "Project mismatch: WASM declares project '{}' in metadata but execution was requested for project '{}'. \
+                 Either rebuild WASM with correct metadata! {{ project: \"{}\" }} or use the correct project_id in request.",
+                metadata.project, job_project_id, job_project_id
+            );
+            error!("❌ {}", error_msg);
+
+            // Fail the job - report to contract
+            let error_result = ExecutionResult {
+                success: false,
+                output: None,
+                error: Some(error_msg.clone()),
+                execution_time_ms: 0,
+                instructions: 0,
+                compile_time_ms: None,
+                compilation_note: None,
+            };
+
+            let _ = near_client.submit_execution_result(request_id, &error_result).await;
+            api_client
+                .complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None)
+                .await?;
+            return Ok(());
+        }
+        info!("✅ Project ID validated: WASM metadata '{}' matches request '{}'", metadata.project, job_project_id);
+    }
+
+    // Resolve project UUID - either from job or from WASM metadata
+    let project_uuid = if let Some(ref job_uuid) = job.project_uuid {
+        // Job has project_uuid - verify it matches WASM metadata if present
+        if let Some(ref metadata) = wasm_metadata {
+            // Resolve metadata.project to UUID and compare
+            match api_client.resolve_project_uuid(&metadata.project).await {
+                Ok(Some(project_info)) => {
+                    if &project_info.uuid != job_uuid {
+                        let error_msg = format!(
+                            "Project mismatch: WASM metadata declares project '{}' (uuid={}) but execution requested for uuid={}",
+                            metadata.project, project_info.uuid, job_uuid
+                        );
+                        error!("❌ {}", error_msg);
+
+                        // Fail the job
+                        let error_result = ExecutionResult {
+                            success: false,
+                            output: None,
+                            error: Some(error_msg.clone()),
+                            execution_time_ms: 0,
+                            instructions: 0,
+                            compile_time_ms: None,
+                            compilation_note: None,
+                        };
+
+                        let _ = near_client.submit_execution_result(request_id, &error_result).await;
+                        api_client
+                            .complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None)
+                            .await?;
+                        return Ok(());
+                    }
+                    info!("✅ Project metadata verified: {} -> {}", metadata.project, job_uuid);
+                }
+                Ok(None) => {
+                    let error_msg = format!(
+                        "Project '{}' from WASM metadata not found on contract",
+                        metadata.project
+                    );
+                    error!("❌ {}", error_msg);
+
+                    let error_result = ExecutionResult {
+                        success: false,
+                        output: None,
+                        error: Some(error_msg.clone()),
+                        execution_time_ms: 0,
+                        instructions: 0,
+                        compile_time_ms: None,
+                        compilation_note: None,
+                    };
+
+                    let _ = near_client.submit_execution_result(request_id, &error_result).await;
+                    api_client
+                        .complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None)
+                        .await?;
+                    return Ok(());
+                }
+                Err(e) => {
+                    warn!("⚠️ Failed to verify project metadata: {}. Continuing with job UUID.", e);
+                }
+            }
+        }
+        Some(job_uuid.clone())
+    } else if let Some(ref metadata) = wasm_metadata {
+        // No job UUID but WASM has metadata - resolve from metadata
+        info!("📋 Extracted WASM metadata: project={}, version={}", metadata.project, metadata.version);
+
+        match api_client.resolve_project_uuid(&metadata.project).await {
+            Ok(Some(project_info)) => {
+                info!("✅ Resolved project UUID: {} -> {}", metadata.project, project_info.uuid);
+                Some(project_info.uuid)
+            }
+            Ok(None) => {
+                warn!("⚠️ Project '{}' not found on contract. Storage will be disabled.", metadata.project);
+                None
+            }
+            Err(e) => {
+                warn!("⚠️ Failed to resolve project UUID: {}. Storage will be disabled.", e);
+                None
+            }
+        }
+    } else {
+        // No job UUID and no metadata - standalone WASM without project
+        debug!("No project context - running as standalone WASM (storage disabled)");
+        None
+    };
+
     // Decrypt secrets from contract if provided (new repo-based system)
     info!("🔍 DEBUG secrets_ref: {:?}", secrets_ref);
     info!("🔍 DEBUG keystore_client: {}", if keystore_client.is_some() { "Some" } else { "None" });
@@ -1250,35 +1573,42 @@ async fn handle_execute_job(
         // user_account_id is the account that requested execution (used for access control)
         let caller = user_account_id.map(|s| s.as_str()).unwrap_or(&secrets_ref.account_id);
 
-        // Decrypt secrets based on code_source type
-        let secrets_result = match code_source {
-            CodeSource::GitHub { repo, commit, .. } => {
-                info!("📦 Decrypting repo-based secrets for GitHub source");
+        // Decrypt secrets based on project_id (if present) or code_source type
+        let secrets_result = if let Some(ref proj_id) = job.project_id {
+            // Project-based execution: use project-scoped secrets
+            info!("📦 Decrypting project-based secrets for project: {}", proj_id);
+            keystore.decrypt_secrets_by_project(proj_id, &secrets_ref.profile, &secrets_ref.account_id, caller, Some(data_id)).await
+        } else {
+            // Non-project execution: use code_source type for secrets
+            match code_source {
+                CodeSource::GitHub { repo, commit, .. } => {
+                    info!("📦 Decrypting repo-based secrets for GitHub source");
 
-                // Resolve branch from commit via coordinator API (with caching)
-                let branch = match api_client.resolve_branch(repo, commit).await {
-                    Ok(b) => {
-                        if let Some(ref branch_name) = b {
-                            info!("✅ Coordinator resolved '{}' → branch '{}'", commit, branch_name);
-                        } else {
-                            info!("⚠️  Coordinator: commit '{}' not found, using wildcard (branch=None)", commit);
+                    // Resolve branch from commit via coordinator API (with caching)
+                    let branch = match api_client.resolve_branch(repo, commit).await {
+                        Ok(b) => {
+                            if let Some(ref branch_name) = b {
+                                info!("✅ Coordinator resolved '{}' → branch '{}'", commit, branch_name);
+                            } else {
+                                info!("⚠️  Coordinator: commit '{}' not found, using wildcard (branch=None)", commit);
+                            }
+                            b
                         }
-                        b
-                    }
-                    Err(e) => {
-                        warn!("⚠️  Coordinator API failed: {}, using wildcard (branch=None)", e);
-                        None
-                    }
-                };
+                        Err(e) => {
+                            warn!("⚠️  Coordinator API failed: {}, using wildcard (branch=None)", e);
+                            None
+                        }
+                    };
 
-                // Call keystore to decrypt secrets by repo
-                keystore.decrypt_secrets_from_contract(repo, branch.as_deref(), &secrets_ref.profile, &secrets_ref.account_id, caller, Some(data_id)).await
-            }
-            CodeSource::WasmUrl { hash, .. } => {
-                info!("📦 Decrypting wasm_hash-based secrets for WasmUrl source: {}", hash);
+                    // Call keystore to decrypt secrets by repo
+                    keystore.decrypt_secrets_from_contract(repo, branch.as_deref(), &secrets_ref.profile, &secrets_ref.account_id, caller, Some(data_id)).await
+                }
+                CodeSource::WasmUrl { hash, .. } => {
+                    info!("📦 Decrypting wasm_hash-based secrets for WasmUrl source: {}", hash);
 
-                // Call keystore to decrypt secrets by wasm_hash
-                keystore.decrypt_secrets_by_wasm_hash(hash, &secrets_ref.profile, &secrets_ref.account_id, caller, Some(data_id)).await
+                    // Call keystore to decrypt secrets by wasm_hash
+                    keystore.decrypt_secrets_by_wasm_hash(hash, &secrets_ref.profile, &secrets_ref.account_id, caller, Some(data_id)).await
+                }
             }
         };
 
@@ -1353,12 +1683,62 @@ async fn handle_execute_job(
     };
 
     // Merge environment variables
-    let env_vars = merge_env_vars(user_secrets, context, resource_limits, request_id, user_account_id, near_payment_yocto, transaction_hash);
+    let env_vars = merge_env_vars(
+        user_secrets,
+        context,
+        resource_limits,
+        request_id,
+        user_account_id,
+        near_payment_yocto,
+        transaction_hash,
+        job.project_id.as_ref(),
+        project_uuid.as_ref(),
+        // HTTPS-specific parameters
+        is_https_call,
+        call_id,
+        payment_key_owner,
+        usd_payment,
+    );
 
     // Get build target from code source
     let build_target = match code_source {
         CodeSource::GitHub { build_target, .. } => Some(build_target.as_str()),
         CodeSource::WasmUrl { build_target, .. } => Some(build_target.as_str()),
+    };
+
+    // Create storage config if keystore is configured AND project_uuid exists
+    // Storage requires both: keystore for encryption/decryption AND project for data organization
+    let storage_config = match (&config.keystore_base_url, &config.keystore_auth_token, &project_uuid) {
+        (Some(keystore_url), Some(keystore_token), Some(uuid)) => {
+            // Determine account_id for storage (user who triggered execution)
+            let storage_account_id = user_account_id
+                .cloned()
+                .unwrap_or_else(|| "anonymous".to_string());
+
+            info!(
+                "📦 Storage enabled: project_uuid={}, wasm_hash={}, account={}",
+                uuid, wasm_checksum, storage_account_id
+            );
+
+            Some(StorageConfig {
+                coordinator_url: config.api_base_url.clone(),
+                coordinator_token: config.api_auth_token.clone(),
+                keystore_url: keystore_url.clone(),
+                keystore_token: keystore_token.clone(),
+                project_uuid: uuid.clone(),
+                wasm_hash: wasm_checksum.clone(),
+                account_id: storage_account_id,
+                tee_mode: config.tee_mode.clone(),
+            })
+        }
+        (None, _, _) | (_, None, _) => {
+            debug!("Storage not enabled (keystore not configured)");
+            None
+        }
+        (_, _, None) => {
+            debug!("Storage not enabled (no project - WASM running standalone)");
+            None
+        }
     };
 
     // Execute WASM
@@ -1371,6 +1751,7 @@ async fn handle_execute_job(
             Some(env_vars),
             build_target,
             response_format,
+            storage_config,
         )
         .await;
 
@@ -1402,6 +1783,53 @@ async fn handle_execute_job(
             info!("🔍 DEBUG: effective_published_url={:?}, compile_time_ms={:?}, compile_cost={}, created_at={:?}, compilation_note={:?}",
                 &effective_published_url, &compile_time_ms, compile_cost, &created_at, &execution_result.compilation_note);
 
+            // Check if WASM execution actually succeeded (executor returns Ok even for WASM errors)
+            if !execution_result.success {
+                let error_msg = execution_result.error.clone().unwrap_or_else(|| "Unknown error".to_string());
+                error!("❌ WASM execution failed: {}", error_msg);
+
+                // HTTPS calls: report error to coordinator
+                if is_https_call {
+                    if let Some(ref call_id_str) = call_id {
+                        info!("📤 HTTPS call: reporting WASM error to coordinator (call_id={})", call_id_str);
+                        if let Err(https_err) = api_client.complete_https_call(
+                            call_id_str,
+                            false,
+                            None,
+                            Some(error_msg.clone()),
+                            execution_result.instructions,
+                            execution_result.execution_time_ms,
+                        ).await {
+                            error!("❌ Failed to report HTTPS call error: {}", https_err);
+                        }
+
+                        // Report failure to coordinator job tracking
+                        if let Err(e) = api_client
+                            .complete_job(
+                                job.job_id,
+                                false,
+                                None,
+                                Some(error_msg),
+                                execution_result.execution_time_ms,
+                                execution_result.instructions,
+                                None,
+                                None,
+                                if compile_cost > 0 { Some(compile_cost.to_string()) } else { None },
+                                Some(JobStatus::ExecutionFailed),
+                                None,
+                            )
+                            .await
+                        {
+                            warn!("⚠️ Failed to report execute job failure: {}", e);
+                        }
+
+                        return Ok(());
+                    }
+                }
+
+                // NEAR contract calls: continue to normal flow (will be handled below)
+            }
+
             if let Some(ct) = compile_time_ms {
                 info!(
                     "✅ Execution successful: compile={}ms execute={}ms instructions={}{}",
@@ -1415,6 +1843,154 @@ async fn handle_execute_job(
                     execution_result.instructions,
                     created_at.as_ref().map(|t| format!(" from {}", t)).unwrap_or_default()
                 );
+            }
+
+            // HTTPS calls go to coordinator, not NEAR contract
+            if is_https_call {
+                let call_id_str = call_id.ok_or_else(|| anyhow::anyhow!("HTTPS call missing call_id"))?;
+                info!("📤 HTTPS call: submitting result to coordinator (call_id={})", call_id_str);
+
+                // Convert ExecutionOutput to serde_json::Value
+                let output_json = execution_result.output.as_ref().map(|out| match out {
+                    api_client::ExecutionOutput::Bytes(bytes) => {
+                        use base64::{engine::general_purpose::STANDARD, Engine};
+                        serde_json::Value::String(STANDARD.encode(bytes))
+                    }
+                    api_client::ExecutionOutput::Text(text) => {
+                        serde_json::Value::String(text.clone())
+                    }
+                    api_client::ExecutionOutput::Json(json) => json.clone(),
+                });
+
+                match api_client.complete_https_call(
+                    call_id_str,
+                    true,
+                    output_json.clone(),
+                    None,
+                    execution_result.instructions,
+                    execution_result.execution_time_ms,
+                ).await {
+                    Ok(()) => {
+                        info!("✅ HTTPS call result submitted to coordinator successfully");
+
+                        // Report success to coordinator job tracking
+                        if let Err(e) = api_client
+                            .complete_job(
+                                job.job_id,
+                                true,
+                                execution_result.output.clone(),
+                                None,
+                                execution_result.execution_time_ms,
+                                execution_result.instructions,
+                                None,
+                                None, // No cost extraction for HTTPS calls - handled by coordinator
+                                if compile_cost > 0 { Some(compile_cost.to_string()) } else { None },
+                                None,
+                                None,
+                            )
+                            .await
+                        {
+                            warn!("⚠️ Failed to report execute job completion: {}", e);
+                        }
+
+                        // Generate and store attestation for HTTPS call
+                        if use_tee_registration {
+                            use sha2::{Sha256, Digest};
+
+                            // Compute hashes
+                            let mut input_hasher = Sha256::new();
+                            input_hasher.update(input_data.as_bytes());
+                            let input_hash = hex::encode(input_hasher.finalize());
+
+                            let output_hash = if let Some(ref json) = output_json {
+                                let mut output_hasher = Sha256::new();
+                                output_hasher.update(json.to_string().as_bytes());
+                                hex::encode(output_hasher.finalize())
+                            } else {
+                                // Empty output
+                                let mut output_hasher = Sha256::new();
+                                output_hasher.update(b"");
+                                hex::encode(output_hasher.finalize())
+                            };
+
+                            // Generate TDX quote
+                            match tdx_client.generate_task_attestation(
+                                "execute",
+                                job.job_id,
+                                code_source.repo(),
+                                code_source.commit(),
+                                code_source.build_target(),
+                                Some(wasm_checksum),
+                                Some(&input_hash),
+                                &output_hash,
+                                None, // No block_height for HTTPS calls
+                            ).await {
+                                Ok(tdx_quote) => {
+                                    // Send attestation to coordinator with HTTPS fields
+                                    let attestation_request = api_client::StoreAttestationRequest {
+                                        task_id: job.job_id,
+                                        task_type: api_client::TaskType::Execute,
+                                        tdx_quote,
+                                        // NEAR context - None for HTTPS calls
+                                        request_id: None,
+                                        caller_account_id: None,
+                                        transaction_hash: None,
+                                        block_height: None,
+                                        // HTTPS call context
+                                        call_id: Some(call_id_str.to_string()),
+                                        payment_key_owner: payment_key_owner.cloned(),
+                                        payment_key_nonce,
+                                        repo_url: code_source.repo().map(|s| s.to_string()),
+                                        commit_hash: code_source.commit().map(|s| s.to_string()),
+                                        build_target: code_source.build_target().map(|s| s.to_string()),
+                                        wasm_hash: Some(wasm_checksum.clone()),
+                                        input_hash: Some(input_hash),
+                                        output_hash,
+                                    };
+
+                                    if let Err(e) = api_client.store_attestation(attestation_request).await {
+                                        warn!("⚠️ Failed to store HTTPS execution attestation: {}", e);
+                                        // Non-critical - continue anyway
+                                    } else {
+                                        info!("✅ Stored HTTPS execution attestation for call_id={}", call_id_str);
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!("⚠️ Failed to generate TDX attestation for HTTPS execution: {}", e);
+                                    // Non-critical - continue anyway
+                                }
+                            }
+                        } else {
+                            debug!("Skipping attestation generation for HTTPS call (USE_TEE_REGISTRATION=false)");
+                        }
+                    }
+                    Err(e) => {
+                        error!("❌ Failed to submit HTTPS call result: {}", e);
+
+                        if let Err(report_err) = api_client
+                            .complete_job(
+                                job.job_id,
+                                false,
+                                None,
+                                Some(format!("Failed to submit HTTPS call result: {}", e)),
+                                execution_result.execution_time_ms,
+                                execution_result.instructions,
+                                None,
+                                None,
+                                None,
+                                Some(api_client::JobStatus::Failed),
+                                None,
+                            )
+                            .await
+                        {
+                            warn!("⚠️ Failed to report execute job failure: {}", report_err);
+                        }
+
+                        return Err(e);
+                    }
+                }
+
+                return Ok(());
             }
 
             // Submit result to NEAR contract (critical path - highest priority)
@@ -1523,6 +2099,10 @@ async fn handle_execute_job(
                                         caller_account_id: user_account_id.cloned(),
                                         transaction_hash: transaction_hash.cloned(),
                                         block_height: context.block_height,
+                                        // HTTPS call context - None for NEAR calls
+                                        call_id: None,
+                                        payment_key_owner: None,
+                                        payment_key_nonce: None,
                                         repo_url: code_source.repo().map(|s| s.to_string()),
                                         commit_hash: code_source.commit().map(|s| s.to_string()),
                                         build_target: code_source.build_target().map(|s| s.to_string()),
@@ -1579,6 +2159,46 @@ async fn handle_execute_job(
         Err(e) => {
             let error_msg = format!("Execution failed: {}", e);
             error!("❌ {}", error_msg);
+
+            // Handle HTTPS call errors
+            if is_https_call {
+                if let Some(call_id_str) = call_id {
+                    info!("📤 HTTPS call: reporting error to coordinator (call_id={})", call_id_str);
+
+                    if let Err(https_err) = api_client.complete_https_call(
+                        call_id_str,
+                        false,
+                        None,
+                        Some(error_msg.clone()),
+                        0,
+                        0,
+                    ).await {
+                        error!("❌ Failed to report HTTPS call error: {}", https_err);
+                    }
+
+                    // Report to coordinator job tracking
+                    if let Err(report_err) = api_client
+                        .complete_job(
+                            job.job_id,
+                            false,
+                            None,
+                            Some(error_msg.clone()),
+                            0,
+                            0,
+                            None,
+                            None,
+                            None,
+                            Some(api_client::JobStatus::ExecutionFailed),
+                            None,
+                        )
+                        .await
+                    {
+                        warn!("⚠️ Failed to report execute job failure: {}", report_err);
+                    }
+
+                    return Err(e);
+                }
+            }
 
             let result = ExecutionResult {
                 success: false,
@@ -1663,6 +2283,10 @@ async fn send_startup_attestation_with_quote(
         caller_account_id: None,
         transaction_hash: None,
         block_height: None,
+        // HTTPS call context - None for startup
+        call_id: None,
+        payment_key_owner: None,
+        payment_key_nonce: None,
         repo_url: Some(format!("worker://{}", config.worker_id)),
         commit_hash: Some("startup".to_string()),
         build_target: Some(config.tee_mode.clone()),
@@ -1679,3 +2303,295 @@ async fn send_startup_attestation_with_quote(
 
     Ok(())
 }
+
+// =============================================================================
+// Contract System Callbacks Handler
+// =============================================================================
+//
+// This handler processes contract business logic that requires yield/resume:
+// - TopUp: decrypt Payment Key → add balance → re-encrypt → resume on contract
+// - Delete: delete from coordinator PostgreSQL → resume on contract
+// - (Future: Withdraw, UpdateLimits, etc.)
+//
+// Separated from main worker loop to avoid blocking WASM compile/execute tasks.
+// This is NOT directly related to running user code - it's contract system operations.
+// =============================================================================
+
+/// Contract System Callbacks Handler - processes TopUp, Delete, and other contract callbacks
+///
+/// Polls multiple task queues and processes contract system operations that require
+/// yield/resume mechanism. These are business logic operations, not WASM execution.
+async fn run_contract_system_callbacks_handler(
+    api_client: ApiClient,
+    keystore_client: Option<KeystoreClient>,
+    near_client: NearClient,
+    capabilities: Vec<String>,
+) {
+    use api_client::SystemCallbackTask;
+
+    info!("📋 Contract System Callbacks Handler loop started (unified queue, 60s timeout)");
+
+    loop {
+        // Poll unified queue for any system callback task (blocking, 60s timeout like execution queue)
+        match api_client.poll_system_callback_task(60, &capabilities).await {
+            Ok(Some(task)) => {
+                match task {
+                    // =================================================================
+                    // TopUp Payment Key - requires keystore
+                    // =================================================================
+                    SystemCallbackTask::TopUp(payload) => {
+                        info!(
+                            "💰 Processing TopUp task: owner={} nonce={} amount={}",
+                            payload.owner, payload.nonce, payload.amount
+                        );
+
+                        // TopUp requires keystore
+                        if let Some(ref ks_client) = keystore_client {
+                            // Convert payload to the format expected by process_topup_task
+                            let task_data = api_client::TopUpTaskData {
+                                data_id: payload.data_id.clone(),
+                                owner: payload.owner.clone(),
+                                nonce: payload.nonce,
+                                amount: payload.amount.clone(),
+                                encrypted_data: payload.encrypted_data.clone(),
+                            };
+
+                            match process_topup_task(ks_client, &near_client, &task_data).await {
+                                Ok(result) => {
+                                    info!(
+                                        "✅ TopUp completed: owner={} nonce={} tx={} new_balance={}",
+                                        payload.owner, payload.nonce, result.tx_hash, result.new_balance
+                                    );
+
+                                    // Notify coordinator of payment key metadata (non-critical)
+                                    if let Err(e) = api_client
+                                        .complete_topup(
+                                            &payload.owner,
+                                            payload.nonce,
+                                            &result.new_balance,
+                                            &result.key_hash,
+                                            &result.project_ids,
+                                            result.max_per_call.as_deref(),
+                                        )
+                                        .await
+                                    {
+                                        warn!(
+                                            "Failed to notify coordinator of payment key update (non-critical): {}",
+                                            e
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "❌ TopUp failed: owner={} nonce={} error={}",
+                                        payload.owner, payload.nonce, e
+                                    );
+
+                                    // Try to resume with error so contract doesn't hang
+                                    if let Err(resume_err) = near_client
+                                        .resume_topup_error(&payload.data_id, &format!("TopUp failed: {}", e))
+                                        .await
+                                    {
+                                        error!(
+                                            "❌ Failed to resume TopUp with error: {} (original error: {})",
+                                            resume_err, e
+                                        );
+                                    }
+                                }
+                            }
+                        } else {
+                            error!(
+                                "❌ TopUp task received but keystore not configured! owner={} nonce={}",
+                                payload.owner, payload.nonce
+                            );
+
+                            // Resume with error so contract doesn't hang
+                            if let Err(e) = near_client
+                                .resume_topup_error(&payload.data_id, "Keystore not configured on this worker")
+                                .await
+                            {
+                                error!(
+                                    "❌ Failed to resume TopUp with error: {}",
+                                    e
+                                );
+                            }
+                        }
+                    }
+
+                    // =================================================================
+                    // Delete Payment Key - doesn't require keystore
+                    // =================================================================
+                    SystemCallbackTask::DeletePaymentKey(payload) => {
+                        info!(
+                            "🗑️ Processing DeletePaymentKey task: owner={} nonce={}",
+                            payload.owner, payload.nonce
+                        );
+
+                        // Step 1: Delete from coordinator PostgreSQL
+                        if let Err(e) = api_client
+                            .delete_payment_key(&payload.owner, payload.nonce)
+                            .await
+                        {
+                            error!(
+                                "❌ Failed to delete payment key from coordinator: owner={} nonce={} error={}",
+                                payload.owner, payload.nonce, e
+                            );
+
+                            // Resume with error so contract doesn't delete the secret
+                            if let Err(e) = near_client
+                                .resume_delete_payment_key_error(
+                                    &payload.data_id,
+                                    &format!("Failed to delete from coordinator: {}", e),
+                                )
+                                .await
+                            {
+                                error!(
+                                    "❌ Failed to resume delete with error: data_id={} error={}",
+                                    payload.data_id, e
+                                );
+                            }
+                            continue;
+                        }
+
+                        // Step 2: Call resume_delete_payment_key on contract
+                        match near_client.resume_delete_payment_key(&payload.data_id).await {
+                            Ok(tx_hash) => {
+                                info!(
+                                    "✅ DeletePaymentKey completed: owner={} nonce={} tx={}",
+                                    payload.owner, payload.nonce, tx_hash
+                                );
+                            }
+                            Err(e) => {
+                                error!(
+                                    "❌ Failed to resume DeletePaymentKey on contract: owner={} nonce={} error={}",
+                                    payload.owner, payload.nonce, e
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(None) => {
+                // Timeout - blocking BRPOP already waited 60s, continue immediately
+            }
+            Err(e) => {
+                error!("❌ Failed to poll system callback task: {}", e);
+                // Sleep before retry to avoid tight error loop
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            }
+        }
+    }
+}
+
+/// TopUp result containing tx_hash, new balance, and key metadata for coordinator
+struct TopUpResult {
+    tx_hash: String,
+    new_balance: String,
+    key_hash: String,
+    project_ids: Vec<String>,
+    max_per_call: Option<String>,
+}
+
+/// Process a single TopUp task
+///
+/// 1. Decrypt current Payment Key data via keystore
+/// 2. Parse JSON and update initial_balance
+/// 3. Re-encrypt via keystore
+/// 4. Call resume_topup on contract
+///
+/// Returns: tx_hash and new_balance for coordinator notification
+async fn process_topup_task(
+    keystore_client: &KeystoreClient,
+    near_client: &NearClient,
+    task: &api_client::TopUpTaskData,
+) -> Result<TopUpResult> {
+    // 1. Decrypt current Payment Key data
+    // Seed format: "system:payment_key:{owner}:{nonce}"
+    let seed = format!("system:payment_key:{}:{}", task.owner, task.nonce);
+
+    let decrypted_bytes = keystore_client
+        .decrypt_raw(&seed, &task.encrypted_data)
+        .await
+        .context("Failed to decrypt Payment Key data")?;
+
+    let decrypted_str = String::from_utf8(decrypted_bytes)
+        .context("Payment Key data is not valid UTF-8")?;
+
+    // 2. Parse JSON and extract fields
+    // Payment Key format: {"key":"base64_key","initial_balance":"123","project_ids":[],"max_per_call":"1000"}
+    let mut payment_key_data: serde_json::Value = serde_json::from_str(&decrypted_str)
+        .context("Failed to parse Payment Key JSON")?;
+
+    // Extract key for hash computation
+    let key = payment_key_data
+        .get("key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing key field"))?
+        .to_string();
+
+    // Compute key_hash = SHA256(key)
+    use sha2::{Sha256, Digest};
+    let key_hash = hex::encode(Sha256::digest(key.as_bytes()));
+
+    // Extract project_ids
+    let project_ids: Vec<String> = payment_key_data
+        .get("project_ids")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Extract max_per_call
+    let max_per_call = payment_key_data
+        .get("max_per_call")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let current_balance = payment_key_data
+        .get("initial_balance")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing initial_balance field"))?;
+
+    let current_balance_u128: u128 = current_balance
+        .parse()
+        .context("Failed to parse initial_balance as u128")?;
+
+    let topup_amount: u128 = task.amount.parse()
+        .context("Failed to parse topup amount as u128")?;
+
+    let new_balance = current_balance_u128 + topup_amount;
+
+    info!(
+        "💰 Updating balance: {} + {} = {} (key_hash={}...)",
+        current_balance_u128, topup_amount, new_balance, &key_hash[..8]
+    );
+
+    payment_key_data["initial_balance"] = serde_json::json!(new_balance.to_string());
+
+    // 3. Re-encrypt via keystore
+    let updated_json = serde_json::to_string(&payment_key_data)
+        .context("Failed to serialize updated Payment Key")?;
+
+    let new_encrypted_data = keystore_client
+        .encrypt(&seed, updated_json.as_bytes())
+        .await
+        .context("Failed to encrypt updated Payment Key data")?;
+
+    // 4. Call resume_topup on contract
+    let tx_hash = near_client
+        .resume_topup(&task.data_id, &new_encrypted_data)
+        .await
+        .context("Failed to resume TopUp on contract")?;
+
+    Ok(TopUpResult {
+        tx_hash,
+        new_balance: new_balance.to_string(),
+        key_hash,
+        project_ids,
+        max_per_call,
+    })
+}
+

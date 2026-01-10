@@ -6,19 +6,20 @@ impl Contract {
     /// Request off-chain execution
     ///
     /// # Arguments
-    /// * `code_source` - GitHub repository/commit to compile, or cached WASM checksum
+    /// * `source` - Execution source: GitHub repo, WasmUrl, or Project reference
     /// * `resource_limits` - Optional resource limits for execution (default: 1B instructions, 128MB, 60s)
     ///                      If None, only compilation is performed (compile-only mode)
     /// * `input_data` - Optional input data for the WASM program (default: empty string)
-    /// * `secrets_ref` - Optional reference to repo-based secrets (profile + account_id)
+    /// * `secrets_ref` - Optional reference to secrets (profile + account_id)
     /// * `response_format` - Optional output format: Bytes, Text, or Json (default: Text)
     /// * `payer_account_id` - Optional account to receive refunds (default: sender)
     /// * `params` - Optional request parameters (force_rebuild, store_on_fastfs)
     ///
-    /// # Code Source
-    /// You can specify code in two ways:
+    /// # Execution Source
+    /// You can specify code in three ways:
     /// - `GitHub { repo, commit, build_target }` - Compile from GitHub repository
     /// - `WasmUrl { url, hash, build_target }` - Use pre-compiled WASM from URL
+    /// - `Project { project_id, version_key }` - Use registered project (version_key=None for active version)
     ///
     /// # Compile-only Mode
     /// If `resource_limits` is None, only compilation is performed:
@@ -26,15 +27,15 @@ impl Contract {
     /// - No execution occurs
     /// - Useful for pre-compiling expensive builds
     ///
-    /// # Repo-Based Secrets
-    /// Secrets are now stored in contract per repository and accessed via references:
-    /// 1. Store secrets once: `store_secrets(repo, branch, profile, encrypted_data, access_rules)`
+    /// # Secrets
+    /// Secrets are stored in contract and accessed via references:
+    /// 1. Store secrets once: `store_secrets(accessor, profile, encrypted_data, access_rules)`
     /// 2. Reference them in execution: `secrets_ref: { profile: "default", account_id: "alice.near" }`
-    /// 3. Worker will fetch secrets from contract via keystore
+    /// 3. Worker will fetch and decrypt secrets via keystore
     #[payable]
     pub fn request_execution(
         &mut self,
-        code_source: CodeSource,
+        source: ExecutionSource,
         resource_limits: Option<ResourceLimits>,
         input_data: Option<String>,
         secrets_ref: Option<SecretsReference>,
@@ -44,18 +45,23 @@ impl Contract {
     ) {
         self.assert_not_paused();
 
+        // Resolve ExecutionSource to CodeSource (and get project_uuid if applicable)
+        let (resolved_source, project_uuid) = self.resolve_execution_source(&source);
 
         // Use provided limits or defaults (for execute mode)
         let limits = resource_limits.clone().unwrap_or_default();
 
-        // Get params or defaults
-        let request_params = params.unwrap_or_default();
+        // Get params or defaults, but override project_uuid if resolved from Project source
+        let mut request_params = params.unwrap_or_default();
+        if project_uuid.is_some() {
+            request_params.project_uuid = project_uuid;
+        }
 
         // Determine if this is compile-only mode
         let compile_only = request_params.compile_only || resource_limits.is_none();
 
         // Validate: WasmUrl source cannot have force_rebuild
-        if matches!(code_source, CodeSource::WasmUrl { .. }) && request_params.force_rebuild {
+        if matches!(resolved_source, CodeSource::WasmUrl { .. }) && request_params.force_rebuild {
             env::panic_str("force_rebuild is not applicable for WasmUrl code source");
         }
 
@@ -110,16 +116,27 @@ impl Contract {
         let request_id = self.next_request_id;
         self.next_request_id += 1;
 
-        let sender_id = env::predecessor_account_id();
-        // Payer: explicitly provided account or fallback to sender (predecessor)
-        let payer_account_id = payer_account_id.unwrap_or_else(|| sender_id.clone());
+        // predecessor_id = contract that called OutLayer (e.g. token.near)
+        // signer_id = real user who signed the transaction (e.g. alice.near)
+        let predecessor_id = env::predecessor_account_id();
+        let signer_id = env::signer_account_id();
+
+        // Payer: explicitly provided account or fallback to predecessor
+        let payer_account_id = payer_account_id.unwrap_or_else(|| predecessor_id.clone());
         let format = response_format.unwrap_or_default();
 
-        // Create execution request data for yield
+        // Extract project_id from ExecutionSource if it's a Project source
+        let project_id = match &source {
+            ExecutionSource::Project { project_id, .. } => Some(project_id.clone()),
+            _ => None,
+        };
+
+        // Create execution request data for yield (send resolved_source to worker)
         let request_data = json!({
             "request_id": request_id,
-            "sender_id": sender_id,
-            "code_source": code_source,
+            "sender_id": signer_id,
+            "predecessor_id": predecessor_id,
+            "code_source": resolved_source,
             "resource_limits": limits,
             "input_data": input_data.as_ref().cloned().unwrap_or_default(),
             "secrets_ref": secrets_ref.as_ref(),
@@ -128,7 +145,9 @@ impl Contract {
             "timestamp": env::block_timestamp(),
             "compile_only": compile_only,
             "force_rebuild": request_params.force_rebuild,
-            "store_on_fastfs": request_params.store_on_fastfs
+            "store_on_fastfs": request_params.store_on_fastfs,
+            "project_uuid": request_params.project_uuid,
+            "project_id": project_id
         });
 
         // Create yield promise to pause execution
@@ -147,11 +166,14 @@ impl Contract {
             .expect("Wrong register length");
 
         // Store the pending execution request
+        // Note: sender_id in ExecutionRequest stores predecessor (contract that called us)
+        // This is used for authorization checks (cancel_stale_execution)
         let execution_request = ExecutionRequest {
             request_id,
             data_id,
-            sender_id: sender_id.clone(),
-            code_source: code_source.clone(),
+            sender_id: predecessor_id.clone(),
+            execution_source: source.clone(),
+            resolved_source: resolved_source.clone(),
             resource_limits: limits.clone(),
             payment,
             timestamp: env::block_timestamp(),
@@ -167,7 +189,7 @@ impl Contract {
             .insert(&request_id, &execution_request);
 
         // Emit event for workers to catch
-        events::emit::execution_requested(&request_data.to_string(), data_id);
+        events::emit::execution_requested(&self.event_standard, &self.event_version, &request_data.to_string(), data_id);
 
         // Return the promise to pause execution
         env::promise_return(promise_idx)
@@ -292,6 +314,8 @@ impl Contract {
 
                         // Emit success event
                         events::emit::execution_completed(
+                            &self.event_standard,
+                            &self.event_version,
                             &sender_id,
                             &code_source,
                             &exec_response.resources_used,
@@ -386,6 +410,8 @@ impl Contract {
 
                         // Emit failure event with error details
                         events::emit::execution_completed(
+                            &self.event_standard,
+                            &self.event_version,
                             &sender_id,
                             &code_source,
                             &exec_response.resources_used,
@@ -475,7 +501,70 @@ impl Contract {
     }
 }
 
+// ============================================================================
+// Execution Source Resolution
+// ============================================================================
+
 impl Contract {
+    /// Resolve ExecutionSource to CodeSource for worker
+    /// Returns (resolved_source, project_uuid)
+    /// Secrets are passed as-is through secrets_ref parameter, no auto-lookup
+    fn resolve_execution_source(
+        &self,
+        source: &ExecutionSource,
+    ) -> (CodeSource, Option<String>) {
+        match source {
+            ExecutionSource::GitHub { repo, commit, build_target } => {
+                (
+                    CodeSource::GitHub {
+                        repo: repo.clone(),
+                        commit: commit.clone(),
+                        build_target: build_target.clone(),
+                    },
+                    None,
+                )
+            }
+            ExecutionSource::WasmUrl { url, hash, build_target } => {
+                (
+                    CodeSource::WasmUrl {
+                        url: url.clone(),
+                        hash: hash.clone(),
+                        build_target: build_target.clone(),
+                    },
+                    None,
+                )
+            }
+            ExecutionSource::Project { project_id, version_key } => {
+                // Get project
+                let project = self.projects.get(project_id)
+                    .expect("Project not found");
+
+                // Determine which version to use
+                let version_to_use = version_key.clone().unwrap_or_else(|| {
+                    assert!(
+                        !project.active_version.is_empty(),
+                        "Project has no active version"
+                    );
+                    project.active_version.clone()
+                });
+
+                // Get version info to get CodeSource
+                let versions = self.project_versions.get(&project.uuid)
+                    .expect("Project versions not found");
+
+                let version_info = versions.get(&version_to_use)
+                    .expect("Version not found");
+
+                log!(
+                    "Resolved project: {}, version: {}, source: {:?}, uuid: {}",
+                    project_id, version_to_use, version_info.source, project.uuid
+                );
+
+                (version_info.source.clone(), Some(project.uuid.clone()))
+            }
+        }
+    }
+
     /// Internal helper to submit execution output (used by both public methods)
     pub(crate) fn submit_execution_output_internal(&mut self, request_id: u64, output: ExecutionOutput) {
         // Get the pending request

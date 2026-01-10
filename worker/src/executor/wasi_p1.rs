@@ -20,6 +20,7 @@ use wasmtime_wasi::preview1::{self, WasiP1Ctx};
 use wasmtime_wasi::WasiCtxBuilder;
 
 use crate::api_client::ResourceLimits;
+use crate::outlayer_storage::client::StorageConfig;
 
 /// Execute WASI Preview 1 module
 ///
@@ -29,6 +30,7 @@ use crate::api_client::ResourceLimits;
 /// * `limits` - Resource limits (memory, instructions, time)
 /// * `env_vars` - Environment variables (from encrypted secrets)
 /// * `print_stderr` - Print WASM stderr to worker logs
+/// * `storage_config` - Optional storage config (only used for metadata validation)
 ///
 /// # Returns
 /// * `Ok((output, fuel_consumed))` - Execution succeeded
@@ -39,6 +41,7 @@ pub async fn execute(
     limits: &ResourceLimits,
     env_vars: Option<HashMap<String, String>>,
     print_stderr: bool,
+    storage_config: Option<&StorageConfig>,
 ) -> Result<(Vec<u8>, u64)> {
     // Configure wasmtime engine for WASI Preview 1
     let mut config = Config::new();
@@ -52,6 +55,13 @@ pub async fn execute(
         .context("Not a valid WASI Preview 1 module")?;
 
     debug!("Loaded as WASI Preview 1 module (wasmtime)");
+
+    // Check for metadata export if running as project
+    // WASM running in a project context MUST have `__outlayer_get_metadata` export
+    let has_metadata_export = module.exports()
+        .any(|export| export.name() == "__outlayer_get_metadata");
+
+    super::validate_project_metadata(has_metadata_export, storage_config)?;
 
     // Create linker for WASI P1
     let mut linker = wasmtime::Linker::new(&engine);

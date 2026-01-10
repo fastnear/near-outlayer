@@ -1,6 +1,6 @@
 use axum::{extract::State, http::StatusCode, Json};
 use redis::AsyncCommands;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::models::{ClaimJobRequest, ClaimJobResponse, CompleteJobRequest, ExecutionRequest, JobInfo, JobType, CodeSource, ResourceLimits, SecretsReference, ResponseFormat, ExecutionContext};
 use crate::AppState;
@@ -162,6 +162,8 @@ pub async fn claim_job(
                     compile_cost_yocto: None, // Not applicable for compile jobs
                     compile_error: None,
                     compile_time_ms: None, // Will be set after compilation
+                    project_uuid: payload.project_uuid.clone(),
+                    project_id: payload.project_id.clone(),
                 });
             }
             Err(e) => {
@@ -284,6 +286,8 @@ pub async fn claim_job(
                     compile_cost_yocto,
                     compile_error,
                     compile_time_ms,
+                    project_uuid: payload.project_uuid.clone(),
+                    project_id: payload.project_id.clone(),
                 });
             }
             Err(e) => {
@@ -461,7 +465,7 @@ pub async fn complete_job(
                    context_sender_id, context_block_height, context_block_timestamp,
                    context_contract_id, context_transaction_hash, context_receipt_id,
                    context_predecessor_id, context_signer_public_key, context_gas_burnt,
-                   compile_only, force_rebuild, store_on_fastfs
+                   compile_only, force_rebuild, store_on_fastfs, project_uuid, project_id
             FROM execution_requests
             WHERE request_id = $1
             "#,
@@ -472,6 +476,8 @@ pub async fn complete_job(
 
         let execution_request = match original_request {
             Ok(Some(req)) => {
+                info!("📋 Fetched execution_requests for request_id={}: project_uuid={:?} project_id={:?}",
+                    job.request_id, req.project_uuid, req.project_id);
                 // Check if this was compile-only request
                 if req.compile_only {
                     // If compile_result is provided, create execute task for executor to send result to contract
@@ -503,7 +509,7 @@ pub async fn complete_job(
                 ExecutionRequest {
                     request_id: job.request_id as u64,
                     data_id: job.data_id.clone(),
-                    code_source,
+                    code_source: Some(code_source),
                     resource_limits: ResourceLimits {
                         max_instructions: req.max_instructions.unwrap_or(1_000_000_000) as u64,
                         max_memory_mb: req.max_memory_mb.unwrap_or(128) as u32,
@@ -538,16 +544,26 @@ pub async fn complete_job(
                     force_rebuild: req.force_rebuild,
                     store_on_fastfs: req.store_on_fastfs,
                     compile_result: payload.compile_result.clone(),
+                    project_uuid: req.project_uuid.clone(),
+                    project_id: req.project_id.clone(),
+                    // HTTPS API fields - not used for NEAR contract calls
+                    is_https_call: false,
+                    call_id: None,
+                    payment_key_owner: None,
+                    payment_key_nonce: None,
+                    usd_payment: None,
+                    compute_limit_usd: None,
+                    attached_deposit_usd: None,
                 }
             }
             Ok(None) => {
                 // Fallback: create minimal request with defaults
                 // This happens if execution_requests table doesn't have the data
-                info!("⚠️ No execution_requests record for request_id={}, using defaults", job.request_id);
+                warn!("⚠️ No execution_requests record for request_id={}, using defaults (project_uuid=None, project_id=None)", job.request_id);
                 ExecutionRequest {
                     request_id: job.request_id as u64,
                     data_id: job.data_id.clone(),
-                    code_source,
+                    code_source: Some(code_source),
                     resource_limits: ResourceLimits {
                         max_instructions: 1_000_000_000,
                         max_memory_mb: 128,
@@ -564,15 +580,25 @@ pub async fn complete_job(
                     force_rebuild: false,
                     store_on_fastfs: false,
                     compile_result: None,
+                    project_uuid: None,
+                    project_id: None,
+                    // HTTPS API fields - not used for NEAR contract calls
+                    is_https_call: false,
+                    call_id: None,
+                    payment_key_owner: None,
+                    payment_key_nonce: None,
+                    usd_payment: None,
+                    compute_limit_usd: None,
+                    attached_deposit_usd: None,
                 }
             }
             Err(e) => {
-                error!("Failed to fetch original execution request: {}", e);
+                error!("Failed to fetch original execution request for request_id={}: {} (project_uuid=None, project_id=None)", job.request_id, e);
                 // Continue with defaults rather than failing
                 ExecutionRequest {
                     request_id: job.request_id as u64,
                     data_id: job.data_id.clone(),
-                    code_source,
+                    code_source: Some(code_source),
                     resource_limits: ResourceLimits {
                         max_instructions: 1_000_000_000,
                         max_memory_mb: 128,
@@ -589,6 +615,16 @@ pub async fn complete_job(
                     force_rebuild: false,
                     store_on_fastfs: false,
                     compile_result: None,
+                    project_uuid: None,
+                    project_id: None,
+                    // HTTPS API fields - not used for NEAR contract calls
+                    is_https_call: false,
+                    call_id: None,
+                    payment_key_owner: None,
+                    payment_key_nonce: None,
+                    usd_payment: None,
+                    compute_limit_usd: None,
+                    attached_deposit_usd: None,
                 }
             }
         };
@@ -601,6 +637,7 @@ pub async fn complete_job(
                 return StatusCode::INTERNAL_SERVER_ERROR;
             }
         };
+        debug!("📤 Execute task JSON: {}", request_json);
 
         let mut conn = match state.redis.get_multiplexed_async_connection().await {
             Ok(c) => c,
@@ -645,11 +682,22 @@ pub async fn complete_job(
             return StatusCode::INTERNAL_SERVER_ERROR;
         };
 
+        // Fetch project_uuid from execution_requests for storage support
+        let project_uuid = sqlx::query_scalar!(
+            "SELECT project_uuid FROM execution_requests WHERE request_id = $1",
+            job.request_id
+        )
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .flatten();
+
         // Create minimal execution request - executor will see compile_error and just report it
         let execution_request = ExecutionRequest {
             request_id: job.request_id as u64,
             data_id: job.data_id.clone(),
-            code_source,
+            code_source: Some(code_source),
             resource_limits: ResourceLimits {
                 max_instructions: 0, // Not used
                 max_memory_mb: 0,
@@ -666,6 +714,16 @@ pub async fn complete_job(
             force_rebuild: false,
             store_on_fastfs: false,
             compile_result: None,
+            project_uuid,
+            project_id: None, // Not needed for failed compile reporting
+            // HTTPS API fields - not used for NEAR contract calls
+            is_https_call: false,
+            call_id: None,
+            payment_key_owner: None,
+            payment_key_nonce: None,
+            usd_payment: None,
+            compute_limit_usd: None,
+            attached_deposit_usd: None,
         };
 
         let request_json = match serde_json::to_string(&execution_request) {

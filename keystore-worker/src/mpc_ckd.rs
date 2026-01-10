@@ -24,11 +24,24 @@ use near_primitives::views::{QueryRequest, CallResult, FinalExecutionStatus};
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use sha3::{Digest, Sha3_256};
 
 // Constants from Bowen's example
 const BLS12381G1_PUBLIC_KEY_SIZE: usize = 48;
 const NEAR_CKD_DOMAIN: &[u8] = b"NEAR BLS12381G1_XMD:SHA-256_SSWU_RO_";
 const OUTPUT_SECRET_SIZE: usize = 32;
+
+// MPC app_id derivation prefix (must match MPC contract exactly)
+const APP_ID_DERIVATION_PREFIX: &str = "near-mpc v0.1.0 app_id derivation:";
+
+/// Derive app_id the same way MPC contract does
+/// app_id = SHA3-256("{prefix}{predecessor_id},{derivation_path}")
+fn derive_app_id(predecessor_id: &str, derivation_path: &str) -> [u8; 32] {
+    let derivation_string = format!("{}{},{}", APP_ID_DERIVATION_PREFIX, predecessor_id, derivation_path);
+    let mut hasher = Sha3_256::new();
+    hasher.update(derivation_string.as_bytes());
+    hasher.finalize().into()
+}
 
 /// MPC CKD configuration from environment
 #[derive(Debug, Clone)]
@@ -84,7 +97,8 @@ pub struct CkdRequestArgs {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CkdArgs {
-    pub app_public_key: String,  // BLS12-381 G1 public key in NEAR format
+    pub derivation_path: String,  // Empty string "" for keystore master key
+    pub app_public_key: String,   // BLS12-381 G1 public key in NEAR format
     pub domain_id: u64,
 }
 
@@ -137,6 +151,7 @@ impl MpcCkdClient {
         // Create CKD request
         let request_args = CkdRequestArgs {
             request: CkdArgs {
+                derivation_path: "".to_string(),  // Empty path for keystore master key
                 app_public_key,
                 domain_id: self.config.mpc_domain_id,
             },
@@ -146,11 +161,16 @@ impl MpcCkdClient {
         let response = self.call_mpc_contract(signer_account_id, request_args).await?;
 
         // Decrypt and verify response
+        // app_id must be derived the same way MPC contract does it
+        let derivation_path = "";  // Empty path for keystore master key
+        let app_id = derive_app_id(signer_account_id, derivation_path);
+        tracing::debug!("Derived app_id: {:?}", app_id);
+        tracing::debug!("Derived app_id (hex): {}", hex::encode(&app_id));
         let secret = self.decrypt_secret_and_verify(
             response.big_y,
             response.big_c,
             ephemeral_private_key,
-            signer_account_id.as_bytes(),
+            &app_id,
         )?;
 
         // Derive final key using HKDF
@@ -327,7 +347,7 @@ impl MpcCkdClient {
         Ok(secret.to_compressed())
     }
 
-    /// Verify MPC signature using pairing (from Bowen's example)
+    /// Verify MPC signature using pairing (from NEAR MPC ckd-example-cli)
     fn verify_signature(&self, public_key: &G2Projective, app_id: &[u8], signature: &G1Projective) -> bool {
         let element1: G1Affine = signature.into();
         if (!element1.is_on_curve() | !element1.is_torsion_free() | element1.is_identity()).into() {
@@ -339,8 +359,9 @@ impl MpcCkdClient {
             return false;
         }
 
-        // Hash app_id to curve
-        let base1 = G1Projective::hash_to_curve(app_id, NEAR_CKD_DOMAIN, &[]).into();
+        // Hash input = MPC public key || app_id (must match MPC contract)
+        let hash_input = [public_key.to_compressed().as_slice(), app_id].concat();
+        let base1 = G1Projective::hash_to_curve(&hash_input, NEAR_CKD_DOMAIN, &[]).into();
         let base2 = G2Affine::generator();
 
         // Verify pairing equation

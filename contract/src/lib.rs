@@ -1,5 +1,5 @@
 use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
-use near_sdk::collections::{LookupMap, UnorderedSet};
+use near_sdk::collections::{LookupMap, UnorderedMap, UnorderedSet};
 use near_sdk::json_types::U128;
 use near_sdk::serde::Serialize;
 use near_sdk::{
@@ -12,6 +12,8 @@ mod admin;
 mod events;
 mod execution;
 mod migration;
+mod payment;
+mod projects;
 mod secrets;
 mod types;
 mod views;
@@ -38,12 +40,17 @@ enum StorageKey {
     SecretsStorage,
     UserSecretsIndex,
     UserSecretsList { account_id: AccountId },
+    // Project storage
+    Projects,
+    ProjectVersions { project_uuid: String },
+    UserProjects,
+    UserProjectsList { account_id: AccountId },
 }
 
-/// Code source specification - either GitHub repo or pre-compiled WASM URL
+/// Execution source - GitHub repo, pre-compiled WASM URL, or project reference
 #[derive(Clone, Debug)]
 #[near(serializers = [borsh, json])]
-pub enum CodeSource {
+pub enum ExecutionSource {
     /// GitHub repository with source code to compile
     GitHub {
         repo: String,
@@ -57,6 +64,29 @@ pub enum CodeSource {
         hash: String,          // SHA256 hash for verification (hex encoded)
         build_target: Option<String>, // e.g., "wasm32-wasip1", "wasm32-wasip2"
     },
+    /// Project reference - uses registered project's code
+    /// If version_key is None, uses active version
+    Project {
+        project_id: String,              // "alice.near/my-app"
+        version_key: Option<String>,     // None = active version, Some = specific version
+    },
+}
+
+/// Resolved code source for worker (GitHub or WasmUrl only, no Project)
+/// This is what gets sent to worker after resolving Project references
+#[derive(Clone, Debug)]
+#[near(serializers = [borsh, json])]
+pub enum CodeSource {
+    GitHub {
+        repo: String,
+        commit: String,
+        build_target: Option<String>,
+    },
+    WasmUrl {
+        url: String,
+        hash: String,
+        build_target: Option<String>,
+    },
 }
 
 /// Optional request parameters for additional options
@@ -65,7 +95,7 @@ pub enum CodeSource {
 pub struct RequestParams {
     /// Force recompilation even if WASM exists in cache
     #[serde(default)]
-    pub force_rebuild: bool,    
+    pub force_rebuild: bool,
 
     /// Store compiled WASM to FastFS after compilation
     /// Path will be: /{checksum}.wasm
@@ -74,8 +104,13 @@ pub struct RequestParams {
 
     /// Compile only flag. Also set = true if resource_limits is none
     #[serde(default)]
-    pub compile_only: bool,    
+    pub compile_only: bool,
 
+    /// Project UUID for project-based execution
+    /// Set automatically by request_execution_project
+    /// Used by worker to enable persistent storage for the project
+    #[serde(default)]
+    pub project_uuid: Option<String>,
 }
 
 /// Response format for execution output
@@ -122,7 +157,8 @@ pub struct ExecutionRequest {
     pub request_id: u64,
     pub data_id: CryptoHash,
     pub sender_id: AccountId,
-    pub code_source: CodeSource,
+    pub execution_source: ExecutionSource,  // Original source (may be Project)
+    pub resolved_source: CodeSource,         // Resolved source for worker (GitHub/WasmUrl only)
     pub resource_limits: ResourceLimits,
     pub payment: Balance,
     pub timestamp: u64,
@@ -237,6 +273,14 @@ pub struct SecretProfileView {
 }
 
 
+/// System secret types (Payment Keys, etc.)
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[near(serializers = [borsh, json])]
+pub enum SystemSecretType {
+    /// Payment Key for HTTPS API
+    PaymentKey,
+}
+
 /// Secret accessor - defines what code can access/decrypt the secret
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[near(serializers = [borsh, json])]
@@ -250,15 +294,97 @@ pub enum SecretAccessor {
     WasmHash {
         hash: String,           // SHA256 hash of the WASM binary
     },
+    /// Secrets bound to a project (available to all versions)
+    Project {
+        project_id: String,     // "alice.near/my-app"
+    },
+    /// System secrets (Payment Keys for HTTPS API)
+    System(SystemSecretType),
 }
 
 /// Composite key for secrets storage
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[near(serializers = [borsh])]
 pub struct SecretKey {
-    pub accessor: SecretAccessor, // What code can access this secret (Repo or WasmHash)
+    pub accessor: SecretAccessor, // What code can access this secret (Repo, WasmHash, or Project)
     pub profile: String,          // Profile name: "default", "premium", etc.
     pub owner: AccountId,         // Account that created these secrets
+}
+
+// ============================================================================
+// Project System - Persistent Storage for WASM Applications
+// ============================================================================
+
+/// Project stored in contract
+#[derive(Clone, Debug)]
+#[near(serializers = [borsh, json])]
+pub struct Project {
+    pub uuid: String,              // Internal UUID: "proj_a1b2c3d4"
+    pub owner: AccountId,          // alice.near
+    pub name: String,              // "my-app"
+    pub active_version: String,    // wasm_hash of active version
+    pub created_at: u64,
+    pub storage_deposit: Balance,  // Storage staking for contract data
+}
+
+/// Version info stored per project
+#[derive(Clone, Debug)]
+#[near(serializers = [borsh, json])]
+pub struct VersionInfo {
+    pub source: CodeSource,
+    pub added_at: u64,
+    pub storage_deposit: Balance,  // Storage staking for this version entry
+}
+
+/// Pending version request (for yield/resume flow)
+#[derive(Clone, Debug)]
+#[near(serializers = [borsh])]
+pub struct PendingVersion {
+    pub project_uuid: String,
+    pub project_id: String,        // "alice.near/my-app" for metadata verification
+    pub source: CodeSource,
+    pub set_active: bool,
+    pub requested_at: u64,
+    pub data_id: CryptoHash,
+}
+
+/// Project view for JSON responses
+#[derive(Clone, Debug)]
+#[near(serializers = [json])]
+pub struct ProjectView {
+    pub uuid: String,
+    pub owner: AccountId,
+    pub name: String,
+    pub project_id: String,        // "alice.near/my-app"
+    pub active_version: String,
+    pub created_at: u64,
+    pub storage_deposit: U128,
+}
+
+/// Version view for JSON responses
+#[derive(Clone, Debug)]
+#[near(serializers = [json])]
+pub struct VersionView {
+    pub wasm_hash: String,
+    pub source: CodeSource,
+    pub added_at: u64,
+    pub is_active: bool,
+}
+
+/// Pricing view for JSON responses (includes both NEAR and USD pricing)
+#[derive(Clone, Debug)]
+#[near(serializers = [json])]
+pub struct PricingView {
+    // NEAR pricing (for blockchain transactions)
+    pub base_fee: U128,
+    pub per_million_instructions_fee: U128,
+    pub per_ms_fee: U128,
+    pub per_compile_ms_fee: U128,
+    // USD pricing (for HTTPS API, in minimal token units)
+    pub base_fee_usd: U128,
+    pub per_million_instructions_fee_usd: U128,
+    pub per_ms_fee_usd: U128,
+    pub per_compile_ms_fee_usd: U128,
 }
 
 #[derive(BorshDeserialize, BorshSerialize, PanicOnDefault)]
@@ -270,11 +396,24 @@ pub struct Contract {
     operator_id: AccountId,
     paused: bool,
 
-    // Pricing
+    // Event metadata (for NEP-297 events)
+    event_standard: String,
+    event_version: String,
+
+    // Pricing (NEAR) - for blockchain transactions
     base_fee: Balance,
     per_million_instructions_fee: Balance,
     per_ms_fee: Balance,                 // Execution time cost
     per_compile_ms_fee: Balance,         // Compilation time cost
+
+    // Pricing (USD) - for HTTPS API (in minimal token units, e.g., 1 = 0.000001 USDT)
+    base_fee_usd: u128,                      // e.g., 10000 = $0.01
+    per_million_instructions_fee_usd: u128,  // e.g., 1 = $0.000001 per 1M instructions
+    per_ms_fee_usd: u128,                    // e.g., 10 = $0.00001 per ms execution
+    per_compile_ms_fee_usd: u128,            // e.g., 10 = $0.00001 per ms compilation
+
+    // Payment token for HTTPS API (e.g., "usdt.tether-token.near")
+    payment_token_contract: Option<AccountId>,
 
     // Request tracking
     next_request_id: u64,
@@ -289,26 +428,54 @@ pub struct Contract {
 
     // User secrets index: account_id -> set of SecretKey
     user_secrets_index: LookupMap<AccountId, UnorderedSet<SecretKey>>,
+
+    // Project storage: project_id ("alice.near/my-app") -> Project
+    projects: LookupMap<String, Project>,
+
+    // Project versions: project_uuid -> (wasm_hash -> VersionInfo)
+    project_versions: LookupMap<String, UnorderedMap<String, VersionInfo>>,
+
+    // User projects index: account_id -> set of project_id
+    user_projects_index: LookupMap<AccountId, UnorderedSet<String>>,
+
+    // Next project UUID counter
+    next_project_id: u64,
 }
 
 #[near_bindgen]
 impl Contract {
     #[init]
-    pub fn new(owner_id: AccountId, operator_id: Option<AccountId>) -> Self {
+    pub fn new(owner_id: AccountId, operator_id: Option<AccountId>, event_standard: Option<String>,
+        event_version: Option<String>) -> Self {
         Self {
             owner_id: owner_id.clone(),
             operator_id: operator_id.unwrap_or(owner_id),
             paused: false,
+            event_standard: event_standard.unwrap_or("near-outlayer".to_string()),
+            event_version: event_version.unwrap_or("1.0.0".to_string()),
+            // NEAR pricing
             base_fee: 1_000_000_000_000_000_000_000, // 0.001 NEAR
             per_million_instructions_fee: 100_000_000_000_000, // 0.0000001 NEAR per million instructions
             per_ms_fee: 100_000_000_000_000_000, // 0.0001 NEAR per second (execution)
             per_compile_ms_fee: 100_000_000_000_000_000, // 0.0001 NEAR per second (compilation)
+            // USD pricing (for HTTPS API, using USDT with 6 decimals)
+            base_fee_usd: 10_000,             // $0.01 base fee
+            per_million_instructions_fee_usd: 1, // $0.000001 per million instructions
+            per_ms_fee_usd: 10,               // $0.00001 per ms execution
+            per_compile_ms_fee_usd: 10,       // $0.00001 per ms compilation
+            // Payment token (set via admin method)
+            payment_token_contract: None,
             next_request_id: 0,
             pending_requests: LookupMap::new(StorageKey::PendingRequests),
             total_executions: 0,
             total_fees_collected: 0,
             secrets_storage: LookupMap::new(StorageKey::SecretsStorage),
             user_secrets_index: LookupMap::new(StorageKey::UserSecretsIndex),
+            // Project system
+            projects: LookupMap::new(StorageKey::Projects),
+            project_versions: LookupMap::new(b"pv".to_vec()),
+            user_projects_index: LookupMap::new(StorageKey::UserProjects),
+            next_project_id: 0,
         }
     }
 }

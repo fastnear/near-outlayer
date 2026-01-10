@@ -25,7 +25,7 @@ pub fn setup_contract() -> Contract {
     let context = get_context(accounts(0), NearToken::from_near(0));
     testing_env!(context.build());
 
-    Contract::new(accounts(0), Some(accounts(1)))
+    Contract::new(accounts(0), Some(accounts(1)), None, None)
 }
 
 #[cfg(test)]
@@ -150,7 +150,7 @@ mod admin_tests {
         testing_env!(context.build());
 
         let new_base = U128(20_000_000_000_000_000_000_000);
-        contract.set_pricing(Some(new_base), None, None, None);
+        contract.set_pricing(Some(new_base), None, None, None, None, None, None, None);
 
         let (base, _, _, _) = contract.get_pricing();
         assert_eq!(base, new_base);

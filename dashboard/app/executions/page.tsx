@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { fetchJobs, JobHistoryEntry, AttestationResponse } from '@/lib/api';
+import { fetchJobs, JobHistoryEntry, AttestationResponse, fetchAttestation } from '@/lib/api';
 import { getTransactionUrl } from '@/lib/explorer';
 import { useNearWallet } from '@/contexts/NearWalletContext';
 import AttestationView from '@/components/AttestationView';
@@ -13,7 +13,13 @@ export default function JobsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedJobId, setExpandedJobId] = useState<number | null>(null);
-  const [attestationModal, setAttestationModal] = useState<{ jobId: number; attestation: AttestationResponse | null; loading: boolean; error: string | null } | null>(null);
+  const [attestationModal, setAttestationModal] = useState<{
+    jobId: number;
+    isHttpsCall: boolean;
+    attestation: AttestationResponse | null;
+    loading: boolean;
+    error: string | null
+  } | null>(null);
   const [showAttestationHelp, setShowAttestationHelp] = useState(false);
 
   useEffect(() => {
@@ -33,13 +39,18 @@ export default function JobsPage() {
     }
   };
 
-  const loadAttestation = async (jobId: number) => {
+  const loadAttestation = async (job: JobHistoryEntry) => {
+    if (!job.job_id) {
+      return; // No job_id available
+    }
+
     const requireApiKey = process.env.NEXT_PUBLIC_REQUIRE_ATTESTATION_API_KEY === 'true';
     const apiKey = process.env.NEXT_PUBLIC_COORDINATOR_API_KEY || '';
 
     if (requireApiKey && !apiKey) {
       setAttestationModal({
-        jobId: jobId,
+        jobId: job.job_id,
+        isHttpsCall: job.is_https_call,
         attestation: null,
         loading: false,
         error: 'API key not configured. Please set NEXT_PUBLIC_COORDINATOR_API_KEY in .env'
@@ -47,15 +58,22 @@ export default function JobsPage() {
       return;
     }
 
-    setAttestationModal({ jobId: jobId, attestation: null, loading: true, error: null });
+    setAttestationModal({
+      jobId: job.job_id,
+      isHttpsCall: job.is_https_call,
+      attestation: null,
+      loading: true,
+      error: null
+    });
 
     try {
-      const { fetchAttestation } = await import('@/lib/api');
-      const data = await fetchAttestation(jobId, apiKey || 'not-required');
+      // Always use job_id to fetch attestation (works for both NEAR and HTTPS calls)
+      const data = await fetchAttestation(job.job_id, apiKey || 'not-required');
 
       if (!data) {
         setAttestationModal({
-          jobId: jobId,
+          jobId: job.job_id,
+          isHttpsCall: job.is_https_call,
           attestation: null,
           loading: false,
           error: 'No attestation found for this job'
@@ -63,7 +81,13 @@ export default function JobsPage() {
         return;
       }
 
-      setAttestationModal({ jobId: jobId, attestation: data, loading: false, error: null });
+      setAttestationModal({
+        jobId: job.job_id,
+        isHttpsCall: job.is_https_call,
+        attestation: data,
+        loading: false,
+        error: null
+      });
     } catch (err: unknown) {
       console.error('Failed to load attestation:', err);
       const errorMessage = err instanceof Error
@@ -72,7 +96,8 @@ export default function JobsPage() {
           ? String(err.response.data.error)
           : 'Failed to load attestation';
       setAttestationModal({
-        jobId: jobId,
+        jobId: job.job_id,
+        isHttpsCall: job.is_https_call,
         attestation: null,
         loading: false,
         error: errorMessage
@@ -222,10 +247,12 @@ export default function JobsPage() {
                           <tr key={job.id}>
                             <td
                               className="whitespace-nowrap px-3 py-4 text-sm font-mono"
-                              title={job.job_id ? `Job ID: ${job.job_id} - Click to view TEE attestation` : 'Click to view TEE attestation'}
+                              title={job.is_https_call
+                                ? `HTTPS Call ID: ${job.call_id} - Click to view TEE attestation`
+                                : `Job ID: ${job.job_id} - Click to view TEE attestation`}
                             >
                               <button
-                                onClick={() => job.job_id && loadAttestation(job.job_id)}
+                                onClick={() => loadAttestation(job)}
                                 className="text-blue-600 hover:text-blue-800 hover:underline"
                                 disabled={!job.job_id}
                               >
@@ -233,15 +260,29 @@ export default function JobsPage() {
                               </button>
                             </td>
                             <td className="whitespace-nowrap px-3 py-4 text-sm">
-                              <span
-                                className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${
-                                  job.job_type === 'compile'
-                                    ? 'bg-blue-100 text-blue-800'
-                                    : 'bg-purple-100 text-purple-800'
-                                }`}
-                              >
-                                {job.job_type || 'N/A'}
-                              </span>
+                              <div className="flex items-center gap-1">
+                                <span
+                                  className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${
+                                    job.job_type === 'compile'
+                                      ? 'bg-blue-100 text-blue-800'
+                                      : 'bg-purple-100 text-purple-800'
+                                  }`}
+                                >
+                                  {job.job_type || 'N/A'}
+                                </span>
+                                <span
+                                  className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${
+                                    job.is_https_call
+                                      ? 'bg-orange-100 text-orange-800'
+                                      : 'bg-green-100 text-green-800'
+                                  }`}
+                                  title={job.is_https_call
+                                    ? `HTTPS API call (call_id: ${job.call_id})`
+                                    : `NEAR blockchain call (tx: ${job.transaction_hash || 'N/A'})`}
+                                >
+                                  {job.is_https_call ? 'HTTPS' : 'NEAR'}
+                                </span>
+                              </div>
                             </td>
                             <td className="whitespace-nowrap px-3 py-4 text-sm">
                               <span
@@ -360,16 +401,27 @@ export default function JobsPage() {
               <div className="flex justify-between items-center mb-4">
                 <div className="flex items-center gap-3">
                   <h2 className="text-2xl font-bold text-gray-900">
-                    TEE Attestation - Job #{attestationModal.jobId}
+                    TEE Attestation - {attestationModal.isHttpsCall ? 'HTTPS' : 'NEAR'} Job #{attestationModal.jobId}
                   </h2>
-                  <Link
-                    href={`/attestation/${attestationModal.jobId}?network=${network}`}
-                    target="_blank"
-                    className="px-3 py-1 bg-green-100 hover:bg-green-200 text-green-700 text-sm font-medium rounded"
-                    title="Open in new tab"
+                  <span
+                    className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${
+                      attestationModal.isHttpsCall
+                        ? 'bg-orange-100 text-orange-800'
+                        : 'bg-green-100 text-green-800'
+                    }`}
                   >
-                    🔗 Direct Link
-                  </Link>
+                    {attestationModal.isHttpsCall ? 'HTTPS' : 'NEAR'}
+                  </span>
+                  {!attestationModal.isHttpsCall && (
+                    <Link
+                      href={`/attestation/${attestationModal.jobId}?network=${network}`}
+                      target="_blank"
+                      className="px-3 py-1 bg-green-100 hover:bg-green-200 text-green-700 text-sm font-medium rounded"
+                      title="Open in new tab"
+                    >
+                      🔗 Direct Link
+                    </Link>
+                  )}
                 </div>
                 <button
                   onClick={() => {

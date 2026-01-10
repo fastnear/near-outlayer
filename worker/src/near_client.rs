@@ -10,6 +10,7 @@ use tracing::{debug, info, warn};
 use crate::api_client::{ExecutionOutput, ExecutionResult};
 
 /// NEAR blockchain client for worker operations
+#[derive(Clone)]
 pub struct NearClient {
     client: JsonRpcClient,
     signer: InMemorySigner,
@@ -607,6 +608,292 @@ impl NearClient {
         Ok(outcome)
     }
 
+    /// Resume a TopUp yield promise
+    ///
+    /// # Arguments
+    /// * `data_id` - CryptoHash from the yield promise (hex encoded)
+    /// * `new_encrypted_data` - New encrypted secret with updated balance (base64)
+    ///
+    /// # Returns
+    /// * `Ok(tx_hash)` - Transaction hash
+    pub async fn resume_topup(
+        &self,
+        data_id: &str,
+        new_encrypted_data: &str,
+    ) -> Result<String> {
+        info!("📤 Resuming TopUp: data_id={}", data_id);
+
+        // Build TopUpResult::Success
+        let args = json!({
+            "data_id": data_id,
+            "result": {
+                "Success": {
+                    "new_encrypted_data": new_encrypted_data
+                }
+            }
+        });
+
+        let args_json = serde_json::to_string(&args)
+            .context("Failed to serialize resume_topup args")?;
+
+        let outcome = self
+            .call_contract_method(
+                "resume_topup",
+                args_json.into_bytes(),
+                100_000_000_000_000, // 100 TGas
+                0,                    // No deposit
+            )
+            .await
+            .context("Failed to call resume_topup")?;
+
+        let tx_hash = format!("{}", outcome.transaction_outcome.id);
+        info!("✅ TopUp resumed: data_id={} tx={}", data_id, tx_hash);
+
+        Ok(tx_hash)
+    }
+
+    /// Resume a TopUp yield promise with error
+    ///
+    /// # Arguments
+    /// * `data_id` - CryptoHash from the yield promise (hex encoded)
+    /// * `error_message` - Error message
+    ///
+    /// # Returns
+    /// * `Ok(tx_hash)` - Transaction hash
+    pub async fn resume_topup_error(
+        &self,
+        data_id: &str,
+        error_message: &str,
+    ) -> Result<String> {
+        info!("📤 Resuming TopUp with error: data_id={} error={}", data_id, error_message);
+
+        // Build TopUpResult::Error
+        let args = json!({
+            "data_id": data_id,
+            "result": {
+                "Error": {
+                    "message": error_message
+                }
+            }
+        });
+
+        let args_json = serde_json::to_string(&args)
+            .context("Failed to serialize resume_topup args")?;
+
+        let outcome = self
+            .call_contract_method(
+                "resume_topup",
+                args_json.into_bytes(),
+                100_000_000_000_000, // 100 TGas
+                0,                    // No deposit
+            )
+            .await
+            .context("Failed to call resume_topup")?;
+
+        let tx_hash = format!("{}", outcome.transaction_outcome.id);
+        info!("✅ TopUp error resumed: data_id={} tx={}", data_id, tx_hash);
+
+        Ok(tx_hash)
+    }
+
+    /// Resume a DeletePaymentKey yield promise with success
+    ///
+    /// Called after successfully deleting the payment key from coordinator PostgreSQL.
+    ///
+    /// # Arguments
+    /// * `data_id` - CryptoHash from the yield promise (hex encoded)
+    ///
+    /// # Returns
+    /// * `Ok(tx_hash)` - Transaction hash
+    pub async fn resume_delete_payment_key(&self, data_id: &str) -> Result<String> {
+        info!("📤 Resuming DeletePaymentKey: data_id={}", data_id);
+
+        // Build DeletePaymentKeyResult::Success
+        let args = json!({
+            "data_id": data_id,
+            "result": "Success"
+        });
+
+        let args_json = serde_json::to_string(&args)
+            .context("Failed to serialize resume_delete_payment_key args")?;
+
+        let outcome = self
+            .call_contract_method(
+                "resume_delete_payment_key",
+                args_json.into_bytes(),
+                100_000_000_000_000, // 100 TGas
+                0,                    // No deposit
+            )
+            .await
+            .context("Failed to call resume_delete_payment_key")?;
+
+        let tx_hash = format!("{}", outcome.transaction_outcome.id);
+        info!("✅ DeletePaymentKey resumed: data_id={} tx={}", data_id, tx_hash);
+
+        Ok(tx_hash)
+    }
+
+    /// Resume a DeletePaymentKey yield promise with error
+    ///
+    /// # Arguments
+    /// * `data_id` - CryptoHash from the yield promise (hex encoded)
+    /// * `error_message` - Error message
+    ///
+    /// # Returns
+    /// * `Ok(tx_hash)` - Transaction hash
+    pub async fn resume_delete_payment_key_error(
+        &self,
+        data_id: &str,
+        error_message: &str,
+    ) -> Result<String> {
+        info!(
+            "📤 Resuming DeletePaymentKey with error: data_id={} error={}",
+            data_id, error_message
+        );
+
+        // Build DeletePaymentKeyResult::Error
+        let args = json!({
+            "data_id": data_id,
+            "result": {
+                "Error": {
+                    "message": error_message
+                }
+            }
+        });
+
+        let args_json = serde_json::to_string(&args)
+            .context("Failed to serialize resume_delete_payment_key args")?;
+
+        let outcome = self
+            .call_contract_method(
+                "resume_delete_payment_key",
+                args_json.into_bytes(),
+                100_000_000_000_000, // 100 TGas
+                0,                    // No deposit
+            )
+            .await
+            .context("Failed to call resume_delete_payment_key")?;
+
+        let tx_hash = format!("{}", outcome.transaction_outcome.id);
+        info!(
+            "✅ DeletePaymentKey error resumed: data_id={} tx={}",
+            data_id, tx_hash
+        );
+
+        Ok(tx_hash)
+    }
+
+    /// Fetch project info from contract by project_id
+    ///
+    /// Returns project with active version info (repo, commit, build_target)
+    /// Used for HTTPS API calls where coordinator passes project_id instead of code_source
+    pub async fn fetch_project(&self, project_id: &str) -> Result<Option<ProjectInfo>> {
+        info!("📦 Fetching project from contract: {}", project_id);
+
+        let request = methods::query::RpcQueryRequest {
+            block_reference: BlockReference::Finality(Finality::Final),
+            request: near_primitives::views::QueryRequest::CallFunction {
+                account_id: self.contract_id.clone(),
+                method_name: "get_project".to_string(),
+                args: json!({ "project_id": project_id }).to_string().into_bytes().into(),
+            },
+        };
+
+        let response = self
+            .client
+            .call(request)
+            .await
+            .context("Failed to call get_project")?;
+
+        if let near_jsonrpc_primitives::types::query::QueryResponseKind::CallResult(result) = response.kind {
+            if result.result.is_empty() {
+                debug!("Project not found: {}", project_id);
+                return Ok(None);
+            }
+
+            let project: ProjectInfo = serde_json::from_slice(&result.result)
+                .context("Failed to parse project info")?;
+
+            info!("✅ Project found: {} (active_version: {})", project.project_id, project.active_version);
+            Ok(Some(project))
+        } else {
+            anyhow::bail!("Unexpected response kind from get_project");
+        }
+    }
+
+    /// Fetch project version (code source) from contract
+    pub async fn fetch_project_version(&self, project_id: &str, version_key: &str) -> Result<Option<VersionView>> {
+        info!("📦 Fetching project version: {} @ {}", project_id, version_key);
+
+        let request = methods::query::RpcQueryRequest {
+            block_reference: BlockReference::Finality(Finality::Final),
+            request: near_primitives::views::QueryRequest::CallFunction {
+                account_id: self.contract_id.clone(),
+                method_name: "get_version".to_string(),
+                args: json!({
+                    "project_id": project_id,
+                    "version_key": version_key
+                }).to_string().into_bytes().into(),
+            },
+        };
+
+        let response = self
+            .client
+            .call(request)
+            .await
+            .context("Failed to call get_version")?;
+
+        if let near_jsonrpc_primitives::types::query::QueryResponseKind::CallResult(result) = response.kind {
+            if result.result.is_empty() {
+                debug!("Project version not found: {} @ {}", project_id, version_key);
+                return Ok(None);
+            }
+
+            let version_view: VersionView = serde_json::from_slice(&result.result)
+                .context("Failed to parse version view")?;
+
+            info!("✅ Project version found: source={:?}", version_view.source);
+            Ok(Some(version_view))
+        } else {
+            anyhow::bail!("Unexpected response kind from get_version");
+        }
+    }
+}
+
+/// Project info from contract
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProjectInfo {
+    pub uuid: String,
+    pub owner: String,
+    pub name: String,
+    pub project_id: String,
+    pub active_version: String,
+}
+
+/// Version view from contract (matches contract's VersionView)
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct VersionView {
+    pub wasm_hash: String,
+    pub source: ContractCodeSource,
+    pub added_at: u64,
+    pub is_active: bool,
+}
+
+/// Code source from contract (matches contract's CodeSource enum)
+/// Uses serde default (externally tagged) to match NEAR SDK serialization:
+/// {"GitHub": {"repo": "...", "commit": "...", "build_target": "..."}}
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum ContractCodeSource {
+    GitHub {
+        repo: String,
+        commit: String,
+        build_target: Option<String>,
+    },
+    WasmUrl {
+        url: String,
+        hash: String,
+        build_target: Option<String>,
+    },
 }
 
 #[cfg(test)]

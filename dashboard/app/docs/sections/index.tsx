@@ -69,8 +69,8 @@ export function ContractIntegrationSection() {
 
             <div className="space-y-4">
               <div className="border-l-4 border-blue-400 pl-4">
-                <p className="font-mono text-sm text-gray-800 mb-1"><strong>code_source</strong>: CodeSource <span className="text-red-600">(required)</span></p>
-                <p className="text-sm text-gray-600 mb-2">Specifies where to get WASM code. Two variants available:</p>
+                <p className="font-mono text-sm text-gray-800 mb-1"><strong>source</strong>: ExecutionSource <span className="text-red-600">(required)</span></p>
+                <p className="text-sm text-gray-600 mb-2">Specifies where to get WASM code. Three variants available:</p>
 
                 <div className="mt-2 mb-2">
                   <p className="text-sm font-semibold text-gray-800 mb-1">Variant 1: GitHub (compile from source)</p>
@@ -81,7 +81,7 @@ export function ContractIntegrationSection() {
                   </ul>
                 </div>
 
-                <div className="mt-2">
+                <div className="mt-2 mb-2">
                   <p className="text-sm font-semibold text-gray-800 mb-1">Variant 2: WasmUrl (pre-compiled WASM)</p>
                   <ul className="list-disc list-inside text-sm text-gray-700 ml-4 space-y-1">
                     <li><code className="bg-gray-100 px-2 py-1 rounded">url</code>: URL to pre-compiled WASM file (FastFS, IPFS, etc.)</li>
@@ -89,6 +89,15 @@ export function ContractIntegrationSection() {
                     <li><code className="bg-gray-100 px-2 py-1 rounded">build_target</code>: &quot;wasm32-wasip1&quot; or &quot;wasm32-wasip2&quot;</li>
                   </ul>
                   <p className="text-xs text-gray-500 mt-1">Use WasmUrl for instant execution without compilation. Ideal for closed-source WASM or permanent deployments on FastFS/IPFS.</p>
+                </div>
+
+                <div className="mt-2">
+                  <p className="text-sm font-semibold text-gray-800 mb-1">Variant 3: Project (registered project)</p>
+                  <ul className="list-disc list-inside text-sm text-gray-700 ml-4 space-y-1">
+                    <li><code className="bg-gray-100 px-2 py-1 rounded">project_id</code>: Project ID (e.g., &quot;alice.near/my-app&quot;)</li>
+                    <li><code className="bg-gray-100 px-2 py-1 rounded">version_key</code>: Optional. Specific version key (null = active version)</li>
+                  </ul>
+                  <p className="text-xs text-gray-500 mt-1">Use Project for registered apps with persistent storage. Automatically uses project secrets if available.</p>
                 </div>
               </div>
 
@@ -208,7 +217,7 @@ export function ContractIntegrationSection() {
           <ol className="list-decimal list-inside space-y-2 text-gray-700 ml-4">
             <li><strong>Compile with store_on_fastfs:</strong> Set <code className="bg-gray-100 px-1 rounded">{`"params": {"store_on_fastfs": true, "compile_only": true}`}</code></li>
             <li><strong>Get FastFS URL:</strong> Response contains <code className="bg-gray-100 px-1 rounded">fastfs_url</code> and <code className="bg-gray-100 px-1 rounded">wasm_hash</code></li>
-            <li><strong>Execute via WasmUrl:</strong> Use the URL and hash in <code className="bg-gray-100 px-1 rounded">code_source</code> for instant execution</li>
+            <li><strong>Execute via WasmUrl:</strong> Use the URL and hash in <code className="bg-gray-100 px-1 rounded">source</code> for instant execution</li>
           </ol>
           <div className="bg-green-50 border-l-4 border-green-400 p-3 mt-3">
             <p className="text-sm text-gray-700">
@@ -889,6 +898,26 @@ export function SecretsSection() {
                 <li>Guarantees: Only this exact binary can access the secrets</li>
               </ul>
             </div>
+
+            <div id="project-binding" className="border-l-4 border-green-400 pl-3 scroll-mt-4">
+              <p className="font-semibold text-gray-800 mb-1">Project-based</p>
+              <p className="text-sm text-gray-700 mb-2">Bind secrets to a Project - accessible by all versions</p>
+              <ul className="list-disc list-inside text-sm text-gray-700 ml-4">
+                <li>Key: <code className="bg-gray-100 px-1 rounded">project_id + profile + owner</code></li>
+                <li>Example: <code className="bg-gray-100 px-1 rounded">alice.near/my-app:production</code></li>
+                <li>Best for: Long-running projects with multiple versions</li>
+                <li>Benefit: Secrets persist across version updates - no re-creation needed</li>
+              </ul>
+            </div>
+          </div>
+
+          <div className="mt-3 p-3 bg-green-50 border border-green-200 rounded">
+            <p className="text-sm text-green-900 font-medium mb-1">✨ Project Binding Recommendation</p>
+            <p className="text-xs text-green-800">
+              For most use cases, <strong>Project binding</strong> is recommended. It allows you to update your WASM code
+              without re-creating secrets. Create a project in the <a href="/projects" className="underline">Projects dashboard</a>,
+              then bind your secrets to that project.
+            </p>
           </div>
 
           <div className="mt-3 p-3 bg-purple-50 border border-purple-200 rounded">

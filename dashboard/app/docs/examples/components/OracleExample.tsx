@@ -92,10 +92,12 @@ cargo build --target wasm32-wasip2 --release
 
 # 4. Request price data
 near call outlayer.testnet request_execution '{
-  "code_source": {
-    "repo": "https://github.com/YOUR_USERNAME/oracle-ark",
-    "commit": "main",
-    "build_target": "wasm32-wasip2"
+  "source": {
+    "GitHub": {
+      "repo": "https://github.com/YOUR_USERNAME/oracle-ark",
+      "commit": "main",
+      "build_target": "wasm32-wasip2"
+    }
   },
   "secrets_ref": {
     "profile": "production",

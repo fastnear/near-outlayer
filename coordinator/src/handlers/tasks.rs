@@ -47,11 +47,11 @@ pub async fn poll_task(
 ) -> Result<Json<ExecutionRequest>, StatusCode> {
     let timeout = params.timeout.min(120); // Max 2 minutes
 
-    // Determine which queue to poll based on capabilities or explicit queue parameter
-    let queue_name = if let Some(ref queue) = params.queue {
+    // Determine which queue(s) to poll based on capabilities or explicit queue parameter
+    let queue_names: Vec<String> = if let Some(ref queue) = params.queue {
         match queue.as_str() {
-            "compile" => state.config.redis_queue_compile.clone(),
-            "execute" => state.config.redis_queue_execute.clone(),
+            "compile" => vec![state.config.redis_queue_compile.clone()],
+            "execute" => vec![state.config.redis_queue_execute.clone()],
             _ => {
                 error!("Invalid queue name: {}. Use 'compile' or 'execute'", queue);
                 return Err(StatusCode::BAD_REQUEST);
@@ -63,12 +63,15 @@ pub async fn poll_task(
         let can_execute = params.capabilities.contains(&"execution".to_string());
 
         match (can_compile, can_execute) {
-            (true, false) => state.config.redis_queue_compile.clone(),
-            (false, true) => state.config.redis_queue_execute.clone(),
+            (true, false) => vec![state.config.redis_queue_compile.clone()],
+            (false, true) => vec![state.config.redis_queue_execute.clone()],
             (true, true) => {
                 // Full worker - poll both queues (compile first, then execute)
-                // For now, poll compile queue - full workers should handle compilation priority
-                state.config.redis_queue_compile.clone()
+                // BRPOP checks queues in order, so compile queue has priority
+                vec![
+                    state.config.redis_queue_compile.clone(),
+                    state.config.redis_queue_execute.clone(),
+                ]
             }
             (false, false) => {
                 error!("Worker has no capabilities specified");
@@ -77,7 +80,7 @@ pub async fn poll_task(
         }
     };
 
-    debug!("Polling queue '{}' with timeout {}s", queue_name, timeout);
+    debug!("Polling queue(s) {:?} with timeout {}s", queue_names, timeout);
 
     // Get dedicated Redis connection for BRPOP (blocking operation)
     let client = state.redis.clone();
@@ -89,9 +92,9 @@ pub async fn poll_task(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    // BRPOP with timeout
+    // BRPOP with timeout - polls multiple queues in order (compile first, then execute)
     let result: Option<(String, String)> = conn
-        .brpop(&queue_name, timeout as f64)
+        .brpop(&queue_names, timeout as f64)
         .await
         .map_err(|e| {
             error!("Redis BRPOP error: {}", e);
@@ -99,8 +102,8 @@ pub async fn poll_task(
         })?;
 
     match result {
-        Some((_key, json)) => {
-            debug!("ExecutionRequest received from {}: {}", queue_name, json);
+        Some((queue_key, json)) => {
+            debug!("ExecutionRequest received from '{}': {}", queue_key, json);
             let request: ExecutionRequest = serde_json::from_str(&json).map_err(|e| {
                 error!("Failed to deserialize execution request: {}", e);
                 StatusCode::INTERNAL_SERVER_ERROR
@@ -108,7 +111,7 @@ pub async fn poll_task(
             Ok(Json(request))
         }
         None => {
-            debug!("Poll timeout on queue '{}' - no tasks available", queue_name);
+            debug!("Poll timeout on queue(s) {:?} - no tasks available", queue_names);
             Err(StatusCode::NO_CONTENT)
         }
     }
@@ -120,8 +123,9 @@ pub async fn create_task(
     State(state): State<AppState>,
     Json(payload): Json<CreateTaskRequest>,
 ) -> Result<(StatusCode, Json<CreateTaskResponse>), StatusCode> {
-    info!("📥 Creating task for request_id={} data_id={} compile_only={} force_rebuild={} store_on_fastfs={}",
-        payload.request_id, payload.data_id, payload.compile_only, payload.force_rebuild, payload.store_on_fastfs);
+    info!("📥 Creating task for request_id={} data_id={} compile_only={} force_rebuild={} store_on_fastfs={} project_uuid={:?} project_id={:?}",
+        payload.request_id, payload.data_id, payload.compile_only, payload.force_rebuild, payload.store_on_fastfs,
+        payload.project_uuid, payload.project_id);
 
     let request_id = payload.request_id;
 
@@ -199,7 +203,7 @@ pub async fn create_task(
     let execution_request = ExecutionRequest {
         request_id,
         data_id: payload.data_id.clone(),
-        code_source,
+        code_source: Some(code_source),
         resource_limits: payload.resource_limits,
         input_data: payload.input_data,
         secrets_ref: payload.secrets_ref, // Reference to contract-stored secrets
@@ -212,6 +216,16 @@ pub async fn create_task(
         force_rebuild: payload.force_rebuild,
         store_on_fastfs: payload.store_on_fastfs,
         compile_result: None, // No compile result yet - set after compilation
+        project_uuid: payload.project_uuid, // For persistent storage
+        project_id: payload.project_id, // For project-based secrets
+        // HTTPS API fields - not used for NEAR contract calls
+        is_https_call: false,
+        call_id: None,
+        payment_key_owner: None,
+        payment_key_nonce: None,
+        usd_payment: None,
+        compute_limit_usd: None,
+        attached_deposit_usd: None,
     };
 
     let request_json = serde_json::to_string(&execution_request).map_err(|e| {
@@ -250,9 +264,9 @@ pub async fn create_task(
             context_sender_id, context_block_height, context_block_timestamp,
             context_contract_id, context_transaction_hash, context_receipt_id,
             context_predecessor_id, context_signer_public_key, context_gas_burnt,
-            compile_only, force_rebuild, store_on_fastfs
+            compile_only, force_rebuild, store_on_fastfs, project_uuid, project_id
         ) VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23
         )
         ON CONFLICT (request_id) DO NOTHING
         "#,
@@ -276,10 +290,15 @@ pub async fn create_task(
         execution_request.context.gas_burnt.map(|g| g as i64),
         execution_request.compile_only,
         execution_request.force_rebuild,
-        execution_request.store_on_fastfs
+        execution_request.store_on_fastfs,
+        execution_request.project_uuid,
+        execution_request.project_id
     )
     .execute(&state.db)
     .await
+    .map(|result| {
+        info!("📝 Stored execution_requests: request_id={} rows_affected={}", request_id, result.rows_affected());
+    })
     .map_err(|e| {
         error!("Failed to store execution request: {}", e);
         // Don't fail - task is already in queue

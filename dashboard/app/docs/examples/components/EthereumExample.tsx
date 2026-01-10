@@ -79,10 +79,12 @@ export function EthereumExample() {
 {`# Using pre-configured Alchemy secrets on testnet
 near contract call-function as-transaction outlayer.testnet request_execution \\
   json-args '{
-    "code_source": {
-      "repo": "https://github.com/zavodil/oracle-ark",
-      "commit": "main",
-      "build_target": "wasm32-wasip2"
+    "source": {
+      "GitHub": {
+        "repo": "https://github.com/zavodil/oracle-ark",
+        "commit": "main",
+        "build_target": "wasm32-wasip2"
+      }
     },
     "secrets_ref": {
       "profile": "alchemy",

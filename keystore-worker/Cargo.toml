@@ -21,6 +21,7 @@ borsh = "1.5"  # For NEP-413 payload serialization
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 rand = "0.8"
 sha2 = "0.10"
+sha3 = "0.10"
 hmac = "0.12"
 hex = "0.4"
 bs58 = "0.5"

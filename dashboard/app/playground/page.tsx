@@ -19,13 +19,16 @@ interface BasePreset {
 // Direct execution preset (calls OutLayer)
 interface DirectPreset extends BasePreset {
   type: 'direct';
-  codeSourceType?: 'github' | 'wasmurl'; // default: 'github'
+  codeSourceType?: 'github' | 'wasmurl' | 'project'; // default: 'github'
   // GitHub source fields
   repo?: string;
   commit?: string;
   // WasmUrl source fields
   wasmUrl?: string;
   wasmHash?: string;
+  // Project source fields
+  projectId?: string; // e.g., "alice.near/my-app"
+  versionKey?: string; // specific version key: hash for WasmUrl, "repo@commit" for GitHub (null = active version)
   // Common fields
   buildTarget: string;
   args: string;
@@ -161,6 +164,19 @@ const DIRECT_PRESETS: DirectPreset[] = [
     forceRebuild: true,
     storeOnFastfs: true,
   },
+  {
+    type: 'direct',
+    name: 'Project Storage Test',
+    description: '💾 Test persistent storage API. Runs test_all command to verify storage operations (set, get, delete, list_keys, has, get_by_version). Uses project-based execution with shared storage across versions.',
+    codeSourceType: 'project',
+    projectId: 'zavodil2.testnet/test-storage',
+    versionKey: 'fb9086ae8a805ea01be67f2508c7757aa6ece174656a71faed29cff0243541de',
+    buildTarget: 'wasm32-wasip2',
+    args: '{"command":"test_all"}',
+    responseFormat: 'Text',
+    networks: ['testnet'],
+    docsLink: '/docs/projects',
+  },
 ];
 
 // ============================================================================
@@ -202,6 +218,54 @@ const PROXY_PRESETS: ProxyPreset[] = [
     increaseDepositIfNoCache: false, // ft_transfer_call accepts only 1 yoctoNEAR
     docsLink: '/docs/examples#intents-ark',
   },
+  {
+    type: 'proxy',
+    name: 'ZFT Token (Init)',
+    args: '{"outlayer_contract":"{{contractId}}","project_id":"zavodil2.testnet/private-ft","total_supply":"1000000000000000000000000000","name":"ZFT Token","symbol":"ZFT","decimals":18,"icon":null}',
+    description: '🪙 Initialize ZFT private token. Mints total_supply to your wallet (NEAR_SENDER_ID).\n\n⚠️ Can only be called ONCE. After initialization, use Balance and Transfer methods.\n\n🔗 Project: zavodil2.testnet/private-ft',
+    networks: ['testnet'],
+    proxyContractIdTestnet: 'zft.testnet',
+    proxyMethod: 'new',
+    proxyDeposit: '200000000000000000000000', // 0.2 NEAR (for OutLayer execution)
+    proxyGas: '300000000000000', // 300 TGas
+    docsLink: '/docs/examples#private-token-ark',
+  },
+  {
+    type: 'proxy',
+    name: 'ZFT Token (Balance)',
+    args: '{"account_id":"zavodil2.testnet"}',
+    description: '🪙 Check ZFT private token balance. Balances are stored on OutLayer, not on-chain.\n\nReplace account_id with the account you want to check.\n\n🔗 Project: zavodil2.testnet/private-ft',
+    networks: ['testnet'],
+    proxyContractIdTestnet: 'zft.testnet',
+    proxyMethod: 'ft_balance_of',
+    proxyDeposit: '100000000000000000000000', // 0.1 NEAR
+    proxyGas: '300000000000000', // 300 TGas
+    docsLink: '/docs/examples#private-token-ark',
+  },
+  {
+    type: 'proxy',
+    name: 'ZFT Token (Transfer)',
+    args: '{"receiver_id":"zavodil.testnet","amount":"1000000000000000000","memo":"test transfer"}',
+    description: '🪙 Transfer ZFT private tokens. Sender is your wallet account (NEAR_SENDER_ID).\n\n📋 Amount is in smallest units (18 decimals). 1 ZFT = 1000000000000000000.\n\n🔗 Project: zavodil2.testnet/private-ft',
+    networks: ['testnet'],
+    proxyContractIdTestnet: 'zft.testnet',
+    proxyMethod: 'ft_transfer',
+    proxyDeposit: '100000000000000000000000', // 0.1 NEAR
+    proxyGas: '300000000000000', // 300 TGas
+    docsLink: '/docs/examples#private-token-ark',
+  },
+  {
+    type: 'proxy',
+    name: 'ZFT Token (Transfer Call)',
+    args: '{"receiver_id":"zavodil.testnet","amount":"1000000000000000000","memo":"test transfer call","msg":"hello from ZFT"}',
+    description: '🪙 Transfer ZFT tokens and call receiver contract (NEP-141 ft_transfer_call).\n\n📋 This method:\n1. Transfers tokens to receiver\n2. Calls ft_on_transfer on receiver contract with your msg\n3. Handles refunds if receiver returns unused tokens\n\n🔗 Project: zavodil2.testnet/private-ft',
+    networks: ['testnet'],
+    proxyContractIdTestnet: 'zft.testnet',
+    proxyMethod: 'ft_transfer_call',
+    proxyDeposit: '100000000000000000000000', // 0.1 NEAR
+    proxyGas: '300000000000000', // 300 TGas
+    docsLink: '/docs/examples#private-token-ark',
+  },
 ];
 
 // Combine all presets
@@ -224,7 +288,7 @@ function PlaygroundContent() {
 
   // Initialize with preset from URL or first preset
   const [selectedPreset, setSelectedPreset] = useState<string>(initialPreset?.name || '');
-  const [codeSourceType, setCodeSourceType] = useState<'github' | 'wasmurl'>(initialPreset?.type === 'direct' ? (initialPreset.codeSourceType || 'github') : 'github');
+  const [codeSourceType, setCodeSourceType] = useState<'github' | 'wasmurl' | 'project'>(initialPreset?.type === 'direct' ? (initialPreset.codeSourceType || 'github') : 'github');
   const [repo, setRepo] = useState(initialPreset?.type === 'direct' ? initialPreset.repo : '');
   const [commit, setCommit] = useState(initialPreset?.type === 'direct' ? initialPreset.commit : '');
   const [wasmUrl, setWasmUrl] = useState('');
@@ -240,6 +304,14 @@ function PlaygroundContent() {
   const [compileOnly, setCompileOnly] = useState(initialPreset?.type === 'direct' ? initialPreset.compileOnly || false : false);
   const [forceRebuild, setForceRebuild] = useState(initialPreset?.type === 'direct' ? initialPreset.forceRebuild || false : false);
   const [storeOnFastfs, setStoreOnFastfs] = useState(initialPreset?.type === 'direct' ? initialPreset.storeOnFastfs || false : false);
+
+  // Proxy preset state
+  const [proxyMethod, setProxyMethod] = useState(initialPreset?.type === 'proxy' ? initialPreset.proxyMethod : '');
+
+  // Project ID for project code source (format: account/name)
+  const [projectId, setProjectId] = useState('');
+  // Version hash for specific version execution
+  const [versionKey, setVersionKey] = useState('');
 
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ transaction: Record<string, unknown>; executionOutput: string | null; transactionHash: string } | null>(null);
@@ -344,7 +416,8 @@ function PlaygroundContent() {
     const preset = PRESETS.find(p => p.name === presetName);
     if (preset) {
       setSelectedPreset(preset.name);
-      setArgs(preset.args);
+      // Replace {{contractId}} placeholder with actual contract ID
+      setArgs(preset.args.replace(/\{\{contractId\}\}/g, contractId));
 
       if (preset.type === 'direct') {
         setCodeSourceType(preset.codeSourceType || 'github');
@@ -352,6 +425,8 @@ function PlaygroundContent() {
         setCommit(preset.commit || '');
         setWasmUrl(preset.wasmUrl || '');
         setWasmHash(preset.wasmHash || '');
+        setProjectId(preset.projectId || '');
+        setVersionKey(preset.versionKey || '');
         setBuildTarget(preset.buildTarget);
         setResponseFormat(preset.responseFormat);
         setSecretsProfile(preset.secretsProfile || '');
@@ -366,11 +441,14 @@ function PlaygroundContent() {
           : (preset.secretsOwnerMainnet || '');
         setSecretsOwner(owner);
       } else {
-        // Proxy preset - clear direct-only fields
+        // Proxy preset - set proxy method and clear direct-only fields
+        setProxyMethod(preset.proxyMethod);
         setCodeSourceType('github');
         setRepo('');
         setCommit('');
         setWasmUrl('');
+        setProjectId('');
+        setVersionKey('');
         setBuildTarget('wasm32-wasip1');
         setResponseFormat('Json');
         setSecretsProfile('');
@@ -486,11 +564,10 @@ function PlaygroundContent() {
     setResult(null);
 
     try {
-      // Check if this is a proxy contract call
-      const currentPreset = PRESETS.find(p => p.name === selectedPreset);
-
       let action;
       let receiverId;
+
+      const currentPreset = PRESETS.find(p => p.name === selectedPreset);
 
       if (currentPreset?.type === 'proxy') {
         // PROXY CONTRACT CALL
@@ -519,15 +596,71 @@ function PlaygroundContent() {
         }
 
         action = actionCreators.functionCall(
-          currentPreset.proxyMethod,
+          proxyMethod,
           proxyArgs,
           BigInt(currentPreset.proxyGas),
           finalDeposit
         );
 
         receiverId = proxyContractId;
+      } else if (codeSourceType === 'project') {
+        // PROJECT EXECUTION
+        if (!projectId || !projectId.trim()) {
+          throw new Error('Please enter a project ID (e.g., account.near/project-name)');
+        }
+
+        // Parse input data (optional)
+        let inputData = null;
+        if (args && args.trim()) {
+          try {
+            const parsedArgs = JSON.parse(args);
+            inputData = JSON.stringify(parsedArgs);
+          } catch {
+            inputData = args;
+          }
+        }
+
+        // Build Project source with optional version_key
+        const projectSource = {
+          Project: {
+            project_id: projectId.trim(),
+            version_key: (versionKey && versionKey.trim()) ? versionKey.trim() : null,
+          },
+        };
+
+        // Build secrets_ref if both profile and owner are provided
+        let secretsRef = null;
+        if (secretsProfile && secretsProfile.trim() && secretsOwner && secretsOwner.trim()) {
+          secretsRef = {
+            profile: secretsProfile.trim(),
+            account_id: secretsOwner.trim(),
+          };
+        }
+
+        const transactionArgs: Record<string, unknown> = {
+          source: projectSource,
+          resource_limits: {
+            max_instructions: 10000000000, // 10B instructions
+            max_memory_mb: 128,
+            max_execution_seconds: 60,
+          },
+          input_data: inputData,
+          response_format: responseFormat,
+        };
+        if (secretsRef) {
+          transactionArgs.secrets_ref = secretsRef;
+        }
+
+        action = actionCreators.functionCall(
+          'request_execution',
+          transactionArgs,
+          BigInt('300000000000000'), // 300 TGas
+          BigInt('100000000000000000000000') // 0.1 NEAR
+        );
+
+        receiverId = contractId;
       } else {
-        // DIRECT OUTLAYER CALL
+        // DIRECT OUTLAYER CALL (github or wasmurl)
         // Parse arguments (optional)
         let inputData = null;
         if (args && args.trim()) {
@@ -549,8 +682,8 @@ function PlaygroundContent() {
           };
         }
 
-        // Build code_source based on type
-        const codeSource = codeSourceType === 'github'
+        // Build source based on type (ExecutionSource enum)
+        const executionSource = codeSourceType === 'github'
           ? {
               GitHub: {
                 repo,
@@ -577,7 +710,7 @@ function PlaygroundContent() {
 
         // Prepare transaction arguments
         const transactionArgs = {
-          code_source: codeSource,
+          source: executionSource,
           resource_limits: {
             max_instructions: 10000000000, // 10B instructions
             max_memory_mb: 128,
@@ -768,12 +901,17 @@ function PlaygroundContent() {
 
                 {/* Method Name */}
                 <div className="mb-6">
-                  <label className="block text-sm font-medium text-gray-700">
+                  <label htmlFor="proxyMethod" className="block text-sm font-medium text-gray-700">
                     Method Name
                   </label>
-                  <div className="mt-1 block w-full rounded-md border border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-600 font-mono">
-                    {currentPreset.proxyMethod}
-                  </div>
+                  <input
+                    type="text"
+                    id="proxyMethod"
+                    value={proxyMethod}
+                    onChange={(e) => setProxyMethod(e.target.value)}
+                    placeholder="method_name"
+                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm font-mono px-3 py-2"
+                  />
                 </div>
               </>
             ) : null;
@@ -789,14 +927,14 @@ function PlaygroundContent() {
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Code Source
                   </label>
-                  <div className="flex gap-4">
+                  <div className="flex gap-4 flex-wrap">
                     <label className="inline-flex items-center">
                       <input
                         type="radio"
                         name="codeSourceType"
                         value="github"
                         checked={codeSourceType === 'github'}
-                        onChange={(e) => setCodeSourceType(e.target.value as 'github' | 'wasmurl')}
+                        onChange={(e) => setCodeSourceType(e.target.value as 'github' | 'wasmurl' | 'project')}
                         className="form-radio h-4 w-4 text-blue-600"
                       />
                       <span className="ml-2 text-sm text-gray-700">GitHub Repository</span>
@@ -807,15 +945,62 @@ function PlaygroundContent() {
                         name="codeSourceType"
                         value="wasmurl"
                         checked={codeSourceType === 'wasmurl'}
-                        onChange={(e) => setCodeSourceType(e.target.value as 'github' | 'wasmurl')}
+                        onChange={(e) => setCodeSourceType(e.target.value as 'github' | 'wasmurl' | 'project')}
                         className="form-radio h-4 w-4 text-blue-600"
                       />
                       <span className="ml-2 text-sm text-gray-700">WASM URL</span>
                     </label>
+                    <label className="inline-flex items-center">
+                      <input
+                        type="radio"
+                        name="codeSourceType"
+                        value="project"
+                        checked={codeSourceType === 'project'}
+                        onChange={(e) => setCodeSourceType(e.target.value as 'github' | 'wasmurl' | 'project')}
+                        className="form-radio h-4 w-4 text-blue-600"
+                      />
+                      <span className="ml-2 text-sm text-gray-700">Project</span>
+                    </label>
                   </div>
                 </div>
 
-                {codeSourceType === 'github' ? (
+                {codeSourceType === 'project' ? (
+                  /* Project input */
+                  <>
+                    <div className="mb-6">
+                      <label htmlFor="projectId" className="block text-sm font-medium text-gray-700">
+                        Project ID
+                      </label>
+                      <input
+                        type="text"
+                        id="projectId"
+                        value={projectId}
+                        onChange={(e) => setProjectId(e.target.value)}
+                        placeholder="account.near/project-name"
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm px-3 py-2"
+                      />
+                      <p className="mt-1 text-xs text-gray-500">
+                        Enter your project ID in format: owner_account/project_name (e.g., alice.near/my-app)
+                      </p>
+                    </div>
+                    <div className="mb-6">
+                      <label htmlFor="versionKey" className="block text-sm font-medium text-gray-700">
+                        Version Key (Optional)
+                      </label>
+                      <input
+                        type="text"
+                        id="versionKey"
+                        value={versionKey}
+                        onChange={(e) => setVersionKey(e.target.value)}
+                        placeholder="Leave empty for active version"
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm font-mono px-3 py-2"
+                      />
+                      <p className="mt-1 text-xs text-gray-500">
+                        For WasmUrl: use hash. For GitHub: use &quot;repo@commit&quot;. Leave empty for active version.
+                      </p>
+                    </div>
+                  </>
+                ) : codeSourceType === 'github' ? (
                   <>
                     {/* GitHub Repository */}
                     <div className="mb-6">
@@ -924,22 +1109,24 @@ function PlaygroundContent() {
                   </>
                 )}
 
-                {/* Build Target and Response Format in columns */}
-                <div className="mb-6 grid grid-cols-2 gap-4">
-                  <div>
-                    <label htmlFor="buildTarget" className="block text-sm font-medium text-gray-700">
-                      Build Target
-                    </label>
-                    <select
-                      id="buildTarget"
-                      value={buildTarget}
-                      onChange={(e) => setBuildTarget(e.target.value)}
-                      className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm px-3 py-2"
-                    >
-                      <option value="wasm32-wasip1">wasm32-wasip1</option>
-                      <option value="wasm32-wasip2">wasm32-wasip2</option>
-                    </select>
-                  </div>
+                {/* Build Target and Response Format in columns - hide Build Target for project */}
+                <div className={`mb-6 grid ${codeSourceType === 'project' ? 'grid-cols-1' : 'grid-cols-2'} gap-4`}>
+                  {codeSourceType !== 'project' && (
+                    <div>
+                      <label htmlFor="buildTarget" className="block text-sm font-medium text-gray-700">
+                        Build Target
+                      </label>
+                      <select
+                        id="buildTarget"
+                        value={buildTarget}
+                        onChange={(e) => setBuildTarget(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm px-3 py-2"
+                      >
+                        <option value="wasm32-wasip1">wasm32-wasip1</option>
+                        <option value="wasm32-wasip2">wasm32-wasip2</option>
+                      </select>
+                    </div>
+                  )}
                   <div>
                     <label htmlFor="responseFormat" className="block text-sm font-medium text-gray-700">
                       Response Format
@@ -1006,7 +1193,7 @@ function PlaygroundContent() {
             ) : null;
           })()}
 
-          {/* Arguments */}
+          {/* Arguments / Input Data */}
           <div className="mb-6">
             <label htmlFor="args" className="block text-sm font-medium text-gray-700">
               {(() => {
@@ -1246,16 +1433,48 @@ function PlaygroundContent() {
           {result && (
             <div className="mt-6 space-y-4">
               {/* Execution Output */}
-              {result.executionOutput && (
-                <div className="bg-green-50 border border-green-200 rounded-md p-4">
-                  <h3 className="text-sm font-medium text-green-800 mb-2">Execution Result</h3>
-                  <div className="bg-white rounded p-3 border border-green-300">
-                    <pre className="text-sm text-gray-900 overflow-auto whitespace-pre-wrap">
-                      {result.executionOutput}
-                    </pre>
+              {result.executionOutput && (() => {
+                // Try to parse JSON to check if execution was successful
+                let parsedOutput: { success?: boolean; error?: string; output?: unknown } | null = null;
+                try {
+                  parsedOutput = JSON.parse(result.executionOutput);
+                } catch {
+                  // Not JSON, show as-is
+                }
+
+                const isError = parsedOutput && parsedOutput.success === false;
+                const errorMessage = parsedOutput?.error;
+                const actualOutput = parsedOutput?.output;
+
+                if (isError) {
+                  return (
+                    <div className="bg-red-50 border border-red-200 rounded-md p-4">
+                      <h3 className="text-sm font-medium text-red-800 mb-2">❌ Execution Failed</h3>
+                      <div className="bg-white rounded p-3 border border-red-300">
+                        <pre className="text-sm text-red-900 overflow-auto whitespace-pre-wrap">
+                          {errorMessage || result.executionOutput}
+                        </pre>
+                      </div>
+                    </div>
+                  );
+                }
+
+                // Success case - show output field if available, otherwise raw output
+                const displayOutput = actualOutput !== undefined && actualOutput !== null
+                  ? (typeof actualOutput === 'string' ? actualOutput : JSON.stringify(actualOutput, null, 2))
+                  : result.executionOutput;
+
+                return (
+                  <div className="bg-green-50 border border-green-200 rounded-md p-4">
+                    <h3 className="text-sm font-medium text-green-800 mb-2">✅ Execution Result</h3>
+                    <div className="bg-white rounded p-3 border border-green-300">
+                      <pre className="text-sm text-gray-900 overflow-auto whitespace-pre-wrap">
+                        {displayOutput}
+                      </pre>
+                    </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
 
               {/* Transaction Details */}
               <div className="bg-blue-50 border border-blue-200 rounded-md p-4">

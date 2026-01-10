@@ -1,17 +1,19 @@
 #!/bin/bash
 
-# Usage: ./run_keystore.sh [testnet|mainnet]
+# Usage: ./run_keystore.sh [dev|testnet|mainnet]
 # Default: mainnet
 
 NETWORK=${1:-mainnet}
 
-if [ "$NETWORK" != "testnet" ] && [ "$NETWORK" != "mainnet" ]; then
-    echo "Error: Invalid network. Use 'testnet' or 'mainnet'"
+if [ "$NETWORK" != "dev" ] && [ "$NETWORK" != "testnet" ] && [ "$NETWORK" != "mainnet" ]; then
+    echo "Error: Invalid network. Use 'dev', 'testnet' or 'mainnet'"
     exit 1
 fi
 
 # Determine env file
-if [ "$NETWORK" = "testnet" ]; then
+if [ "$NETWORK" = "dev" ]; then
+    ENV_FILE=".env.dev"
+elif [ "$NETWORK" = "testnet" ]; then
     ENV_FILE=".env.testnet"
 else
     ENV_FILE=".env"

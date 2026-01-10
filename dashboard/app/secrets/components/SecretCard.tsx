@@ -1,6 +1,6 @@
 'use client';
 
-import { UserSecret, isRepoAccessor, isWasmHashAccessor } from './types';
+import { UserSecret, isRepoAccessor, isWasmHashAccessor, isProjectAccessor } from './types';
 import { formatAccessCondition } from './utils';
 
 interface SecretCardProps {
@@ -48,6 +48,16 @@ export function SecretCard({ secret, onEdit, onUpdate, onDelete }: SecretCardPro
                 </span>
                 <h3 className="text-sm font-mono text-gray-900 truncate" title={secret.accessor.WasmHash.hash}>
                   {secret.accessor.WasmHash.hash.substring(0, 8)}...{secret.accessor.WasmHash.hash.substring(secret.accessor.WasmHash.hash.length - 8)}
+                </h3>
+              </>
+            )}
+            {isProjectAccessor(secret.accessor) && secret.accessor.Project?.project_id && (
+              <>
+                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-700">
+                  Project
+                </span>
+                <h3 className="text-sm font-semibold text-gray-900 truncate">
+                  {secret.accessor.Project.project_id}
                 </h3>
               </>
             )}
