@@ -23,7 +23,12 @@ All approved keystores use the same account (`keystore-dao.outlayer.testnet`) to
 ## Build & Deploy
 
 ### Build Contract
+
 ```bash
+# macOS build via docker
+./build-docker.sh
+
+# local build
 ./build.sh
 # or
 cargo near build
@@ -32,19 +37,12 @@ cargo near build
 ### Deploy to Testnet
 ```bash
 # Deploy contract
-near deploy keystore-dao.outlayer.testnet \
-  --wasmFile res/keystore_dao_contract.wasm \
-  --accountId keystore-dao.outlayer.testnet
+near contract deploy dao.outlayer.testnet use-file res/keystore_dao_contract.wasm without-init-call network-config testnet sign-with-keychain send
 
 # Initialize with DAO members
-near call keystore-dao.outlayer.testnet new \
-  '{
-    "owner_id": "admin.testnet",
-    "init_account_id": "init-keystore.outlayer.testnet",
-    "dao_members": ["alice.testnet", "bob.testnet", "charlie.testnet"],
-    "mpc_contract_id": "v1.signer.testnet"
-  }' \
-  --accountId keystore-dao.outlayer.testnet
+
+near call dao.outlayer.testnet new '{"owner_id": "owner.outlayer.testnet", "init_account_id": "init-keystore.outlayer.testnet", "dao
+_members": ["zavodil.testnet"], "mpc_contract_id": "v1.signer-prod.testnet"}' --accountId dao.outlayer.testnet
 ```
 
 ### Update Collateral (Required for TEE verification)
@@ -52,7 +50,7 @@ near call keystore-dao.outlayer.testnet new \
 # Get latest Intel collateral from:
 # https://api.trustedservices.intel.com/sgx/certification/v4/
 
-near call keystore-dao.outlayer.testnet update_collateral \
+near call dao.outlayer.testnet update_collateral \
   '{"collateral": "{...json...}"}' \
   --accountId admin.testnet
 ```

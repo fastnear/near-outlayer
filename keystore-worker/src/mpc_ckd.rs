@@ -24,11 +24,24 @@ use near_primitives::views::{QueryRequest, CallResult, FinalExecutionStatus};
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use sha3::{Digest, Sha3_256};
 
 // Constants from Bowen's example
 const BLS12381G1_PUBLIC_KEY_SIZE: usize = 48;
 const NEAR_CKD_DOMAIN: &[u8] = b"NEAR BLS12381G1_XMD:SHA-256_SSWU_RO_";
 const OUTPUT_SECRET_SIZE: usize = 32;
+
+// MPC app_id derivation prefix (must match MPC contract exactly)
+const APP_ID_DERIVATION_PREFIX: &str = "near-mpc v0.1.0 app_id derivation:";
+
+/// Derive app_id the same way MPC contract does
+/// app_id = SHA3-256("{prefix}{predecessor_id},{derivation_path}")
+fn derive_app_id(predecessor_id: &str, derivation_path: &str) -> [u8; 32] {
+    let derivation_string = format!("{}{},{}", APP_ID_DERIVATION_PREFIX, predecessor_id, derivation_path);
+    let mut hasher = Sha3_256::new();
+    hasher.update(derivation_string.as_bytes());
+    hasher.finalize().into()
+}
 
 /// MPC CKD configuration from environment
 #[derive(Debug, Clone)]
@@ -148,11 +161,16 @@ impl MpcCkdClient {
         let response = self.call_mpc_contract(signer_account_id, request_args).await?;
 
         // Decrypt and verify response
+        // app_id must be derived the same way MPC contract does it
+        let derivation_path = "";  // Empty path for keystore master key
+        let app_id = derive_app_id(signer_account_id, derivation_path);
+        tracing::debug!("Derived app_id: {:?}", app_id);
+        tracing::debug!("Derived app_id (hex): {}", hex::encode(&app_id));
         let secret = self.decrypt_secret_and_verify(
             response.big_y,
             response.big_c,
             ephemeral_private_key,
-            signer_account_id.as_bytes(),
+            &app_id,
         )?;
 
         // Derive final key using HKDF
