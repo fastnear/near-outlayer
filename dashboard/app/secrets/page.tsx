@@ -40,7 +40,15 @@ export default function SecretsPage() {
         args: { account_id: accountId },
       });
 
-      setUserSecrets(Array.isArray(secrets) ? secrets : []);
+      // Filter out System accessor (Payment Keys) - those are managed on /payment-keys page
+      const filteredSecrets = (Array.isArray(secrets) ? secrets : []).filter(
+        (s: UserSecret) => {
+          if (!s.accessor || typeof s.accessor !== 'object') return true;
+          return !('System' in s.accessor);
+        }
+      );
+
+      setUserSecrets(filteredSecrets);
     } catch (err) {
       console.error('Failed to load user secrets:', err);
       setError(`Failed to load secrets: ${(err as Error).message}`);

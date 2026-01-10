@@ -1,13 +1,27 @@
 //! HTTP API server for keystore worker
 //!
-//! Public endpoints (no auth required):
+//! ## Route Access Levels
+//!
+//! ### Public endpoints (no auth required):
 //! - GET /health - Health check
 //! - POST /pubkey - Get public key for encryption (used by dashboard)
 //!
-//! Protected endpoints (require bearer token auth):
-//! - POST /decrypt - Decrypt secrets from contract (worker only)
-//! - POST /add_generated_secret - Add generated secrets (coordinator only)
-//! - POST /update_user_secrets - Update user secrets with NEP-413 signature (coordinator only)
+//! ### Worker-only endpoints (ALLOWED_WORKER_TOKEN_HASHES):
+//! - POST /decrypt - Decrypt secrets from contract
+//! - POST /encrypt - Encrypt data (for TopUp flow)
+//! - POST /decrypt-raw - Decrypt raw data with seed
+//! - POST /storage/encrypt - Encrypt persistent storage data
+//! - POST /storage/decrypt - Decrypt persistent storage data
+//!
+//! ### Coordinator-only endpoints (ALLOWED_COORDINATOR_TOKEN_HASHES):
+//! - POST /add_generated_secret - Add generated PROTECTED_ secrets
+//! - POST /update_user_secrets - Update user secrets with NEP-413 signature
+//!
+//! ## Security Model
+//!
+//! Workers (running in TEE) get access to decrypt/encrypt endpoints.
+//! Coordinator (NOT in TEE) only gets access to secret management endpoints
+//! that require additional NEP-413 signature verification.
 
 use axum::{
     extract::State,
@@ -117,6 +131,18 @@ pub enum SecretAccessor {
     Project {
         project_id: String,
     },
+    /// System secrets (Payment Keys for HTTPS API)
+    System {
+        secret_type: SystemSecretType,
+    },
+}
+
+/// System secret types
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemSecretType {
+    /// Payment Key for HTTPS API
+    PaymentKey,
 }
 
 /// Request to decrypt secrets from contract
@@ -339,27 +365,64 @@ pub struct StorageDecryptResponse {
     pub value_base64: String,
 }
 
+// ==================== Generic Encryption API (for TopUp flow) ====================
+
+/// Request to encrypt plaintext data
+/// Used by workers to re-encrypt secrets after TopUp
+#[derive(Debug, Deserialize)]
+pub struct EncryptRequest {
+    /// Seed for deriving keypair (format depends on secret type)
+    /// For Payment Key: "system:payment_key:{owner}:{nonce}"
+    pub seed: String,
+    /// Plaintext data to encrypt (base64 encoded)
+    pub plaintext_base64: String,
+    /// TEE attestation proving worker identity
+    pub attestation: Attestation,
+}
+
+/// Response with encrypted data
+#[derive(Debug, Serialize)]
+pub struct EncryptResponse {
+    /// Encrypted data (base64)
+    pub encrypted_base64: String,
+}
+
 /// Create the API router with all endpoints
-/// Protected endpoints require Bearer token auth (for coordinator/worker access)
-/// /pubkey and /health are public (for dashboard access)
+///
+/// Route access levels:
+/// - Public (no auth): /health, /pubkey
+/// - Worker-only (ALLOWED_WORKER_TOKEN_HASHES): /decrypt, /encrypt, /decrypt-raw, /storage/*
+/// - Coordinator-only (ALLOWED_COORDINATOR_TOKEN_HASHES): /add_generated_secret, /update_user_secrets
 pub fn create_router(state: AppState) -> Router {
-    // Protected routes (require auth token)
-    let protected_routes = Router::new()
+    // Worker-only routes (for TEE workers)
+    // These endpoints require valid worker token - coordinator CANNOT access them
+    let worker_routes = Router::new()
         .route("/decrypt", post(decrypt_handler))
-        .route("/add_generated_secret", post(add_generated_secret_handler))
-        .route("/update_user_secrets", post(update_user_secrets_handler)) // Protected + NEP-413 signature
+        .route("/encrypt", post(encrypt_handler)) // For TopUp flow - re-encrypt with new balance
+        .route("/decrypt-raw", post(decrypt_raw_handler)) // For TopUp flow - decrypt raw data with seed
         .route("/storage/encrypt", post(storage_encrypt_handler))
         .route("/storage/decrypt", post(storage_decrypt_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
-            auth_middleware,
+            worker_auth_middleware,
+        ));
+
+    // Coordinator-only routes (for dashboard proxy)
+    // These endpoints require valid coordinator token - workers CANNOT access them
+    let coordinator_routes = Router::new()
+        .route("/add_generated_secret", post(add_generated_secret_handler))
+        .route("/update_user_secrets", post(update_user_secrets_handler)) // + NEP-413 signature
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            coordinator_auth_middleware,
         ));
 
     // Public routes (no auth required)
     Router::new()
         .route("/health", get(health_handler))
         .route("/pubkey", post(pubkey_handler)) // Public for dashboard encryption
-        .merge(protected_routes)
+        .merge(worker_routes)
+        .merge(coordinator_routes)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -510,6 +573,16 @@ async fn decrypt_handler(
                 "Received decrypt request (Project)"
             );
         }
+        SecretAccessor::System { secret_type } => {
+            tracing::info!(
+                task_id = %task_id_str,
+                tee_type = %req.attestation.tee_type,
+                secret_type = ?secret_type,
+                profile = %req.profile,
+                owner = %req.owner,
+                "Received decrypt request (System)"
+            );
+        }
     }
 
     // 1. Verify TEE attestation
@@ -580,6 +653,29 @@ async fn decrypt_handler(
                     tracing::warn!(
                         task_id = %task_id_str,
                         project_id = %project_id,
+                        profile = %req.profile,
+                        owner = %req.owner,
+                        "Secrets not found in contract"
+                    );
+                    ApiError::BadRequest("Secrets not found in contract".to_string())
+                })?
+        }
+        SecretAccessor::System { secret_type } => {
+            // Convert SystemSecretType to contract format string
+            let secret_type_str = match secret_type {
+                SystemSecretType::PaymentKey => "PaymentKey",
+            };
+            near_client
+                .get_secrets_by_system(secret_type_str, &req.profile, &req.owner)
+                .await
+                .map_err(|e| {
+                    tracing::error!(task_id = %task_id_str, error = %e, "Failed to read secrets from contract");
+                    ApiError::InternalError(format!("Failed to read secrets from contract: {}", e))
+                })?
+                .ok_or_else(|| {
+                    tracing::warn!(
+                        task_id = %task_id_str,
+                        secret_type = ?secret_type,
                         profile = %req.profile,
                         owner = %req.owner,
                         "Secrets not found in contract"
@@ -697,6 +793,25 @@ async fn decrypt_handler(
 
             seed
         }
+        SecretAccessor::System { secret_type } => {
+            // Seed format: system:{type}:{owner}:{nonce}
+            // nonce is stored in profile field
+            let type_str = match secret_type {
+                SystemSecretType::PaymentKey => "payment_key",
+            };
+            let seed = format!("system:{}:{}:{}", type_str, req.owner, req.profile);
+
+            tracing::info!(
+                task_id = %task_id_str,
+                secret_type = ?secret_type,
+                owner = %req.owner,
+                nonce = %req.profile,
+                seed = %seed,
+                "🔓 DECRYPTION SEED (System)"
+            );
+
+            seed
+        }
     };
 
     // 5. Decrypt using derived keypair
@@ -725,6 +840,138 @@ async fn decrypt_handler(
     Ok(Json(DecryptResponse {
         plaintext_secrets: plaintext_b64,
     }))
+}
+
+/// Encrypt plaintext data
+///
+/// Used by workers to re-encrypt secrets after TopUp:
+/// 1. Worker decrypts current Payment Key data via /decrypt
+/// 2. Worker parses JSON, updates initial_balance
+/// 3. Worker calls /encrypt to get new encrypted data
+/// 4. Worker calls promise_yield_resume with new encrypted data
+async fn encrypt_handler(
+    State(state): State<AppState>,
+    Json(req): Json<EncryptRequest>,
+) -> Result<Json<EncryptResponse>, ApiError> {
+    // Check if keystore is ready
+    if !state.is_ready() {
+        tracing::warn!("Encrypt request rejected - keystore not ready");
+        return Err(ApiError::Unauthorized(
+            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string()
+        ));
+    }
+
+    tracing::info!(
+        seed = %req.seed,
+        "Received encrypt request"
+    );
+
+    // Verify TEE attestation
+    crate::attestation::verify_attestation(
+        &req.attestation,
+        &state.config.tee_mode,
+        &state.expected_measurements,
+    )
+    .map_err(|e| {
+        tracing::warn!(error = %e, "Encrypt attestation verification failed");
+        ApiError::Unauthorized(format!("Attestation verification failed: {}", e))
+    })?;
+
+    // Decode plaintext from base64
+    let plaintext_bytes = base64::decode(&req.plaintext_base64)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid base64 in plaintext: {}", e)))?;
+
+    // Encrypt with derived key
+    let keystore = state.keystore.read().await;
+    let encrypted_bytes = keystore
+        .encrypt(&req.seed, &plaintext_bytes)
+        .map_err(|e| ApiError::InternalError(format!("Failed to encrypt data: {}", e)))?;
+
+    let encrypted_base64 = base64::encode(&encrypted_bytes);
+
+    tracing::info!(
+        seed = %req.seed,
+        plaintext_len = plaintext_bytes.len(),
+        encrypted_len = encrypted_bytes.len(),
+        "Successfully encrypted data"
+    );
+
+    Ok(Json(EncryptResponse { encrypted_base64 }))
+}
+
+/// Request to decrypt raw encrypted data directly
+#[derive(Debug, Deserialize)]
+pub struct DecryptRawRequest {
+    /// Seed for key derivation
+    pub seed: String,
+    /// Base64-encoded encrypted data
+    pub encrypted_base64: String,
+    /// TEE attestation from requesting worker
+    pub attestation: Attestation,
+}
+
+/// Response with decrypted data
+#[derive(Debug, Serialize)]
+pub struct DecryptRawResponse {
+    /// Base64-encoded plaintext data
+    pub plaintext_base64: String,
+}
+
+/// Decrypt raw encrypted data directly
+///
+/// Used by workers for TopUp flow:
+/// 1. Worker receives encrypted_data from SystemEvent::TopUpPaymentKey
+/// 2. Worker calls /decrypt-raw with seed and encrypted_data
+/// 3. Worker receives plaintext Payment Key JSON
+/// 4. Worker updates balance and calls /encrypt
+async fn decrypt_raw_handler(
+    State(state): State<AppState>,
+    Json(req): Json<DecryptRawRequest>,
+) -> Result<Json<DecryptRawResponse>, ApiError> {
+    // Check if keystore is ready
+    if !state.is_ready() {
+        tracing::warn!("Decrypt-raw request rejected - keystore not ready");
+        return Err(ApiError::Unauthorized(
+            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string()
+        ));
+    }
+
+    tracing::info!(
+        seed = %req.seed,
+        "Received decrypt-raw request"
+    );
+
+    // Verify TEE attestation
+    crate::attestation::verify_attestation(
+        &req.attestation,
+        &state.config.tee_mode,
+        &state.expected_measurements,
+    )
+    .map_err(|e| {
+        tracing::warn!(error = %e, "Decrypt-raw attestation verification failed");
+        ApiError::Unauthorized(format!("Attestation verification failed: {}", e))
+    })?;
+
+    // Decode encrypted data from base64
+    let encrypted_bytes = base64::decode(&req.encrypted_base64)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid base64 in encrypted_data: {}", e)))?;
+
+    // Decrypt with derived key
+    let keystore = state.keystore.read().await;
+    let plaintext_bytes = keystore
+        .decrypt(&req.seed, &encrypted_bytes)
+        .map_err(|e| ApiError::InternalError(format!("Failed to decrypt data: {}", e)))?;
+
+    let plaintext_base64 = base64::encode(&plaintext_bytes);
+
+    tracing::info!(
+        seed = %req.seed,
+        encrypted_len = encrypted_bytes.len(),
+        plaintext_len = plaintext_bytes.len(),
+        "Successfully decrypted raw data"
+    );
+
+    Ok(Json(DecryptRawResponse { plaintext_base64 }))
 }
 
 /// Add generated secrets to existing encrypted secrets
@@ -1056,6 +1303,18 @@ async fn update_user_secrets_handler(
                     ApiError::InternalError(format!("Failed to fetch secrets: {}", e))
                 })?
         }
+        SecretAccessor::System { secret_type } => {
+            let secret_type_str = match secret_type {
+                SystemSecretType::PaymentKey => "PaymentKey",
+            };
+            near_client
+                .get_secrets_by_system(secret_type_str, &req.profile, &req.owner)
+                .await
+                .map_err(|e| {
+                    tracing::warn!(error = %e, "Failed to fetch secrets from contract");
+                    ApiError::InternalError(format!("Failed to fetch secrets: {}", e))
+                })?
+        }
     };
 
     // 7. Decrypt existing secrets (if any) using OLD accessor seed
@@ -1097,6 +1356,12 @@ async fn update_user_secrets_handler(
             }
             SecretAccessor::Project { project_id } => {
                 format!("project:{}:{}", project_id, req.owner)
+            }
+            SecretAccessor::System { secret_type } => {
+                let type_str = match secret_type {
+                    SystemSecretType::PaymentKey => "payment_key",
+                };
+                format!("system:{}:{}:{}", type_str, req.owner, req.profile)
             }
         };
 
@@ -1246,6 +1511,12 @@ async fn update_user_secrets_handler(
         }
         SecretAccessor::Project { project_id } => {
             format!("project:{}:{}", project_id, req.owner)
+        }
+        SecretAccessor::System { secret_type } => {
+            let type_str = match secret_type {
+                SystemSecretType::PaymentKey => "payment_key",
+            };
+            format!("system:{}:{}:{}", type_str, req.owner, req.profile)
         }
     };
 
@@ -1550,13 +1821,11 @@ fn verify_near_signature(
     Ok(())
 }
 
-/// Authentication middleware (only for /decrypt and /add_generated_secret)
+/// Worker authentication middleware
 ///
-/// Checks Bearer token in Authorization header.
-/// Token is hashed with SHA256 and compared against allowed hashes.
-/// This is the primary authentication mechanism when worker accesses secrets.
-/// Note: /pubkey and /health are public endpoints (no auth required).
-async fn auth_middleware(
+/// For TEE worker-only endpoints: /decrypt, /encrypt, /decrypt-raw, /storage/*
+/// Checks Bearer token against ALLOWED_WORKER_TOKEN_HASHES.
+async fn worker_auth_middleware(
     State(state): State<AppState>,
     req: axum::http::Request<axum::body::Body>,
     next: middleware::Next,
@@ -1567,7 +1836,7 @@ async fn auth_middleware(
         .get("Authorization")
         .and_then(|h| h.to_str().ok())
         .ok_or_else(|| {
-            tracing::warn!("Missing Authorization header in request");
+            tracing::warn!("Missing Authorization header in worker request");
             ApiError::Unauthorized("Missing Authorization header".to_string())
         })?;
 
@@ -1585,14 +1854,13 @@ async fn auth_middleware(
     hasher.update(token.as_bytes());
     let token_hash = hex::encode(hasher.finalize());
 
-    // Check if hash is in allowed list
+    // Check if hash is in allowed WORKER list
     if !state.config.allowed_worker_token_hashes.contains(&token_hash) {
         tracing::warn!(
             token_hash = %token_hash,
-            allowed_hashes = ?state.config.allowed_worker_token_hashes,
-            "Unauthorized: token hash not in allowed list"
+            "Unauthorized: token hash not in worker allowed list"
         );
-        return Err(ApiError::Unauthorized("Invalid token".to_string()));
+        return Err(ApiError::Unauthorized("Invalid worker token".to_string()));
     }
 
     // Find which worker this token belongs to (for logging)
@@ -1604,7 +1872,57 @@ async fn auth_middleware(
     tracing::debug!(
         token_hash = %token_hash,
         worker_index = worker_index,
-        "✅ Worker authenticated successfully via bearer token"
+        "✅ Worker authenticated successfully"
+    );
+
+    Ok(next.run(req).await)
+}
+
+/// Coordinator authentication middleware
+///
+/// For coordinator-only endpoints: /add_generated_secret, /update_user_secrets
+/// Checks Bearer token against ALLOWED_COORDINATOR_TOKEN_HASHES.
+async fn coordinator_auth_middleware(
+    State(state): State<AppState>,
+    req: axum::http::Request<axum::body::Body>,
+    next: middleware::Next,
+) -> Result<Response, ApiError> {
+    // Get Authorization header
+    let auth_header = req
+        .headers()
+        .get("Authorization")
+        .and_then(|h| h.to_str().ok())
+        .ok_or_else(|| {
+            tracing::warn!("Missing Authorization header in coordinator request");
+            ApiError::Unauthorized("Missing Authorization header".to_string())
+        })?;
+
+    // Extract Bearer token
+    let token = auth_header
+        .strip_prefix("Bearer ")
+        .ok_or_else(|| {
+            tracing::warn!("Invalid Authorization format (expected 'Bearer <token>')");
+            ApiError::Unauthorized("Invalid Authorization format".to_string())
+        })?;
+
+    // Hash token with SHA256
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    let token_hash = hex::encode(hasher.finalize());
+
+    // Check if hash is in allowed COORDINATOR list
+    if !state.config.allowed_coordinator_token_hashes.contains(&token_hash) {
+        tracing::warn!(
+            token_hash = %token_hash,
+            "Unauthorized: token hash not in coordinator allowed list"
+        );
+        return Err(ApiError::Unauthorized("Invalid coordinator token".to_string()));
+    }
+
+    tracing::debug!(
+        token_hash = %token_hash,
+        "✅ Coordinator authenticated successfully"
     );
 
     Ok(next.run(req).await)

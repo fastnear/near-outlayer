@@ -14,6 +14,26 @@ use crate::api_client::{ApiClient, CreateTaskParams, ResourceLimits as ApiResour
 pub enum ContractEvent {
     ExecutionRequested(ExecutionRequestedEvent),
     ProjectStorageCleanup(ProjectStorageCleanupEvent),
+    TopUpPaymentKey(TopUpPaymentKeyEvent),
+    DeletePaymentKey(DeletePaymentKeyEvent),
+}
+
+/// TopUpPaymentKey event data from SystemEvent
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopUpPaymentKeyEvent {
+    pub data_id: Vec<u8>,          // CryptoHash for yield/resume
+    pub owner: String,              // Payment Key owner
+    pub nonce: u32,                 // Payment Key nonce (profile)
+    pub amount: String,             // Amount in minimal token units (U128 as string)
+    pub encrypted_data: String,     // Current encrypted secret (base64)
+}
+
+/// DeletePaymentKey event data from SystemEvent
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeletePaymentKeyEvent {
+    pub data_id: Vec<u8>,          // CryptoHash for yield/resume
+    pub owner: String,              // Payment Key owner
+    pub nonce: u32,                 // Payment Key nonce (profile)
 }
 
 /// ExecutionRequested event data from contract (matches contract's event structure)
@@ -394,6 +414,16 @@ impl EventMonitor {
                                     error!("Failed to handle project_storage_cleanup event: {}", e);
                                 }
                             }
+                            ContractEvent::TopUpPaymentKey(topup_event) => {
+                                if let Err(e) = self.handle_topup_payment_key(topup_event).await {
+                                    error!("Failed to handle topup_payment_key event: {}", e);
+                                }
+                            }
+                            ContractEvent::DeletePaymentKey(delete_event) => {
+                                if let Err(e) = self.handle_delete_payment_key(delete_event).await {
+                                    error!("Failed to handle delete_payment_key event: {}", e);
+                                }
+                            }
                         }
                     }
 
@@ -686,6 +716,35 @@ impl EventMonitor {
 
                 Some(ContractEvent::ProjectStorageCleanup(event_data))
             }
+            "system_event" => {
+                // SystemEvent is wrapped: {"TopUpPaymentKey": {...}} or {"DeletePaymentKey": {...}}
+                let system_event = &data_array[0];
+
+                if let Some(topup_data) = system_event.get("TopUpPaymentKey") {
+                    let event_data: TopUpPaymentKeyEvent =
+                        serde_json::from_value(topup_data.clone()).ok()?;
+
+                    info!(
+                        "✅ Found system_event TopUpPaymentKey at block {}: owner={} nonce={} amount={}",
+                        block_height, event_data.owner, event_data.nonce, event_data.amount
+                    );
+
+                    Some(ContractEvent::TopUpPaymentKey(event_data))
+                } else if let Some(delete_data) = system_event.get("DeletePaymentKey") {
+                    let event_data: DeletePaymentKeyEvent =
+                        serde_json::from_value(delete_data.clone()).ok()?;
+
+                    info!(
+                        "✅ Found system_event DeletePaymentKey at block {}: owner={} nonce={}",
+                        block_height, event_data.owner, event_data.nonce
+                    );
+
+                    Some(ContractEvent::DeletePaymentKey(event_data))
+                } else {
+                    warn!("Unknown system_event type at block {}: {:?}", block_height, system_event);
+                    None
+                }
+            }
             _ => None,
         }
     }
@@ -793,5 +852,99 @@ impl EventMonitor {
                 Err(e)
             }
         }
+    }
+
+    /// Handle TopUpPaymentKey event by creating task in coordinator
+    ///
+    /// The worker will pick up this task and:
+    /// 1. Decrypt current Payment Key data via keystore
+    /// 2. Update balance (add topup amount)
+    /// 3. Re-encrypt via keystore
+    /// 4. Call promise_yield_resume on contract
+    async fn handle_topup_payment_key(&self, event: TopUpPaymentKeyEvent) -> Result<()> {
+        info!(
+            "💰 Processing TopUp event: owner={} nonce={} amount={}",
+            event.owner, event.nonce, event.amount
+        );
+
+        // Convert data_id to hex string
+        let data_id_hex = hex::encode(&event.data_id);
+
+        let params = crate::api_client::TopUpTaskData {
+            data_id: data_id_hex.clone(),
+            owner: event.owner.clone(),
+            nonce: event.nonce,
+            amount: event.amount.clone(),
+            encrypted_data: event.encrypted_data,
+        };
+
+        match self.api_client.create_topup_task(params).await {
+            Ok(Some(task_id)) => {
+                info!(
+                    "✅ TopUp task created: task_id={} data_id={} owner={} amount={}",
+                    task_id, data_id_hex, event.owner, event.amount
+                );
+            }
+            Ok(None) => {
+                info!(
+                    "ℹ️  TopUp task already exists (duplicate): data_id={}",
+                    data_id_hex
+                );
+            }
+            Err(e) => {
+                error!(
+                    "❌ Failed to create TopUp task: {}. data_id={} owner={}",
+                    e, data_id_hex, event.owner
+                );
+                return Err(e);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handle DeletePaymentKey event by creating task in coordinator
+    ///
+    /// The worker will pick up this task and:
+    /// 1. Delete payment key from coordinator PostgreSQL
+    /// 2. Call resume_delete_payment_key on contract
+    async fn handle_delete_payment_key(&self, event: DeletePaymentKeyEvent) -> Result<()> {
+        info!(
+            "🗑️ Processing DeletePaymentKey event: owner={} nonce={}",
+            event.owner, event.nonce
+        );
+
+        // Convert data_id to hex string
+        let data_id_hex = hex::encode(&event.data_id);
+
+        let params = crate::api_client::DeletePaymentKeyTaskData {
+            data_id: data_id_hex.clone(),
+            owner: event.owner.clone(),
+            nonce: event.nonce,
+        };
+
+        match self.api_client.create_delete_payment_key_task(params).await {
+            Ok(Some(task_id)) => {
+                info!(
+                    "✅ DeletePaymentKey task created: task_id={} data_id={} owner={}",
+                    task_id, data_id_hex, event.owner
+                );
+            }
+            Ok(None) => {
+                info!(
+                    "ℹ️  DeletePaymentKey task already exists (duplicate): data_id={}",
+                    data_id_hex
+                );
+            }
+            Err(e) => {
+                error!(
+                    "❌ Failed to create DeletePaymentKey task: {}. data_id={} owner={}",
+                    e, data_id_hex, event.owner
+                );
+                return Err(e);
+            }
+        }
+
+        Ok(())
     }
 }

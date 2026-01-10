@@ -319,6 +319,13 @@ near contract call-function as-transaction dev.outlayer.testnet set_event_metada
 near contract call-function as-transaction dev.outlayer.testnet set_operator json-args '{"new_operator_id":"dev.outlayer.testnet"}' prepaid-gas '100.0 Tgas' attached-deposit '0 NEAR' sign-as owner.outlayer.testnet network-config testnet sign-with-keychain send
 ```
 
+### Set testnet USDC
+
+near contract call-function as-transaction dev.outlayer.testnet set_payment_token_contract json-args '{"token_contract":"usdc.fakes.testnet"}' prepaid-gas '100.0 Tgas' attached-deposit '0 NEAR' sign-as owner.outlayer.testnet network-config testnet sign-with-keychain send
+
+# register storage
+near contract call-function as-transaction usdc.fakes.testnet storage_deposit json-args '{"account_id": "dev.outlayer.testnet"}' prepaid-gas '100.0 Tgas' attached-deposit '0.1 NEAR' sign-as dev.outlayer.testnet network-config testnet sign-with-keychain send
+
 ### Deploy without init
 
 ```bash

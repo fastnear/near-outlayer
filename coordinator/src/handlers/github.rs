@@ -359,6 +359,16 @@ pub enum SecretAccessor {
     Project {
         project_id: String,
     },
+    /// System secrets (Payment Keys, etc.)
+    System {
+        #[serde(flatten)]
+        kind: SystemSecretKind,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+pub enum SystemSecretKind {
+    PaymentKey {},
 }
 
 #[derive(Debug, Deserialize)]
@@ -367,6 +377,9 @@ pub struct GetPubkeyRequest {
     pub accessor: SecretAccessor,
     /// NEAR account ID that will own these secrets (REQUIRED)
     pub owner: String,
+    /// Profile (nonce) for Payment Keys
+    #[serde(default)]
+    pub profile: Option<String>,
     /// Secrets JSON to validate before encryption
     pub secrets_json: String,
 }
@@ -384,6 +397,10 @@ pub enum PubkeyResponseAccessor {
     },
     Project {
         project_id: String,
+    },
+    System {
+        kind: String,
+        profile: String,
     },
 }
 
@@ -495,6 +512,37 @@ pub async fn get_secrets_pubkey(
 
             (seed, accessor)
         }
+        SecretAccessor::System { kind } => {
+            // Get profile (nonce) for Payment Keys
+            let profile = req.profile.clone().ok_or((
+                StatusCode::BAD_REQUEST,
+                "Profile (nonce) is required for System secrets".to_string(),
+            ))?;
+
+            // Build seed based on system secret kind
+            let (seed, kind_str) = match kind {
+                SystemSecretKind::PaymentKey {} => {
+                    // Build seed: system:payment_key:owner:nonce
+                    let seed = format!("system:payment_key:{}:{}", req.owner, profile);
+                    (seed, "payment_key".to_string())
+                }
+            };
+
+            tracing::info!(
+                "🔐 ENCRYPTION SEED (System): kind={}, owner={}, profile={}, seed={}",
+                kind_str,
+                req.owner,
+                profile,
+                seed
+            );
+
+            let accessor = PubkeyResponseAccessor::System {
+                kind: kind_str,
+                profile,
+            };
+
+            (seed, accessor)
+        }
     };
 
     // Call keystore to get pubkey (POST with seed and secrets_json for validation)
@@ -589,6 +637,7 @@ pub struct AddGeneratedSecretRequest {
     /// What code can access these secrets
     pub accessor: SecretAccessor,
     pub owner: String,
+    pub profile: Option<String>, // Required for System accessor (nonce for Payment Keys)
     pub encrypted_secrets_base64: Option<String>, // Existing encrypted secrets (optional)
     pub new_secrets: Vec<GeneratedSecretSpec>,
 }
@@ -711,6 +760,36 @@ pub async fn add_generated_secret(
 
             let accessor = PubkeyResponseAccessor::Project {
                 project_id: project_id.clone(),
+            };
+
+            (seed, accessor)
+        }
+        SecretAccessor::System { kind } => {
+            // Get profile (nonce) for System secrets
+            let profile = req.profile.clone().ok_or((
+                StatusCode::BAD_REQUEST,
+                "Profile (nonce) is required for System secrets".to_string(),
+            ))?;
+
+            let (seed, kind_str) = match kind {
+                SystemSecretKind::PaymentKey {} => {
+                    let seed = format!("system:payment_key:{}:{}", req.owner, profile);
+                    (seed, "payment_key".to_string())
+                }
+            };
+
+            tracing::info!(
+                "🔑 GENERATE SECRETS (System): kind={}, owner={}, profile={}, seed={}, new_secrets_count={}",
+                kind_str,
+                req.owner,
+                profile,
+                seed,
+                req.new_secrets.len()
+            );
+
+            let accessor = PubkeyResponseAccessor::System {
+                kind: kind_str,
+                profile,
             };
 
             (seed, accessor)

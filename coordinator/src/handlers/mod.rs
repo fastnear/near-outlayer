@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod attestations;
+pub mod call;
 pub mod github;
 pub mod internal;
 pub mod jobs;
@@ -9,5 +10,6 @@ pub mod projects;
 pub mod public;
 pub mod storage;
 pub mod tasks;
+pub mod topup;
 pub mod wasm;
 pub mod workers;

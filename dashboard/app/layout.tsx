@@ -34,7 +34,7 @@ export default function RootLayout({
                     <Link href="/" className="text-xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-[#cc6600] to-[#d4a017]">
                       NEAR OutLayer
                     </Link>
-                    {/* Desktop menu */}
+                    {/* Desktop menu - left side */}
                     <div className="hidden md:flex space-x-4">
                       <Link href="/docs" className="text-gray-700 hover:text-[#cc6600] px-3 py-2 rounded-md text-sm font-medium transition-colors">
                         Docs
@@ -42,21 +42,51 @@ export default function RootLayout({
                       <Link href="/executions" className="text-gray-700 hover:text-[#cc6600] px-3 py-2 rounded-md text-sm font-medium transition-colors">
                         Executions
                       </Link>
-                      <Link href="/projects" className="text-gray-700 hover:text-[#cc6600] px-3 py-2 rounded-md text-sm font-medium transition-colors">
-                        Projects
-                      </Link>
-                      <Link href="/secrets" className="text-gray-700 hover:text-[#5a8f3a] px-3 py-2 rounded-md text-sm font-medium transition-colors">
-                        Secrets
-                      </Link>
                       <Link href="/stats" className="text-gray-700 hover:text-[#cc6600] px-3 py-2 rounded-md text-sm font-medium transition-colors">
                         Stats
                       </Link>
-                      <Link href="/playground" className="text-gray-700 hover:text-[#5a8f3a] px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                      <Link href="/playground" className="text-gray-700 hover:text-[#cc6600] px-3 py-2 rounded-md text-sm font-medium transition-colors">
                         Playground
                       </Link>
-                      <Link href="/settings" className="text-gray-700 hover:text-[#cc6600] px-3 py-2 rounded-md text-sm font-medium transition-colors">
-                        Settings
+                    </div>
+                  </div>
+
+                  {/* Desktop menu - right side with dropdown */}
+                  <div className="hidden md:flex items-center">
+                    <div className="relative group">
+                      <Link
+                        href="/workspace"
+                        className="text-gray-700 hover:text-[#cc6600] px-3 py-2 rounded-md text-sm font-medium transition-colors border border-gray-200 hover:border-[#cc6600] rounded-lg inline-flex items-center gap-1"
+                      >
+                        My Workspace
+                        <svg className="w-4 h-4 transition-transform group-hover:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
                       </Link>
+                      {/* Dropdown menu */}
+                      <div className="absolute right-0 mt-1 w-48 bg-white rounded-lg shadow-lg border border-gray-200 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-150 z-50">
+                        <div className="py-1">
+                          <Link href="/workspace" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 hover:text-[#cc6600]">
+                            Overview
+                          </Link>
+                          <Link href="/projects" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 hover:text-[#cc6600]">
+                            Projects
+                          </Link>
+                          <Link href="/secrets" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 hover:text-[#cc6600]">
+                            Secrets
+                          </Link>
+                          <Link href="/payment-keys" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 hover:text-[#cc6600]">
+                            Payment Keys
+                          </Link>
+                          <Link href="/earnings" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 hover:text-[#cc6600]">
+                            Earnings
+                          </Link>
+                          <div className="border-t border-gray-100 my-1"></div>
+                          <Link href="/settings" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 hover:text-[#cc6600]">
+                            Settings
+                          </Link>
+                        </div>
+                      </div>
                     </div>
                   </div>
 
@@ -96,20 +126,6 @@ export default function RootLayout({
                         Executions
                       </Link>
                       <Link
-                        href="/projects"
-                        onClick={() => setMobileMenuOpen(false)}
-                        className="text-gray-700 hover:text-[#cc6600] px-3 py-2 rounded-md text-sm font-medium transition-colors"
-                      >
-                        Projects
-                      </Link>
-                      <Link
-                        href="/secrets"
-                        onClick={() => setMobileMenuOpen(false)}
-                        className="text-gray-700 hover:text-[#5a8f3a] px-3 py-2 rounded-md text-sm font-medium transition-colors"
-                      >
-                        Secrets
-                      </Link>
-                      <Link
                         href="/stats"
                         onClick={() => setMobileMenuOpen(false)}
                         className="text-gray-700 hover:text-[#cc6600] px-3 py-2 rounded-md text-sm font-medium transition-colors"
@@ -119,16 +135,16 @@ export default function RootLayout({
                       <Link
                         href="/playground"
                         onClick={() => setMobileMenuOpen(false)}
-                        className="text-gray-700 hover:text-[#5a8f3a] px-3 py-2 rounded-md text-sm font-medium transition-colors"
+                        className="text-gray-700 hover:text-[#cc6600] px-3 py-2 rounded-md text-sm font-medium transition-colors"
                       >
                         Playground
                       </Link>
                       <Link
-                        href="/settings"
+                        href="/workspace"
                         onClick={() => setMobileMenuOpen(false)}
                         className="text-gray-700 hover:text-[#cc6600] px-3 py-2 rounded-md text-sm font-medium transition-colors"
                       >
-                        Settings
+                        My Workspace
                       </Link>
                     </div>
                   </div>

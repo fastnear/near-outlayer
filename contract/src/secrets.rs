@@ -53,6 +53,15 @@ impl Contract {
                     project_id
                 );
             }
+            SecretAccessor::System(secret_type) => {
+                // System secrets (Payment Keys) - just validate the type exists
+                match secret_type {
+                    SystemSecretType::PaymentKey => {
+                        // PaymentKey secrets are valid, no additional validation needed
+                        // The profile is used as nonce (e.g., "0", "1", "2")
+                    }
+                }
+            }
         }
 
         // Validate common inputs
@@ -184,7 +193,8 @@ impl Contract {
     }
 
     /// Internal method to delete secrets by key
-    fn delete_secrets_internal(&mut self, key: SecretKey, caller: &AccountId) {
+    /// pub(crate) to allow access from payment.rs for delete_payment_key
+    pub(crate) fn delete_secrets_internal(&mut self, key: SecretKey, caller: &AccountId) {
         let profile_data = self.secrets_storage.get(&key)
             .expect("Secrets not found");
 
@@ -276,6 +286,10 @@ impl Contract {
             SecretAccessor::Project { project_id } => {
                 1 + // enum discriminant
                 4 + project_id.len() // String with u32 length prefix
+            }
+            SecretAccessor::System(_secret_type) => {
+                1 + // enum discriminant for System
+                1   // enum discriminant for SystemSecretType (PaymentKey = 0)
             }
         };
 

@@ -23,6 +23,12 @@ interface SignedMessage {
   accountId: string;
 }
 
+export interface StablecoinConfig {
+  contract: string;
+  decimals: number;
+  symbol: string;
+}
+
 interface NearWalletContextType {
   accountId: string | null;
   isConnected: boolean;
@@ -30,6 +36,7 @@ interface NearWalletContextType {
   network: NetworkType;
   contractId: string;
   rpcUrl: string;
+  stablecoin: StablecoinConfig;
   shouldReopenModal: boolean;
   clearReopenModal: () => void;
   connect: () => void;
@@ -49,6 +56,17 @@ const getNetworkConfig = (network: NetworkType) => ({
   rpcUrl: network === 'testnet'
     ? process.env.NEXT_PUBLIC_TESTNET_RPC_URL || 'https://rpc.testnet.near.org'
     : process.env.NEXT_PUBLIC_MAINNET_RPC_URL || 'https://rpc.mainnet.near.org',
+  stablecoin: {
+    contract: network === 'testnet'
+      ? process.env.NEXT_PUBLIC_TESTNET_STABLECOIN_CONTRACT || 'usdc.fakes.testnet'
+      : process.env.NEXT_PUBLIC_MAINNET_STABLECOIN_CONTRACT || '17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1',
+    decimals: network === 'testnet'
+      ? parseInt(process.env.NEXT_PUBLIC_TESTNET_STABLECOIN_DECIMALS || '6', 10)
+      : parseInt(process.env.NEXT_PUBLIC_MAINNET_STABLECOIN_DECIMALS || '6', 10),
+    symbol: network === 'testnet'
+      ? process.env.NEXT_PUBLIC_TESTNET_STABLECOIN_SYMBOL || 'USDC'
+      : process.env.NEXT_PUBLIC_MAINNET_STABLECOIN_SYMBOL || 'USDC',
+  },
 });
 
 export function NearWalletProvider({ children }: { children: ReactNode }) {
@@ -276,6 +294,7 @@ export function NearWalletProvider({ children }: { children: ReactNode }) {
         network,
         contractId: config.contractId,
         rpcUrl: config.rpcUrl,
+        stablecoin: config.stablecoin,
         shouldReopenModal,
         clearReopenModal,
         connect,

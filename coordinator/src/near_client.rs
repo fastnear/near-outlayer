@@ -146,3 +146,68 @@ pub async fn fetch_project_from_contract(
     let args = json!({ "project_id": project_id });
     call_view(&client, rpc_url, contract_id, "get_project", Some(&args)).await
 }
+
+/// Full project info including code source (for HTTPS API)
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProjectFullInfo {
+    pub uuid: String,
+    pub owner: String,
+    pub name: String,
+    pub project_id: String,
+    pub active_version: String,
+    #[serde(default)]
+    pub repo: Option<String>,
+    #[serde(default)]
+    pub commit_hash: Option<String>,
+    #[serde(default)]
+    pub build_target: Option<String>,
+}
+
+/// Fetch full project info from NEAR contract
+/// Returns project with active version's code source
+pub async fn fetch_project_full_from_contract(
+    rpc_url: &str,
+    contract_id: &str,
+    project_id: &str,
+) -> Result<Option<ProjectFullInfo>> {
+    let client = Client::new();
+    let args = json!({ "project_id": project_id });
+
+    // First get basic project info
+    let project: Option<ProjectInfo> = call_view(&client, rpc_url, contract_id, "get_project", Some(&args)).await?;
+
+    match project {
+        Some(p) => {
+            // Now get the active version's code source
+            let version_args = json!({
+                "project_id": project_id,
+                "version": p.active_version
+            });
+
+            let code_source: Option<CodeSourceInfo> = call_view(
+                &client, rpc_url, contract_id, "get_project_version", Some(&version_args)
+            ).await.unwrap_or(None);
+
+            Ok(Some(ProjectFullInfo {
+                uuid: p.uuid,
+                owner: p.owner,
+                name: p.name,
+                project_id: p.project_id,
+                active_version: p.active_version,
+                repo: code_source.as_ref().and_then(|cs| cs.repo.clone()),
+                commit_hash: code_source.as_ref().and_then(|cs| cs.commit.clone()),
+                build_target: code_source.as_ref().and_then(|cs| cs.build_target.clone()),
+            }))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Code source info from project version
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CodeSourceInfo {
+    pub repo: Option<String>,
+    pub commit: Option<String>,
+    pub build_target: Option<String>,
+}
+

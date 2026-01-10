@@ -70,10 +70,17 @@ impl Contract {
             paused: old_state.paused,
             event_standard: "near-outlayer".to_string(),
             event_version: "1.0.0".to_string(),
+            // NEAR pricing
             base_fee: old_state.base_fee,
             per_million_instructions_fee: old_state.per_million_instructions_fee,
             per_ms_fee: old_state.per_ms_fee,
             per_compile_ms_fee: old_state.per_compile_ms_fee,
+            // USD pricing (defaults for HTTPS API)
+            base_fee_usd: 10_000,
+            per_million_instructions_fee_usd: 1,
+            per_ms_fee_usd: 10,
+            per_compile_ms_fee_usd: 10,
+            payment_token_contract: None,
             next_request_id: old_state.next_request_id,
             pending_requests: old_state.pending_requests,
             total_executions: old_state.total_executions,

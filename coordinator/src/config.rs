@@ -46,6 +46,26 @@ pub struct Config {
     pub expected_worker_measurement: String,
     pub default_rate_limit: u32,
     pub max_rate_limit: u32,
+
+    // Stablecoin configuration
+    /// Stablecoin contract address (e.g., "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1" for native USDC on NEAR)
+    pub stablecoin_contract: String,
+    /// Token decimals (6 for USDC)
+    pub stablecoin_decimals: u8,
+    /// Token symbol (e.g., "USDC")
+    pub stablecoin_symbol: String,
+
+    // HTTPS API settings
+    /// Default compute budget in minimal token units (e.g., 10000 = $0.01)
+    pub default_compute_limit: u128,
+    /// Minimum compute budget (protection against micro-spam)
+    pub min_compute_limit: u128,
+    /// HTTPS call timeout in seconds
+    pub https_call_timeout_seconds: u64,
+    /// Max concurrent calls per payment key
+    pub max_concurrent_calls_per_key: u32,
+    /// Rate limit for payment key (requests per minute)
+    pub payment_key_rate_limit_per_minute: u32,
 }
 
 impl Config {
@@ -120,6 +140,32 @@ impl Config {
                 .parse()?,
             max_rate_limit: std::env::var("MAX_RATE_LIMIT_PER_MINUTE")
                 .unwrap_or_else(|_| "600".to_string())
+                .parse()?,
+
+            // Stablecoin configuration
+            stablecoin_contract: std::env::var("STABLECOIN_CONTRACT")
+                .unwrap_or_else(|_| "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1".to_string()),
+            stablecoin_decimals: std::env::var("STABLECOIN_DECIMALS")
+                .unwrap_or_else(|_| "6".to_string())
+                .parse()?,
+            stablecoin_symbol: std::env::var("STABLECOIN_SYMBOL")
+                .unwrap_or_else(|_| "USDC".to_string()),
+
+            // HTTPS API settings
+            default_compute_limit: std::env::var("DEFAULT_COMPUTE_LIMIT")
+                .unwrap_or_else(|_| "10000".to_string()) // $0.01 default
+                .parse()?,
+            min_compute_limit: std::env::var("MIN_COMPUTE_LIMIT")
+                .unwrap_or_else(|_| "1000".to_string()) // $0.001 minimum
+                .parse()?,
+            https_call_timeout_seconds: std::env::var("HTTPS_CALL_TIMEOUT_SECONDS")
+                .unwrap_or_else(|_| "300".to_string()) // 5 minutes
+                .parse()?,
+            max_concurrent_calls_per_key: std::env::var("MAX_CONCURRENT_CALLS_PER_KEY")
+                .unwrap_or_else(|_| "10".to_string())
+                .parse()?,
+            payment_key_rate_limit_per_minute: std::env::var("PAYMENT_KEY_RATE_LIMIT_PER_MINUTE")
+                .unwrap_or_else(|_| "1000".to_string())
                 .parse()?,
         })
     }

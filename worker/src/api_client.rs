@@ -63,7 +63,10 @@ pub struct ExecutionContext {
 pub struct ExecutionRequest {
     pub request_id: u64,
     pub data_id: String,
-    pub code_source: CodeSource,
+    /// Code source - optional for HTTPS calls where project_id is used instead
+    /// Worker resolves project_id -> code_source from contract
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_source: Option<CodeSource>,
     pub resource_limits: ResourceLimits,
     pub input_data: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -95,6 +98,21 @@ pub struct ExecutionRequest {
     /// Project ID for project-based secrets (e.g., "alice.near/my-app")
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
+    /// HTTPS API call flag - if true, don't call contract, call coordinator instead
+    #[serde(default)]
+    pub is_https_call: bool,
+    /// HTTPS API call ID - used to complete the call on coordinator
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    /// Payment Key owner for HTTPS calls (NEAR account ID)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payment_key_owner: Option<String>,
+    /// Payment Key nonce for HTTPS calls
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payment_key_nonce: Option<i32>,
+    /// USD payment amount for HTTPS calls (X-Attached-Deposit, in minimal token units)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usd_payment: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,6 +183,63 @@ impl CodeSource {
     #[allow(dead_code)]
     pub fn is_wasm_url(&self) -> bool {
         matches!(self, CodeSource::WasmUrl { .. })
+    }
+
+    /// Normalize repo URL to full https:// format for git clone
+    /// Examples:
+    /// - "github.com/user/repo" -> "https://github.com/user/repo"
+    /// - "https://github.com/user/repo" -> "https://github.com/user/repo" (unchanged)
+    /// - "user/repo" -> "https://github.com/user/repo"
+    /// - "git@github.com:user/repo.git" -> "https://github.com/user/repo"
+    /// - "ssh://git@github.com/user/repo" -> "https://github.com/user/repo"
+    pub fn normalize(mut self) -> Self {
+        match &mut self {
+            CodeSource::GitHub { repo, .. } => {
+                // Skip if already has https/http protocol
+                if repo.starts_with("https://") || repo.starts_with("http://") {
+                    return self;
+                }
+
+                // Handle SSH format: git@github.com:user/repo.git
+                if repo.starts_with("git@github.com:") {
+                    let path = repo.strip_prefix("git@github.com:").unwrap();
+                    let path = path.strip_suffix(".git").unwrap_or(path);
+                    *repo = format!("https://github.com/{}", path);
+                    return self;
+                }
+
+                // Handle SSH URL format: ssh://git@github.com/user/repo
+                if repo.starts_with("ssh://git@github.com/") {
+                    let path = repo.strip_prefix("ssh://git@github.com/").unwrap();
+                    let path = path.strip_suffix(".git").unwrap_or(path);
+                    *repo = format!("https://github.com/{}", path);
+                    return self;
+                }
+
+                // Handle ssh:// without git@ prefix
+                if repo.starts_with("ssh://") {
+                    // Leave as is, will fail later with better error
+                    return self;
+                }
+
+                // Add https:// prefix
+                if repo.starts_with("github.com/") {
+                    *repo = format!("https://{}", repo);
+                } else if !repo.contains('/') {
+                    // Invalid format - leave as is, will fail later with better error
+                    return self;
+                } else {
+                    // Assume it's "user/repo" format
+                    *repo = format!("https://github.com/{}", repo);
+                }
+
+                self
+            }
+            CodeSource::WasmUrl { .. } => {
+                // WasmUrl already has full URL, no normalization needed
+                self
+            }
+        }
     }
 }
 
@@ -667,6 +742,77 @@ impl ApiClient {
         Ok(())
     }
 
+    /// Complete an HTTPS API call (without NEAR contract interaction)
+    ///
+    /// Used for HTTPS /call endpoint where results go directly to coordinator
+    /// instead of being submitted to the NEAR contract.
+    ///
+    /// # Arguments
+    /// * `call_id` - UUID of the HTTPS call
+    /// * `success` - Whether execution succeeded
+    /// * `output` - Execution output (JSON)
+    /// * `error` - Error message (if failed)
+    /// * `instructions` - Instructions consumed
+    /// * `time_ms` - Execution time in milliseconds
+    pub async fn complete_https_call(
+        &self,
+        call_id: &str,
+        success: bool,
+        output: Option<serde_json::Value>,
+        error: Option<String>,
+        instructions: u64,
+        time_ms: u64,
+    ) -> Result<()> {
+        let url = format!("{}/https-calls/complete", self.base_url);
+
+        #[derive(Serialize)]
+        struct CompleteHttpsCallRequest {
+            call_id: String,
+            success: bool,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            output: Option<serde_json::Value>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            error: Option<String>,
+            instructions: u64,
+            time_ms: u64,
+        }
+
+        let request = CompleteHttpsCallRequest {
+            call_id: call_id.to_string(),
+            success,
+            output,
+            error: error.clone(),
+            instructions,
+            time_ms,
+        };
+
+        tracing::info!(
+            "📤 Completing HTTPS call: call_id={} success={} instructions={} time_ms={}",
+            call_id, success, instructions, time_ms
+        );
+
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.auth_token)
+            .json(&request)
+            .send()
+            .await
+            .context("Failed to send complete HTTPS call request")?;
+
+        if !response.status().is_success() {
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            tracing::error!("❌ Complete HTTPS call failed: {}", error_text);
+            anyhow::bail!("Complete HTTPS call failed: {}", error_text)
+        }
+
+        tracing::info!("✅ HTTPS call {} completed successfully", call_id);
+        Ok(())
+    }
+
     /// Store system logs (compilation/execution) for admin debugging
     /// This endpoint does NOT require authentication (internal endpoint)
     ///
@@ -1028,6 +1174,313 @@ impl ApiClient {
         }
     }
 
+    /// Create a TopUp task for Payment Key balance update
+    ///
+    /// This is used when ft_on_transfer emits SystemEvent::TopUpPaymentKey
+    /// Worker will decrypt/update balance/encrypt and call promise_yield_resume
+    pub async fn create_topup_task(&self, params: TopUpTaskData) -> Result<Option<i64>> {
+        let url = format!("{}/topup/create", self.base_url);
+
+        #[derive(Serialize)]
+        struct CreateTopUpRequest {
+            data_id: String,
+            owner: String,
+            nonce: u32,
+            amount: String,
+            encrypted_data: String,
+        }
+
+        #[derive(Deserialize)]
+        struct CreateTopUpResponse {
+            task_id: i64,
+            created: bool,
+        }
+
+        let request = CreateTopUpRequest {
+            data_id: params.data_id.clone(),
+            owner: params.owner,
+            nonce: params.nonce,
+            amount: params.amount,
+            encrypted_data: params.encrypted_data,
+        };
+
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.auth_token)
+            .json(&request)
+            .send()
+            .await
+            .context("Failed to create topup task")?;
+
+        if !response.status().is_success() {
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            anyhow::bail!("Create topup task failed: {}", error_text)
+        }
+
+        let create_response: CreateTopUpResponse = response.json().await
+            .context("Failed to parse create topup task response")?;
+
+        if create_response.created {
+            tracing::info!(
+                task_id = create_response.task_id,
+                data_id = %params.data_id,
+                "TopUp task created in coordinator"
+            );
+            Ok(Some(create_response.task_id))
+        } else {
+            tracing::info!(
+                data_id = %params.data_id,
+                "TopUp task already exists (duplicate)"
+            );
+            Ok(None)
+        }
+    }
+
+    /// Complete TopUp - notify coordinator of new balance
+    ///
+    /// Called after successfully calling resume_topup on the contract.
+    /// This stores payment key metadata in coordinator's PostgreSQL for validation.
+    ///
+    /// # Arguments
+    /// * `owner` - Payment Key owner (NEAR account)
+    /// * `nonce` - Payment Key nonce
+    /// * `new_initial_balance` - The new total balance after top-up
+    /// * `key_hash` - SHA256 hash of the key (hex encoded) for validation
+    /// * `project_ids` - List of allowed project IDs (empty = all projects)
+    /// * `max_per_call` - Max amount per API call (optional)
+    pub async fn complete_topup(
+        &self,
+        owner: &str,
+        nonce: u32,
+        new_initial_balance: &str,
+        key_hash: &str,
+        project_ids: &[String],
+        max_per_call: Option<&str>,
+    ) -> Result<()> {
+        let url = format!("{}/topup/complete", self.base_url);
+
+        #[derive(Serialize)]
+        struct CompleteTopUpRequest {
+            owner: String,
+            nonce: u32,
+            new_initial_balance: String,
+            key_hash: String,
+            project_ids: Vec<String>,
+            max_per_call: Option<String>,
+        }
+
+        let request = CompleteTopUpRequest {
+            owner: owner.to_string(),
+            nonce,
+            new_initial_balance: new_initial_balance.to_string(),
+            key_hash: key_hash.to_string(),
+            project_ids: project_ids.to_vec(),
+            max_per_call: max_per_call.map(String::from),
+        };
+
+        tracing::info!(
+            "📊 Notifying coordinator of TopUp completion: owner={} nonce={} balance={} key_hash={}...",
+            owner, nonce, new_initial_balance, &key_hash[..8.min(key_hash.len())]
+        );
+
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.auth_token)
+            .json(&request)
+            .send()
+            .await
+            .context("Failed to notify coordinator of topup completion")?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            tracing::warn!(
+                "Failed to update balance cache (non-critical): {}",
+                error_text
+            );
+            // Non-critical error - TopUp still succeeded on contract
+            return Ok(());
+        }
+
+        tracing::info!("Balance cache updated successfully");
+        Ok(())
+    }
+
+    /// Delete payment key from coordinator PostgreSQL (soft delete)
+    ///
+    /// Called when processing DeletePaymentKey event from contract.
+    /// This marks the key as deleted in PostgreSQL so it's no longer valid for HTTPS API calls.
+    ///
+    /// # Arguments
+    /// * `owner` - Payment Key owner (NEAR account)
+    /// * `nonce` - Payment Key nonce
+    pub async fn delete_payment_key(&self, owner: &str, nonce: u32) -> Result<()> {
+        let url = format!("{}/payment-keys/delete", self.base_url);
+
+        #[derive(Serialize)]
+        struct DeletePaymentKeyRequest {
+            owner: String,
+            nonce: u32,
+        }
+
+        let request = DeletePaymentKeyRequest {
+            owner: owner.to_string(),
+            nonce,
+        };
+
+        tracing::info!(
+            "🗑️ Deleting payment key from coordinator: owner={} nonce={}",
+            owner, nonce
+        );
+
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.auth_token)
+            .json(&request)
+            .send()
+            .await
+            .context("Failed to delete payment key from coordinator")?;
+
+        if !response.status().is_success() {
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            anyhow::bail!("Delete payment key failed: {}", error_text)
+        }
+
+        tracing::info!(
+            "✅ Payment key deleted from coordinator: owner={} nonce={}",
+            owner, nonce
+        );
+        Ok(())
+    }
+
+    /// Create a DeletePaymentKey task in coordinator queue
+    ///
+    /// Called by event monitor when DeletePaymentKey event is detected.
+    /// Worker will poll for these tasks and process them.
+    pub async fn create_delete_payment_key_task(
+        &self,
+        params: DeletePaymentKeyTaskData,
+    ) -> Result<Option<i64>> {
+        let url = format!("{}/payment-keys/delete-task/create", self.base_url);
+
+        #[derive(Serialize)]
+        struct CreateDeleteTaskRequest {
+            data_id: String,
+            owner: String,
+            nonce: u32,
+        }
+
+        #[derive(Deserialize)]
+        struct CreateDeleteTaskResponse {
+            task_id: i64,
+            created: bool,
+        }
+
+        let request = CreateDeleteTaskRequest {
+            data_id: params.data_id.clone(),
+            owner: params.owner,
+            nonce: params.nonce,
+        };
+
+        tracing::info!(
+            "📝 Creating DeletePaymentKey task: data_id={} owner={} nonce={}",
+            &params.data_id[..8.min(params.data_id.len())],
+            request.owner,
+            request.nonce
+        );
+
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.auth_token)
+            .json(&request)
+            .send()
+            .await
+            .context("Failed to create delete payment key task")?;
+
+        if !response.status().is_success() {
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            anyhow::bail!("Create delete task failed: {}", error_text)
+        }
+
+        let result: CreateDeleteTaskResponse = response.json().await?;
+        if result.created {
+            Ok(Some(result.task_id))
+        } else {
+            Ok(None)
+        }
+    }
+
+    // =========================================================================
+    // Unified System Callbacks Polling
+    // =========================================================================
+
+    /// Poll for ANY system callback task (TopUp, Delete, etc.) from unified queue
+    ///
+    /// This is the preferred method - replaces separate poll_topup_task and
+    /// poll_delete_payment_key_task methods. Worker polls a single queue and
+    /// dispatches based on task type.
+    ///
+    /// # Arguments
+    /// * `timeout` - Seconds to wait (0 for non-blocking, max 120)
+    ///
+    /// # Returns
+    /// * `Ok(Some(task))` - Task received, dispatch based on task_type
+    /// * `Ok(None)` - No tasks available (timeout)
+    /// * `Err(_)` - Request failed
+    pub async fn poll_system_callback_task(&self, timeout: u64) -> Result<Option<SystemCallbackTask>> {
+        let url = format!("{}/system-callbacks/poll?timeout={}", self.base_url, timeout);
+
+        let response = self
+            .client
+            .get(&url)
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await
+            .context("Failed to poll system callback task")?;
+
+        if !response.status().is_success() {
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            anyhow::bail!("Poll system callback task failed: {}", error_text)
+        }
+
+        let task: Option<SystemCallbackTask> = response.json().await
+            .context("Failed to parse system callback task response")?;
+
+        if let Some(ref t) = task {
+            match t {
+                SystemCallbackTask::TopUp(payload) => {
+                    tracing::info!(
+                        "📥 System callback: TopUp task_id={} owner={} nonce={}",
+                        payload.task_id, payload.owner, payload.nonce
+                    );
+                }
+                SystemCallbackTask::DeletePaymentKey(payload) => {
+                    tracing::info!(
+                        "📥 System callback: Delete task_id={} owner={} nonce={}",
+                        payload.task_id, payload.owner, payload.nonce
+                    );
+                }
+            }
+        }
+
+        Ok(task)
+    }
+
     /// Send heartbeat to coordinator
     ///
     /// # Arguments
@@ -1293,6 +1746,8 @@ impl ApiClient {
 pub enum TaskType {
     Compile,
     Execute,
+    /// TopUp Payment Key - process yield/resume for balance update
+    Topup,
 }
 
 impl std::fmt::Display for TaskType {
@@ -1300,8 +1755,75 @@ impl std::fmt::Display for TaskType {
         match self {
             TaskType::Compile => write!(f, "compile"),
             TaskType::Execute => write!(f, "execute"),
+            TaskType::Topup => write!(f, "topup"),
         }
     }
+}
+
+/// Parameters for creating a TopUp task
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopUpTaskData {
+    /// data_id for yield/resume (hex encoded)
+    pub data_id: String,
+    /// Payment Key owner
+    pub owner: String,
+    /// Payment Key nonce (profile)
+    pub nonce: u32,
+    /// TopUp amount in minimal token units
+    pub amount: String,
+    /// Current encrypted secret (base64)
+    pub encrypted_data: String,
+}
+
+/// Data for a DeletePaymentKey task
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeletePaymentKeyTaskData {
+    /// data_id for yield/resume (hex encoded)
+    pub data_id: String,
+    /// Payment Key owner
+    pub owner: String,
+    /// Payment Key nonce (profile)
+    pub nonce: u32,
+}
+
+// =============================================================================
+// Unified System Callback Task Type
+// =============================================================================
+
+/// Unified system callback task - matches coordinator's SystemCallbackTask
+///
+/// All contract business logic that requires yield/resume is processed through this.
+/// Workers poll a single queue and dispatch based on task_type.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "task_type", rename_all = "snake_case")]
+pub enum SystemCallbackTask {
+    /// TopUp Payment Key - requires keystore to decrypt/re-encrypt
+    TopUp(TopUpTaskPayload),
+    /// Delete Payment Key - no keystore needed
+    DeletePaymentKey(DeletePaymentKeyPayload),
+    // Future: Withdraw, UpdateLimits, etc.
+}
+
+/// TopUp task payload from unified queue
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopUpTaskPayload {
+    pub task_id: i64,
+    pub data_id: String,
+    pub owner: String,
+    pub nonce: u32,
+    pub amount: String,
+    pub encrypted_data: String,
+    pub created_at: i64,
+}
+
+/// DeletePaymentKey task payload from unified queue
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeletePaymentKeyPayload {
+    pub task_id: i64,
+    pub data_id: String,
+    pub owner: String,
+    pub nonce: u32,
+    pub created_at: i64,
 }
 
 /// Request to store task attestation in coordinator
@@ -1313,11 +1835,16 @@ pub struct StoreAttestationRequest {
     // TDX attestation data
     pub tdx_quote: String, // base64 encoded
 
-    // NEAR context
+    // NEAR context (NULL for HTTPS calls)
     pub request_id: Option<i64>,
     pub caller_account_id: Option<String>,
     pub transaction_hash: Option<String>,
     pub block_height: Option<u64>,
+
+    // HTTPS call context (NULL for NEAR calls)
+    pub call_id: Option<String>,
+    pub payment_key_owner: Option<String>,
+    pub payment_key_nonce: Option<i32>,
 
     // Code source
     pub repo_url: Option<String>,

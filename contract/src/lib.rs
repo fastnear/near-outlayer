@@ -12,6 +12,7 @@ mod admin;
 mod events;
 mod execution;
 mod migration;
+mod payment;
 mod projects;
 mod secrets;
 mod types;
@@ -272,6 +273,14 @@ pub struct SecretProfileView {
 }
 
 
+/// System secret types (Payment Keys, etc.)
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[near(serializers = [borsh, json])]
+pub enum SystemSecretType {
+    /// Payment Key for HTTPS API
+    PaymentKey,
+}
+
 /// Secret accessor - defines what code can access/decrypt the secret
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[near(serializers = [borsh, json])]
@@ -289,6 +298,8 @@ pub enum SecretAccessor {
     Project {
         project_id: String,     // "alice.near/my-app"
     },
+    /// System secrets (Payment Keys for HTTPS API)
+    System(SystemSecretType),
 }
 
 /// Composite key for secrets storage
@@ -360,6 +371,22 @@ pub struct VersionView {
     pub is_active: bool,
 }
 
+/// Pricing view for JSON responses (includes both NEAR and USD pricing)
+#[derive(Clone, Debug)]
+#[near(serializers = [json])]
+pub struct PricingView {
+    // NEAR pricing (for blockchain transactions)
+    pub base_fee: U128,
+    pub per_million_instructions_fee: U128,
+    pub per_ms_fee: U128,
+    pub per_compile_ms_fee: U128,
+    // USD pricing (for HTTPS API, in minimal token units)
+    pub base_fee_usd: U128,
+    pub per_million_instructions_fee_usd: U128,
+    pub per_ms_fee_usd: U128,
+    pub per_compile_ms_fee_usd: U128,
+}
+
 #[derive(BorshDeserialize, BorshSerialize, PanicOnDefault)]
 #[borsh(crate = "near_sdk::borsh")]
 #[near_bindgen]
@@ -373,11 +400,20 @@ pub struct Contract {
     event_standard: String,
     event_version: String,
 
-    // Pricing
+    // Pricing (NEAR) - for blockchain transactions
     base_fee: Balance,
     per_million_instructions_fee: Balance,
     per_ms_fee: Balance,                 // Execution time cost
     per_compile_ms_fee: Balance,         // Compilation time cost
+
+    // Pricing (USD) - for HTTPS API (in minimal token units, e.g., 1 = 0.000001 USDT)
+    base_fee_usd: u128,                      // e.g., 10000 = $0.01
+    per_million_instructions_fee_usd: u128,  // e.g., 1 = $0.000001 per 1M instructions
+    per_ms_fee_usd: u128,                    // e.g., 10 = $0.00001 per ms execution
+    per_compile_ms_fee_usd: u128,            // e.g., 10 = $0.00001 per ms compilation
+
+    // Payment token for HTTPS API (e.g., "usdt.tether-token.near")
+    payment_token_contract: Option<AccountId>,
 
     // Request tracking
     next_request_id: u64,
@@ -417,10 +453,18 @@ impl Contract {
             paused: false,
             event_standard: event_standard.unwrap_or("near-outlayer".to_string()),
             event_version: event_version.unwrap_or("1.0.0".to_string()),
+            // NEAR pricing
             base_fee: 1_000_000_000_000_000_000_000, // 0.001 NEAR
             per_million_instructions_fee: 100_000_000_000_000, // 0.0000001 NEAR per million instructions
             per_ms_fee: 100_000_000_000_000_000, // 0.0001 NEAR per second (execution)
             per_compile_ms_fee: 100_000_000_000_000_000, // 0.0001 NEAR per second (compilation)
+            // USD pricing (for HTTPS API, using USDT with 6 decimals)
+            base_fee_usd: 10_000,             // $0.01 base fee
+            per_million_instructions_fee_usd: 1, // $0.000001 per million instructions
+            per_ms_fee_usd: 10,               // $0.00001 per ms execution
+            per_compile_ms_fee_usd: 10,       // $0.00001 per ms compilation
+            // Payment token (set via admin method)
+            payment_token_contract: None,
             next_request_id: 0,
             pending_requests: LookupMap::new(StorageKey::PendingRequests),
             total_executions: 0,

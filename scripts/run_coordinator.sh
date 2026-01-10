@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Usage: ./run_coordinator.sh [testnet|mainnet] [--no-cache]
+# Usage: ./run_coordinator.sh [dev|testnet|mainnet] [--no-cache]
 # Default: mainnet
 # --no-cache: Force rebuild without cache
 
@@ -14,12 +14,17 @@ for arg in "$@"; do
     fi
 done
 
-if [ "$NETWORK" != "testnet" ] && [ "$NETWORK" != "mainnet" ]; then
-    echo "Error: Invalid network. Use 'testnet' or 'mainnet'"
+if [ "$NETWORK" != "dev" ] && [ "$NETWORK" != "testnet" ] && [ "$NETWORK" != "mainnet" ]; then
+    echo "Error: Invalid network. Use 'dev', 'testnet' or 'mainnet'"
     exit 1
 fi
 
-COMPOSE_FILE="docker-compose.$NETWORK.yml"
+# Dev uses testnet infrastructure but different contract
+if [ "$NETWORK" = "dev" ]; then
+    COMPOSE_FILE="docker-compose.dev.yml"
+else
+    COMPOSE_FILE="docker-compose.$NETWORK.yml"
+fi
 
 if [ ! -f "$COMPOSE_FILE" ]; then
     echo "Error: $COMPOSE_FILE not found"
@@ -50,7 +55,9 @@ source "$ROOT_ENV"
 set +a
 
 # Check coordinator .env file exists (for docker-compose to use)
-if [ "$NETWORK" = "testnet" ]; then
+if [ "$NETWORK" = "dev" ]; then
+    ENV_FILE="$PROJECT_ROOT/coordinator/.env.dev"
+elif [ "$NETWORK" = "testnet" ]; then
     ENV_FILE="$PROJECT_ROOT/coordinator/.env.testnet"
 else
     ENV_FILE="$PROJECT_ROOT/coordinator/.env"
@@ -62,7 +69,12 @@ if [ ! -f "$ENV_FILE" ]; then
 fi
 
 # Set network-specific variables from root .env
-if [ "$NETWORK" = "testnet" ]; then
+if [ "$NETWORK" = "dev" ]; then
+    # Dev uses same ports as testnet but different contract
+    POSTGRES_PORT=${POSTGRES_EXTERNAL_PORT_TESTNET:-5432}
+    POSTGRES_PASSWORD=${POSTGRES_PASSWORD_TESTNET:-postgres}
+    POSTGRES_DB=${POSTGRES_DB_TESTNET:-offchainvm}
+elif [ "$NETWORK" = "testnet" ]; then
     POSTGRES_PORT=${POSTGRES_EXTERNAL_PORT_TESTNET:-5432}
     POSTGRES_PASSWORD=${POSTGRES_PASSWORD_TESTNET:-postgres}
     POSTGRES_DB=${POSTGRES_DB_TESTNET:-offchainvm}
@@ -143,7 +155,7 @@ echo ""
 echo "✅ Coordinator started successfully!"
 echo ""
 echo "Network: $NETWORK"
-if [ "$NETWORK" = "testnet" ]; then
+if [ "$NETWORK" = "dev" ] || [ "$NETWORK" = "testnet" ]; then
     echo "PostgreSQL: localhost:${POSTGRES_EXTERNAL_PORT_TESTNET:-5432} (DB: ${POSTGRES_DB_TESTNET:-offchainvm})"
     echo "Redis: localhost:${REDIS_EXTERNAL_PORT_TESTNET:-6379}"
     echo "Coordinator API: http://localhost:${COORDINATOR_EXTERNAL_PORT_TESTNET:-8080}"

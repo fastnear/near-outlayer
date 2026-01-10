@@ -104,7 +104,10 @@ pub enum JobType {
 pub struct ExecutionRequest {
     pub request_id: u64,
     pub data_id: String,
-    pub code_source: CodeSource,
+    /// Code source - optional for HTTPS calls where project_id is used instead.
+    /// Worker will resolve project_id → code_source from contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_source: Option<CodeSource>,
     pub resource_limits: ResourceLimits,
     pub input_data: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -138,6 +141,29 @@ pub struct ExecutionRequest {
     /// Project ID for project-based secrets (e.g., "alice.near/my-app")
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
+
+    // ===== HTTPS API fields =====
+    /// HTTPS API call flag - if true, report result to coordinator, not contract
+    #[serde(default)]
+    pub is_https_call: bool,
+    /// HTTPS API call ID - used to complete the call on coordinator
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    /// Payment Key owner for HTTPS calls (NEAR account ID)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payment_key_owner: Option<String>,
+    /// Payment Key nonce for HTTPS calls
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payment_key_nonce: Option<i32>,
+    /// USD payment amount for HTTPS calls (in minimal token units)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usd_payment: Option<String>,
+    /// Compute limit in USD for HTTPS calls (X-Compute-Limit header value)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compute_limit_usd: Option<String>,
+    /// Attached deposit in USD for HTTPS calls (X-Attached-Deposit header value)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attached_deposit_usd: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -651,11 +677,16 @@ pub struct TaskAttestation {
     pub tdx_quote: Vec<u8>,
     pub worker_measurement: String,
 
-    // NEAR context
+    // NEAR context (NULL for HTTPS calls)
     pub request_id: Option<i64>,
     pub caller_account_id: Option<String>,
     pub transaction_hash: Option<String>,
     pub block_height: Option<i64>,
+
+    // HTTPS call context (NULL for NEAR calls)
+    pub call_id: Option<uuid::Uuid>,
+    pub payment_key_owner: Option<String>,
+    pub payment_key_nonce: Option<i32>,
 
     // Code source (both task types have this)
     pub repo_url: Option<String>,
@@ -681,7 +712,7 @@ pub struct AttestationResponse {
     pub tdx_quote: String,  // base64 encoded
     pub worker_measurement: String,
 
-    // NEAR context
+    // NEAR context (NULL for HTTPS calls)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -690,6 +721,14 @@ pub struct AttestationResponse {
     pub transaction_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub block_height: Option<i64>,
+
+    // HTTPS call context (NULL for NEAR calls)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payment_key_owner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payment_key_nonce: Option<i32>,
 
     // Code source
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -723,6 +762,10 @@ impl From<TaskAttestation> for AttestationResponse {
             caller_account_id: att.caller_account_id,
             transaction_hash: att.transaction_hash,
             block_height: att.block_height,
+            // HTTPS call context
+            call_id: att.call_id.map(|id| id.to_string()),
+            payment_key_owner: att.payment_key_owner,
+            payment_key_nonce: att.payment_key_nonce,
             repo_url: att.repo_url,
             commit_hash: att.commit_hash,
             build_target: att.build_target,
@@ -743,11 +786,16 @@ pub struct StoreAttestationRequest {
     // TDX attestation data
     pub tdx_quote: String,  // base64 encoded
 
-    // NEAR context
+    // NEAR context (NULL for HTTPS calls)
     pub request_id: Option<i64>,
     pub caller_account_id: Option<String>,
     pub transaction_hash: Option<String>,
     pub block_height: Option<u64>,
+
+    // HTTPS call context (NULL for NEAR calls)
+    pub call_id: Option<String>,
+    pub payment_key_owner: Option<String>,
+    pub payment_key_nonce: Option<i32>,
 
     // Code source
     pub repo_url: Option<String>,

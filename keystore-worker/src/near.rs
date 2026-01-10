@@ -388,6 +388,59 @@ impl NearClient {
         Ok(secret_profile)
     }
 
+    /// Read secrets from contract by System secret type
+    ///
+    /// Calls: contract.get_secrets(accessor: System(PaymentKey), profile, owner)
+    /// Returns: SecretProfile { encrypted_secrets, access, ... }
+    pub async fn get_secrets_by_system(
+        &self,
+        secret_type: &str,  // "PaymentKey"
+        profile: &str,      // nonce for Payment Keys
+        owner: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        tracing::debug!(
+            contract = %self.contract_id,
+            secret_type = %secret_type,
+            profile = %profile,
+            owner = %owner,
+            "Reading secrets by System from contract"
+        );
+
+        let args = json!({
+            "accessor": {
+                "System": secret_type
+            },
+            "profile": profile,
+            "owner": owner,
+        });
+
+        let query = methods::query::RpcQueryRequest {
+            block_reference: BlockReference::latest(),
+            request: near_primitives::views::QueryRequest::CallFunction {
+                account_id: self.contract_id.clone(),
+                method_name: "get_secrets".to_string(),
+                args: args.to_string().into_bytes().into(),
+            },
+        };
+
+        let response = self
+            .rpc_client
+            .call(query)
+            .await
+            .context("Failed to query contract")?;
+
+        let result = match response.kind {
+            QueryResponseKind::CallResult(result) => result.result,
+            _ => anyhow::bail!("Unexpected query response"),
+        };
+
+        // Parse response (Option<SecretProfile>)
+        let secret_profile: Option<serde_json::Value> = serde_json::from_slice(&result)
+            .context("Failed to parse contract response")?;
+
+        Ok(secret_profile)
+    }
+
     /// Check if account is member of DAO role (Sputnik v2 compatible)
     ///
     /// Calls: dao_contract.get_policy()

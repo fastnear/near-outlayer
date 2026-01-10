@@ -21,8 +21,13 @@ pub struct Config {
     /// OffchainVM contract account ID
     pub offchainvm_contract_id: String,
 
-    /// Allowed worker token hashes (SHA256)
+    /// Allowed worker token hashes (SHA256) - for TEE workers only
+    /// Grants access to: /decrypt, /encrypt, /decrypt-raw, /storage/*
     pub allowed_worker_token_hashes: Vec<String>,
+
+    /// Allowed coordinator token hashes (SHA256) - for coordinator only
+    /// Grants access to: /add_generated_secret, /update_user_secrets
+    pub allowed_coordinator_token_hashes: Vec<String>,
 
     /// TEE mode (sgx, sev, simulated, none)
     pub tee_mode: TeeMode,
@@ -82,6 +87,13 @@ impl Config {
             .filter(|s| !s.is_empty())
             .collect();
 
+        let allowed_coordinator_token_hashes = std::env::var("ALLOWED_COORDINATOR_TOKEN_HASHES")
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
         let tee_mode = match std::env::var("TEE_MODE").unwrap_or_else(|_| "none".to_string()).as_str() {
             "sgx" => TeeMode::Sgx,
             "sev" => TeeMode::Sev,
@@ -97,6 +109,7 @@ impl Config {
             near_rpc_url,
             offchainvm_contract_id,
             allowed_worker_token_hashes,
+            allowed_coordinator_token_hashes,
             tee_mode,
         })
     }
@@ -104,7 +117,11 @@ impl Config {
     /// Validate configuration
     pub fn validate(&self) -> Result<()> {
         if self.allowed_worker_token_hashes.is_empty() {
-            tracing::warn!("No worker token hashes configured - all requests will be rejected");
+            tracing::warn!("No worker token hashes configured - worker endpoints will reject all requests");
+        }
+
+        if self.allowed_coordinator_token_hashes.is_empty() {
+            tracing::warn!("No coordinator token hashes configured - coordinator endpoints will reject all requests");
         }
 
         Ok(())

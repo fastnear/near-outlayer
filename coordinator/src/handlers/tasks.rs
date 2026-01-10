@@ -202,7 +202,7 @@ pub async fn create_task(
     let execution_request = ExecutionRequest {
         request_id,
         data_id: payload.data_id.clone(),
-        code_source,
+        code_source: Some(code_source),
         resource_limits: payload.resource_limits,
         input_data: payload.input_data,
         secrets_ref: payload.secrets_ref, // Reference to contract-stored secrets
@@ -217,6 +217,14 @@ pub async fn create_task(
         compile_result: None, // No compile result yet - set after compilation
         project_uuid: payload.project_uuid, // For persistent storage
         project_id: payload.project_id, // For project-based secrets
+        // HTTPS API fields - not used for NEAR contract calls
+        is_https_call: false,
+        call_id: None,
+        payment_key_owner: None,
+        payment_key_nonce: None,
+        usd_payment: None,
+        compute_limit_usd: None,
+        attached_deposit_usd: None,
     };
 
     let request_json = serde_json::to_string(&execution_request).map_err(|e| {

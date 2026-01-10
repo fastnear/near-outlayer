@@ -507,7 +507,7 @@ pub async fn complete_job(
                 ExecutionRequest {
                     request_id: job.request_id as u64,
                     data_id: job.data_id.clone(),
-                    code_source,
+                    code_source: Some(code_source),
                     resource_limits: ResourceLimits {
                         max_instructions: req.max_instructions.unwrap_or(1_000_000_000) as u64,
                         max_memory_mb: req.max_memory_mb.unwrap_or(128) as u32,
@@ -544,6 +544,14 @@ pub async fn complete_job(
                     compile_result: payload.compile_result.clone(),
                     project_uuid: req.project_uuid.clone(),
                     project_id: req.project_id.clone(),
+                    // HTTPS API fields - not used for NEAR contract calls
+                    is_https_call: false,
+                    call_id: None,
+                    payment_key_owner: None,
+                    payment_key_nonce: None,
+                    usd_payment: None,
+                    compute_limit_usd: None,
+                    attached_deposit_usd: None,
                 }
             }
             Ok(None) => {
@@ -553,7 +561,7 @@ pub async fn complete_job(
                 ExecutionRequest {
                     request_id: job.request_id as u64,
                     data_id: job.data_id.clone(),
-                    code_source,
+                    code_source: Some(code_source),
                     resource_limits: ResourceLimits {
                         max_instructions: 1_000_000_000,
                         max_memory_mb: 128,
@@ -572,6 +580,14 @@ pub async fn complete_job(
                     compile_result: None,
                     project_uuid: None,
                     project_id: None,
+                    // HTTPS API fields - not used for NEAR contract calls
+                    is_https_call: false,
+                    call_id: None,
+                    payment_key_owner: None,
+                    payment_key_nonce: None,
+                    usd_payment: None,
+                    compute_limit_usd: None,
+                    attached_deposit_usd: None,
                 }
             }
             Err(e) => {
@@ -580,7 +596,7 @@ pub async fn complete_job(
                 ExecutionRequest {
                     request_id: job.request_id as u64,
                     data_id: job.data_id.clone(),
-                    code_source,
+                    code_source: Some(code_source),
                     resource_limits: ResourceLimits {
                         max_instructions: 1_000_000_000,
                         max_memory_mb: 128,
@@ -599,6 +615,14 @@ pub async fn complete_job(
                     compile_result: None,
                     project_uuid: None,
                     project_id: None,
+                    // HTTPS API fields - not used for NEAR contract calls
+                    is_https_call: false,
+                    call_id: None,
+                    payment_key_owner: None,
+                    payment_key_nonce: None,
+                    usd_payment: None,
+                    compute_limit_usd: None,
+                    attached_deposit_usd: None,
                 }
             }
         };
@@ -670,7 +694,7 @@ pub async fn complete_job(
         let execution_request = ExecutionRequest {
             request_id: job.request_id as u64,
             data_id: job.data_id.clone(),
-            code_source,
+            code_source: Some(code_source),
             resource_limits: ResourceLimits {
                 max_instructions: 0, // Not used
                 max_memory_mb: 0,
@@ -689,6 +713,14 @@ pub async fn complete_job(
             compile_result: None,
             project_uuid,
             project_id: None, // Not needed for failed compile reporting
+            // HTTPS API fields - not used for NEAR contract calls
+            is_https_call: false,
+            call_id: None,
+            payment_key_owner: None,
+            payment_key_nonce: None,
+            usd_payment: None,
+            compute_limit_usd: None,
+            attached_deposit_usd: None,
         };
 
         let request_json = match serde_json::to_string(&execution_request) {

@@ -432,7 +432,17 @@ export default function AttestationView({
         </div>
       )}
 
-      {/* Transaction Link */}
+      {/* HTTPS Call Context */}
+      {attestation.call_id && (
+        <div>
+          <label className="block text-sm font-semibold text-gray-700 mb-1">HTTPS Call ID</label>
+          <div className="bg-orange-50 p-2 rounded border border-orange-200 font-mono text-sm">
+            {attestation.call_id}
+          </div>
+        </div>
+      )}
+
+      {/* NEAR Transaction Link */}
       {attestation.transaction_hash && (
         <div>
           <label className="block text-sm font-semibold text-gray-700 mb-1">NEAR Transaction</label>
