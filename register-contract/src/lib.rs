@@ -167,7 +167,7 @@ impl RegisterContract {
         // 4. Add access key to this contract's account (worker account)
         // Permission: Function call to offchainvm_contract_id::resolve_execution and submit_execution_output_and_resolve
         let allowance: Allowance = Allowance::limited(NearToken::from_near(10)).unwrap(); // 10 NEAR for gas
-        let method_names = "resolve_execution,submit_execution_output_and_resolve".to_string();
+        let method_names = "resolve_execution,submit_execution_output_and_resolve,resume_topup,resume_delete_payment_key".to_string();
         let current_account = env::current_account_id();
 
         let offchainvm_contract_id: AccountId = OFFCHAINVM_CONTRACT_ID.parse().unwrap();
