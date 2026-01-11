@@ -11,8 +11,6 @@ use crate::models::{AttestationResponse, StoreAttestationRequest, TaskAttestatio
 use crate::AppState;
 
 /// Public endpoint: Get attestation by job ID (task ID)
-///
-/// Requires valid API key in X-API-Key header
 pub async fn get_attestation(
     Path(job_id): Path<i64>,
     State(state): State<AppState>,

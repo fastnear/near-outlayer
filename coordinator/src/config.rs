@@ -24,7 +24,6 @@ pub struct Config {
 
     // Auth
     pub require_auth: bool,
-    pub require_attestation_api_key: bool,
 
     // Timeouts
     pub task_poll_timeout_seconds: u64,
@@ -41,11 +40,9 @@ pub struct Config {
     // CORS
     pub cors_allowed_origins: Vec<String>,
 
-    // Attestation API
+    // Admin API
     pub admin_bearer_token: String,
     pub expected_worker_measurement: String,
-    pub default_rate_limit: u32,
-    pub max_rate_limit: u32,
 
     // Stablecoin configuration
     /// Stablecoin contract address (e.g., "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1" for native USDC on NEAR)
@@ -105,9 +102,6 @@ impl Config {
             require_auth: std::env::var("REQUIRE_AUTH")
                 .unwrap_or_else(|_| "true".to_string())
                 .parse()?,
-            require_attestation_api_key: std::env::var("REQUIRE_ATTESTATION_API_KEY")
-                .unwrap_or_else(|_| "true".to_string())
-                .parse()?,
 
             task_poll_timeout_seconds: std::env::var("TASK_POLL_TIMEOUT_SECONDS")
                 .unwrap_or_else(|_| "60".to_string())
@@ -135,12 +129,6 @@ impl Config {
                 .unwrap_or_else(|_| "change-this-in-production".to_string()),
             expected_worker_measurement: std::env::var("EXPECTED_WORKER_MEASUREMENT")
                 .unwrap_or_else(|_| "0".repeat(96)),
-            default_rate_limit: std::env::var("DEFAULT_RATE_LIMIT_PER_MINUTE")
-                .unwrap_or_else(|_| "60".to_string())
-                .parse()?,
-            max_rate_limit: std::env::var("MAX_RATE_LIMIT_PER_MINUTE")
-                .unwrap_or_else(|_| "600".to_string())
-                .parse()?,
 
             // Stablecoin configuration
             stablecoin_contract: std::env::var("STABLECOIN_CONTRACT")

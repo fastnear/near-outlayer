@@ -117,9 +117,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         pricing_updated_at: Arc::new(RwLock::new(SystemTime::now())),
     };
 
-    // Initialize rate limiter for API keys
-    let rate_limiter = Arc::new(middleware::rate_limit::RateLimiter::new());
-
     // Initialize IP rate limiter for public endpoints (10 requests/minute)
     // Protects keystore (which runs in TEE) from spam/DoS
     // Cleanup happens lazily when HashMap exceeds 1000 entries
@@ -215,8 +212,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/public/users/:user_account_id/earnings",
             get(handlers::public::get_user_earnings),
         )
-        // TODO Fix
-        // .route("/public/api-keys", post(handlers::public::create_api_key))
         .route("/public/projects/storage", get(handlers::public::get_project_storage))
         // Payment Key balance and usage (public - no auth required)
         .route(
@@ -236,7 +231,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/public/project-earnings/:project_owner/history",
             get(handlers::public::get_project_owner_earnings_history),
         )
-        .route("/health", get(|| async { "OK" }));
+        .route("/health", get(|| async { "OK" }))
+        // Attestation endpoint (public with IP rate limiting)
+        .route("/attestations/:job_id", get(handlers::attestations::get_attestation));
 
     // Build internal routes (no auth - for worker communication only)
     // These endpoints are NOT exposed externally, workers use internal network
@@ -244,23 +241,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/internal/system-logs", post(handlers::internal::store_system_log))
         .with_state(state.clone());
 
-    // Build API key protected routes (require API key)
-    let api_key_protected = Router::new()
-        .route("/attestations/:job_id", get(handlers::attestations::get_attestation))
-        .layer(axum::middleware::from_fn_with_state(
-            (rate_limiter.clone(), config.clone()),
-            middleware::rate_limit::rate_limit_middleware,
-        ))
-        .layer(axum::middleware::from_fn_with_state(
-            (state.db.clone(), config.clone()),
-            middleware::api_key_auth::api_key_auth,
-        ))
-        .with_state(state.clone());
-
     // Build admin routes (require admin bearer token)
     let admin = Router::new()
-        .route("/admin/api-keys", post(handlers::admin::create_api_key))
-        .route("/admin/system-logs/:request_id", get(handlers::internal::get_system_logs))
+        .route("/admin/compile-logs/:job_id", get(handlers::internal::get_compile_logs))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::admin_auth::admin_auth,
@@ -288,7 +271,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .allow_headers([
             axum::http::header::CONTENT_TYPE,
             axum::http::header::AUTHORIZATION,
-            axum::http::HeaderName::from_static("x-api-key"),
             axum::http::HeaderName::from_static("x-payment-key"),
             axum::http::HeaderName::from_static("x-compute-limit"),
             axum::http::HeaderName::from_static("x-attached-deposit"),
@@ -305,7 +287,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(protected)
         .merge(public)
         .merge(secrets_routes)
-        .merge(api_key_protected)
         .merge(internal)
         .merge(admin)
         .merge(https_api)

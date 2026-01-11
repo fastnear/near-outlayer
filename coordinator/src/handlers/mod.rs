@@ -1,4 +1,3 @@
-pub mod admin;
 pub mod attestations;
 pub mod call;
 pub mod github;

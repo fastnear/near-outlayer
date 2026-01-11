@@ -52,20 +52,20 @@ pub async fn store_system_log(
     Ok((StatusCode::CREATED, Json(serde_json::json!({"id": result.id}))))
 }
 
-/// GET /admin/system-logs/:request_id
+/// GET /admin/compile-logs/:job_id
 ///
 /// ⚠️ ADMIN ONLY - NEVER EXPOSE VIA PUBLIC API ⚠️
-/// Returns RAW stderr/stdout which may contain leaked system files
+/// Returns RAW stderr/stdout from compilation which may contain leaked system files
 /// Access this endpoint ONLY via localhost/SSH, NOT through public URL
 ///
-/// Retrieve raw system logs for a specific request (admin debugging)
-/// NO AUTH REQUIRED in dev mode - in production, add proper admin authentication
-/// This endpoint should NOT be accessible from external networks
-pub async fn get_system_logs(
+/// Retrieve compilation logs for a specific job (admin debugging)
+/// Only compilation errors are logged here - successful compilations and
+/// execution errors are NOT stored in system_hidden_logs
+pub async fn get_compile_logs(
     State(state): State<AppState>,
-    Path(request_id): Path<i64>,
+    Path(job_id): Path<i64>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    // Fetch all system logs for this request_id
+    // Fetch compilation logs for this job_id
     let logs = sqlx::query_as!(
         SystemHiddenLog,
         r#"
@@ -80,15 +80,15 @@ pub async fn get_system_logs(
             execution_error,
             created_at::TEXT as "created_at!"
         FROM system_hidden_logs
-        WHERE request_id = $1
+        WHERE job_id = $1
         ORDER BY created_at DESC
         "#,
-        request_id
+        job_id
     )
     .fetch_all(&state.db)
     .await
     .map_err(|e| {
-        tracing::error!("Failed to fetch system logs: {}", e);
+        tracing::error!("Failed to fetch compile logs: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
