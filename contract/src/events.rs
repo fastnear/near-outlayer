@@ -91,14 +91,18 @@ pub fn emit_project_storage_cleanup(
     project_id: &str,
     project_uuid: &str,
 ) {
+    // Emit as system_event so compiler-only workers skip it
+    // (system_event is handled via system callbacks which require "execution" capability)
     let event = near_sdk::serde_json::json!({
         "standard": standard,
         "version": version,
-        "event": "project_storage_cleanup",
+        "event": "system_event",
         "data": [{
-            "project_id": project_id,
-            "project_uuid": project_uuid,
-            "timestamp": near_sdk::env::block_timestamp(),
+            "ProjectStorageCleanup": {
+                "project_id": project_id,
+                "project_uuid": project_uuid,
+                "timestamp": near_sdk::env::block_timestamp(),
+            }
         }]
     });
 

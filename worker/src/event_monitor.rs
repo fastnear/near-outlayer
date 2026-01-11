@@ -705,19 +705,8 @@ impl EventMonitor {
 
                 Some(ContractEvent::ExecutionRequested(event_data))
             }
-            "project_storage_cleanup" => {
-                let event_data: ProjectStorageCleanupEvent =
-                    serde_json::from_value(data_array[0].clone()).ok()?;
-
-                info!(
-                    "✅ Found project_storage_cleanup event at block {}: project_id={} uuid={}",
-                    block_height, event_data.project_id, event_data.project_uuid
-                );
-
-                Some(ContractEvent::ProjectStorageCleanup(event_data))
-            }
             "system_event" => {
-                // SystemEvent is wrapped: {"TopUpPaymentKey": {...}} or {"DeletePaymentKey": {...}}
+                // SystemEvent is wrapped: {"TopUpPaymentKey": {...}}, {"DeletePaymentKey": {...}}, or {"ProjectStorageCleanup": {...}}
                 let system_event = &data_array[0];
 
                 if let Some(topup_data) = system_event.get("TopUpPaymentKey") {
@@ -740,6 +729,16 @@ impl EventMonitor {
                     );
 
                     Some(ContractEvent::DeletePaymentKey(event_data))
+                } else if let Some(cleanup_data) = system_event.get("ProjectStorageCleanup") {
+                    let event_data: ProjectStorageCleanupEvent =
+                        serde_json::from_value(cleanup_data.clone()).ok()?;
+
+                    info!(
+                        "✅ Found system_event ProjectStorageCleanup at block {}: project_id={} uuid={}",
+                        block_height, event_data.project_id, event_data.project_uuid
+                    );
+
+                    Some(ContractEvent::ProjectStorageCleanup(event_data))
                 } else {
                     warn!("Unknown system_event type at block {}: {:?}", block_height, system_event);
                     None
@@ -759,11 +758,13 @@ impl EventMonitor {
             .context("Failed to parse request_data JSON")?;
 
         info!(
-            "Creating task for execution request: request_id={} source={} sender={} response_format={:?}",
+            "Creating task for execution request: request_id={} source={} sender={} response_format={:?} project_uuid={:?} project_id={:?}",
             request_data.request_id,
             request_data.code_source.display(),
             request_data.sender_id,
-            request_data.response_format
+            request_data.response_format,
+            request_data.project_uuid,
+            request_data.project_id
         );
 
         // Convert data_id Vec<u8> to hex string
@@ -807,6 +808,9 @@ impl EventMonitor {
             project_uuid: request_data.project_uuid.clone(),
             project_id: request_data.project_id.clone(),
         };
+
+        info!("📤 Sending task to coordinator: project_uuid={:?} project_id={:?}",
+            request_data.project_uuid, request_data.project_id);
 
         match self.api_client.create_task(params).await
         {
