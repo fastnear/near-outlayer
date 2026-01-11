@@ -176,6 +176,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/topup/complete", post(handlers::topup::complete_topup))
         // DeletePaymentKey task endpoints (worker-protected)
         .route("/payment-keys/delete-task/create", post(handlers::topup::create_delete_payment_key_task))
+        // ProjectStorageCleanup task endpoints (worker-protected)
+        .route("/projects/cleanup-task/create", post(handlers::topup::create_project_storage_cleanup_task))
         // Unified system callbacks poll endpoint
         .route("/system-callbacks/poll", get(handlers::topup::poll_system_callback_task))
         // HTTPS call completion endpoint (worker-protected)

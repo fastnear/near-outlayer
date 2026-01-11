@@ -46,7 +46,8 @@ pub enum SystemCallbackTask {
     TopUp(TopUpTaskPayload),
     /// Delete Payment Key - no keystore needed
     DeletePaymentKey(DeletePaymentKeyTaskPayload),
-    // Future: Withdraw, UpdateLimits, etc.
+    /// Project Storage Cleanup - clear compiled WASM and storage for deleted project
+    ProjectStorageCleanup(ProjectStorageCleanupPayload),
 }
 
 /// TopUp task payload (stored in unified queue)
@@ -68,6 +69,15 @@ pub struct DeletePaymentKeyTaskPayload {
     pub data_id: String,
     pub owner: String,
     pub nonce: u32,
+    pub created_at: i64,
+}
+
+/// ProjectStorageCleanup task payload (stored in unified queue)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectStorageCleanupPayload {
+    pub task_id: i64,
+    pub project_id: String,
+    pub project_uuid: String,
     pub created_at: i64,
 }
 
@@ -435,6 +445,113 @@ pub async fn create_delete_payment_key_task(
 }
 
 // =============================================================================
+// ProjectStorageCleanup Task Queue
+// =============================================================================
+
+/// Request to create a ProjectStorageCleanup task
+#[derive(Debug, Deserialize)]
+pub struct CreateProjectStorageCleanupRequest {
+    /// Project ID (e.g., "owner.near/repo")
+    pub project_id: String,
+    /// Project UUID for storage lookup
+    pub project_uuid: String,
+}
+
+/// Response for create project storage cleanup task
+#[derive(Debug, Serialize)]
+pub struct CreateProjectStorageCleanupResponse {
+    pub task_id: i64,
+    pub created: bool,
+}
+
+/// Create a new ProjectStorageCleanup task
+///
+/// Called by event_monitor when it detects a SystemEvent::ProjectStorageCleanup event.
+/// Task is stored in Redis queue for workers to process.
+pub async fn create_project_storage_cleanup_task(
+    State(state): State<AppState>,
+    Json(req): Json<CreateProjectStorageCleanupRequest>,
+) -> Result<Json<CreateProjectStorageCleanupResponse>, StatusCode> {
+    info!(
+        "Creating ProjectStorageCleanup task: project_id={} uuid={}",
+        req.project_id, req.project_uuid
+    );
+
+    // Check for duplicate by project_uuid
+    let exists_key = format!("project_storage_cleanup:uuid:{}", req.project_uuid);
+    let mut conn = state.redis.get_async_connection().await.map_err(|e| {
+        error!("Failed to get Redis connection: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // Check if task already exists
+    let exists: bool = conn.exists(&exists_key).await.map_err(|e| {
+        error!("Failed to check task existence: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    if exists {
+        let task_id: i64 = conn.get(&exists_key).await.unwrap_or(0);
+        info!(
+            "ProjectStorageCleanup task already exists: uuid={} task_id={}",
+            req.project_uuid, task_id
+        );
+        return Ok(Json(CreateProjectStorageCleanupResponse {
+            task_id,
+            created: false,
+        }));
+    }
+
+    // Generate task_id
+    let task_id: i64 = conn.incr("project_storage_cleanup_task_id_counter", 1).await.map_err(|e| {
+        error!("Failed to generate task_id: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // Create unified task payload
+    let payload = ProjectStorageCleanupPayload {
+        task_id,
+        project_id: req.project_id.clone(),
+        project_uuid: req.project_uuid.clone(),
+        created_at: chrono::Utc::now().timestamp(),
+    };
+
+    // Wrap in unified task type
+    let task = SystemCallbackTask::ProjectStorageCleanup(payload);
+
+    // Serialize task
+    let task_json = serde_json::to_string(&task).map_err(|e| {
+        error!("Failed to serialize task: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // Store task in unified Redis queue
+    let _: () = conn.lpush(SYSTEM_CALLBACKS_QUEUE, &task_json).await.map_err(|e| {
+        error!("Failed to push task to queue: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // Mark uuid as processed (with TTL of 1 hour)
+    let _: () = conn
+        .set_ex(&exists_key, task_id, 3600)
+        .await
+        .map_err(|e| {
+            error!("Failed to mark task as existing: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    info!(
+        "ProjectStorageCleanup task created: task_id={} uuid={}",
+        task_id, req.project_uuid
+    );
+
+    Ok(Json(CreateProjectStorageCleanupResponse {
+        task_id,
+        created: true,
+    }))
+}
+
+// =============================================================================
 // Unified System Callbacks Poll Endpoint
 // =============================================================================
 
@@ -532,6 +649,12 @@ pub async fn poll_system_callback_task(
                     info!(
                         "📥 System callback task polled: type=DeletePaymentKey task_id={} owner={} nonce={}",
                         payload.task_id, payload.owner, payload.nonce
+                    );
+                }
+                SystemCallbackTask::ProjectStorageCleanup(payload) => {
+                    info!(
+                        "📥 System callback task polled: type=ProjectStorageCleanup task_id={} project_id={} uuid={}",
+                        payload.task_id, payload.project_id, payload.project_uuid
                     );
                 }
             }

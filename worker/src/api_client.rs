@@ -1422,6 +1422,64 @@ impl ApiClient {
         }
     }
 
+    /// Create a project storage cleanup task in coordinator queue
+    ///
+    /// Called by event monitor when ProjectStorageCleanup event is detected.
+    /// Worker will poll for these tasks and process them.
+    pub async fn create_project_storage_cleanup_task(
+        &self,
+        project_id: &str,
+        project_uuid: &str,
+    ) -> Result<Option<i64>> {
+        let url = format!("{}/projects/cleanup-task/create", self.base_url);
+
+        #[derive(Serialize)]
+        struct CreateCleanupTaskRequest {
+            project_id: String,
+            project_uuid: String,
+        }
+
+        #[derive(Deserialize)]
+        struct CreateCleanupTaskResponse {
+            task_id: i64,
+            created: bool,
+        }
+
+        let request = CreateCleanupTaskRequest {
+            project_id: project_id.to_string(),
+            project_uuid: project_uuid.to_string(),
+        };
+
+        tracing::info!(
+            "📝 Creating ProjectStorageCleanup task: project_id={} uuid={}",
+            project_id, project_uuid
+        );
+
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.auth_token)
+            .json(&request)
+            .send()
+            .await
+            .context("Failed to create project storage cleanup task")?;
+
+        if !response.status().is_success() {
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            anyhow::bail!("Create cleanup task failed: {}", error_text)
+        }
+
+        let result: CreateCleanupTaskResponse = response.json().await?;
+        if result.created {
+            Ok(Some(result.task_id))
+        } else {
+            Ok(None)
+        }
+    }
+
     // =========================================================================
     // Unified System Callbacks Polling
     // =========================================================================
@@ -1474,6 +1532,12 @@ impl ApiClient {
                     tracing::info!(
                         "📥 System callback: Delete task_id={} owner={} nonce={}",
                         payload.task_id, payload.owner, payload.nonce
+                    );
+                }
+                SystemCallbackTask::ProjectStorageCleanup(payload) => {
+                    tracing::info!(
+                        "📥 System callback: ProjectStorageCleanup task_id={} project_id={} uuid={}",
+                        payload.task_id, payload.project_id, payload.project_uuid
                     );
                 }
             }
@@ -1802,7 +1866,8 @@ pub enum SystemCallbackTask {
     TopUp(TopUpTaskPayload),
     /// Delete Payment Key - no keystore needed
     DeletePaymentKey(DeletePaymentKeyPayload),
-    // Future: Withdraw, UpdateLimits, etc.
+    /// Project Storage Cleanup - clear compiled WASM and storage for deleted project
+    ProjectStorageCleanup(ProjectStorageCleanupPayload),
 }
 
 /// TopUp task payload from unified queue
@@ -1824,6 +1889,15 @@ pub struct DeletePaymentKeyPayload {
     pub data_id: String,
     pub owner: String,
     pub nonce: u32,
+    pub created_at: i64,
+}
+
+/// ProjectStorageCleanup task payload from unified queue
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectStorageCleanupPayload {
+    pub task_id: i64,
+    pub project_id: String,
+    pub project_uuid: String,
     pub created_at: i64,
 }
 

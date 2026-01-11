@@ -833,24 +833,38 @@ impl EventMonitor {
         Ok(())
     }
 
-    /// Handle project_storage_cleanup event by clearing storage in coordinator
+    /// Handle ProjectStorageCleanup event by creating task in coordinator
+    ///
+    /// The worker with execution capability will pick up this task and:
+    /// 1. Call clear_project_storage on coordinator
     async fn handle_project_storage_cleanup(&self, event: ProjectStorageCleanupEvent) -> Result<()> {
         info!(
-            "🧹 Clearing storage for deleted project: project_id={} uuid={}",
+            "🧹 Creating cleanup task for deleted project: project_id={} uuid={}",
             event.project_id, event.project_uuid
         );
 
-        match self.api_client.clear_project_storage(&event.project_uuid).await {
-            Ok(()) => {
+        match self
+            .api_client
+            .create_project_storage_cleanup_task(&event.project_id, &event.project_uuid)
+            .await
+        {
+            Ok(Some(task_id)) => {
                 info!(
-                    "✅ Successfully cleared storage for project: uuid={}",
+                    "✅ Created ProjectStorageCleanup task: task_id={} uuid={}",
+                    task_id, event.project_uuid
+                );
+                Ok(())
+            }
+            Ok(None) => {
+                info!(
+                    "⏭️ ProjectStorageCleanup task already exists for uuid={}",
                     event.project_uuid
                 );
                 Ok(())
             }
             Err(e) => {
                 error!(
-                    "❌ Failed to clear storage for project uuid={}: {}",
+                    "❌ Failed to create cleanup task for project uuid={}: {}",
                     event.project_uuid, e
                 );
                 Err(e)

@@ -2470,6 +2470,31 @@ async fn run_contract_system_callbacks_handler(
                             }
                         }
                     }
+
+                    // =================================================================
+                    // Project Storage Cleanup - clear compiled WASM and storage
+                    // =================================================================
+                    SystemCallbackTask::ProjectStorageCleanup(payload) => {
+                        info!(
+                            "🧹 Processing ProjectStorageCleanup task: project_id={} uuid={}",
+                            payload.project_id, payload.project_uuid
+                        );
+
+                        match api_client.clear_project_storage(&payload.project_uuid).await {
+                            Ok(()) => {
+                                info!(
+                                    "✅ ProjectStorageCleanup completed: uuid={}",
+                                    payload.project_uuid
+                                );
+                            }
+                            Err(e) => {
+                                error!(
+                                    "❌ Failed to clear project storage: uuid={} error={}",
+                                    payload.project_uuid, e
+                                );
+                            }
+                        }
+                    }
                 }
             }
             Ok(None) => {
