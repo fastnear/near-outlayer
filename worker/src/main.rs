@@ -409,7 +409,8 @@ async fn worker_iteration(
         return Ok(false);
     };
 
-    info!("📨 Received execution request: {:?}", execution_request);
+    info!("📨 Received execution request: request_id={} project_uuid={:?} project_id={:?}",
+        execution_request.request_id, execution_request.project_uuid, execution_request.project_id);
 
     // Extract request details
     let request_id = execution_request.request_id;
