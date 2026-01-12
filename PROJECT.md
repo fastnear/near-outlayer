@@ -685,78 +685,90 @@ fn validate_code_source(source: &CodeSource) -> Result<()> {
 
 ---
 
-## Roadmap
+## Implementation Status (Updated: 2025-01-12)
 
-### Phase 1: TEE-Based MVP (4-5 months)
-**Goal**: Production-ready system with TEE security from day one
+### Completed Components
 
-**Smart Contract:**
-- [ ] NEAR OutLayer smart contract with yield/resume pattern
-- [ ] Payment validation and escrow
-- [ ] Timeout and cancellation handling
-- [ ] Event emission for workers
-- [ ] Public key storage and attestation verification
+| Component | Status | Notes |
+|-----------|--------|-------|
+| **Smart Contract** | ✅ 100% | yield/resume, secrets management, dynamic pricing |
+| **Coordinator API** | ✅ 100% | PostgreSQL + Redis, task queue, WASM cache |
+| **Worker** | ✅ 100% | wasmi execution, fuel metering, WASI env vars |
+| **Keystore Worker** | ✅ 100% | TEE attestation, access control validation |
+| **Dashboard** | ✅ 100% | Next.js, secrets management, executions view |
+| **Register Contract** | ✅ 100% | Intel TDX verification, worker whitelist |
 
-**Worker (TEE-based):**
-- [ ] AWS Nitro Enclaves OR Intel SGX integration
-- [ ] Keypair generation inside TEE
-- [ ] Remote attestation report generation
-- [ ] Event monitoring (outside TEE)
-- [ ] Task queue and coordination
+### Smart Contract Features
+- ✅ `request_execution` with resource limit validation
+- ✅ `resolve_execution` with actual metrics logging
+- ✅ `store_secrets` / `delete_secrets` / `get_secrets` / `list_user_secrets`
+- ✅ Dynamic pricing: `base_fee + (instructions × rate) + (time × rate)`
+- ✅ Hard caps: 100B instructions, 60s execution time
+- ✅ User secrets index for O(1) lookups
 
-**WASM Execution:**
-- [ ] wasmi integration with instruction metering
-- [ ] WASI runtime with minimal capabilities
-- [ ] Memory limits and OOM detection
-- [ ] Process timeout enforcement (kill after max_execution_seconds)
-- [ ] Resource usage tracking
+### Worker Features
+- ✅ wasmi with fuel metering (real instruction counting)
+- ✅ WASI environment variables from decrypted secrets
+- ✅ Docker sandboxed compilation (no network, resource limits)
+- ✅ GitHub branch resolution via coordinator API with Redis caching
+- ✅ TEE attestation (Intel TDX via Phala dstack)
 
-**Compilation Pipeline:**
-- [ ] Sandboxed Docker compilation environment
-- [ ] GitHub repo cloning and validation (public repos only)
-- [ ] WASM binary caching (content-addressed storage)
-- [ ] Asynchronous compilation with CompilationInProgress response
-- [ ] Cache eviction policy (LRU)
+### Keystore Features
+- ✅ Access control: AllowAll, Whitelist, AccountPattern, NEAR/FT/NFT balance
+- ✅ Logic conditions (AND/OR/NOT)
+- ✅ Reserved keywords protection (NEAR_SENDER_ID, etc.)
+- ✅ Per-repo encryption keys (HMAC-SHA256 derived)
 
-**Secret Management:**
-- [ ] Client-side secret encryption (Ed25519 public key)
-- [ ] TEE-based secret decryption
-- [ ] Environment variable injection into WASM
-- [ ] Memory clearing after execution
+### Infrastructure
+- ✅ PostgreSQL + Redis via docker-compose
+- ✅ WASM cache with LRU eviction
+- ✅ Bearer token auth (SHA256 hashed)
+- ✅ Phala Cloud deployment configs
 
-**Testing & Validation:**
-- [ ] End-to-end test suite
-- [ ] Security audit (smart contract + worker)
-- [ ] TEE attestation verification
-- [ ] Load testing (multiple concurrent executions)
+### Pending Work
 
-### Phase 2: Production Scaling (2-3 months)
-**Goal**: Handle high throughput and multiple workers
+| Item | Priority | Notes |
+|------|----------|-------|
+| End-to-end tests | High | Integration testing |
+| Load testing | Medium | Multiple concurrent executions |
+| Security audit | High | Contract + worker |
+| Deployment scripts | Low | Human handles deployment |
 
-- [ ] Multi-worker coordination (Redis/PostgreSQL task queue)
-- [ ] Worker pool scaling (configurable pool size)
-- [ ] Horizontal scaling support (multiple physical servers)
+---
+
+## Roadmap (Reference)
+
+### Phase 1: TEE-Based MVP ✅ COMPLETE
+- [x] Smart contract with yield/resume pattern
+- [x] Payment validation and escrow
+- [x] Timeout and cancellation handling
+- [x] Event emission for workers
+- [x] Intel TDX integration (via Phala Cloud)
+- [x] Keypair generation inside TEE
+- [x] Remote attestation report generation
+- [x] wasmi with instruction metering
+- [x] WASI runtime with minimal capabilities
+- [x] Memory limits and timeout enforcement
+- [x] Sandboxed Docker compilation
+- [x] WASM binary caching (LRU)
+- [x] TEE-based secret decryption
+- [x] Environment variable injection
+
+### Phase 2: Production Scaling ✅ MOSTLY COMPLETE
+- [x] Multi-worker coordination (Redis task queue)
+- [x] Dynamic pricing based on resource usage
 - [ ] Advanced monitoring (Prometheus, Grafana)
-- [ ] SLA guarantees (99.9% uptime)
-- [ ] Dynamic pricing based on resource usage
-- [ ] Compilation result sharing (S3/IPFS for WASM binaries)
+- [ ] SLA guarantees documentation
 
-### Phase 3: Operator Decentralization (6+ months)
-**Goal**: Permissionless worker marketplace
-
-- [ ] Multi-operator support (clients choose worker by pubkey)
+### Phase 3: Operator Decentralization (Future)
+- [ ] Multi-operator support
 - [ ] Slashing for availability failures
-- [ ] Payment splitting (protocol fee + worker fee)
-- [ ] Reputation system based on uptime and correctness
-- [ ] Governance for protocol parameters
-- [ ] Dispute resolution mechanism
+- [ ] Reputation system
 
-### Phase 4: Advanced Features (Ongoing)
-- [ ] ZK proofs for succinctness (optional, for expensive verifications)
-- [ ] GPU support via WebGPU (for ML inference)
-- [ ] Precompiled WASM templates (popular libraries)
-- [ ] CDN for WASM distribution (faster cold starts)
-- [ ] Cross-chain support (other yield/resume compatible chains)
+### Phase 4: Advanced Features (Future)
+- [ ] ZK proofs for verification
+- [ ] GPU support via WebGPU
+- [ ] Cross-chain support
 
 ---
 
