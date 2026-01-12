@@ -442,6 +442,120 @@ export default function AttestationView({
         </div>
       )}
 
+      {/* Manual I/O Verification for HTTPS Calls */}
+      {attestation.call_id && attestation.task_type === 'execute' && (
+        <div className="border-2 border-orange-200 rounded-lg p-4 bg-orange-50">
+          <div className="flex justify-between items-center mb-3">
+            <h3 className="text-lg font-semibold text-orange-900">Manual Input/Output Verification</h3>
+            {!ioValidation && (
+              <button
+                onClick={() => {
+                  setIoValidation({
+                    inputData: '',
+                    outputData: '',
+                    inputHash: '',
+                    outputHash: '',
+                    inputMatch: null,
+                    outputMatch: null,
+                    loading: false,
+                    error: null
+                  });
+                }}
+                className="px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white text-sm font-medium rounded"
+              >
+                Enter Data to Verify
+              </button>
+            )}
+            {ioValidation && (
+              <button
+                onClick={() => setIoValidation(null)}
+                className="px-3 py-1 bg-gray-400 hover:bg-gray-500 text-white text-sm font-medium rounded"
+              >
+                Close
+              </button>
+            )}
+          </div>
+
+          {ioValidation && (
+            <div className="space-y-4">
+              {/* Input Data Section */}
+              <div>
+                <label className="block text-sm font-semibold text-gray-800 mb-1">Input Data (paste your request body)</label>
+                <textarea
+                  value={ioValidation.inputData}
+                  onChange={async (e) => {
+                    const newInputData = e.target.value;
+                    const { sha256 } = await import('@/lib/near-rpc');
+                    const newInputHash = newInputData ? await sha256(newInputData) : '';
+                    const newInputMatch = newInputHash === (attestation.input_hash || '');
+                    setIoValidation({ ...ioValidation, inputData: newInputData, inputHash: newInputHash, inputMatch: newInputMatch });
+                  }}
+                  className="w-full h-20 p-2 border border-gray-300 rounded font-mono text-sm"
+                  placeholder="Paste the JSON input you sent to the API..."
+                />
+                <div className="mt-2 space-y-1">
+                  <div className="flex items-start gap-2">
+                    <span className="text-xs font-semibold text-gray-600 w-32">Calculated Hash:</span>
+                    <span className="text-xs font-mono text-gray-800 break-all flex-1">{ioValidation.inputHash || '(enter data above)'}</span>
+                  </div>
+                  <div className="flex items-start gap-2">
+                    <span className="text-xs font-semibold text-gray-600 w-32">Attestation Hash:</span>
+                    <span className="text-xs font-mono text-gray-800 break-all flex-1">{attestation.input_hash || 'N/A'}</span>
+                  </div>
+                  {ioValidation.inputHash && (
+                    <div className={`px-3 py-2 rounded ${ioValidation.inputMatch ? 'bg-green-100 border border-green-300' : 'bg-red-100 border border-red-300'}`}>
+                      <span className={`text-sm font-semibold ${ioValidation.inputMatch ? 'text-green-800' : 'text-red-800'}`}>
+                        {ioValidation.inputMatch ? '✓ Input Hash Matches' : '✗ Input Hash Mismatch'}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Output Data Section */}
+              <div>
+                <label className="block text-sm font-semibold text-gray-800 mb-1">Output Data (paste API response)</label>
+                <textarea
+                  value={ioValidation.outputData}
+                  onChange={async (e) => {
+                    const newOutputData = e.target.value;
+                    const { sha256 } = await import('@/lib/near-rpc');
+                    const newOutputHash = newOutputData ? await sha256(newOutputData) : '';
+                    const newOutputMatch = newOutputHash === attestation.output_hash;
+                    setIoValidation({ ...ioValidation, outputData: newOutputData, outputHash: newOutputHash, outputMatch: newOutputMatch });
+                  }}
+                  className="w-full h-20 p-2 border border-gray-300 rounded font-mono text-sm"
+                  placeholder="Paste the JSON output you received from the API..."
+                />
+                <div className="mt-2 space-y-1">
+                  <div className="flex items-start gap-2">
+                    <span className="text-xs font-semibold text-gray-600 w-32">Calculated Hash:</span>
+                    <span className="text-xs font-mono text-gray-800 break-all flex-1">{ioValidation.outputHash || '(enter data above)'}</span>
+                  </div>
+                  <div className="flex items-start gap-2">
+                    <span className="text-xs font-semibold text-gray-600 w-32">Attestation Hash:</span>
+                    <span className="text-xs font-mono text-gray-800 break-all flex-1">{attestation.output_hash || 'N/A'}</span>
+                  </div>
+                  {ioValidation.outputHash && (
+                    <div className={`px-3 py-2 rounded ${ioValidation.outputMatch ? 'bg-green-100 border border-green-300' : 'bg-red-100 border border-red-300'}`}>
+                      <span className={`text-sm font-semibold ${ioValidation.outputMatch ? 'text-green-800' : 'text-red-800'}`}>
+                        {ioValidation.outputMatch ? '✓ Output Hash Matches' : '✗ Output Hash Mismatch'}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {!ioValidation && (
+            <p className="text-sm text-gray-700">
+              For HTTPS calls, paste the input you sent and output you received to verify they match the attestation hashes.
+            </p>
+          )}
+        </div>
+      )}
+
       {/* NEAR Transaction Link */}
       {attestation.transaction_hash && (
         <div>
