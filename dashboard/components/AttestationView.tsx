@@ -48,6 +48,12 @@ export default function AttestationView({
     return rtmr3.replace(/0+$/, '') || rtmr3;
   };
 
+  // Escape string for Python byte literal b"..."
+  const escapePyStr = (s: string | undefined | null): string => {
+    if (!s) return '';
+    return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  };
+
   const calculateTaskHash = async (att: AttestationResponse): Promise<string> => {
     const parts: Uint8Array[] = [];
     const encoder = new TextEncoder();
@@ -693,67 +699,79 @@ export default function AttestationView({
                         <div className="text-purple-900">{attestation.task_id}</div>
                       </div>
                     </div>
-                    {attestation.repo_url && (
-                      <div className="flex items-start gap-2">
-                        <span className="text-purple-700 font-bold min-w-[20px]">3.</span>
-                        <div className="flex-1">
-                          <span className="text-gray-600">repo_url (string):</span>
+                    <div className="flex items-start gap-2">
+                      <span className={`font-bold min-w-[20px] ${attestation.repo_url ? 'text-purple-700' : 'text-gray-400'}`}>3.</span>
+                      <div className="flex-1">
+                        <span className="text-gray-600">repo_url (string, optional):</span>
+                        {attestation.repo_url ? (
                           <div className="text-purple-900 break-all">&quot;{attestation.repo_url}&quot;</div>
-                        </div>
+                        ) : (
+                          <div className="text-gray-400 italic">not included (null)</div>
+                        )}
                       </div>
-                    )}
-                    {attestation.commit_hash && (
-                      <div className="flex items-start gap-2">
-                        <span className="text-purple-700 font-bold min-w-[20px]">4.</span>
-                        <div className="flex-1">
-                          <span className="text-gray-600">commit_hash (string):</span>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className={`font-bold min-w-[20px] ${attestation.commit_hash ? 'text-purple-700' : 'text-gray-400'}`}>4.</span>
+                      <div className="flex-1">
+                        <span className="text-gray-600">commit_hash (string, optional):</span>
+                        {attestation.commit_hash ? (
                           <div className="text-purple-900">&quot;{attestation.commit_hash}&quot;</div>
-                        </div>
+                        ) : (
+                          <div className="text-gray-400 italic">not included (null)</div>
+                        )}
                       </div>
-                    )}
-                    {attestation.build_target && (
-                      <div className="flex items-start gap-2">
-                        <span className="text-purple-700 font-bold min-w-[20px]">5.</span>
-                        <div className="flex-1">
-                          <span className="text-gray-600">build_target (string):</span>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className={`font-bold min-w-[20px] ${attestation.build_target ? 'text-purple-700' : 'text-gray-400'}`}>5.</span>
+                      <div className="flex-1">
+                        <span className="text-gray-600">build_target (string, optional):</span>
+                        {attestation.build_target ? (
                           <div className="text-purple-900">&quot;{attestation.build_target}&quot;</div>
-                        </div>
+                        ) : (
+                          <div className="text-gray-400 italic">not included (null)</div>
+                        )}
                       </div>
-                    )}
-                    {attestation.wasm_hash && (
-                      <div className="flex items-start gap-2">
-                        <span className="text-purple-700 font-bold min-w-[20px]">6.</span>
-                        <div className="flex-1">
-                          <span className="text-gray-600">wasm_hash (hex string):</span>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className={`font-bold min-w-[20px] ${attestation.wasm_hash ? 'text-purple-700' : 'text-gray-400'}`}>6.</span>
+                      <div className="flex-1">
+                        <span className="text-gray-600">wasm_hash (string, optional):</span>
+                        {attestation.wasm_hash ? (
                           <div className="text-purple-900 break-all">&quot;{attestation.wasm_hash}&quot;</div>
-                        </div>
+                        ) : (
+                          <div className="text-gray-400 italic">not included (null)</div>
+                        )}
                       </div>
-                    )}
-                    {attestation.input_hash && (
-                      <div className="flex items-start gap-2">
-                        <span className="text-purple-700 font-bold min-w-[20px]">7.</span>
-                        <div className="flex-1">
-                          <span className="text-gray-600">input_hash (hex string):</span>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className={`font-bold min-w-[20px] ${attestation.input_hash ? 'text-purple-700' : 'text-gray-400'}`}>7.</span>
+                      <div className="flex-1">
+                        <span className="text-gray-600">input_hash (string, optional):</span>
+                        {attestation.input_hash ? (
                           <div className="text-purple-900 break-all">&quot;{attestation.input_hash}&quot;</div>
-                        </div>
+                        ) : (
+                          <div className="text-gray-400 italic">not included (null)</div>
+                        )}
                       </div>
-                    )}
+                    </div>
                     <div className="flex items-start gap-2">
                       <span className="text-purple-700 font-bold min-w-[20px]">8.</span>
                       <div className="flex-1">
-                        <span className="text-gray-600">output_hash (hex string):</span>
+                        <span className="text-gray-600">output_hash (string):</span>
                         <div className="text-purple-900 break-all">&quot;{attestation.output_hash}&quot;</div>
                       </div>
                     </div>
-                    {attestation.block_height && (
-                      <div className="flex items-start gap-2">
-                        <span className="text-purple-700 font-bold min-w-[20px]">9.</span>
-                        <div className="flex-1">
-                          <span className="text-gray-600">block_height (u64, little-endian):</span>
+                    <div className="flex items-start gap-2">
+                      <span className={`font-bold min-w-[20px] ${attestation.block_height ? 'text-purple-700' : 'text-gray-400'}`}>9.</span>
+                      <div className="flex-1">
+                        <span className="text-gray-600">block_height (u64, little-endian, optional):</span>
+                        {attestation.block_height ? (
                           <div className="text-purple-900">{attestation.block_height}</div>
-                        </div>
+                        ) : (
+                          <div className="text-gray-400 italic">not included (null)</div>
+                        )}
                       </div>
-                    )}
+                    </div>
                   </div>
                   <div className="mt-2 p-2 bg-purple-50 border border-purple-200 rounded">
                     <div className="text-purple-900 font-semibold">Final Hash (SHA256 of concatenated bytes):</div>
@@ -763,6 +781,126 @@ export default function AttestationView({
                     <strong>Note:</strong> Each string is encoded as UTF-8 bytes, numbers are little-endian encoded.
                     The Task Hash binds the TDX Quote to this specific execution, preventing attestation forgery.
                   </p>
+                </div>
+              </details>
+
+              {/* Python verification code */}
+              <details className="mt-3 bg-green-100 border border-green-300 rounded p-3">
+                <summary className="cursor-pointer font-semibold text-green-900 text-sm hover:text-green-700">
+                  🐍 Python Code to Verify Task Hash
+                </summary>
+                <div className="mt-3">
+                  <p className="text-green-800 text-xs mb-2">
+                    Copy and run this Python code locally to verify the task hash calculation:
+                  </p>
+                  <div className="relative">
+                    <pre className="bg-gray-900 text-green-400 p-3 rounded text-xs overflow-x-auto whitespace-pre">{`import hashlib
+import struct
+
+data = b""
+
+# 1. task_type (string)
+data += b"${escapePyStr(attestation.task_type)}"
+
+# 2. task_id (i64, little-endian)
+data += struct.pack("<q", ${attestation.task_id})
+${attestation.repo_url ? `
+# 3. repo_url (string)
+data += b"${escapePyStr(attestation.repo_url)}"
+` : `
+# 3. repo_url - not included (null)`}
+${attestation.commit_hash ? `
+# 4. commit_hash (string)
+data += b"${escapePyStr(attestation.commit_hash)}"
+` : `
+# 4. commit_hash - not included (null)`}
+${attestation.build_target ? `
+# 5. build_target (string)
+data += b"${escapePyStr(attestation.build_target)}"
+` : `
+# 5. build_target - not included (null)`}
+${attestation.wasm_hash ? `
+# 6. wasm_hash (string, NOT raw bytes!)
+data += b"${escapePyStr(attestation.wasm_hash)}"
+` : `
+# 6. wasm_hash - not included (null)`}
+${attestation.input_hash ? `
+# 7. input_hash (string, NOT raw bytes!)
+data += b"${escapePyStr(attestation.input_hash)}"
+` : `
+# 7. input_hash - not included (null)`}
+
+# 8. output_hash (string, NOT raw bytes!)
+data += b"${escapePyStr(attestation.output_hash)}"
+${attestation.block_height ? `
+# 9. block_height (u64, little-endian)
+data += struct.pack("<Q", ${attestation.block_height})
+` : `
+# 9. block_height - not included (null)`}
+
+# Calculate SHA256
+final_hash = hashlib.sha256(data).hexdigest()
+print(f"Task Hash: {final_hash}")
+print(f"Expected:  ${quoteValidation.expectedTaskHash}")
+print(f"Match: {final_hash == '${quoteValidation.expectedTaskHash}'}")`}</pre>
+                    <button
+                      onClick={() => {
+                        const code = `import hashlib
+import struct
+
+data = b""
+
+# 1. task_type (string)
+data += b"${escapePyStr(attestation.task_type)}"
+
+# 2. task_id (i64, little-endian)
+data += struct.pack("<q", ${attestation.task_id})
+${attestation.repo_url ? `
+# 3. repo_url (string)
+data += b"${escapePyStr(attestation.repo_url)}"
+` : `
+# 3. repo_url - not included (null)`}
+${attestation.commit_hash ? `
+# 4. commit_hash (string)
+data += b"${escapePyStr(attestation.commit_hash)}"
+` : `
+# 4. commit_hash - not included (null)`}
+${attestation.build_target ? `
+# 5. build_target (string)
+data += b"${escapePyStr(attestation.build_target)}"
+` : `
+# 5. build_target - not included (null)`}
+${attestation.wasm_hash ? `
+# 6. wasm_hash (string, NOT raw bytes!)
+data += b"${escapePyStr(attestation.wasm_hash)}"
+` : `
+# 6. wasm_hash - not included (null)`}
+${attestation.input_hash ? `
+# 7. input_hash (string, NOT raw bytes!)
+data += b"${escapePyStr(attestation.input_hash)}"
+` : `
+# 7. input_hash - not included (null)`}
+
+# 8. output_hash (string, NOT raw bytes!)
+data += b"${escapePyStr(attestation.output_hash)}"
+${attestation.block_height ? `
+# 9. block_height (u64, little-endian)
+data += struct.pack("<Q", ${attestation.block_height})
+` : `
+# 9. block_height - not included (null)`}
+
+# Calculate SHA256
+final_hash = hashlib.sha256(data).hexdigest()
+print(f"Task Hash: {final_hash}")
+print(f"Expected:  ${quoteValidation.expectedTaskHash}")
+print(f"Match: {final_hash == '${quoteValidation.expectedTaskHash}'}")`;
+                        navigator.clipboard.writeText(code);
+                      }}
+                      className="absolute top-2 right-2 px-2 py-1 bg-green-600 hover:bg-green-700 text-white text-xs rounded"
+                    >
+                      Copy
+                    </button>
+                  </div>
                 </div>
               </details>
             </div>
