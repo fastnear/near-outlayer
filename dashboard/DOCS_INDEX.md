@@ -25,20 +25,30 @@ dashboard/app/docs/
 ├── page.tsx                      # Main documentation page (overview)
 ├── layout.tsx                    # Sidebar navigation menu
 ├── getting-started/page.tsx      # Getting Started (from sections/GettingStarted.tsx)
+├── integration-guide/page.tsx    # Integration Guide - high-level overview with links
+├── https-api/page.tsx            # ✨ HTTPS API (NEW) - full API reference
+├── payment-keys/page.tsx         # ✨ Payment Keys (NEW) - prepaid USD keys for API access
+├── earnings/page.tsx             # ✨ Earnings (NEW) - developer monetization
 ├── architecture/page.tsx         # Architecture overview
-├── contract-integration/page.tsx # Contract integration guide
+├── contract-integration/page.tsx # Contract integration guide (NEAR transactions)
 ├── dev-guide/page.tsx            # Developer Guide (from sections/DeveloperGuide.tsx)
 ├── wasi/page.tsx                 # Writing WASI Code (comprehensive guide)
 ├── secrets/page.tsx              # Secrets Management
-├── projects/page.tsx             # ✨ Projects & Versions (NEW)
+├── projects/page.tsx             # Projects & Versions
 ├── pricing/page.tsx              # Pricing model
 ├── tee-attestation/page.tsx      # TEE Attestation (from sections/TeeAttestation.tsx)
-├── examples/page.tsx             # ✨ Example Projects (all examples)
+├── examples/page.tsx             # Example Projects (all examples)
 └── sections/
-    ├── index.tsx                 # Export all sections
-    ├── GettingStarted.tsx        # Source for getting-started/page.tsx
-    ├── DeveloperGuide.tsx        # Source for dev-guide/page.tsx
-    └── TeeAttestation.tsx        # Source for tee-attestation/page.tsx
+    ├── index.tsx                 # Re-exports all sections
+    ├── utils.tsx                 # Shared components (AnchorHeading, useHashNavigation)
+    ├── GettingStarted.tsx        # Getting started content
+    ├── DeveloperGuide.tsx        # Developer guide content
+    ├── ContractIntegration.tsx   # Contract integration content
+    ├── Wasi.tsx                  # WASI programming content
+    ├── Secrets.tsx               # Secrets management content
+    ├── Pricing.tsx               # Pricing content
+    ├── Architecture.tsx          # Architecture content
+    └── TeeAttestation.tsx        # TEE attestation content
 ```
 
 ## Example Mapping: Source → Dashboard
@@ -165,13 +175,17 @@ dashboard/app/docs/
 |----------------|---------------|-------------------|------------|
 | `/docs` | `dashboard/app/docs/page.tsx` | - | Overview, getting started |
 | `/docs/getting-started` | `dashboard/app/docs/sections/GettingStarted.tsx` | - | Quick start guide, first contract |
+| `/docs/integration-guide` | `dashboard/app/docs/integration-guide/page.tsx` | - | High-level overview, links to detailed docs |
+| `/docs/https-api` | `dashboard/app/docs/https-api/page.tsx` | `DESIGN_HTTPS_API.md` | **Full HTTPS API reference, headers, responses** |
+| `/docs/payment-keys` | `dashboard/app/docs/payment-keys/page.tsx` | `DESIGN_HTTPS_API.md` | **Payment Keys: creation, restrictions, balance** |
+| `/docs/earnings` | `dashboard/app/docs/earnings/page.tsx` | `DESIGN_HTTPS_API.md` | **Developer earnings, USD_PAYMENT, monetization** |
 | `/docs/architecture` | `dashboard/app/docs/architecture/page.tsx` | - | System design, components |
-| `/docs/contract-integration` | `dashboard/app/docs/contract-integration/page.tsx` | `contract/README.md` | Contract API, integration |
+| `/docs/contract-integration` | `dashboard/app/docs/sections/ContractIntegration.tsx` | `contract/README.md` | Contract API, NEAR transactions |
 | `/docs/dev-guide` | `dashboard/app/docs/sections/DeveloperGuide.tsx` | - | Development workflow, best practices |
-| `/docs/wasi` | `dashboard/app/docs/sections/index.tsx` (WasiSection) | `wasi-examples/WASI_TUTORIAL.md`, `worker/wit/world.wit` | WASI programming, host functions |
-| `/docs/secrets` | `dashboard/app/docs/sections/index.tsx` (SecretsSection) | `keystore-dao-contract/README.md` | Secrets management, CKD, Keystore DAO |
+| `/docs/wasi` | `dashboard/app/docs/sections/Wasi.tsx` | `wasi-examples/WASI_TUTORIAL.md`, `worker/wit/world.wit` | WASI programming, host functions |
+| `/docs/secrets` | `dashboard/app/docs/sections/Secrets.tsx` | `keystore-dao-contract/README.md` | Secrets management, CKD, Keystore DAO |
 | `/docs/projects` | `dashboard/app/docs/projects/page.tsx` | `contract/src/projects.rs` | Projects, versions, persistent storage, project secrets |
-| `/docs/pricing` | `dashboard/app/docs/sections/index.tsx` (PricingSection) | - | Cost model, resource limits |
+| `/docs/pricing` | `dashboard/app/docs/sections/Pricing.tsx` | - | Cost model, resource limits |
 | `/docs/tee-attestation` | `dashboard/app/docs/sections/TeeAttestation.tsx` | `TEE_ATTESTATION_FLOW.md` | TEE verification, attestation |
 | `/docs/examples` | `dashboard/app/docs/examples/page.tsx` | `wasi-examples/*/README.md` | All example projects |
 
@@ -452,6 +466,53 @@ The `wasm_hash` is stored with each record but NOT included in the unique key co
 - Caching expensive computations
 - Session data storage
 - Private WASM-only state
+
+## HTTPS API & Payment Keys
+
+### Overview
+OutLayer projects can be called via HTTPS API in addition to NEAR transactions. This enables:
+- **No blockchain transactions required** for callers
+- **USD-based payments** via prepaid Payment Keys
+- **Developer monetization** via X-Attached-Deposit header
+
+### Documentation Pages
+
+| Page | Description |
+|------|-------------|
+| `/docs/integration-guide` | High-level overview with links to detailed docs |
+| `/docs/https-api` | **Full HTTPS API reference** - endpoints, headers, responses, examples |
+| `/docs/payment-keys` | **Payment Keys** - creation, restrictions, balance management |
+| `/docs/earnings` | **Developer earnings** - USD_PAYMENT, monetization strategies |
+
+### Dashboard Pages
+- `/payment-keys` - Create and manage Payment Keys, top up balance
+- `/earnings` - View accumulated earnings, withdraw
+
+### Quick Summary
+
+**How it works:**
+1. Create Payment Key at `/payment-keys` with USD deposit
+2. Call: `POST https://api.outlayer.io/call/{owner}/{project}` with `X-Payment-Key` header
+3. Optionally attach payment to project author via `X-Attached-Deposit` header
+4. WASM reads payment via `USD_PAYMENT` env var
+
+**Key headers:**
+- `X-Payment-Key` (required): `owner:nonce:secret`
+- `X-Compute-Limit` (optional): max compute budget in USD micro-units
+- `X-Attached-Deposit` (optional): payment to project author
+
+**See detailed documentation:**
+- [HTTPS API](/docs/https-api) - Full API reference
+- [Payment Keys](/docs/payment-keys) - Key management
+- [Earnings](/docs/earnings) - Monetization guide
+
+### Implementation Status
+- **HTTPS API docs**: ✅ `/docs/https-api`
+- **Payment Keys docs**: ✅ `/docs/payment-keys`
+- **Earnings docs**: ✅ `/docs/earnings`
+- **Integration Guide**: ✅ `/docs/integration-guide` (simplified, with links)
+- **Dashboard `/payment-keys`**: ✅ Implemented
+- **Dashboard `/earnings`**: ✅ Implemented
 
 ## Documentation Update Checklist
 

@@ -13,12 +13,48 @@ const pageStructure = {
     { id: 'quick-start', title: 'Quick Start: 4 Steps' },
     { id: 'secrets', title: 'Need API Keys or Secrets?' },
     { id: 'payment', title: 'Payment & Pricing' },
+    { id: 'https-api', title: 'HTTPS API (No Blockchain)' },
+    { id: 'persistent-storage', title: 'Persistent Storage' },
+  ],
+  '/docs/integration-guide': [
+    { id: 'overview', title: 'Overview' },
+    { id: 'capabilities', title: 'Project Capabilities' },
+    { id: 'two-ways', title: 'Two Ways to Access' },
+    { id: 'quick-setup', title: 'Quick Setup Steps' },
+    { id: 'env-vars', title: 'Environment Variables' },
   ],
   '/docs/contract-integration': [
     { id: 'request-execution', title: 'Method: request_execution' },
     { id: 'callback', title: 'What You Get Back (Callback)' },
     { id: 'pricing-payment', title: 'Pricing & Payment' },
     { id: 'performance', title: 'Performance Tips' },
+  ],
+  '/docs/https-api': [
+    { id: 'overview', title: 'Overview' },
+    { id: 'request-format', title: 'Request Format' },
+    { id: 'headers', title: 'Request Headers' },
+    { id: 'body', title: 'Request Body' },
+    { id: 'response-format', title: 'Response Format' },
+    { id: 'env-vars', title: 'Environment Variables' },
+    { id: 'errors', title: 'Error Codes' },
+    { id: 'examples', title: 'Code Examples' },
+  ],
+  '/docs/payment-keys': [
+    { id: 'what-are-payment-keys', title: 'What are Payment Keys?' },
+    { id: 'key-format', title: 'Key Format' },
+    { id: 'creating-keys', title: 'Creating Payment Keys' },
+    { id: 'restrictions', title: 'Key Restrictions' },
+    { id: 'balance', title: 'Balance Management' },
+    { id: 'rate-limits', title: 'Rate Limits' },
+    { id: 'security', title: 'Security Best Practices' },
+  ],
+  '/docs/earnings': [
+    { id: 'how-it-works', title: 'How Earnings Work' },
+    { id: 'checking-payment', title: 'Checking Payment in WASM' },
+    { id: 'viewing-earnings', title: 'Viewing Your Earnings' },
+    { id: 'withdrawing', title: 'Withdrawing Earnings' },
+    { id: 'pricing-strategies', title: 'Pricing Strategies' },
+    { id: 'best-practices', title: 'Best Practices' },
   ],
   '/docs/dev-guide': [
     { id: 'problem', title: 'The Problem' },
@@ -60,14 +96,19 @@ const pageStructure = {
     { id: 'wasm-metadata', title: 'Project Binding (metadata!)' },
     { id: 'managing-versions', title: 'Managing Versions' },
     { id: 'persistent-storage', title: 'Persistent Storage' },
-    { id: 'storage-api', title: 'Storage API' },
-    { id: 'storage-methods', title: 'Storage Methods Reference' },
-    { id: 'storage-example', title: 'Usage Example' },
-    { id: 'conditional-writes', title: 'Conditional Writes (Atomic)' },
-    { id: 'storage-security', title: 'Storage Security' },
-    { id: 'user-data-isolation', title: 'User Data Isolation' },
-    { id: 'worker-storage', title: 'Worker Storage' },
     { id: 'project-secrets', title: 'Project Secrets' },
+    { id: 'use-cases', title: 'Use Cases' },
+    { id: 'best-practices', title: 'Best Practices' },
+  ],
+  '/docs/storage': [
+    { id: 'overview', title: 'Overview' },
+    { id: 'quick-start', title: 'Quick Start' },
+    { id: 'api', title: 'Storage API' },
+    { id: 'methods', title: 'Methods Reference' },
+    { id: 'atomic-operations', title: 'Atomic Operations' },
+    { id: 'user-isolation', title: 'User Data Isolation' },
+    { id: 'worker-storage', title: 'Worker Storage' },
+    { id: 'security', title: 'Security' },
     { id: 'use-cases', title: 'Use Cases' },
     { id: 'best-practices', title: 'Best Practices' },
   ],
@@ -190,6 +231,44 @@ export default function DocsLayout({
                 )}
               </div>
 
+              {/* Integration Guide - NEW */}
+              <div>
+                <Link
+                  href="/docs/integration-guide"
+                  className={`flex items-center justify-between w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                    isActive('/docs/integration-guide')
+                      ? 'bg-[var(--primary-orange)] text-white'
+                      : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                  onClick={(e) => {
+                    if (isActive('/docs/integration-guide')) {
+                      e.preventDefault();
+                      toggleExpand('/docs/integration-guide');
+                    }
+                  }}
+                >
+                  <span>Integration Guide</span>
+                  {pageStructure['/docs/integration-guide'] && (
+                    <svg className={`w-4 h-4 transition-transform ${expandedPages['/docs/integration-guide'] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  )}
+                </Link>
+                {expandedPages['/docs/integration-guide'] && pageStructure['/docs/integration-guide'] && (
+                  <div className="ml-4 mt-1 space-y-1">
+                    {pageStructure['/docs/integration-guide'].map(section => (
+                      <button
+                        key={section.id}
+                        onClick={() => scrollToSection(section.id)}
+                        className="block w-full text-left px-3 py-1.5 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
+                      >
+                        {section.title}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               {/* Developer Guide */}
               <div>
                 <Link
@@ -254,6 +333,120 @@ export default function DocsLayout({
                 {expandedPages['/docs/contract-integration'] && pageStructure['/docs/contract-integration'] && (
                   <div className="ml-4 mt-1 space-y-1">
                     {pageStructure['/docs/contract-integration'].map(section => (
+                      <button
+                        key={section.id}
+                        onClick={() => scrollToSection(section.id)}
+                        className="block w-full text-left px-3 py-1.5 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
+                      >
+                        {section.title}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* HTTPS API */}
+              <div>
+                <Link
+                  href="/docs/https-api"
+                  className={`flex items-center justify-between w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                    isActive('/docs/https-api')
+                      ? 'bg-[var(--primary-orange)] text-white'
+                      : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                  onClick={(e) => {
+                    if (isActive('/docs/https-api')) {
+                      e.preventDefault();
+                      toggleExpand('/docs/https-api');
+                    }
+                  }}
+                >
+                  <span>HTTPS API</span>
+                  {pageStructure['/docs/https-api'] && (
+                    <svg className={`w-4 h-4 transition-transform ${expandedPages['/docs/https-api'] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  )}
+                </Link>
+                {expandedPages['/docs/https-api'] && pageStructure['/docs/https-api'] && (
+                  <div className="ml-4 mt-1 space-y-1">
+                    {pageStructure['/docs/https-api'].map(section => (
+                      <button
+                        key={section.id}
+                        onClick={() => scrollToSection(section.id)}
+                        className="block w-full text-left px-3 py-1.5 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
+                      >
+                        {section.title}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Payment Keys */}
+              <div>
+                <Link
+                  href="/docs/payment-keys"
+                  className={`flex items-center justify-between w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                    isActive('/docs/payment-keys')
+                      ? 'bg-[var(--primary-orange)] text-white'
+                      : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                  onClick={(e) => {
+                    if (isActive('/docs/payment-keys')) {
+                      e.preventDefault();
+                      toggleExpand('/docs/payment-keys');
+                    }
+                  }}
+                >
+                  <span>Payment Keys</span>
+                  {pageStructure['/docs/payment-keys'] && (
+                    <svg className={`w-4 h-4 transition-transform ${expandedPages['/docs/payment-keys'] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  )}
+                </Link>
+                {expandedPages['/docs/payment-keys'] && pageStructure['/docs/payment-keys'] && (
+                  <div className="ml-4 mt-1 space-y-1">
+                    {pageStructure['/docs/payment-keys'].map(section => (
+                      <button
+                        key={section.id}
+                        onClick={() => scrollToSection(section.id)}
+                        className="block w-full text-left px-3 py-1.5 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
+                      >
+                        {section.title}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Earnings */}
+              <div>
+                <Link
+                  href="/docs/earnings"
+                  className={`flex items-center justify-between w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                    isActive('/docs/earnings')
+                      ? 'bg-[var(--primary-orange)] text-white'
+                      : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                  onClick={(e) => {
+                    if (isActive('/docs/earnings')) {
+                      e.preventDefault();
+                      toggleExpand('/docs/earnings');
+                    }
+                  }}
+                >
+                  <span>Earnings</span>
+                  {pageStructure['/docs/earnings'] && (
+                    <svg className={`w-4 h-4 transition-transform ${expandedPages['/docs/earnings'] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  )}
+                </Link>
+                {expandedPages['/docs/earnings'] && pageStructure['/docs/earnings'] && (
+                  <div className="ml-4 mt-1 space-y-1">
+                    {pageStructure['/docs/earnings'].map(section => (
                       <button
                         key={section.id}
                         onClick={() => scrollToSection(section.id)}
@@ -405,6 +598,44 @@ export default function DocsLayout({
                 {expandedPages['/docs/projects'] && pageStructure['/docs/projects'] && (
                   <div className="ml-4 mt-1 space-y-1">
                     {pageStructure['/docs/projects'].map(section => (
+                      <button
+                        key={section.id}
+                        onClick={() => scrollToSection(section.id)}
+                        className="block w-full text-left px-3 py-1.5 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
+                      >
+                        {section.title}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Storage */}
+              <div>
+                <Link
+                  href="/docs/storage"
+                  className={`flex items-center justify-between w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                    isActive('/docs/storage')
+                      ? 'bg-[var(--primary-orange)] text-white'
+                      : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                  onClick={(e) => {
+                    if (isActive('/docs/storage')) {
+                      e.preventDefault();
+                      toggleExpand('/docs/storage');
+                    }
+                  }}
+                >
+                  <span>Storage</span>
+                  {pageStructure['/docs/storage'] && (
+                    <svg className={`w-4 h-4 transition-transform ${expandedPages['/docs/storage'] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  )}
+                </Link>
+                {expandedPages['/docs/storage'] && pageStructure['/docs/storage'] && (
+                  <div className="ml-4 mt-1 space-y-1">
+                    {pageStructure['/docs/storage'].map(section => (
                       <button
                         key={section.id}
                         onClick={() => scrollToSection(section.id)}

@@ -27,12 +27,12 @@ export default function ProjectsPage() {
   return (
     <div className="prose prose-lg max-w-none">
       <h1 className="text-3xl font-bold text-gray-900 mb-6">
-        Projects & Persistent Storage
+        Projects
       </h1>
 
       <p className="text-gray-700 mb-8">
         Projects allow you to organize your WASM code with version management, persistent storage, and project-level secrets.
-        All versions of a project share the same storage encryption key, so data persists across updates.
+        All versions of a project share the same resources, enabling seamless updates.
       </p>
 
       {/* What are Projects */}
@@ -232,360 +232,32 @@ metadata! {
           </p>
         </div>
 
-        <AnchorHeading id="storage-api" level={3}>Storage API (WIT Interface)</AnchorHeading>
-
-        <p className="text-gray-700 mb-4">
-          The storage interface is defined in <code>worker/wit/world.wit</code>. Your WASM code imports these functions
-          as <code>near:rpc/storage@0.1.0</code>:
-        </p>
-
-        <SyntaxHighlighter language="text" style={vscDarkPlus} className="rounded-lg mb-4">
-          {`interface storage {
-    // Basic operations
-    set: func(key: string, value: list<u8>) -> string;
-    get: func(key: string) -> tuple<list<u8>, string>;
-    has: func(key: string) -> bool;
-    delete: func(key: string) -> bool;
-    list-keys: func(prefix: string) -> tuple<string, string>;
-
-    // Conditional writes (atomic operations)
-    set-if-absent: func(key: string, value: list<u8>) -> tuple<bool, string>;
-    set-if-equals: func(key: string, expected: list<u8>, new-value: list<u8>) -> tuple<bool, list<u8>, string>;
-    increment: func(key: string, delta: s64) -> tuple<s64, string>;
-    decrement: func(key: string, delta: s64) -> tuple<s64, string>;
-
-    // Worker-private storage (not accessible by users)
-    set-worker: func(key: string, value: list<u8>) -> string;
-    get-worker: func(key: string) -> tuple<list<u8>, string>;
-
-    // Version migration - read from a specific WASM version
-    get-by-version: func(key: string, wasm-hash: string) -> tuple<list<u8>, string>;
-
-    // Cleanup
-    clear-all: func() -> string;
-    clear-version: func(wasm-hash: string) -> string;
-}`}
-        </SyntaxHighlighter>
-
-        <AnchorHeading id="storage-methods" level={3}>Storage Methods Reference</AnchorHeading>
-
-        <div className="overflow-x-auto mb-6">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Method</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Description</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Returns</th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              <tr>
-                <td className="px-4 py-3 text-sm font-mono">set(key, value)</td>
-                <td className="px-4 py-3 text-sm text-gray-600">Store a key-value pair</td>
-                <td className="px-4 py-3 text-sm text-gray-600">Error string (empty on success)</td>
-              </tr>
-              <tr>
-                <td className="px-4 py-3 text-sm font-mono">get(key)</td>
-                <td className="px-4 py-3 text-sm text-gray-600">Retrieve value by key</td>
-                <td className="px-4 py-3 text-sm text-gray-600">(data, error)</td>
-              </tr>
-              <tr>
-                <td className="px-4 py-3 text-sm font-mono">has(key)</td>
-                <td className="px-4 py-3 text-sm text-gray-600">Check if key exists</td>
-                <td className="px-4 py-3 text-sm text-gray-600">bool</td>
-              </tr>
-              <tr>
-                <td className="px-4 py-3 text-sm font-mono">delete(key)</td>
-                <td className="px-4 py-3 text-sm text-gray-600">Delete a key</td>
-                <td className="px-4 py-3 text-sm text-gray-600">bool (true if existed)</td>
-              </tr>
-              <tr>
-                <td className="px-4 py-3 text-sm font-mono">list-keys(prefix)</td>
-                <td className="px-4 py-3 text-sm text-gray-600">List keys with prefix</td>
-                <td className="px-4 py-3 text-sm text-gray-600">(JSON array string, error)</td>
-              </tr>
-              <tr className="bg-purple-50">
-                <td className="px-4 py-3 text-sm font-mono">set-if-absent(key, value)</td>
-                <td className="px-4 py-3 text-sm text-gray-600">Set only if key doesn&apos;t exist</td>
-                <td className="px-4 py-3 text-sm text-gray-600">(inserted: bool, error)</td>
-              </tr>
-              <tr className="bg-purple-50">
-                <td className="px-4 py-3 text-sm font-mono">set-if-equals(key, expected, new)</td>
-                <td className="px-4 py-3 text-sm text-gray-600">Compare-and-swap (atomic update)</td>
-                <td className="px-4 py-3 text-sm text-gray-600">(success, current, error)</td>
-              </tr>
-              <tr className="bg-purple-50">
-                <td className="px-4 py-3 text-sm font-mono">increment(key, delta)</td>
-                <td className="px-4 py-3 text-sm text-gray-600">Atomic increment (i64)</td>
-                <td className="px-4 py-3 text-sm text-gray-600">(new_value: i64, error)</td>
-              </tr>
-              <tr className="bg-purple-50">
-                <td className="px-4 py-3 text-sm font-mono">decrement(key, delta)</td>
-                <td className="px-4 py-3 text-sm text-gray-600">Atomic decrement (i64)</td>
-                <td className="px-4 py-3 text-sm text-gray-600">(new_value: i64, error)</td>
-              </tr>
-              <tr>
-                <td className="px-4 py-3 text-sm font-mono">set-worker(key, value)</td>
-                <td className="px-4 py-3 text-sm text-gray-600">Store worker-private data</td>
-                <td className="px-4 py-3 text-sm text-gray-600">Error string</td>
-              </tr>
-              <tr>
-                <td className="px-4 py-3 text-sm font-mono">get-worker(key)</td>
-                <td className="px-4 py-3 text-sm text-gray-600">Get worker-private data</td>
-                <td className="px-4 py-3 text-sm text-gray-600">(data, error)</td>
-              </tr>
-              <tr>
-                <td className="px-4 py-3 text-sm font-mono">get-by-version(key, hash)</td>
-                <td className="px-4 py-3 text-sm text-gray-600">Read from specific WASM version</td>
-                <td className="px-4 py-3 text-sm text-gray-600">(data, error)</td>
-              </tr>
-              <tr>
-                <td className="px-4 py-3 text-sm font-mono">clear-all()</td>
-                <td className="px-4 py-3 text-sm text-gray-600">Delete all user&apos;s storage</td>
-                <td className="px-4 py-3 text-sm text-gray-600">Error string</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        <AnchorHeading id="storage-example" level={3}>Usage Example</AnchorHeading>
-
-        <SyntaxHighlighter language="rust" style={vscDarkPlus} className="rounded-lg mb-4">
-          {`// In your WASM code (WASI P2)
-use near::rpc::storage;
-
-// Store data
-let err = storage::set("user:alice:balance", "100".as_bytes().to_vec());
-if !err.is_empty() {
-    eprintln!("Storage error: {}", err);
-}
-
-// Read data
-let (data, err) = storage::get("user:alice:balance");
-if err.is_empty() {
-    let value = String::from_utf8(data).unwrap();
-    println!("Balance: {}", value);
-}
-
-// Check existence
-if storage::has("user:alice:balance") {
-    println!("Key exists!");
-}
-
-// List keys with prefix
-let (keys_json, err) = storage::list_keys("user:");
-// keys_json = '["user:alice:balance", "user:bob:balance"]'
-
-// Read from old version (for migrations)
-let (old_data, err) = storage::get_by_version("legacy_key", "abc123...");
-
-// Worker-private storage (other users cannot read this)
-storage::set_worker("internal_state", state_bytes);`}
-        </SyntaxHighlighter>
-
-        <AnchorHeading id="conditional-writes" level={3}>Conditional Writes (Atomic Operations)</AnchorHeading>
-
-        <p className="text-gray-700 mb-4">
-          OutLayer provides atomic operations for concurrent-safe storage updates. These are essential for counters, rate limiters, and any state that multiple executions might modify.
-        </p>
-
-        <div className="bg-green-50 border-l-4 border-green-400 p-4 mb-6">
-          <p className="text-sm text-green-800">
-            <strong>Why use conditional writes?</strong> Regular <code>set()</code> can cause race conditions when multiple users execute simultaneously.
-            Conditional writes use optimistic locking to ensure data integrity without explicit locks.
-          </p>
-        </div>
-
-        <SyntaxHighlighter language="rust" style={vscDarkPlus} className="rounded-lg mb-4">
-          {`use outlayer::storage;
-
-// ==================== set_if_absent ====================
-// Only inserts if key doesn't exist - perfect for initialization
-
-if storage::set_if_absent("counter", &0i64.to_le_bytes())? {
-    println!("Counter initialized to 0");
-} else {
-    println!("Counter already exists, not overwritten");
-}
-
-// ==================== increment / decrement ====================
-// Atomic counters - handles concurrent updates automatically
-
-// Increment page views (creates key with delta if not exists)
-let views = storage::increment("page_views", 1)?;
-println!("Page views: {}", views);
-
-// Decrement inventory
-let stock = storage::decrement("stock:item_123", 1)?;
-if stock < 0 {
-    println!("Out of stock!");
-}
-
-// Use negative delta for decrement via increment
-let credits = storage::increment("credits", -10)?;
-
-// ==================== set_if_equals (Compare-and-Swap) ====================
-// Update only if current value matches expected - for complex updates
-
-// Read current value
-let current = storage::get("balance")?.unwrap_or(vec![0; 8]);
-let balance = i64::from_le_bytes(current.clone().try_into().unwrap());
-
-// Calculate new value
-let new_balance = balance + 100;
-
-// Atomic update with retry on conflict
-match storage::set_if_equals("balance", &current, &new_balance.to_le_bytes())? {
-    (true, _) => println!("Balance updated!"),
-    (false, Some(actual)) => println!("Concurrent update! Retry with {:?}", actual),
-    (false, None) => println!("Key was deleted"),
-}`}
-        </SyntaxHighlighter>
-
-        <h4 className="font-semibold text-gray-900 mb-2">Method Details</h4>
-
-        <div className="space-y-4 mb-6">
-          <div className="border border-purple-200 rounded-lg p-4 bg-purple-50">
-            <h5 className="font-mono font-semibold text-purple-900 mb-2">set_if_absent(key, value) → bool</h5>
-            <p className="text-sm text-gray-700 mb-2">
-              Inserts value only if key doesn&apos;t exist. Returns <code>true</code> if inserted, <code>false</code> if key already existed.
-            </p>
-            <p className="text-xs text-gray-500">
-              <strong>Use case:</strong> One-time initialization, ensuring default values aren&apos;t overwritten.
-            </p>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          <div className="border border-green-200 rounded-lg p-4 bg-green-50">
+            <h4 className="font-semibold text-green-900 mb-2">Encrypted</h4>
+            <p className="text-sm text-gray-600">All data encrypted with project-specific keys in TEE</p>
           </div>
-
-          <div className="border border-purple-200 rounded-lg p-4 bg-purple-50">
-            <h5 className="font-mono font-semibold text-purple-900 mb-2">set_if_equals(key, expected, new_value) → (bool, Option&lt;Vec&lt;u8&gt;&gt;)</h5>
-            <p className="text-sm text-gray-700 mb-2">
-              Updates value only if current value equals expected (compare-and-swap). On failure, returns the actual current value for retry.
-            </p>
-            <p className="text-xs text-gray-500">
-              <strong>Use case:</strong> Complex state transitions, optimistic locking, concurrent-safe updates.
-            </p>
+          <div className="border border-blue-200 rounded-lg p-4 bg-blue-50">
+            <h4 className="font-semibold text-blue-900 mb-2">User-Isolated</h4>
+            <p className="text-sm text-gray-600">Each user has their own namespace, automatic isolation</p>
           </div>
-
           <div className="border border-purple-200 rounded-lg p-4 bg-purple-50">
-            <h5 className="font-mono font-semibold text-purple-900 mb-2">increment(key, delta) → i64</h5>
-            <p className="text-sm text-gray-700 mb-2">
-              Atomically increments a numeric value (i64, little-endian). If key doesn&apos;t exist, creates it with <code>delta</code> as initial value.
-            </p>
-            <p className="text-xs text-gray-500">
-              <strong>Use case:</strong> Page counters, rate limiters, vote counts, any numeric accumulator.
-            </p>
-          </div>
-
-          <div className="border border-purple-200 rounded-lg p-4 bg-purple-50">
-            <h5 className="font-mono font-semibold text-purple-900 mb-2">decrement(key, delta) → i64</h5>
-            <p className="text-sm text-gray-700 mb-2">
-              Atomically decrements a numeric value. Equivalent to <code>increment(key, -delta)</code>. Creates key with <code>-delta</code> if not exists.
-            </p>
-            <p className="text-xs text-gray-500">
-              <strong>Use case:</strong> Inventory management, countdown timers, credit deduction.
-            </p>
+            <h4 className="font-semibold text-purple-900 mb-2">Atomic Operations</h4>
+            <p className="text-sm text-gray-600">Increment, decrement, compare-and-swap for concurrency</p>
           </div>
         </div>
 
-        <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-6">
-          <p className="text-sm text-yellow-800">
-            <strong>Important:</strong> <code>increment</code>/<code>decrement</code> expect values stored as 8-byte little-endian i64.
-            If you store a counter differently (e.g., as string), use <code>set_if_equals</code> instead.
+        <div className="bg-gray-50 rounded-lg p-6">
+          <p className="text-gray-700 mb-4">
+            For detailed information about storage API, methods, atomic operations, and usage examples, see the dedicated documentation:
           </p>
+          <Link
+            href="/docs/storage"
+            className="inline-flex items-center px-4 py-2 bg-[var(--primary-orange)] text-white rounded-lg hover:bg-orange-600 transition-colors"
+          >
+            Storage Documentation →
+          </Link>
         </div>
-
-        <AnchorHeading id="storage-monitoring" level={3}>Storage Monitoring</AnchorHeading>
-
-        <p className="text-gray-700 mb-4">
-          The <Link href="/projects" className="text-[var(--primary-orange)] hover:underline">Projects dashboard</Link> shows
-          storage usage for each project: total bytes and number of keys. This data is cached and may not reflect
-          the most recent changes immediately.
-        </p>
-
-        <AnchorHeading id="storage-cleanup" level={3}>Storage Cleanup</AnchorHeading>
-
-        <p className="text-gray-700 mb-4">
-          When you <strong>delete a project</strong>, all associated storage data is automatically cleared.
-          The contract emits a <code>project_storage_cleanup</code> event, and the worker processes it
-          to remove all stored keys for that project.
-        </p>
-
-        <div className="bg-red-50 border-l-4 border-red-400 p-4 mb-6">
-          <p className="text-sm text-red-800">
-            <strong>Warning:</strong> Deleting a project permanently removes all storage data.
-            This action cannot be undone. Export any important data before deletion.
-          </p>
-        </div>
-
-        <AnchorHeading id="storage-security" level={3}>Storage Security</AnchorHeading>
-
-        <ul className="list-disc list-inside text-gray-700 space-y-2 mb-6">
-          <li>All data is encrypted using keystore TEE before storage</li>
-          <li>Encryption key derived from: <code>storage:{'{'}project_uuid{'}'}:{'{'}account_id{'}'}</code></li>
-          <li>Worker-private storage uses <code>@worker</code> as account_id</li>
-        </ul>
-
-        <AnchorHeading id="user-data-isolation" level={3}>User Data Isolation</AnchorHeading>
-
-        <p className="text-gray-700 mb-4">
-          Storage is automatically isolated per user at the protocol level. Each user has their own namespace:
-        </p>
-
-        <ul className="list-disc list-inside text-gray-700 space-y-2 mb-6">
-          <li><strong>Automatic isolation</strong>: <code>alice.near</code> cannot read or overwrite data stored by <code>bob.near</code></li>
-          <li><strong>Per-user encryption</strong>: Different encryption keys for each user&apos;s data</li>
-          <li><strong>Transparent to WASM</strong>: Your code uses simple keys like <code>balance</code> - the platform handles namespacing</li>
-          <li><strong>No code changes needed</strong>: Isolation is enforced by the platform, not by your application</li>
-          <li><strong>Caller-triggered access</strong>: WASM can only read user data when that user triggers the execution</li>
-        </ul>
-
-        <SyntaxHighlighter language="text" style={vscDarkPlus} className="rounded-lg mb-4">
-          {`// alice.near calls execution:
-storage::set("balance", b"100");
-// Database key: project_uuid:alice.near:balance = "100"
-
-// bob.near calls execution:
-storage::set("balance", b"200");
-// Database key: project_uuid:bob.near:balance = "200"
-
-// alice.near reads:
-storage::get("balance")  // → "100" (her data)
-
-// bob.near reads:
-storage::get("balance")  // → "200" (his data)
-
-// WASM code CANNOT read another user's data!
-// There is no storage::get_for_account("bob.near", "balance")
-// User data is only accessible when that user triggers the execution`}
-        </SyntaxHighlighter>
-
-        <AnchorHeading id="worker-storage" level={3}>Worker Storage (Shared State)</AnchorHeading>
-
-        <p className="text-gray-700 mb-4">
-          Worker-private storage uses <code>@worker</code> as account_id, making it shared across all users.
-          Users cannot directly access this storage - only your WASM code can read/write it.
-        </p>
-
-        <SyntaxHighlighter language="text" style={vscDarkPlus} className="rounded-lg mb-4">
-          {`// Any user calls execution:
-storage::set_worker("total_count", b"100");
-// Database key: project_uuid:@worker:total_count = "100"
-
-// Any other user calls:
-storage::get_worker("total_count")  // → "100" (same shared data!)
-
-// Use case: Private Token balances (see private-token-ark example)
-storage::set_worker("balances", balances_json);  // Shared across all users
-// Users cannot directly read balances - only through your WASM methods`}
-        </SyntaxHighlighter>
-
-        <div className="bg-green-50 border-l-4 border-green-400 p-4 mb-6">
-          <p className="text-sm text-green-800">
-            <strong>Use case:</strong> Worker storage is ideal for shared state like token balances,
-            global counters, or application configuration. Users interact with this data only through
-            your WASM methods - they cannot bypass your logic.
-          </p>
-        </div>
-
       </section>
 
       {/* Project Secrets */}
@@ -678,6 +350,12 @@ storage::set_worker("balances", balances_json);  // Shared across all users
       <section className="bg-gray-50 rounded-lg p-6">
         <h3 className="text-lg font-semibold text-gray-900 mb-4">Related Documentation</h3>
         <ul className="space-y-2">
+          <li>
+            <Link href="/docs/storage" className="text-[var(--primary-orange)] hover:underline">
+              Persistent Storage
+            </Link>
+            {' '}- Storage API, methods, atomic operations
+          </li>
           <li>
             <Link href="/docs/secrets#project-binding" className="text-[var(--primary-orange)] hover:underline">
               Project Secrets

@@ -371,21 +371,103 @@ export default function GettingStartedSection() {
           </ul>
         </section>
 
+        <section id="https-api">
+          <AnchorHeading id="https-api">HTTPS API (No Blockchain)</AnchorHeading>
+          <p className="text-gray-700 mb-3">
+            OutLayer projects can also be called via <strong>HTTPS API</strong> without NEAR transactions.
+            Perfect for web apps, mobile apps, and backend services.
+          </p>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <div className="bg-purple-50 border-2 border-purple-200 rounded-lg p-4">
+              <h4 className="font-semibold text-purple-800 mb-2">NEAR Transactions</h4>
+              <ul className="text-sm text-purple-700 space-y-1">
+                <li>• Pay with NEAR tokens</li>
+                <li>• Yield/resume mechanism</li>
+                <li>• On-chain settlement</li>
+                <li>• Best for: smart contracts</li>
+              </ul>
+            </div>
+            <div className="bg-orange-50 border-2 border-orange-200 rounded-lg p-4">
+              <h4 className="font-semibold text-orange-800 mb-2">HTTPS API</h4>
+              <ul className="text-sm text-orange-700 space-y-1">
+                <li>• Pay with USD (Payment Keys)</li>
+                <li>• Direct HTTP call</li>
+                <li>• Sub-second response</li>
+                <li>• Best for: apps, APIs, backends</li>
+              </ul>
+            </div>
+          </div>
+
+          <pre className="text-xs bg-gray-800 text-gray-100 p-3 rounded overflow-x-auto mb-3">
+{`curl -X POST https://api.outlayer.io/call/alice.near/my-project \\
+  -H "X-Payment-Key: alice.near:1:abc123secret" \\
+  -H "Content-Type: application/json" \\
+  -d '{"city": "Tokyo"}'`}
+          </pre>
+
+          <div className="bg-blue-50 border-l-4 border-blue-500 p-4">
+            <p className="text-sm text-blue-800">
+              📖 <Link href="/docs/https-api" className="underline font-medium">HTTPS API Reference</Link> •{' '}
+              <Link href="/docs/payment-keys" className="underline font-medium">Payment Keys</Link> •{' '}
+              <Link href="/docs/earnings" className="underline font-medium">Earn from Your Projects</Link>
+            </p>
+          </div>
+        </section>
+
+        <section id="persistent-storage">
+          <AnchorHeading id="persistent-storage">Persistent Storage</AnchorHeading>
+          <p className="text-gray-700 mb-3">
+            Need to store data between executions? <strong>Projects with WASI Preview 2</strong> get encrypted persistent storage
+            that survives across version updates.
+          </p>
+
+          <div className="bg-gray-50 border-2 border-gray-200 rounded-lg p-4 mb-4">
+            <pre className="text-xs overflow-x-auto">
+{`use outlayer::{metadata, storage};
+
+metadata! {
+    project: "alice.near/my-app",
+    version: "1.0.0",
+}
+
+fn main() {
+    // Read/write persistent data
+    storage::set("user:123:visits", b"42");
+    let visits = storage::get("user:123:visits");
+}`}
+            </pre>
+          </div>
+
+          <ul className="list-disc list-inside space-y-2 text-gray-700 ml-4 text-sm mb-4">
+            <li><strong>Encrypted</strong> - Data encrypted with project-specific key</li>
+            <li><strong>Versioned</strong> - All project versions share the same storage</li>
+            <li><strong>WASM-only access</strong> - Only your code can read/write</li>
+          </ul>
+
+          <div className="bg-blue-50 border-l-4 border-blue-500 p-4">
+            <p className="text-sm text-blue-800">
+              📖 <Link href="/docs/projects" className="underline font-medium">Projects & Storage Guide</Link> •{' '}
+              <Link href="/projects" className="underline font-medium">Manage Projects</Link>
+            </p>
+          </div>
+        </section>
+
         <section id="ready-to-build">
           <AnchorHeading id="ready-to-build">Ready to Build?</AnchorHeading>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <Link href="/docs/dev-guide" className="block bg-gradient-to-br from-orange-50 to-red-50 border-2 border-orange-200 rounded-lg p-4 hover:shadow-lg transition-shadow">
-              <h4 className="font-semibold text-gray-800 mb-2">📖 Developer Guide</h4>
+              <h4 className="font-semibold text-gray-800 mb-2">Developer Guide</h4>
               <p className="text-sm text-gray-700">Step-by-step tutorial: Build a random number generator</p>
             </Link>
 
             <Link href="/docs/examples" className="block bg-gradient-to-br from-blue-50 to-purple-50 border-2 border-blue-200 rounded-lg p-4 hover:shadow-lg transition-shadow">
-              <h4 className="font-semibold text-gray-800 mb-2">💡 Working Examples</h4>
+              <h4 className="font-semibold text-gray-800 mb-2">Working Examples</h4>
               <p className="text-sm text-gray-700">7 production-ready examples with full source code</p>
             </Link>
 
             <Link href="/docs/contract-integration" className="block bg-gradient-to-br from-green-50 to-teal-50 border-2 border-green-200 rounded-lg p-4 hover:shadow-lg transition-shadow">
-              <h4 className="font-semibold text-gray-800 mb-2">🔌 Contract Integration</h4>
+              <h4 className="font-semibold text-gray-800 mb-2">Contract Integration</h4>
               <p className="text-sm text-gray-700">All parameters, callback handling, best practices</p>
             </Link>
           </div>
