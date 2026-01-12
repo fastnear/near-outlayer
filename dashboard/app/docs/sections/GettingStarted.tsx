@@ -54,19 +54,103 @@ export default function GettingStartedSection() {
           <AnchorHeading id="what-is-outlayer">What is OutLayer?</AnchorHeading>
           <p className="text-gray-700 mb-3">
             OutLayer lets you run <strong>any off-chain code</strong> (random numbers, HTTP requests, AI models, heavy computations)
-            and get the result back in your NEAR smart contract using NEAR&apos;s <strong>yield/resume mechanism</strong>.
+            with <strong>cryptographic proof</strong> that exactly the code you specified ran with the inputs you provided.
           </p>
           <p className="text-gray-700">
-            You don&apos;t need to build infrastructure, manage workers, or deal with access control. Just write your code,
-            push to GitHub, and call it from your contract. OutLayer handles compilation, execution, and returning results.
+            Call OutLayer from <strong>NEAR smart contracts</strong> (yield/resume) or <strong>any app via HTTPS</strong>.
+            Every execution produces verifiable TEE attestation - no trust required, just math.
           </p>
+        </section>        
+
+        <section id="tee-attestation">
+          <AnchorHeading id="tee-attestation">Verifiable Execution (TEE)</AnchorHeading>
+          <p className="text-gray-700 mb-3">
+            Every OutLayer execution runs inside <strong>Intel TDX</strong> (Trusted Execution Environment) and produces
+            a cryptographic attestation proving:
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+            <div className="bg-purple-50 border-l-4 border-purple-500 p-3">
+              <p className="text-sm text-purple-800"><strong>🔐 Code Integrity</strong> - SHA256 of exact WASM binary</p>
+            </div>
+            <div className="bg-purple-50 border-l-4 border-purple-500 p-3">
+              <p className="text-sm text-purple-800"><strong>📥 Input Integrity</strong> - SHA256 of input data</p>
+            </div>
+            <div className="bg-purple-50 border-l-4 border-purple-500 p-3">
+              <p className="text-sm text-purple-800"><strong>📤 Output Integrity</strong> - Result from that code + input</p>
+            </div>
+            <div className="bg-purple-50 border-l-4 border-purple-500 p-3">
+              <p className="text-sm text-purple-800"><strong>🛡️ Worker Identity</strong> - Verified TEE measurements</p>
+            </div>
+          </div>
+          <div className="bg-green-50 border-l-4 border-green-500 p-4">
+            <p className="text-sm text-gray-700">
+              <strong>🎯 Why this matters:</strong> Anyone can independently verify that your code ran correctly.
+              No &quot;trust us&quot; - cryptographic proof signed by Intel hardware.
+              <Link href="/docs/tee-attestation" className="ml-2 text-[var(--primary-orange)] hover:underline">Learn more →</Link>
+            </p>
+          </div>
         </section>
 
-        <section id="how-yield-resume-works">
-          <AnchorHeading id="how-yield-resume-works">How Yield/Resume Works on NEAR</AnchorHeading>
+        <section id="tee-vault">
+          <AnchorHeading id="tee-vault">Upgradeable TEE Vault</AnchorHeading>
           <p className="text-gray-700 mb-3">
-            NEAR Protocol&apos;s yield/resume feature allows smart contracts to <strong>pause execution</strong>, wait for external
-            computation to complete, then <strong>resume with the result</strong> - all within a single logical transaction.
+            Build wallet apps where <strong>private keys live inside TEE</strong>. Update your code anytime —
+            secrets persist across upgrades thanks to <strong>Confidential Key Derivation (CKD)</strong>.
+          </p>
+          <div className="bg-orange-50 border-2 border-orange-300 rounded-lg p-4 mb-3">
+            <p className="text-sm text-orange-800">
+              <strong>How it works:</strong> Your project gets a unique derived key from DAO-controlled master key.
+              Only your WASM code running in TEE can access it. Change your code — same key, same secrets.
+            </p>
+          </div>
+          <div className="bg-blue-50 border-l-4 border-blue-500 p-4">
+            <p className="text-sm text-blue-800">
+              💡 <Link href="/docs/secrets#confidential-key-derivation" className="underline font-medium">CKD Documentation</Link> •{' '}
+              <Link href="/docs/secrets#dao-governance" className="underline font-medium">DAO Governance →</Link>
+            </p>
+          </div>
+        </section>
+
+        <section id="two-modes">
+          <AnchorHeading id="two-modes">Two Ways to Use OutLayer</AnchorHeading>
+          <p className="text-gray-700 mb-4">
+            Choose based on your use case. Both provide the same verifiable execution guarantees.
+          </p>
+
+          {/* Mode comparison cards */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+            <div className="bg-purple-50 border-2 border-purple-300 rounded-lg p-5">
+              <h4 className="font-bold text-purple-900 mb-2 text-lg">🔗 Blockchain (NEAR)</h4>
+              <ul className="text-sm text-purple-800 space-y-1 mb-3">
+                <li>• Smart contract callbacks via yield/resume</li>
+                <li>• Pay with NEAR tokens</li>
+                <li>• On-chain settlement & refunds</li>
+                <li>• Best for: DeFi, DAOs, on-chain apps</li>
+              </ul>
+              <Link href="/docs/near-integration" className="text-sm text-purple-700 font-medium hover:underline">
+                Full documentation →
+              </Link>
+            </div>
+            <div className="bg-orange-50 border-2 border-orange-300 rounded-lg p-5">
+              <h4 className="font-bold text-orange-900 mb-2 text-lg">🌐 HTTPS API</h4>
+              <ul className="text-sm text-orange-800 space-y-1 mb-3">
+                <li>• Direct HTTP calls, instant response</li>
+                <li>• Pay with USDC (Payment Keys)</li>
+                <li>• No blockchain knowledge needed</li>
+                <li>• Best for: Web apps, APIs, backends</li>
+              </ul>
+              <Link href="/docs/web2-integration" className="text-sm text-orange-700 font-medium hover:underline">
+                Full documentation →
+              </Link>
+            </div>
+          </div>
+        </section>
+
+        <section id="blockchain-flow">
+          <AnchorHeading id="blockchain-flow">Blockchain Flow (NEAR Yield/Resume)</AnchorHeading>
+          <p className="text-gray-700 mb-3">
+            NEAR&apos;s yield/resume allows smart contracts to <strong>pause execution</strong>, wait for off-chain
+            computation, then <strong>resume with the result</strong> - all in one logical transaction.
           </p>
 
           {/* Desktop Diagram - Hidden on mobile */}
@@ -136,8 +220,8 @@ export default function GettingStartedSection() {
               <text x="640" y="342" textAnchor="start" fontSize="9" fill="#166534">• Read stdout</text>              
 
               {/* Step 5: OutLayer -> Your Contract */}
-              <line x1="700" y1="370" x2="510" y2="370" stroke="#f97316" strokeWidth="2" markerEnd="url(#arrowOrange)" />
-              <text x="605" y="385" textAnchor="middle" fontSize="11" fill="#c2410c" fontWeight="bold">4. yield_resume()</text>
+              <line x1="700" y1="370" x2="510" y2="370" stroke="#16a34a" strokeWidth="2" markerEnd="url(#arrowGreen)" />
+              <text x="605" y="385" textAnchor="middle" fontSize="11" fill="#166534" fontWeight="bold">4. yield_resume()</text>
 
               {/* RESUME box */}
               <rect x="450" y="400" width="120" height="40" fill="#dcfce7" stroke="#16a34a" strokeWidth="2" rx="4" />
@@ -145,8 +229,8 @@ export default function GettingStartedSection() {
               <text x="510" y="430" textAnchor="middle" fontSize="9" fill="#166534">Process result</text>
 
               {/* Step 4: Worker -> OutLayer */}
-              <line x1="510" y1="470" x2="310" y2="470" stroke="#a855f7" strokeWidth="2" markerEnd="url(#arrowPurple)" />
-              <text x="410" y="465" textAnchor="middle" fontSize="11" fill="#7e22ce" fontWeight="bold">5. return result</text>
+              <line x1="510" y1="470" x2="310" y2="470" stroke="#c2410c" strokeWidth="2" markerEnd="url(#arrowOrange)" />
+              <text x="410" y="465" textAnchor="middle" fontSize="11" fill="#92400e" fontWeight="bold">5. return result</text>
 
               {/* Final result */}
               <rect x="100" y="500" width="380" height="40" fill="#dcfce7" stroke="#16a34a" strokeWidth="2" rx="8" />
@@ -253,6 +337,146 @@ export default function GettingStartedSection() {
           </div>
         </section>
 
+        <section id="https-flow">
+          <AnchorHeading id="https-flow">HTTPS Flow (Direct API)</AnchorHeading>
+          <p className="text-gray-700 mb-3">
+            Call OutLayer directly via HTTPS - no blockchain transactions, instant response.
+            Ideal for developers who want to <strong>monetize their APIs</strong> and provide users
+            with <strong>cryptographic proof</strong> of what code actually ran.
+          </p>
+
+          {/* Desktop Diagram - Hidden on mobile */}
+          <div className="hidden md:block bg-white border-2 border-gray-300 rounded-lg p-6 mb-4 overflow-x-auto">
+            <svg viewBox="0 0 700 400" className="w-full" style={{ maxWidth: '700px', margin: '0 auto' }}>
+              {/* Participant boxes */}
+              <rect x="50" y="20" width="120" height="50" fill="#3b82f6" rx="8" />
+              <text x="110" y="40" textAnchor="middle" fill="white" fontSize="12" fontWeight="bold">Your App</text>
+              <text x="110" y="55" textAnchor="middle" fill="white" fontSize="10">(Web/Mobile/API)</text>
+
+              <rect x="280" y="20" width="120" height="50" fill="#f97316" rx="8" />
+              <text x="340" y="40" textAnchor="middle" fill="white" fontSize="12" fontWeight="bold">OutLayer</text>
+              <text x="340" y="55" textAnchor="middle" fill="white" fontSize="12" fontWeight="bold">API</text>
+
+              <rect x="510" y="20" width="120" height="50" fill="#16a34a" rx="8" />
+              <text x="570" y="50" textAnchor="middle" fill="white" fontSize="14" fontWeight="bold">TEE Worker</text>
+
+              {/* Lifelines */}
+              <line x1="110" y1="70" x2="110" y2="370" stroke="#d1d5db" strokeWidth="2" strokeDasharray="5,5" />
+              <line x1="340" y1="70" x2="340" y2="370" stroke="#d1d5db" strokeWidth="2" strokeDasharray="5,5" />
+              <line x1="570" y1="70" x2="570" y2="370" stroke="#d1d5db" strokeWidth="2" strokeDasharray="5,5" />
+
+              {/* Arrows */}
+              <defs>
+                <marker id="arrowBlue2" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+                  <path d="M0,0 L0,6 L9,3 z" fill="#3b82f6" />
+                </marker>
+                <marker id="arrowOrange2" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+                  <path d="M0,0 L0,6 L9,3 z" fill="#f97316" />
+                </marker>
+                <marker id="arrowGreen2" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+                  <path d="M0,0 L0,6 L9,3 z" fill="#16a34a" />
+                </marker>
+              </defs>
+
+              {/* Step 1: App -> API */}
+              <line x1="110" y1="100" x2="340" y2="100" stroke="#3b82f6" strokeWidth="2" markerEnd="url(#arrowBlue2)" />
+              <text x="225" y="90" textAnchor="middle" fontSize="11" fill="#1e40af" fontWeight="bold">1. POST /call/owner/project</text>
+              <text x="225" y="113" textAnchor="middle" fontSize="9" fill="#6b7280">X-Payment-Key + X-Attached-Deposit</text>
+              <text x="225" y="125" textAnchor="middle" fontSize="8" fill="#9ca3af">(payment goes to app author)</text>
+
+              {/* Step 2: API -> Worker */}
+              <line x1="340" y1="150" x2="570" y2="150" stroke="#f97316" strokeWidth="2" markerEnd="url(#arrowOrange2)" />
+              <text x="455" y="145" textAnchor="middle" fontSize="11" fill="#c2410c" fontWeight="bold">2. Execute in TEE</text>
+
+              {/* Worker execution box */}
+              <rect x="490" y="170" width="160" height="90" fill="#f0fdf4" stroke="#16a34a" strokeWidth="2" rx="4" />
+              <text x="500" y="188" textAnchor="start" fontSize="10" fontWeight="bold" fill="#166534">🔨 TEE Worker:</text>
+              <text x="500" y="205" textAnchor="start" fontSize="9" fill="#166534">• Load WASM (cached)</text>
+              <text x="500" y="220" textAnchor="start" fontSize="9" fill="#166534">• Execute with input</text>
+              <text x="500" y="235" textAnchor="start" fontSize="9" fill="#166534">• Generate attestation</text>
+              <text x="500" y="250" textAnchor="start" fontSize="9" fill="#166534">• Return result + proof</text>
+
+              {/* Step 3: Worker -> API */}
+              <line x1="570" y1="280" x2="340" y2="280" stroke="#16a34a" strokeWidth="2" markerEnd="url(#arrowGreen2)" />
+              <text x="455" y="295" textAnchor="middle" fontSize="11" fill="#166534" fontWeight="bold">3. Result + attestation</text>
+
+              {/* Step 4: API -> App */}
+              <line x1="340" y1="320" x2="110" y2="320" stroke="#f97316" strokeWidth="2" markerEnd="url(#arrowOrange2)" />
+              <text x="225" y="315" textAnchor="middle" fontSize="11" fill="#c2410c" fontWeight="bold">4. JSON response</text>
+
+              {/* Final result */}
+              <rect x="110" y="340" width="280" height="35" fill="#dcfce7" stroke="#16a34a" strokeWidth="2" rx="8" />
+              <text x="250" y="362" textAnchor="middle" fontSize="11" fontWeight="bold" fill="#166534">✅ Instant response with verifiable proof</text>
+            </svg>
+          </div>
+
+          {/* Mobile Simplified Diagram */}
+          <div className="md:hidden bg-gradient-to-b from-gray-50 to-orange-50 border-2 border-gray-300 rounded-lg p-4 mb-4">
+            <div className="space-y-3 text-sm">
+              {/* Step 1 */}
+              <div className="flex items-center gap-2">
+                <div className="flex-shrink-0 w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center text-white font-bold text-xs">1</div>
+                <div className="flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-blue-800">Your App</span>
+                    <span className="text-gray-600">→</span>
+                    <span className="font-semibold text-orange-800">OutLayer API</span>
+                  </div>
+                  <div className="text-xs text-gray-600 ml-0 mt-0.5">
+                    POST + Payment Key + optional tip to author
+                  </div>
+                </div>
+              </div>
+
+              {/* Step 2 */}
+              <div className="flex items-center gap-2">
+                <div className="flex-shrink-0 w-8 h-8 bg-orange-500 rounded-full flex items-center justify-center text-white font-bold text-xs">2</div>
+                <div className="flex items-center gap-2 flex-1">
+                  <span className="font-semibold text-orange-800">API</span>
+                  <span className="text-gray-600">→</span>
+                  <span className="font-semibold text-green-800">TEE Worker</span>
+                </div>
+              </div>
+
+              {/* Execution */}
+              <div className="ml-10 p-3 bg-green-50 border-l-4 border-green-500 rounded">
+                <div className="font-bold text-green-900 text-xs mb-1">🔨 TEE execution:</div>
+                <div className="text-xs text-green-800 space-y-0.5">
+                  <div>• Load cached WASM</div>
+                  <div>• Execute with input</div>
+                  <div>• Generate attestation</div>
+                </div>
+              </div>
+
+              {/* Step 3 */}
+              <div className="flex items-center gap-2">
+                <div className="flex-shrink-0 w-8 h-8 bg-green-600 rounded-full flex items-center justify-center text-white font-bold text-xs">3</div>
+                <div className="flex items-center gap-2 flex-1">
+                  <span className="font-semibold text-green-800">Worker</span>
+                  <span className="text-gray-600">→</span>
+                  <span className="font-semibold text-orange-800">API</span>
+                  <span className="text-gray-600">→</span>
+                  <span className="font-semibold text-blue-800">App</span>
+                </div>
+              </div>
+
+              {/* Complete */}
+              <div className="p-3 bg-green-100 border-2 border-green-600 rounded-lg text-center">
+                <div className="font-bold text-green-900 text-xs">✅ Instant Response!</div>
+                <div className="text-xs text-green-800 mt-1">JSON with result + attestation proof</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-orange-50 border-l-4 border-orange-500 p-4">
+            <p className="text-sm text-gray-700">
+              <strong>🎯 Key benefit:</strong> Sub-second response, no blockchain knowledge needed.
+              Same verifiable execution, just via HTTP. Pay with USDC via Payment Keys.
+              Optionally send payment to app author via <code className="bg-orange-100 px-1 rounded text-xs">X-Attached-Deposit</code> header.
+            </p>
+          </div>
+        </section>
+
         <section id="why-outlayer">
           <AnchorHeading id="why-outlayer">Why OutLayer Makes This Easy</AnchorHeading>
           <div className="space-y-3">
@@ -292,29 +516,46 @@ export default function GettingStartedSection() {
           <AnchorHeading id="quick-start">Quick Start: 4 Steps</AnchorHeading>
           <div className="space-y-4">
             <div className="bg-white border-2 border-gray-200 rounded-lg p-4">
-              <h4 className="font-semibold text-gray-800 mb-2">1️⃣ Write WASI Code</h4>
+              <h4 className="font-semibold text-gray-800 mb-2">1️⃣ Write Your Code</h4>
               <p className="text-sm text-gray-700 mb-2">
-                Create Rust project that compiles to WebAssembly. Read input from stdin, write output to stdout.
+                Create a project that compiles to WebAssembly. Rust recommended, other languages supported.
               </p>
               <p className="text-xs text-gray-600">
-                📖 <Link href="/docs/dev-guide" className="text-[var(--primary-orange)] hover:underline">Follow the Developer Guide</Link> for step-by-step tutorial
-              </p>
-              <p className="text-xs text-gray-600 mt-1">
-                💡 <Link href="/docs/examples" className="text-[var(--primary-orange)] hover:underline">See Working Examples</Link> for inspiration
-              </p>
-            </div>
-
-            <div className="bg-white border-2 border-gray-200 rounded-lg p-4">
-              <h4 className="font-semibold text-gray-800 mb-2">2️⃣ Push to GitHub</h4>
-              <p className="text-sm text-gray-700">
-                Make your repo public (or private with access tokens). OutLayer will clone and compile it on-demand.
+                📖 <Link href="/docs/dev-guide" className="text-[var(--primary-orange)] hover:underline">Tutorial</Link> •{' '}
+                <Link href="/docs/examples" className="text-[var(--primary-orange)] hover:underline">Examples</Link> •{' '}
+                <Link href="/docs/wasi" className="text-[var(--primary-orange)] hover:underline">Building Apps</Link>
               </p>
             </div>
 
             <div className="bg-white border-2 border-gray-200 rounded-lg p-4">
-              <h4 className="font-semibold text-gray-800 mb-2">3️⃣ Call from Your Contract or Testnet</h4>
+              <h4 className="font-semibold text-gray-800 mb-2">2️⃣ Push to GitHub or Provide WASM URL</h4>
               <p className="text-sm text-gray-700 mb-2">
-                <strong>Option A:</strong> Test directly from CLI (no contract needed)
+                <strong>Option A:</strong> Push to GitHub (public or private with access tokens). OutLayer will clone and compile on-demand.
+              </p>
+              <p className="text-sm text-gray-700 mb-2">
+                <strong>Option B:</strong> Host pre-compiled WASM file anywhere and provide direct URL.
+              </p>
+              <p className="text-xs text-gray-500">
+                ⏱️ GitHub: first execution compiles (10-30 sec), then cached. WASM URL: instant execution.
+              </p>
+            </div>
+
+            <div className="bg-white border-2 border-gray-200 rounded-lg p-4">
+              <h4 className="font-semibold text-gray-800 mb-2">3️⃣ Call OutLayer</h4>
+              <p className="text-sm text-gray-700 mb-2">
+                <strong>Option A:</strong> HTTPS API — call directly from any app
+              </p>
+              <pre className="text-xs bg-gray-100 p-2 rounded mt-1 overflow-x-auto">
+{`curl -X POST https://api.outlayer.io/call/owner/project \\
+  -H "X-Payment-Key: pk_..." \\
+  -d '{"param": 123}'`}
+              </pre>
+              <p className="text-xs text-gray-600 mt-1 mb-3">
+                📖 <Link href="/docs/web2-integration" className="text-[var(--primary-orange)] hover:underline">HTTPS Guide</Link> •{' '}
+                <Link href="/docs/https-api" className="text-[var(--primary-orange)] hover:underline">API Reference</Link>
+              </p>
+              <p className="text-sm text-gray-700 mb-2">
+                <strong>Option B:</strong> NEAR transaction
               </p>
               <pre className="text-xs bg-gray-100 p-2 rounded mt-1 overflow-x-auto">
 {`near call outlayer.testnet request_execution '\\
@@ -323,36 +564,52 @@ export default function GettingStartedSection() {
   --accountId you.testnet --deposit 0.1`}
               </pre>
               <p className="text-sm text-gray-700 mt-3 mb-2">
-                <strong>Option B:</strong> Integrate in your smart contract
+                <strong>Option C:</strong> Smart contract integration
               </p>
               <p className="text-xs text-gray-600">
-                📖 <Link href="/docs/contract-integration" className="text-[var(--primary-orange)] hover:underline">Contract Integration Guide</Link> -
-                See all parameters and callback handling
+                📖 <Link href="/docs/near-integration" className="text-[var(--primary-orange)] hover:underline">Contract Integration Guide</Link>
               </p>
             </div>
 
             <div className="bg-white border-2 border-gray-200 rounded-lg p-4">
-              <h4 className="font-semibold text-gray-800 mb-2">4️⃣ Receive Result in Callback</h4>
+              <h4 className="font-semibold text-gray-800 mb-2">4️⃣ Receive Result</h4>
+              <p className="text-sm text-gray-700">
+                HTTPS returns JSON response instantly. NEAR contract receives callback automatically.
+                Excess payment refunded based on actual resources used.
+              </p>
+            </div>
+
+            <div className="bg-white border-2 border-gray-200 rounded-lg p-4">
+              <h4 className="font-semibold text-gray-800 mb-2">5️⃣ Verify Attestation</h4>
               <p className="text-sm text-gray-700 mb-2">
-                Your contract receives the result automatically. You control what happens next - no external permissions needed.
+                Every execution produces TEE attestation — cryptographic proof of what code ran with what inputs.
               </p>
               <p className="text-xs text-gray-600">
-                Excess payment automatically refunded. Payment based on actual resources used (instructions + time).
+                📖 <Link href="/docs/tee-attestation" className="text-[var(--primary-orange)] hover:underline">How Attestation Works</Link> •{' '}
+                <Link href="/executions" className="text-[var(--primary-orange)] hover:underline">View Executions</Link>
               </p>
             </div>
           </div>
         </section>
 
         <section id="secrets">
-          <AnchorHeading id="secrets">Need API Keys or Secrets?</AnchorHeading>
+          <AnchorHeading id="secrets">Secrets</AnchorHeading>
           <p className="text-gray-700 mb-3">
-            Store encrypted secrets on-chain with access control (whitelists, NEAR balance checks, NFT ownership, etc).
-            OutLayer workers decrypt and inject them as environment variables - your WASM code accesses them via <code className="bg-gray-100 px-2 py-1 rounded">std::env::var()</code>.
+            Store encrypted API keys and credentials with access control. OutLayer decrypts them
+            during execution — your code reads them as environment variables.
+            <strong> Update your code anytime — secrets persist across upgrades.</strong>
           </p>
+          <div className="bg-purple-50 border-l-4 border-purple-500 p-4 mb-3">
+            <p className="text-sm text-purple-800">
+              <strong>🔐 Protected Secrets (CKD):</strong> Generate keys that <em>nobody knows</em> — not even you.
+              Only your WASM code running in TEE can access them. Perfect for wallet apps and signing keys.
+            </p>
+          </div>
           <div className="bg-blue-50 border-l-4 border-blue-500 p-4">
             <p className="text-sm text-blue-800">
-              💡 <strong>Use the Dashboard:</strong> <Link href="/secrets" className="underline font-medium">Manage Secrets</Link> -
-              Encrypt API keys client-side, store on-chain, use in any execution
+              💡 <Link href="/secrets" className="underline font-medium">Manage Secrets</Link> •{' '}
+              <Link href="/docs/secrets#confidential-key-derivation" className="underline font-medium">CKD Docs</Link> •{' '}
+              <Link href="/docs/secrets" className="underline font-medium">Learn more →</Link>
             </p>
           </div>
         </section>
@@ -360,33 +617,45 @@ export default function GettingStartedSection() {
         <section id="payment">
           <AnchorHeading id="payment">Payment & Pricing</AnchorHeading>
           <p className="text-gray-700 mb-3">
-            Attach NEAR tokens when calling <code className="bg-gray-100 px-2 py-1 rounded">request_execution</code>.
-            Cost = base fee + (actual instructions used × price) + (execution time × price).
+            Pay per execution based on actual resources used. Unused deposit automatically refunded.
           </p>
-          <ul className="list-disc list-inside space-y-2 text-gray-700 ml-4 text-sm">
-            <li>Unused deposit automatically refunded</li>
-            <li>Users can pay for their own executions (set <code className="bg-gray-100 px-1 rounded">payer_account_id</code>)</li>
-            <li>Or contracts can sponsor execution costs</li>
-            <li>Query <code className="bg-gray-100 px-1 rounded">estimate_execution_cost()</code> to see pricing before calling</li>
-          </ul>
+          <div className="bg-blue-50 border-l-4 border-blue-500 p-4">
+            <p className="text-sm text-blue-800">
+              💡 <Link href="/docs/pricing" className="underline font-medium">Pricing details →</Link>
+            </p>
+          </div>
+        </section>
+
+        <section id="persistent-storage">
+          <AnchorHeading id="persistent-storage">Persistent Storage</AnchorHeading>
+          <p className="text-gray-700 mb-3">
+            Store data between executions with encrypted persistent storage.
+            Data persists across code updates and is only accessible by your code.
+          </p>
+          <div className="bg-blue-50 border-l-4 border-blue-500 p-4">
+            <p className="text-sm text-blue-800">
+              💡 <Link href="/docs/storage" className="underline font-medium">Storage Guide</Link> •{' '}
+              <Link href="/docs/projects" className="underline font-medium">Projects →</Link>
+            </p>
+          </div>
         </section>
 
         <section id="ready-to-build">
           <AnchorHeading id="ready-to-build">Ready to Build?</AnchorHeading>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <Link href="/docs/dev-guide" className="block bg-gradient-to-br from-orange-50 to-red-50 border-2 border-orange-200 rounded-lg p-4 hover:shadow-lg transition-shadow">
-              <h4 className="font-semibold text-gray-800 mb-2">📖 Developer Guide</h4>
+              <h4 className="font-semibold text-gray-800 mb-2">Developer Guide</h4>
               <p className="text-sm text-gray-700">Step-by-step tutorial: Build a random number generator</p>
             </Link>
 
             <Link href="/docs/examples" className="block bg-gradient-to-br from-blue-50 to-purple-50 border-2 border-blue-200 rounded-lg p-4 hover:shadow-lg transition-shadow">
-              <h4 className="font-semibold text-gray-800 mb-2">💡 Working Examples</h4>
-              <p className="text-sm text-gray-700">7 production-ready examples with full source code</p>
+              <h4 className="font-semibold text-gray-800 mb-2">Working Examples</h4>
+              <p className="text-sm text-gray-700">Production-ready examples with full source code</p>
             </Link>
 
-            <Link href="/docs/contract-integration" className="block bg-gradient-to-br from-green-50 to-teal-50 border-2 border-green-200 rounded-lg p-4 hover:shadow-lg transition-shadow">
-              <h4 className="font-semibold text-gray-800 mb-2">🔌 Contract Integration</h4>
-              <p className="text-sm text-gray-700">All parameters, callback handling, best practices</p>
+            <Link href="/docs/near-integration" className="block bg-gradient-to-br from-green-50 to-teal-50 border-2 border-green-200 rounded-lg p-4 hover:shadow-lg transition-shadow">
+              <h4 className="font-semibold text-gray-800 mb-2">NEAR Integration</h4>
+              <p className="text-sm text-gray-700">Smart contract integration with yield/resume callbacks</p>
             </Link>
           </div>
         </section>

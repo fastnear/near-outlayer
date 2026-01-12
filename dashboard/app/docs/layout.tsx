@@ -7,18 +7,56 @@ import { useState, useEffect } from 'react';
 // Define page structure with subsections
 const pageStructure = {
   '/docs/getting-started': [
-    { id: 'what-is-outlayer', title: 'What is OutLayer?' },
-    { id: 'how-yield-resume-works', title: 'How Yield/Resume Works' },
-    { id: 'why-outlayer', title: 'Why OutLayer Makes This Easy' },
-    { id: 'quick-start', title: 'Quick Start: 4 Steps' },
-    { id: 'secrets', title: 'Need API Keys or Secrets?' },
-    { id: 'payment', title: 'Payment & Pricing' },
+    { id: 'what-is-outlayer', title: 'Overview' },    
+    { id: 'two-modes', title: 'Integration Modes' },
+    { id: 'quick-start', title: 'Quick Start' },
+    { id: 'secrets', title: 'Features' },
   ],
-  '/docs/contract-integration': [
+  '/docs/near-integration': [
     { id: 'request-execution', title: 'Method: request_execution' },
-    { id: 'callback', title: 'What You Get Back (Callback)' },
+    { id: 'callback', title: 'Callback Response' },
+    { id: 'example', title: 'Example Contract Call' },
     { id: 'pricing-payment', title: 'Pricing & Payment' },
     { id: 'performance', title: 'Performance Tips' },
+    { id: 'fastfs-workflow', title: 'FastFS Workflow' },
+    { id: 'tee-attestation', title: 'TEE Attestation' },
+  ],
+  '/docs/web2-integration': [
+    { id: 'why-web2', title: 'Why Web2 Integration?' },
+    { id: 'quick-start', title: 'Quick Start' },
+    { id: 'tee-attestation', title: 'TEE Attestation' },
+    { id: 'payments', title: 'Payments & Monetization' },
+    { id: 'env-vars', title: 'Environment Variables' },
+    { id: 'api-reference', title: 'API Reference' },
+    { id: 'code-examples', title: 'Code Examples' },
+    { id: 'capabilities', title: 'Project Capabilities' },
+  ],
+  '/docs/https-api': [
+    { id: 'overview', title: 'Overview' },
+    { id: 'request-format', title: 'Request Format' },
+    { id: 'headers', title: 'Request Headers' },
+    { id: 'body', title: 'Request Body' },
+    { id: 'response-format', title: 'Response Format' },
+    { id: 'env-vars', title: 'Environment Variables' },
+    { id: 'errors', title: 'Error Codes' },
+    { id: 'examples', title: 'Code Examples' },
+  ],
+  '/docs/payment-keys': [
+    { id: 'what-are-payment-keys', title: 'What are Payment Keys?' },
+    { id: 'key-format', title: 'Key Format' },
+    { id: 'creating-keys', title: 'Creating Payment Keys' },
+    { id: 'restrictions', title: 'Key Restrictions' },
+    { id: 'balance', title: 'Balance Management' },
+    { id: 'rate-limits', title: 'Rate Limits' },
+    { id: 'security', title: 'Security Best Practices' },
+  ],
+  '/docs/earnings': [
+    { id: 'how-it-works', title: 'How Earnings Work' },
+    { id: 'checking-payment', title: 'Checking Payment in WASM' },
+    { id: 'viewing-earnings', title: 'Viewing Your Earnings' },
+    { id: 'withdrawing', title: 'Withdrawing Earnings' },
+    { id: 'pricing-strategies', title: 'Pricing Strategies' },
+    { id: 'best-practices', title: 'Best Practices' },
   ],
   '/docs/dev-guide': [
     { id: 'problem', title: 'The Problem' },
@@ -60,14 +98,19 @@ const pageStructure = {
     { id: 'wasm-metadata', title: 'Project Binding (metadata!)' },
     { id: 'managing-versions', title: 'Managing Versions' },
     { id: 'persistent-storage', title: 'Persistent Storage' },
-    { id: 'storage-api', title: 'Storage API' },
-    { id: 'storage-methods', title: 'Storage Methods Reference' },
-    { id: 'storage-example', title: 'Usage Example' },
-    { id: 'conditional-writes', title: 'Conditional Writes (Atomic)' },
-    { id: 'storage-security', title: 'Storage Security' },
-    { id: 'user-data-isolation', title: 'User Data Isolation' },
-    { id: 'worker-storage', title: 'Worker Storage' },
     { id: 'project-secrets', title: 'Project Secrets' },
+    { id: 'use-cases', title: 'Use Cases' },
+    { id: 'best-practices', title: 'Best Practices' },
+  ],
+  '/docs/storage': [
+    { id: 'overview', title: 'Overview' },
+    { id: 'quick-start', title: 'Quick Start' },
+    { id: 'api', title: 'Storage API' },
+    { id: 'methods', title: 'Methods Reference' },
+    { id: 'atomic-operations', title: 'Atomic Operations' },
+    { id: 'user-isolation', title: 'User Data Isolation' },
+    { id: 'worker-storage', title: 'Worker Storage' },
+    { id: 'security', title: 'Security' },
     { id: 'use-cases', title: 'Use Cases' },
     { id: 'best-practices', title: 'Best Practices' },
   ],
@@ -77,14 +120,6 @@ const pageStructure = {
     { id: 'resource-limits', title: 'Resource Limits' },
     { id: 'refund-policy', title: 'Refund Policy' },
     { id: 'optimization-tips', title: 'Optimization Tips' },
-  ],
-  '/docs/architecture': [
-    { id: 'system-components', title: 'System Components' },
-    { id: 'execution-flow', title: 'Execution Flow' },
-    { id: 'security-guarantees', title: 'Security Guarantees' },
-    { id: 'scalability', title: 'Scalability' },
-    { id: 'wasm-caching', title: 'WASM Caching Strategy' },
-    { id: 'high-availability', title: 'High Availability' },
   ],
   '/docs/examples': [
     { id: 'random-ark', title: 'Random Number' },
@@ -149,14 +184,13 @@ export default function DocsLayout({
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
         {/* Sidebar Navigation */}
         <div className="lg:col-span-1">
-          <div className="bg-white rounded-lg shadow-sm p-6 sticky top-4 max-h-[calc(100vh-120px)] overflow-y-auto">
-            <h3 className="text-lg font-bold mb-4 text-gray-900">Contents</h3>
-            <nav className="space-y-1">
+          <div className="bg-white rounded-lg shadow-sm p-2">            
+            <nav className="space-y-0.5">
               {/* Getting Started */}
               <div>
                 <Link
                   href="/docs/getting-started"
-                  className={`flex items-center justify-between w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                  className={`flex items-center justify-between w-full text-left px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
                     isActive('/docs/getting-started')
                       ? 'bg-[var(--primary-orange)] text-white'
                       : 'text-gray-700 hover:bg-gray-100'
@@ -176,12 +210,12 @@ export default function DocsLayout({
                   )}
                 </Link>
                 {expandedPages['/docs/getting-started'] && pageStructure['/docs/getting-started'] && (
-                  <div className="ml-4 mt-1 space-y-1">
+                  <div className="ml-4 mt-1 space-y-0.5">
                     {pageStructure['/docs/getting-started'].map(section => (
                       <button
                         key={section.id}
                         onClick={() => scrollToSection(section.id)}
-                        className="block w-full text-left px-3 py-1.5 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
+                        className="block w-full text-left px-3 py-1 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
                       >
                         {section.title}
                       </button>
@@ -190,124 +224,11 @@ export default function DocsLayout({
                 )}
               </div>
 
-              {/* Developer Guide */}
-              <div>
-                <Link
-                  href="/docs/dev-guide"
-                  className={`flex items-center justify-between w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-                    isActive('/docs/dev-guide')
-                      ? 'bg-[var(--primary-orange)] text-white'
-                      : 'text-gray-700 hover:bg-gray-100'
-                  }`}
-                  onClick={(e) => {
-                    if (isActive('/docs/dev-guide')) {
-                      e.preventDefault();
-                      toggleExpand('/docs/dev-guide');
-                    }
-                  }}
-                >
-                  <span>Developer Guide</span>
-                  {pageStructure['/docs/dev-guide'] && (
-                    <svg className={`w-4 h-4 transition-transform ${expandedPages['/docs/dev-guide'] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                    </svg>
-                  )}
-                </Link>
-                {expandedPages['/docs/dev-guide'] && pageStructure['/docs/dev-guide'] && (
-                  <div className="ml-4 mt-1 space-y-1">
-                    {pageStructure['/docs/dev-guide'].map(section => (
-                      <button
-                        key={section.id}
-                        onClick={() => scrollToSection(section.id)}
-                        className="block w-full text-left px-3 py-1.5 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
-                      >
-                        {section.title}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* Contract Integration */}
-              <div>
-                <Link
-                  href="/docs/contract-integration"
-                  className={`flex items-center justify-between w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-                    isActive('/docs/contract-integration')
-                      ? 'bg-[var(--primary-orange)] text-white'
-                      : 'text-gray-700 hover:bg-gray-100'
-                  }`}
-                  onClick={(e) => {
-                    if (isActive('/docs/contract-integration')) {
-                      e.preventDefault();
-                      toggleExpand('/docs/contract-integration');
-                    }
-                  }}
-                >
-                  <span>Contract Integration</span>
-                  {pageStructure['/docs/contract-integration'] && (
-                    <svg className={`w-4 h-4 transition-transform ${expandedPages['/docs/contract-integration'] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                    </svg>
-                  )}
-                </Link>
-                {expandedPages['/docs/contract-integration'] && pageStructure['/docs/contract-integration'] && (
-                  <div className="ml-4 mt-1 space-y-1">
-                    {pageStructure['/docs/contract-integration'].map(section => (
-                      <button
-                        key={section.id}
-                        onClick={() => scrollToSection(section.id)}
-                        className="block w-full text-left px-3 py-1.5 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
-                      >
-                        {section.title}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* Writing WASI Code */}
-              <div>
-                <Link
-                  href="/docs/wasi"
-                  className={`flex items-center justify-between w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-                    isActive('/docs/wasi')
-                      ? 'bg-[var(--primary-orange)] text-white'
-                      : 'text-gray-700 hover:bg-gray-100'
-                  }`}
-                  onClick={(e) => {
-                    if (isActive('/docs/wasi')) {
-                      e.preventDefault();
-                      toggleExpand('/docs/wasi');
-                    }
-                  }}
-                >
-                  <span>Writing WASI Code</span>
-                  {pageStructure['/docs/wasi'] && (
-                    <svg className={`w-4 h-4 transition-transform ${expandedPages['/docs/wasi'] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                    </svg>
-                  )}
-                </Link>
-                {expandedPages['/docs/wasi'] && pageStructure['/docs/wasi'] && (
-                  <div className="ml-4 mt-1 space-y-1">
-                    {pageStructure['/docs/wasi'].map(section => (
-                      <button
-                        key={section.id}
-                        onClick={() => scrollToSection(section.id)}
-                        className="block w-full text-left px-3 py-1.5 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
-                      >
-                        {section.title}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
               {/* Example Projects */}
               <div>
                 <Link
                   href="/docs/examples"
-                  className={`flex items-center justify-between w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                  className={`flex items-center justify-between w-full text-left px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
                     isActive('/docs/examples')
                       ? 'bg-[var(--primary-orange)] text-white'
                       : 'text-gray-700 hover:bg-gray-100'
@@ -327,12 +248,12 @@ export default function DocsLayout({
                   )}
                 </Link>
                 {expandedPages['/docs/examples'] && pageStructure['/docs/examples'] && (
-                  <div className="ml-4 mt-1 space-y-1">
+                  <div className="ml-4 mt-1 space-y-0.5">
                     {pageStructure['/docs/examples'].map(section => (
                       <button
                         key={section.id}
                         onClick={() => scrollToSection(section.id)}
-                        className="block w-full text-left px-3 py-1.5 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
+                        className="block w-full text-left px-3 py-1 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
                       >
                         {section.title}
                       </button>
@@ -341,11 +262,173 @@ export default function DocsLayout({
                 )}
               </div>
 
-              {/* Managing Secrets */}
+              {/* Guides Section */}
+              <div className="pt-3 pb-1">
+                <span className="px-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Guides</span>
+              </div>
+
+              {/* NEAR Integration */}
+              <div>
+                <Link
+                  href="/docs/near-integration"
+                  className={`flex items-center justify-between w-full text-left px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                    isActive('/docs/near-integration')
+                      ? 'bg-[var(--primary-orange)] text-white'
+                      : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                  onClick={(e) => {
+                    if (isActive('/docs/near-integration')) {
+                      e.preventDefault();
+                      toggleExpand('/docs/near-integration');
+                    }
+                  }}
+                >
+                  <span>NEAR Integration</span>
+                  {pageStructure['/docs/near-integration'] && (
+                    <svg className={`w-4 h-4 transition-transform ${expandedPages['/docs/near-integration'] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  )}
+                </Link>
+                {expandedPages['/docs/near-integration'] && pageStructure['/docs/near-integration'] && (
+                  <div className="ml-4 mt-1 space-y-0.5">
+                    {pageStructure['/docs/near-integration'].map(section => (
+                      <button
+                        key={section.id}
+                        onClick={() => scrollToSection(section.id)}
+                        className="block w-full text-left px-3 py-1 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
+                      >
+                        {section.title}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Web2 Integration */}
+              <div>
+                <Link
+                  href="/docs/web2-integration"
+                  className={`flex items-center justify-between w-full text-left px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                    isActive('/docs/web2-integration')
+                      ? 'bg-[var(--primary-orange)] text-white'
+                      : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                  onClick={(e) => {
+                    if (isActive('/docs/web2-integration')) {
+                      e.preventDefault();
+                      toggleExpand('/docs/web2-integration');
+                    }
+                  }}
+                >
+                  <span>Web2 Integration</span>
+                  {pageStructure['/docs/web2-integration'] && (
+                    <svg className={`w-4 h-4 transition-transform ${expandedPages['/docs/web2-integration'] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  )}
+                </Link>
+                {expandedPages['/docs/web2-integration'] && pageStructure['/docs/web2-integration'] && (
+                  <div className="ml-4 mt-1 space-y-0.5">
+                    {pageStructure['/docs/web2-integration'].map(section => (
+                      <button
+                        key={section.id}
+                        onClick={() => scrollToSection(section.id)}
+                        className="block w-full text-left px-3 py-1 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
+                      >
+                        {section.title}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Building OutLayer App */}
+              <div>
+                <Link
+                  href="/docs/wasi"
+                  className={`flex items-center justify-between w-full text-left px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                    isActive('/docs/wasi')
+                      ? 'bg-[var(--primary-orange)] text-white'
+                      : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                  onClick={(e) => {
+                    if (isActive('/docs/wasi')) {
+                      e.preventDefault();
+                      toggleExpand('/docs/wasi');
+                    }
+                  }}
+                >
+                  <span>Building OutLayer App</span>
+                  {pageStructure['/docs/wasi'] && (
+                    <svg className={`w-4 h-4 transition-transform ${expandedPages['/docs/wasi'] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  )}
+                </Link>
+                {expandedPages['/docs/wasi'] && pageStructure['/docs/wasi'] && (
+                  <div className="ml-4 mt-1 space-y-0.5">
+                    {pageStructure['/docs/wasi'].map(section => (
+                      <button
+                        key={section.id}
+                        onClick={() => scrollToSection(section.id)}
+                        className="block w-full text-left px-3 py-1 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
+                      >
+                        {section.title}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Tutorial: First App */}
+              <div>
+                <Link
+                  href="/docs/dev-guide"
+                  className={`flex items-center justify-between w-full text-left px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                    isActive('/docs/dev-guide')
+                      ? 'bg-[var(--primary-orange)] text-white'
+                      : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                  onClick={(e) => {
+                    if (isActive('/docs/dev-guide')) {
+                      e.preventDefault();
+                      toggleExpand('/docs/dev-guide');
+                    }
+                  }}
+                >
+                  <span>Tutorial: First App</span>
+                  {pageStructure['/docs/dev-guide'] && (
+                    <svg className={`w-4 h-4 transition-transform ${expandedPages['/docs/dev-guide'] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  )}
+                </Link>
+                {expandedPages['/docs/dev-guide'] && pageStructure['/docs/dev-guide'] && (
+                  <div className="ml-4 mt-1 space-y-0.5">
+                    {pageStructure['/docs/dev-guide'].map(section => (
+                      <button
+                        key={section.id}
+                        onClick={() => scrollToSection(section.id)}
+                        className="block w-full text-left px-3 py-1 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
+                      >
+                        {section.title}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* OutLayer Features Section */}
+              <div className="pt-3 pb-1">
+                <span className="px-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">OutLayer Features</span>
+              </div>
+
+              {/* Secrets */}
               <div>
                 <Link
                   href="/docs/secrets"
-                  className={`flex items-center justify-between w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                  className={`flex items-center justify-between w-full text-left px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
                     isActive('/docs/secrets')
                       ? 'bg-[var(--primary-orange)] text-white'
                       : 'text-gray-700 hover:bg-gray-100'
@@ -365,12 +448,12 @@ export default function DocsLayout({
                   )}
                 </Link>
                 {expandedPages['/docs/secrets'] && pageStructure['/docs/secrets'] && (
-                  <div className="ml-4 mt-1 space-y-1">
+                  <div className="ml-4 mt-1 space-y-0.5">
                     {pageStructure['/docs/secrets'].map(section => (
                       <button
                         key={section.id}
                         onClick={() => scrollToSection(section.id)}
-                        className="block w-full text-left px-3 py-1.5 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
+                        className="block w-full text-left px-3 py-1 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
                       >
                         {section.title}
                       </button>
@@ -379,11 +462,11 @@ export default function DocsLayout({
                 )}
               </div>
 
-              {/* Projects & Versions */}
+              {/* Projects */}
               <div>
                 <Link
                   href="/docs/projects"
-                  className={`flex items-center justify-between w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                  className={`flex items-center justify-between w-full text-left px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
                     isActive('/docs/projects')
                       ? 'bg-[var(--primary-orange)] text-white'
                       : 'text-gray-700 hover:bg-gray-100'
@@ -403,12 +486,12 @@ export default function DocsLayout({
                   )}
                 </Link>
                 {expandedPages['/docs/projects'] && pageStructure['/docs/projects'] && (
-                  <div className="ml-4 mt-1 space-y-1">
+                  <div className="ml-4 mt-1 space-y-0.5">
                     {pageStructure['/docs/projects'].map(section => (
                       <button
                         key={section.id}
                         onClick={() => scrollToSection(section.id)}
-                        className="block w-full text-left px-3 py-1.5 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
+                        className="block w-full text-left px-3 py-1 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
                       >
                         {section.title}
                       </button>
@@ -417,36 +500,36 @@ export default function DocsLayout({
                 )}
               </div>
 
-              {/* Pricing & Limits */}
+              {/* Storage */}
               <div>
                 <Link
-                  href="/docs/pricing"
-                  className={`flex items-center justify-between w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-                    isActive('/docs/pricing')
+                  href="/docs/storage"
+                  className={`flex items-center justify-between w-full text-left px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                    isActive('/docs/storage')
                       ? 'bg-[var(--primary-orange)] text-white'
                       : 'text-gray-700 hover:bg-gray-100'
                   }`}
                   onClick={(e) => {
-                    if (isActive('/docs/pricing')) {
+                    if (isActive('/docs/storage')) {
                       e.preventDefault();
-                      toggleExpand('/docs/pricing');
+                      toggleExpand('/docs/storage');
                     }
                   }}
                 >
-                  <span>Pricing & Limits</span>
-                  {pageStructure['/docs/pricing'] && (
-                    <svg className={`w-4 h-4 transition-transform ${expandedPages['/docs/pricing'] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <span>Storage</span>
+                  {pageStructure['/docs/storage'] && (
+                    <svg className={`w-4 h-4 transition-transform ${expandedPages['/docs/storage'] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                     </svg>
                   )}
                 </Link>
-                {expandedPages['/docs/pricing'] && pageStructure['/docs/pricing'] && (
-                  <div className="ml-4 mt-1 space-y-1">
-                    {pageStructure['/docs/pricing'].map(section => (
+                {expandedPages['/docs/storage'] && pageStructure['/docs/storage'] && (
+                  <div className="ml-4 mt-1 space-y-0.5">
+                    {pageStructure['/docs/storage'].map(section => (
                       <button
                         key={section.id}
                         onClick={() => scrollToSection(section.id)}
-                        className="block w-full text-left px-3 py-1.5 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
+                        className="block w-full text-left px-3 py-1 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
                       >
                         {section.title}
                       </button>
@@ -455,36 +538,112 @@ export default function DocsLayout({
                 )}
               </div>
 
-              {/* Architecture */}
+              {/* HTTPS API */}
               <div>
                 <Link
-                  href="/docs/architecture"
-                  className={`flex items-center justify-between w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-                    isActive('/docs/architecture')
+                  href="/docs/https-api"
+                  className={`flex items-center justify-between w-full text-left px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                    isActive('/docs/https-api')
                       ? 'bg-[var(--primary-orange)] text-white'
                       : 'text-gray-700 hover:bg-gray-100'
                   }`}
                   onClick={(e) => {
-                    if (isActive('/docs/architecture')) {
+                    if (isActive('/docs/https-api')) {
                       e.preventDefault();
-                      toggleExpand('/docs/architecture');
+                      toggleExpand('/docs/https-api');
                     }
                   }}
                 >
-                  <span>Architecture</span>
-                  {pageStructure['/docs/architecture'] && (
-                    <svg className={`w-4 h-4 transition-transform ${expandedPages['/docs/architecture'] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <span>HTTPS API</span>
+                  {pageStructure['/docs/https-api'] && (
+                    <svg className={`w-4 h-4 transition-transform ${expandedPages['/docs/https-api'] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                     </svg>
                   )}
                 </Link>
-                {expandedPages['/docs/architecture'] && pageStructure['/docs/architecture'] && (
-                  <div className="ml-4 mt-1 space-y-1">
-                    {pageStructure['/docs/architecture'].map(section => (
+                {expandedPages['/docs/https-api'] && pageStructure['/docs/https-api'] && (
+                  <div className="ml-4 mt-1 space-y-0.5">
+                    {pageStructure['/docs/https-api'].map(section => (
                       <button
                         key={section.id}
                         onClick={() => scrollToSection(section.id)}
-                        className="block w-full text-left px-3 py-1.5 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
+                        className="block w-full text-left px-3 py-1 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
+                      >
+                        {section.title}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Payment Keys */}
+              <div>
+                <Link
+                  href="/docs/payment-keys"
+                  className={`flex items-center justify-between w-full text-left px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                    isActive('/docs/payment-keys')
+                      ? 'bg-[var(--primary-orange)] text-white'
+                      : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                  onClick={(e) => {
+                    if (isActive('/docs/payment-keys')) {
+                      e.preventDefault();
+                      toggleExpand('/docs/payment-keys');
+                    }
+                  }}
+                >
+                  <span>Payment Keys</span>
+                  {pageStructure['/docs/payment-keys'] && (
+                    <svg className={`w-4 h-4 transition-transform ${expandedPages['/docs/payment-keys'] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  )}
+                </Link>
+                {expandedPages['/docs/payment-keys'] && pageStructure['/docs/payment-keys'] && (
+                  <div className="ml-4 mt-1 space-y-0.5">
+                    {pageStructure['/docs/payment-keys'].map(section => (
+                      <button
+                        key={section.id}
+                        onClick={() => scrollToSection(section.id)}
+                        className="block w-full text-left px-3 py-1 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
+                      >
+                        {section.title}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Earnings */}
+              <div>
+                <Link
+                  href="/docs/earnings"
+                  className={`flex items-center justify-between w-full text-left px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                    isActive('/docs/earnings')
+                      ? 'bg-[var(--primary-orange)] text-white'
+                      : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                  onClick={(e) => {
+                    if (isActive('/docs/earnings')) {
+                      e.preventDefault();
+                      toggleExpand('/docs/earnings');
+                    }
+                  }}
+                >
+                  <span>Earnings</span>
+                  {pageStructure['/docs/earnings'] && (
+                    <svg className={`w-4 h-4 transition-transform ${expandedPages['/docs/earnings'] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  )}
+                </Link>
+                {expandedPages['/docs/earnings'] && pageStructure['/docs/earnings'] && (
+                  <div className="ml-4 mt-1 space-y-0.5">
+                    {pageStructure['/docs/earnings'].map(section => (
+                      <button
+                        key={section.id}
+                        onClick={() => scrollToSection(section.id)}
+                        className="block w-full text-left px-3 py-1 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
                       >
                         {section.title}
                       </button>
@@ -497,7 +656,7 @@ export default function DocsLayout({
               <div>
                 <Link
                   href="/docs/tee-attestation"
-                  className={`flex items-center justify-between w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                  className={`flex items-center justify-between w-full text-left px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
                     isActive('/docs/tee-attestation')
                       ? 'bg-[var(--primary-orange)] text-white'
                       : 'text-gray-700 hover:bg-gray-100'
@@ -517,12 +676,12 @@ export default function DocsLayout({
                   )}
                 </Link>
                 {expandedPages['/docs/tee-attestation'] && pageStructure['/docs/tee-attestation'] && (
-                  <div className="ml-4 mt-1 space-y-1">
+                  <div className="ml-4 mt-1 space-y-0.5">
                     {pageStructure['/docs/tee-attestation'].map(section => (
                       <button
                         key={section.id}
                         onClick={() => scrollToSection(section.id)}
-                        className="block w-full text-left px-3 py-1.5 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
+                        className="block w-full text-left px-3 py-1 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
                       >
                         {section.title}
                       </button>
@@ -530,6 +689,45 @@ export default function DocsLayout({
                   </div>
                 )}
               </div>
+
+              {/* Pricing & Limits */}
+              <div>
+                <Link
+                  href="/docs/pricing"
+                  className={`flex items-center justify-between w-full text-left px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                    isActive('/docs/pricing')
+                      ? 'bg-[var(--primary-orange)] text-white'
+                      : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                  onClick={(e) => {
+                    if (isActive('/docs/pricing')) {
+                      e.preventDefault();
+                      toggleExpand('/docs/pricing');
+                    }
+                  }}
+                >
+                  <span>Pricing & Limits</span>
+                  {pageStructure['/docs/pricing'] && (
+                    <svg className={`w-4 h-4 transition-transform ${expandedPages['/docs/pricing'] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  )}
+                </Link>
+                {expandedPages['/docs/pricing'] && pageStructure['/docs/pricing'] && (
+                  <div className="ml-4 mt-1 space-y-0.5">
+                    {pageStructure['/docs/pricing'].map(section => (
+                      <button
+                        key={section.id}
+                        onClick={() => scrollToSection(section.id)}
+                        className="block w-full text-left px-3 py-1 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
+                      >
+                        {section.title}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
             </nav>
           </div>
         </div>

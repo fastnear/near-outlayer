@@ -112,194 +112,124 @@ export default function Home() {
 
           <div className="mt-6 max-w-3xl mx-auto space-y-4">
             <p className="text-base text-gray-700 sm:text-lg md:text-xl">
-              Pause your smart contract execution at any point and attach your GitHub repository as an argument.
+              Run <strong>any code</strong> with <strong>cryptographic proof</strong> that exactly the code you specified ran with the inputs you provided.
             </p>
             <p className="text-base text-gray-700 sm:text-lg md:text-xl">
-              We compile your code, execute it off-chain in TEE, and finalize your transaction on-chain — enabling AI inference, real-world data oracles, secure randomness, or any computation beyond smart contract limits.
+              Call OutLayer from <strong>NEAR smart contracts</strong> (async yield/resume) or <strong>any app via HTTPS</strong>.
+              Every execution produces verifiable TEE attestation signed by Intel hardware.
             </p>
-          </div>
-
-          {/* CTA Buttons */}
-          <div className="mt-10 max-w-md mx-auto sm:flex sm:justify-center gap-4">
-            <Link
-              href="/playground"
-              className="btn-primary w-full sm:w-auto flex items-center justify-center px-8 py-3 text-base font-bold rounded-lg text-black md:py-4 md:text-lg md:px-10 whitespace-nowrap"
-            >
-              Try Playground
-            </Link>
-            <Link
-              href="/executions"
-              className="btn-secondary w-full sm:w-auto flex items-center justify-center px-8 py-3 text-base font-bold rounded-lg md:py-4 md:text-lg md:px-10 mt-3 sm:mt-0 whitespace-nowrap"
-            >
-              View Executions
-            </Link>
           </div>
         </div>
 
-        {/* Features Grid */}
-        <div className="mt-24">
-          <h3 className="text-3xl font-bold text-center mb-12 text-transparent bg-clip-text bg-gradient-to-r from-[var(--primary-orange)] to-[var(--primary-green)]">
-            OutLayer Features
-          </h3>
-          <div className="grid grid-cols-1 gap-8 sm:grid-cols-2 lg:grid-cols-3">
+        {/* Key Value Propositions */}
+        <div className="mt-20">
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-3 max-w-6xl mx-auto">
 
-            {/* Fast Execution */}
-            <div className="feature-card rounded-lg px-6 py-8 transform transition-all">
-              <div className="feature-icon inline-flex items-center justify-center p-4 rounded-lg mb-6">
-                <svg className="h-8 w-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                </svg>
-              </div>
-              <h4 className="text-xl font-bold text-[var(--primary-orange)] mb-3">Fast Execution</h4>
-              <p className="text-gray-600">
-                Off-chain execution 100x faster with Layer 1 settlement. Run code impossible in smart contracts while final results settle securely on NEAR blockchain.
-              </p>
-            </div>
-
-            {/* Secure & Verifiable */}
-            <div className="feature-card rounded-lg px-6 py-8 transform transition-all">
-              <div className="feature-icon inline-flex items-center justify-center p-4 rounded-lg mb-6">
-                <svg className="h-8 w-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                </svg>
-              </div>
-              <h4 className="text-xl font-bold text-[var(--primary-green)] mb-3">Secure & Verifiable</h4>
-              <p className="text-gray-600">
-                TEE-ready architecture with attestation support. Trust minimized with cryptographic proofs and NEAR settlement.
-              </p>
-            </div>
-
-            {/* Any WASM Code */}
-            <div className="feature-card rounded-lg px-6 py-8 transform transition-all">
-              <div className="feature-icon inline-flex items-center justify-center p-4 rounded-lg mb-6">
-                <svg className="h-8 w-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
-                </svg>
-              </div>
-              <h4 className="text-xl font-bold text-[var(--primary-orange)] mb-3">Any WASM Code</h4>
-              <p className="text-gray-600">
-                Execute AI inference, fetch price oracles, generate randomness, or run any computation. Write in Rust, C++, Go, or any language that compiles to WASM.
-              </p>
-            </div>
-
-            {/* Encrypted Secrets */}
-            <div className="feature-card rounded-lg px-6 py-8 transform transition-all">
-              <div className="feature-icon inline-flex items-center justify-center p-4 rounded-lg mb-6">
-                <svg className="h-8 w-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
-                </svg>
-              </div>
-              <h4 className="text-xl font-bold text-[var(--primary-green)] mb-3">Encrypted Secrets</h4>
-              <p className="text-gray-600">
-                Store API keys encrypted on-chain, protected by Confidential Key Derivation (CKD) via NEAR MPC Network. Deterministic secrets persist across TEE restarts. Automatically injected as WASI environment variables.
-              </p>
-            </div>
-
-            {/* Dynamic Pricing */}
-            <div className="feature-card rounded-lg px-6 py-8 transform transition-all">
-              <div className="feature-icon inline-flex items-center justify-center p-4 rounded-lg mb-6">
-                <svg className="h-8 w-8 text-white" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1.41 16.09V20h-2.67v-1.93c-1.71-.36-3.16-1.46-3.27-3.4h1.96c.1 1.05.82 1.87 2.65 1.87 1.96 0 2.4-.98 2.4-1.59 0-.83-.44-1.61-2.67-2.14-2.48-.6-4.18-1.62-4.18-3.67 0-1.72 1.39-2.84 3.11-3.21V4h2.67v1.95c1.86.45 2.79 1.86 2.85 3.39H14.3c-.05-1.11-.64-1.87-2.22-1.87-1.5 0-2.4.68-2.4 1.64 0 .84.65 1.39 2.67 1.91s4.18 1.39 4.18 3.91c-.01 1.83-1.38 2.83-3.12 3.16z"/>
-                </svg>
-              </div>
-              <h4 className="text-xl font-bold text-[var(--primary-orange)] mb-3">Flexible Payment</h4>
-              <p className="text-gray-600">
-                Pay only for actual resources consumed. Choose who pays: let users cover their requests or sponsor execution from contract balance. Unused funds automatically refunded.
-              </p>
-            </div>
-
-            {/* Resource Metering */}
-            <div className="feature-card rounded-lg px-6 py-8 transform transition-all">
-              <div className="feature-icon inline-flex items-center justify-center p-4 rounded-lg mb-6">
-                <svg className="h-8 w-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                </svg>
-              </div>
-              <h4 className="text-xl font-bold text-[var(--primary-green)] mb-3">Real Metrics</h4>
-              <p className="text-gray-600">
-                Actual instruction counting via fuel metering. Precise timing and resource usage tracking. No fake metrics.
-              </p>
-            </div>
-
-            {/* Code Source Flexibility */}
-            <div className="feature-card rounded-lg px-6 py-8 transform transition-all">
-              <div className="feature-icon inline-flex items-center justify-center p-4 rounded-lg mb-6">
-                <svg className="h-8 w-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                </svg>
-              </div>
-              <h4 className="text-xl font-bold text-[var(--primary-orange)] mb-3">Code Source Flexibility</h4>
-              <p className="text-gray-600">
-                Compile from GitHub repos (branch or commit hash) OR upload pre-compiled WASM. Store immutable binaries on FastFS/IPFS. WASM cache with distributed locking for efficiency.
-              </p>
-            </div>
-
-            {/* Access Control */}
-            <div className="feature-card rounded-lg px-6 py-8 transform transition-all">
-              <div className="feature-icon inline-flex items-center justify-center p-4 rounded-lg mb-6">
+            {/* Verifiable Execution */}
+            <div className="bg-gradient-to-br from-purple-50 to-purple-100 border-2 border-purple-300 rounded-xl p-6 transform transition-all hover:shadow-lg">
+              <div className="inline-flex items-center justify-center p-3 bg-purple-500 rounded-lg mb-4">
                 <svg className="h-8 w-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
                 </svg>
               </div>
-              <h4 className="text-xl font-bold text-[var(--primary-green)] mb-3">Access Control</h4>
-              <p className="text-gray-600">
-                Flexible secret access: whitelist, NEAR/FT/NFT balance checks, DAO memebership, account patterns, and complex logic conditions (AND/OR/NOT).
+              <h4 className="text-xl font-bold text-purple-900 mb-2">Verifiable Execution</h4>
+              <p className="text-purple-800 text-sm">
+                Cryptographic proof that YOUR code ran with YOUR inputs. Intel TDX attestation — no &quot;trust us&quot;, just math.
               </p>
             </div>
 
-            {/* WASI Support */}
-            <div className="feature-card rounded-lg px-6 py-8 transform transition-all">
-              <div className="feature-icon inline-flex items-center justify-center p-4 rounded-lg mb-6">
-                <svg className="h-8 w-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            {/* API Monetization */}
+            <div className="bg-gradient-to-br from-green-50 to-green-100 border-2 border-green-300 rounded-xl p-6 transform transition-all hover:shadow-lg">
+              <div className="inline-flex items-center justify-center p-3 bg-green-500 rounded-lg mb-4">
+                <svg className="h-8 w-8 text-white" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1.41 16.09V20h-2.67v-1.93c-1.71-.36-3.16-1.46-3.27-3.4h1.96c.1 1.05.82 1.87 2.65 1.87 1.96 0 2.4-.98 2.4-1.59 0-.83-.44-1.61-2.67-2.14-2.48-.6-4.18-1.62-4.18-3.67 0-1.72 1.39-2.84 3.11-3.21V4h2.67v1.95c1.86.45 2.79 1.86 2.85 3.39H14.3c-.05-1.11-.64-1.87-2.22-1.87-1.5 0-2.4.68-2.4 1.64 0 .84.65 1.39 2.67 1.91s4.18 1.39 4.18 3.91c-.01 1.83-1.38 2.83-3.12 3.16z"/>
                 </svg>
               </div>
-              <h4 className="text-xl font-bold text-[var(--primary-orange)] mb-3">WASI Environment</h4>
-              <p className="text-gray-600">
-                Full WASI support with environment variables and blockchain context. Access secrets via std::env::var(). Pass block height, account ID, timestamp as input parameters.
+              <h4 className="text-xl font-bold text-green-900 mb-2">Monetize Your API</h4>
+              <p className="text-green-800 text-sm">
+                Developers earn when users call their code. Gasless stablecoin earnings — no gas fees for you or your users.
               </p>
             </div>
 
-            {/* Real-World Data */}
-            <div className="feature-card rounded-lg px-6 py-8 transform transition-all">
-              <div className="feature-icon inline-flex items-center justify-center p-4 rounded-lg mb-6">
+            {/* TEE Vault */}
+            <div className="bg-gradient-to-br from-orange-50 to-orange-100 border-2 border-orange-300 rounded-xl p-6 transform transition-all hover:shadow-lg">
+              <div className="inline-flex items-center justify-center p-3 bg-orange-500 rounded-lg mb-4">
                 <svg className="h-8 w-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
                 </svg>
               </div>
-              <h4 className="text-xl font-bold text-[var(--primary-green)] mb-3">Real-World Data</h4>
-              <p className="text-gray-600">
-                Fetch any API data: asset prices, weather forecasts, sports results, Dota match outcomes, historical on-chain data from indexers, flight status, and more.
-              </p>
-            </div>
-
-            {/* Host Functions & Premium RPC */}
-            <div className="feature-card rounded-lg px-6 py-8 transform transition-all">
-              <div className="feature-icon inline-flex items-center justify-center p-4 rounded-lg mb-6">
-                <svg className="h-8 w-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                </svg>
-              </div>
-              <h4 className="text-xl font-bold text-[var(--primary-orange)] mb-3">Host Functions & Premium RPC</h4>
-              <p className="text-gray-600">
-                Direct NEAR blockchain access from WASM via host functions (call, transfer, view). Premium FastNEAR RPC included. Control TEE-generated accounts for verifiable DeFi automation - your code manages funds users can trust.
-              </p>
-            </div>
-
-            {/* Unlimited Possibilities */}
-            <div className="feature-card rounded-lg px-6 py-8 transform transition-all">
-              <div className="feature-icon inline-flex items-center justify-center p-4 rounded-lg mb-6">
-                <svg className="h-8 w-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                </svg>
-              </div>
-              <h4 className="text-xl font-bold text-[var(--primary-green)] mb-3">Unlimited Possibilities</h4>
-              <p className="text-gray-600">
-                Break free from blockchain constraints. Invent entirely new concepts and use cases previously impossible in decentralized applications. The only limit is your imagination.
+              <h4 className="text-xl font-bold text-orange-900 mb-2">Upgradeable TEE Vault</h4>
+              <p className="text-orange-800 text-sm">
+                Build wallet apps where private keys live inside TEE. Update your code anytime — secrets persist across upgrades.
               </p>
             </div>
 
           </div>
+        </div>
+
+        {/* Use Cases */}
+        <div className="mt-24">
+          <h3 className="text-3xl font-bold text-center mb-12 text-transparent bg-clip-text bg-gradient-to-r from-[var(--primary-orange)] to-[var(--primary-green)]">
+            What You Can Build
+          </h3>
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-3 max-w-4xl mx-auto">
+
+            {/* AI Inference */}
+            <div className="feature-card rounded-lg px-6 py-6 transform transition-all">
+              <div className="feature-icon inline-flex items-center justify-center p-3 rounded-lg mb-4">
+                <svg className="h-6 w-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                </svg>
+              </div>
+              <h4 className="text-lg font-bold text-[var(--primary-orange)] mb-2">AI Inference</h4>
+              <p className="text-gray-600 text-sm">
+                Run ML models off-chain with verifiable results. OpenAI, Anthropic, local models — all with proof.
+              </p>
+            </div>
+
+            {/* Secure Randomness */}
+            <div className="feature-card rounded-lg px-6 py-6 transform transition-all">
+              <div className="feature-icon inline-flex items-center justify-center p-3 rounded-lg mb-4">
+                <svg className="h-6 w-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+              </div>
+              <h4 className="text-lg font-bold text-[var(--primary-green)] mb-2">Secure Randomness</h4>
+              <p className="text-gray-600 text-sm">
+                Verifiable random numbers for games, lotteries, NFT minting. TEE-generated, provably fair.
+              </p>
+            </div>
+
+            {/* HTTP APIs */}
+            <div className="feature-card rounded-lg px-6 py-6 transform transition-all">
+              <div className="feature-icon inline-flex items-center justify-center p-3 rounded-lg mb-4">
+                <svg className="h-6 w-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+              <h4 className="text-lg font-bold text-[var(--primary-orange)] mb-2">HTTP APIs & Webhooks</h4>
+              <p className="text-gray-600 text-sm">
+                Connect to any external API. Wrap it in OutLayer and get paid for every call users make to your endpoint.
+              </p>
+            </div>
+
+          </div>
+        </div>
+
+        {/* CTA Buttons */}
+        <div className="mt-16 max-w-md mx-auto sm:flex sm:justify-center gap-4">
+          <Link
+            href="/playground"
+            className="btn-primary w-full sm:w-auto flex items-center justify-center px-8 py-3 text-base font-bold rounded-lg text-black md:py-4 md:text-lg md:px-10 whitespace-nowrap"
+          >
+            Try Playground
+          </Link>
+          <Link
+            href="/executions"
+            className="btn-secondary w-full sm:w-auto flex items-center justify-center px-8 py-3 text-base font-bold rounded-lg md:py-4 md:text-lg md:px-10 mt-3 sm:mt-0 whitespace-nowrap"
+          >
+            View Executions
+          </Link>
         </div>
 
         {/* Only Possible on NEAR banner */}
@@ -317,22 +247,18 @@ export default function Home() {
           <h3 className="text-3xl font-bold mb-12 text-transparent bg-clip-text bg-gradient-to-r from-[var(--primary-orange)] to-[var(--primary-yellow)]">
             Get Started
           </h3>
-          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4 max-w-5xl mx-auto">
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-3 max-w-4xl mx-auto">
+            <Link href="/docs/getting-started" className="feature-card rounded-lg px-6 py-6 hover:scale-105 transition-transform">
+              <h4 className="text-lg font-bold text-[var(--primary-orange)] mb-2">Documentation</h4>
+              <p className="text-sm text-gray-600">Learn the basics</p>
+            </Link>
             <Link href="/playground" className="feature-card rounded-lg px-6 py-6 hover:scale-105 transition-transform">
-              <h4 className="text-lg font-bold text-[var(--primary-orange)] mb-2">Playground</h4>
+              <h4 className="text-lg font-bold text-[var(--primary-green)] mb-2">Playground</h4>
               <p className="text-sm text-gray-600">Test execution</p>
             </Link>
-            <Link href="/secrets" className="feature-card rounded-lg px-6 py-6 hover:scale-105 transition-transform">
-              <h4 className="text-lg font-bold text-[var(--primary-green)] mb-2">Secrets</h4>
-              <p className="text-sm text-gray-600">Manage API keys</p>
-            </Link>
-            <Link href="/executions" className="feature-card rounded-lg px-6 py-6 hover:scale-105 transition-transform">
-              <h4 className="text-lg font-bold text-[var(--primary-orange)] mb-2">Executions</h4>
-              <p className="text-sm text-gray-600">View results</p>
-            </Link>
-            <Link href="/stats" className="feature-card rounded-lg px-6 py-6 hover:scale-105 transition-transform">
-              <h4 className="text-lg font-bold text-[var(--primary-green)] mb-2">Analytics</h4>
-              <p className="text-sm text-gray-600">Platform stats</p>
+            <Link href="/docs/examples" className="feature-card rounded-lg px-6 py-6 hover:scale-105 transition-transform">
+              <h4 className="text-lg font-bold text-[var(--primary-orange)] mb-2">Examples</h4>
+              <p className="text-sm text-gray-600">Working code</p>
             </Link>
           </div>
         </div>

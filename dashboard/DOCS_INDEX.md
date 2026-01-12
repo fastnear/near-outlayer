@@ -10,6 +10,15 @@ This file describes the dashboard documentation structure and source → rendere
 >
 > Users read documentation at https://dashboard.outlayer.io/docs, not this file!
 
+## Core Value Proposition
+
+OutLayer provides **verifiable off-chain computation** with TEE attestation. Two equal integration modes:
+
+1. **HTTPS API** - Direct HTTP calls, pay with USDC, instant response. Ideal for web apps, APIs, monetization.
+2. **Blockchain (NEAR)** - Smart contract integration via yield/resume. Ideal for DeFi, DAOs, on-chain apps.
+
+Both modes provide the same cryptographic proof via Intel TDX attestation.
+
 ## Quick Reference
 
 - **Main Docs**: `/dashboard/app/docs/` - All documentation pages
@@ -25,20 +34,28 @@ dashboard/app/docs/
 ├── page.tsx                      # Main documentation page (overview)
 ├── layout.tsx                    # Sidebar navigation menu
 ├── getting-started/page.tsx      # Getting Started (from sections/GettingStarted.tsx)
-├── architecture/page.tsx         # Architecture overview
-├── contract-integration/page.tsx # Contract integration guide
+├── web2-integration/page.tsx     # Web2 Integration - HTTPS API with TEE attestation
+├── https-api/page.tsx            # ✨ HTTPS API (NEW) - full API reference
+├── payment-keys/page.tsx         # ✨ Payment Keys (NEW) - prepaid USD keys for API access
+├── earnings/page.tsx             # ✨ Earnings (NEW) - developer monetization
+├── near-integration/page.tsx     # NEAR Integration - smart contract integration
 ├── dev-guide/page.tsx            # Developer Guide (from sections/DeveloperGuide.tsx)
-├── wasi/page.tsx                 # Writing WASI Code (comprehensive guide)
+├── wasi/page.tsx                 # Building OutLayer App (comprehensive guide)
 ├── secrets/page.tsx              # Secrets Management
-├── projects/page.tsx             # ✨ Projects & Versions (NEW)
+├── projects/page.tsx             # Projects & Versions
 ├── pricing/page.tsx              # Pricing model
 ├── tee-attestation/page.tsx      # TEE Attestation (from sections/TeeAttestation.tsx)
-├── examples/page.tsx             # ✨ Example Projects (all examples)
+├── examples/page.tsx             # Example Projects (all examples)
 └── sections/
-    ├── index.tsx                 # Export all sections
-    ├── GettingStarted.tsx        # Source for getting-started/page.tsx
-    ├── DeveloperGuide.tsx        # Source for dev-guide/page.tsx
-    └── TeeAttestation.tsx        # Source for tee-attestation/page.tsx
+    ├── index.tsx                 # Re-exports all sections
+    ├── utils.tsx                 # Shared components (AnchorHeading, useHashNavigation)
+    ├── GettingStarted.tsx        # Getting started content
+    ├── DeveloperGuide.tsx        # Developer guide content
+    ├── ContractIntegration.tsx   # Contract integration content
+    ├── Wasi.tsx                  # WASI programming content
+    ├── Secrets.tsx               # Secrets management content
+    ├── Pricing.tsx               # Pricing content
+    └── TeeAttestation.tsx        # TEE attestation content
 ```
 
 ## Example Mapping: Source → Dashboard
@@ -164,14 +181,17 @@ dashboard/app/docs/
 | Dashboard Page | Primary Source | Secondary Sources | Key Topics |
 |----------------|---------------|-------------------|------------|
 | `/docs` | `dashboard/app/docs/page.tsx` | - | Overview, getting started |
-| `/docs/getting-started` | `dashboard/app/docs/sections/GettingStarted.tsx` | - | Quick start guide, first contract |
-| `/docs/architecture` | `dashboard/app/docs/architecture/page.tsx` | - | System design, components |
-| `/docs/contract-integration` | `dashboard/app/docs/contract-integration/page.tsx` | `contract/README.md` | Contract API, integration |
+| `/docs/getting-started` | `dashboard/app/docs/sections/GettingStarted.tsx` | - | **TEE attestation, two integration modes (HTTPS & Blockchain), quick start** |
+| `/docs/web2-integration` | `dashboard/app/docs/web2-integration/page.tsx` | - | HTTPS integration overview, TEE attestation |
+| `/docs/https-api` | `dashboard/app/docs/https-api/page.tsx` | `DESIGN_HTTPS_API.md` | **Full HTTPS API reference, headers, responses** |
+| `/docs/payment-keys` | `dashboard/app/docs/payment-keys/page.tsx` | `DESIGN_HTTPS_API.md` | **Payment Keys: creation, restrictions, balance** |
+| `/docs/earnings` | `dashboard/app/docs/earnings/page.tsx` | `DESIGN_HTTPS_API.md` | **Developer earnings, USD_PAYMENT, monetization** |
+| `/docs/near-integration` | `dashboard/app/docs/near-integration/page.tsx` | `contract/README.md` | NEAR smart contract integration, yield/resume |
 | `/docs/dev-guide` | `dashboard/app/docs/sections/DeveloperGuide.tsx` | - | Development workflow, best practices |
-| `/docs/wasi` | `dashboard/app/docs/sections/index.tsx` (WasiSection) | `wasi-examples/WASI_TUTORIAL.md`, `worker/wit/world.wit` | WASI programming, host functions |
-| `/docs/secrets` | `dashboard/app/docs/sections/index.tsx` (SecretsSection) | `keystore-dao-contract/README.md` | Secrets management, CKD, Keystore DAO |
+| `/docs/wasi` | `dashboard/app/docs/sections/Wasi.tsx` | `wasi-examples/WASI_TUTORIAL.md`, `worker/wit/world.wit` | WASI programming, host functions |
+| `/docs/secrets` | `dashboard/app/docs/sections/Secrets.tsx` | `keystore-dao-contract/README.md` | Secrets management, CKD, Keystore DAO |
 | `/docs/projects` | `dashboard/app/docs/projects/page.tsx` | `contract/src/projects.rs` | Projects, versions, persistent storage, project secrets |
-| `/docs/pricing` | `dashboard/app/docs/sections/index.tsx` (PricingSection) | - | Cost model, resource limits |
+| `/docs/pricing` | `dashboard/app/docs/sections/Pricing.tsx` | - | Cost model, resource limits |
 | `/docs/tee-attestation` | `dashboard/app/docs/sections/TeeAttestation.tsx` | `TEE_ATTESTATION_FLOW.md` | TEE verification, attestation |
 | `/docs/examples` | `dashboard/app/docs/examples/page.tsx` | `wasi-examples/*/README.md` | All example projects |
 
@@ -185,12 +205,24 @@ Sidebar menu in `dashboard/app/docs/layout.tsx` is managed through the `pageStru
 
 ```tsx
 const pageStructure = {
+  '/docs/getting-started': [
+    { id: 'what-is-outlayer', title: 'What is OutLayer?' },
+    { id: 'tee-attestation', title: 'Verifiable Execution (TEE)' },
+    { id: 'two-modes', title: 'Two Ways to Use' },
+    { id: 'blockchain-flow', title: 'Blockchain Flow' },
+    { id: 'https-flow', title: 'HTTPS Flow' },
+    { id: 'why-outlayer', title: 'Why OutLayer' },
+    { id: 'quick-start', title: 'Quick Start' },
+    { id: 'secrets', title: 'Secrets' },
+    { id: 'payment', title: 'Payment & Pricing' },
+    { id: 'persistent-storage', title: 'Persistent Storage' },
+  ],
   '/docs/examples': [
     { id: 'random-ark', title: 'Random Number' },
     { id: 'echo-ark', title: 'Echo' },
     { id: 'ai-ark', title: 'AI Integration' },
     { id: 'weather-ark', title: 'Weather Oracle' },
-    { id: 'botfather-ark', title: 'Bot Father' },  // ← added
+    { id: 'botfather-ark', title: 'Bot Father' },
     { id: 'oracle-ark', title: 'Price Oracle' },
     { id: 'ethereum-api', title: 'Ethereum API' },
     { id: 'intents-ark', title: 'NEAR Intents swap' },
@@ -452,6 +484,61 @@ The `wasm_hash` is stored with each record but NOT included in the unique key co
 - Caching expensive computations
 - Session data storage
 - Private WASM-only state
+
+## HTTPS API & Payment Keys
+
+### Overview
+HTTPS API is one of two equal ways to use OutLayer (alongside Blockchain/NEAR integration). Both provide the same TEE attestation guarantees.
+
+**HTTPS mode is ideal for:**
+- **Monetization** - Developers can charge for API access
+- **Proof to users** - Cryptographic proof of what code ran
+- **Web/Mobile apps** - No blockchain knowledge needed
+- **USD payments** - Via prepaid Payment Keys
+
+### Documentation Pages
+
+| Page | Description |
+|------|-------------|
+| `/docs/web2-integration` | HTTPS integration overview, TEE attestation |
+| `/docs/https-api` | **Full HTTPS API reference** - endpoints, headers, responses, examples |
+| `/docs/payment-keys` | **Payment Keys** - creation, restrictions, balance management |
+| `/docs/earnings` | **Developer earnings** - USD_PAYMENT, monetization strategies |
+
+### Dashboard Pages
+- `/payment-keys` - Create and manage Payment Keys, top up balance
+- `/earnings` - View accumulated earnings, withdraw
+
+### Quick Summary
+
+**How it works:**
+1. Create Payment Key at `/payment-keys` with USD deposit
+2. Call: `POST https://api.outlayer.io/call/{owner}/{project}` with `X-Payment-Key` header
+3. Optionally attach payment to project author via `X-Attached-Deposit` header
+4. WASM reads payment via `USD_PAYMENT` env var
+
+**Key headers:**
+- `X-Payment-Key` (required): `owner:nonce:secret`
+- `X-Compute-Limit` (optional): max compute budget in USD micro-units
+- `X-Attached-Deposit` (optional): payment to project author
+
+**See detailed documentation:**
+- [HTTPS API](/docs/https-api) - Full API reference
+- [Payment Keys](/docs/payment-keys) - Key management
+- [Earnings](/docs/earnings) - Monetization guide
+
+### Implementation Status
+
+**Two Integration Modes (equal priority):**
+- ✅ `/docs/web2-integration` - HTTPS API overview
+- ✅ `/docs/https-api` - Full HTTPS API reference
+- ✅ `/docs/near-integration` - NEAR smart contract integration (yield/resume)
+
+**Payment & Monetization:**
+- ✅ `/docs/payment-keys` - Payment Keys documentation
+- ✅ `/docs/earnings` - Developer earnings documentation
+- ✅ Dashboard `/payment-keys` - UI for key management
+- ✅ Dashboard `/earnings` - UI for earnings
 
 ## Documentation Update Checklist
 
