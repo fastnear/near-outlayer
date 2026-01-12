@@ -781,18 +781,16 @@ export default function AttestationView({
                     <strong>Note:</strong> Each string is encoded as UTF-8 bytes, numbers are little-endian encoded.
                     The Task Hash binds the TDX Quote to this specific execution, preventing attestation forgery.
                   </p>
-                </div>
-              </details>
 
-              {/* Python verification code */}
-              <details className="mt-3 bg-green-100 border border-green-300 rounded p-3">
-                <summary className="cursor-pointer font-semibold text-green-900 text-sm hover:text-green-700">
-                  🐍 Python Code to Verify Task Hash
-                </summary>
-                <div className="mt-3">
-                  <p className="text-green-800 text-xs mb-2">
-                    Copy and run this Python code locally to verify the task hash calculation:
-                  </p>
+                  {/* Python verification code - nested inside Task Hash Calculation Steps */}
+                  <details className="mt-3 bg-green-100 border border-green-300 rounded p-2">
+                    <summary className="cursor-pointer font-semibold text-green-900 text-xs hover:text-green-700">
+                      Python Code to Verify Task Hash
+                    </summary>
+                    <div className="mt-2">
+                      <p className="text-green-800 text-xs mb-2">
+                        Copy and run this Python code locally to verify the task hash calculation:
+                      </p>
                   <div className="relative">
                     <pre className="bg-gray-900 text-green-400 p-3 rounded text-xs overflow-x-auto whitespace-pre">{`import hashlib
 import struct
@@ -898,9 +896,11 @@ print(f"Match: {final_hash == '${quoteValidation.expectedTaskHash}'}")`;
                       }}
                       className="absolute top-2 right-2 px-2 py-1 bg-green-600 hover:bg-green-700 text-white text-xs rounded"
                     >
-                      Copy
-                    </button>
-                  </div>
+                        Copy
+                      </button>
+                    </div>
+                    </div>
+                  </details>
                 </div>
               </details>
             </div>
