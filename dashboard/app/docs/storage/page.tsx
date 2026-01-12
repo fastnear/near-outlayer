@@ -416,7 +416,7 @@ storage::set_worker("balances", balances_json);  // Shared across all users
           </li>
           <li>
             <Link href="/docs/wasi" className="text-[var(--primary-orange)] hover:underline">
-              Writing WASI Code
+              Building OutLayer App
             </Link>
             {' '}- WASI P1 vs P2, building WASM modules
           </li>

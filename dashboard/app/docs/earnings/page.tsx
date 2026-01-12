@@ -472,11 +472,11 @@ if usd_payment < required_payment {
             {' '}- How users fund their API access
           </li>
           <li>
-            <Link href="/docs/integration-guide" className="text-[var(--primary-orange)] hover:underline">Integration Guide</Link>
+            <Link href="/docs/web2-integration" className="text-[var(--primary-orange)] hover:underline">Web2 Integration</Link>
             {' '}- Complete project monetization setup
           </li>
           <li>
-            <Link href="/docs/wasi" className="text-[var(--primary-orange)] hover:underline">Writing WASI Code</Link>
+            <Link href="/docs/wasi" className="text-[var(--primary-orange)] hover:underline">Building OutLayer App</Link>
             {' '}- Environment variables and payment checking
           </li>
         </ul>

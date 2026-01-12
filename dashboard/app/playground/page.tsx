@@ -159,7 +159,7 @@ const DIRECT_PRESETS: DirectPreset[] = [
     args: '',
     responseFormat: 'Text',
     networks: ['testnet', 'mainnet'],
-    docsLink: '/docs/contract-integration#params',
+    docsLink: '/docs/near-integration#request-execution',
     compileOnly: true,
     forceRebuild: true,
     storeOnFastfs: true,

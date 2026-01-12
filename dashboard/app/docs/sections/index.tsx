@@ -7,5 +7,4 @@ export { default as ContractIntegrationSection } from './ContractIntegration';
 export { default as WasiSection } from './Wasi';
 export { default as SecretsSection } from './Secrets';
 export { default as PricingSection } from './Pricing';
-export { default as ArchitectureSection } from './Architecture';
 export { AnchorHeading, useHashNavigation } from './utils';

@@ -652,8 +652,8 @@ weather = call_outlayer("alice.near/weather-api", {"city": "Tokyo"})`}
             {' '}- How project authors earn from X-Attached-Deposit
           </li>
           <li>
-            <Link href="/docs/integration-guide" className="text-[var(--primary-orange)] hover:underline">Integration Guide</Link>
-            {' '}- Complete project setup walkthrough
+            <Link href="/docs/web2-integration" className="text-[var(--primary-orange)] hover:underline">Web2 Integration</Link>
+            {' '}- Complete HTTPS integration guide
           </li>
           <li>
             <Link href="/docs/tee-attestation" className="text-[var(--primary-orange)] hover:underline">TEE Attestation</Link>

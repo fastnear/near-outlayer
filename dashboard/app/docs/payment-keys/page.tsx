@@ -44,7 +44,7 @@ export default function PaymentKeysPage() {
             <strong>Key benefits:</strong>
           </p>
           <ul className="list-disc list-inside text-sm text-blue-800 mt-2 space-y-1">
-            <li>No blockchain transactions required</li>
+            <li>No blockchain transactions per API call (only key setup/withdrawal)</li>
             <li>Sub-second response times</li>
             <li>Easy integration with existing backends</li>
             <li>USD stablecoin payments (USDT/USDC)</li>
@@ -80,8 +80,8 @@ Example: X-Payment-Key: alice.near:0:K7xR2mN9pQs5vW3yZ8bF...`}
               </tr>
               <tr>
                 <td className="px-4 py-3 text-sm font-mono">nonce</td>
-                <td className="px-4 py-3 text-sm text-gray-600">Key number (0, 1, 2...)</td>
-                <td className="px-4 py-3 text-sm font-mono">0</td>
+                <td className="px-4 py-3 text-sm text-gray-600">Key number (1, 2...)</td>
+                <td className="px-4 py-3 text-sm font-mono">1</td>
               </tr>
               <tr>
                 <td className="px-4 py-3 text-sm font-mono">secret</td>
@@ -446,8 +446,8 @@ X-RateLimit-Reset: 1704067260`}
             {' '}- How project authors earn from API calls
           </li>
           <li>
-            <Link href="/docs/integration-guide" className="text-[var(--primary-orange)] hover:underline">Integration Guide</Link>
-            {' '}- Step-by-step project setup
+            <Link href="/docs/web2-integration" className="text-[var(--primary-orange)] hover:underline">Web2 Integration</Link>
+            {' '}- HTTPS API integration guide
           </li>
           <li>
             <Link href="/docs/pricing" className="text-[var(--primary-orange)] hover:underline">Pricing</Link>

@@ -8,7 +8,7 @@ export default function WasiSection() {
 
   return (
     <div className="prose max-w-none">
-      <h2 className="text-3xl font-bold mb-6 text-[var(--primary-orange)]">Writing WASI Code</h2>
+      <h2 className="text-3xl font-bold mb-6 text-[var(--primary-orange)]">Building OutLayer App</h2>
 
       <div className="space-y-6">
         <section id="what-is-wasi">
