@@ -513,14 +513,195 @@ impl StorageClient {
         Ok(())
     }
 
-    /// Set worker-private storage (account_id = "@worker")
-    pub fn set_worker(&self, key: &str, value: &[u8]) -> Result<()> {
-        self.set_for_account(key, value, "@worker")
+    /// Set worker storage (account_id = "@worker")
+    /// is_encrypted: true = encrypt via keystore (default, private to project)
+    ///               false = store plaintext (public, readable by other projects)
+    pub fn set_worker(&self, key: &str, value: &[u8], is_encrypted: bool) -> Result<()> {
+        if is_encrypted {
+            // Encrypted: use keystore
+            self.set_for_account(key, value, "@worker")
+        } else {
+            // Public: store plaintext directly (no keystore)
+            self.set_public(key, value)
+        }
     }
 
-    /// Get worker-private storage (account_id = "@worker")
-    pub fn get_worker(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        self.get_for_account(key, "@worker")
+    /// Set public storage (plaintext, no encryption)
+    fn set_public(&self, key: &str, value: &[u8]) -> Result<()> {
+        let key_hash = self.hash_key(key);
+
+        debug!(
+            "storage_set_public: key_hash={}, value_size={}",
+            key_hash,
+            value.len()
+        );
+
+        // Store plaintext key and value directly (no keystore encryption)
+        let body = serde_json::json!({
+            "project_uuid": &self.config.project_uuid,
+            "wasm_hash": self.config.wasm_hash,
+            "account_id": "@worker",
+            "key_hash": key_hash,
+            "encrypted_key": key.as_bytes(),      // plaintext key
+            "encrypted_value": value,              // plaintext value
+            "is_encrypted": false,
+        });
+
+        let response = self
+            .client
+            .post(format!("{}/storage/set", self.config.coordinator_url))
+            .header("Authorization", format!("Bearer {}", self.config.coordinator_token))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .context("Failed to send storage set request")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().unwrap_or_default();
+            error!("Storage set_public failed: {} - {}", status, error_text);
+            anyhow::bail!("Storage set_public failed: {} - {}", status, error_text);
+        }
+
+        Ok(())
+    }
+
+    /// Get worker storage (account_id = "@worker")
+    /// project: None = read from current project (private or public)
+    ///          Some("owner.near/project-id") = read public data from another project
+    pub fn get_worker(&self, key: &str, project: Option<&str>) -> Result<Option<Vec<u8>>> {
+        match project {
+            None => {
+                // Read from own project - may be encrypted or public
+                self.get_worker_own(key)
+            }
+            Some(project_path) => {
+                // Read from another project - only public data allowed
+                self.get_worker_public(key, project_path)
+            }
+        }
+    }
+
+    /// Get worker storage from own project (handles both encrypted and public)
+    fn get_worker_own(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        let key_hash = self.hash_key(key);
+
+        debug!("storage_get_worker_own: key_hash={}", key_hash);
+
+        let body = serde_json::json!({
+            "project_uuid": &self.config.project_uuid,
+            "account_id": "@worker",
+            "key_hash": key_hash,
+        });
+
+        let response = self
+            .client
+            .post(format!("{}/storage/get", self.config.coordinator_url))
+            .header("Authorization", format!("Bearer {}", self.config.coordinator_token))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .context("Failed to send storage get request")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().unwrap_or_default();
+            error!("Storage get failed: {} - {}", status, error_text);
+            anyhow::bail!("Storage get failed: {} - {}", status, error_text);
+        }
+
+        #[derive(Deserialize)]
+        struct GetResponse {
+            exists: bool,
+            encrypted_key: Option<Vec<u8>>,
+            encrypted_value: Option<Vec<u8>>,
+            #[serde(default = "default_true")]
+            is_encrypted: bool,
+        }
+
+        fn default_true() -> bool { true }
+
+        let resp: GetResponse = response.json().context("Failed to parse storage get response")?;
+
+        if !resp.exists {
+            return Ok(None);
+        }
+
+        match (resp.encrypted_key, resp.encrypted_value) {
+            (Some(enc_key), Some(enc_value)) => {
+                if resp.is_encrypted {
+                    // Encrypted: decrypt via keystore
+                    let decrypted = self.decrypt_via_keystore(&enc_key, &enc_value, "@worker")?;
+                    Ok(Some(decrypted.value))
+                } else {
+                    // Public: value is plaintext
+                    Ok(Some(enc_value))
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Get public worker storage from another project
+    fn get_worker_public(&self, key: &str, project_path: &str) -> Result<Option<Vec<u8>>> {
+        // Parse project_path: "owner.near/project-id" -> lookup project_uuid
+        let parts: Vec<&str> = project_path.splitn(2, '/').collect();
+        if parts.len() != 2 {
+            anyhow::bail!("Invalid project path format. Expected 'owner.near/project-id', got '{}'", project_path);
+        }
+        let owner = parts[0];
+        let project_id = parts[1];
+
+        let key_hash = self.hash_key(key);
+
+        debug!(
+            "storage_get_worker_public: owner={}, project_id={}, key_hash={}",
+            owner, project_id, key_hash
+        );
+
+        // Request public storage from coordinator
+        // Coordinator will check is_encrypted=false before returning
+        let body = serde_json::json!({
+            "owner": owner,
+            "project_id": project_id,
+            "key_hash": key_hash,
+        });
+
+        let response = self
+            .client
+            .post(format!("{}/storage/get-public", self.config.coordinator_url))
+            .header("Authorization", format!("Bearer {}", self.config.coordinator_token))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .context("Failed to send storage get-public request")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            if status == reqwest::StatusCode::NOT_FOUND {
+                return Ok(None);
+            }
+            if status == reqwest::StatusCode::FORBIDDEN {
+                anyhow::bail!("Storage key '{}' in project '{}' is not public", key, project_path);
+            }
+            let error_text = response.text().unwrap_or_default();
+            error!("Storage get-public failed: {} - {}", status, error_text);
+            anyhow::bail!("Storage get-public failed: {} - {}", status, error_text);
+        }
+
+        #[derive(Deserialize)]
+        struct GetPublicResponse {
+            exists: bool,
+            value: Option<Vec<u8>>,
+        }
+
+        let resp: GetPublicResponse = response.json().context("Failed to parse storage get-public response")?;
+
+        if !resp.exists {
+            return Ok(None);
+        }
+
+        Ok(resp.value)
     }
 
     // ==================== Conditional Write Operations ====================

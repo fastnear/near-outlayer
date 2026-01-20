@@ -71,3 +71,17 @@ cd keystore-worker && cargo run          # Run keystore
 - [wasi-examples/WASI_TUTORIAL.md](wasi-examples/WASI_TUTORIAL.md) - WASI guide
 - [contract/README.md](contract/README.md) - Contract API
 - [worker/README.md](worker/README.md) - Worker config
+
+## Key Database Tables (Coordinator)
+| Table | Description |
+|-------|-------------|
+| `execution_requests` | Stores blockchain execution requests with `attached_usd`, `project_id` |
+| `jobs` | Task queue for workers |
+| `earnings_history` | Unified earnings log for blockchain + HTTPS calls |
+| `project_owner_earnings` | HTTPS earnings balance per project owner |
+| `wasm_cache` | Compiled WASM binaries metadata |
+
+## Developer Payments Flow
+1. **Blockchain**: User deposits stablecoins → calls `request_execution(attached_usd)` → project owner earns
+2. **HTTPS**: User creates payment key → calls API with `X-Attached-Deposit` → project owner earns
+3. **Dashboard**: `/earnings` page shows balances and history from both sources

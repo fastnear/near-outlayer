@@ -277,6 +277,31 @@ Base Fee + (CPU × CPU_Rate) + (Memory × Memory_Rate) + (Time × Time_Rate)
 - Failed executions still cost resources
 - Clients incentivized to test code before production
 
+### 5.1 Developer Payments (Stablecoin)
+
+Project developers can receive payments from users who call their projects.
+
+**Flow for Blockchain Calls:**
+1. User deposits stablecoins via `ft_transfer_call` with `msg: {"action": "deposit_balance"}`
+2. User calls `request_execution` with `attached_usd: U128(amount)` parameter
+3. Amount deducted from user's stablecoin balance in contract
+4. On successful execution, amount credited to project owner's `developer_earnings`
+5. WASM can call `refund_usd(amount)` to return partial payment to caller
+6. Project owner withdraws via `withdraw_developer_earnings()`
+
+**Flow for HTTPS API Calls:**
+1. User creates payment key with deposited balance
+2. User calls HTTPS API with `X-Attached-Deposit` header
+3. On successful execution, amount credited to project owner in coordinator DB
+4. Earnings tracked in `project_owner_earnings` and `earnings_history` tables
+
+**Earnings History:**
+- Unified `earnings_history` table tracks both blockchain and HTTPS earnings
+- Fields: `project_owner`, `project_id`, `attached_usd`, `refund_usd`, `amount`, `source`
+- Blockchain-specific: `tx_hash`, `caller`, `request_id`
+- HTTPS-specific: `call_id`, `payment_key_owner`, `payment_key_nonce`
+- Dashboard shows earnings history at `/earnings` page
+
 ### 6. Failure Handling
 
 **Timeout Mechanism:**
@@ -685,7 +710,7 @@ fn validate_code_source(source: &CodeSource) -> Result<()> {
 
 ---
 
-## Implementation Status (Updated: 2025-01-12)
+## Implementation Status (Updated: 2026-01-13)
 
 ### Completed Components
 
@@ -695,7 +720,7 @@ fn validate_code_source(source: &CodeSource) -> Result<()> {
 | **Coordinator API** | ✅ 100% | PostgreSQL + Redis, task queue, WASM cache |
 | **Worker** | ✅ 100% | wasmi execution, fuel metering, WASI env vars |
 | **Keystore Worker** | ✅ 100% | TEE attestation, access control validation |
-| **Dashboard** | ✅ 100% | Next.js, secrets management, executions view |
+| **Dashboard** | ✅ 100% | Next.js, secrets management, executions view, earnings page |
 | **Register Contract** | ✅ 100% | Intel TDX verification, worker whitelist |
 
 ### Smart Contract Features
@@ -705,6 +730,10 @@ fn validate_code_source(source: &CodeSource) -> Result<()> {
 - ✅ Dynamic pricing: `base_fee + (instructions × rate) + (time × rate)`
 - ✅ Hard caps: 100B instructions, 60s execution time
 - ✅ User secrets index for O(1) lookups
+- ✅ Developer payments: `attached_usd` parameter for stablecoin payments to project owners
+- ✅ User stablecoin balances: deposit via `ft_transfer_call` with `action=deposit_balance`
+- ✅ Developer earnings withdrawal: `withdraw_developer_earnings()`
+- ✅ Refund support: WASM can call `refund_usd()` to return partial payment to caller
 
 ### Worker Features
 - ✅ wasmi with fuel metering (real instruction counting)
@@ -712,12 +741,22 @@ fn validate_code_source(source: &CodeSource) -> Result<()> {
 - ✅ Docker sandboxed compilation (no network, resource limits)
 - ✅ GitHub branch resolution via coordinator API with Redis caching
 - ✅ TEE attestation (Intel TDX via Phala dstack)
+- ✅ Payment host functions: `refund_usd()` for WASM to return partial payment
+- ✅ `ATTACHED_USD` environment variable available to WASM
 
 ### Keystore Features
 - ✅ Access control: AllowAll, Whitelist, AccountPattern, NEAR/FT/NFT balance
 - ✅ Logic conditions (AND/OR/NOT)
 - ✅ Reserved keywords protection (NEAR_SENDER_ID, etc.)
 - ✅ Per-repo encryption keys (HMAC-SHA256 derived)
+
+### Coordinator Features
+- ✅ PostgreSQL + Redis task queue
+- ✅ WASM cache with LRU eviction
+- ✅ HTTPS API calls with payment keys
+- ✅ Earnings history tracking (`earnings_history` table)
+- ✅ Project owner earnings for HTTPS calls (`project_owner_earnings` table)
+- ✅ Public API: `/public/project-earnings/:owner` and `/public/project-earnings/:owner/history`
 
 ### Infrastructure
 - ✅ PostgreSQL + Redis via docker-compose

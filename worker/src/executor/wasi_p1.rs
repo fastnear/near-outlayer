@@ -33,7 +33,8 @@ use crate::outlayer_storage::client::StorageConfig;
 /// * `storage_config` - Optional storage config (only used for metadata validation)
 ///
 /// # Returns
-/// * `Ok((output, fuel_consumed))` - Execution succeeded
+/// * `Ok((output, fuel_consumed, refund_usd))` - Execution succeeded
+///   - `refund_usd` is always None for P1 (no payment host function support)
 /// * `Err(_)` - Not a valid P1 module or execution failed
 pub async fn execute(
     wasm_bytes: &[u8],
@@ -42,7 +43,7 @@ pub async fn execute(
     env_vars: Option<HashMap<String, String>>,
     print_stderr: bool,
     storage_config: Option<&StorageConfig>,
-) -> Result<(Vec<u8>, u64)> {
+) -> Result<(Vec<u8>, u64, Option<u64>)> {
     // Configure wasmtime engine for WASI Preview 1
     let mut config = Config::new();
     config.async_support(true);
@@ -163,5 +164,6 @@ pub async fn execute(
 
     let output = stdout_pipe.contents().to_vec();
 
-    Ok((output, fuel_consumed))
+    // P1 does not support payment host functions, so refund_usd is always None
+    Ok((output, fuel_consumed, None))
 }

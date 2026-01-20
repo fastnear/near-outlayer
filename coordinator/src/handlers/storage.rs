@@ -15,9 +15,13 @@ pub struct StorageSetRequest {
     pub wasm_hash: String,             // Which version is writing
     pub account_id: String,            // NEAR account or "@worker"
     pub key_hash: String,              // SHA256 of plaintext key
-    pub encrypted_key: Vec<u8>,        // Encrypted key
-    pub encrypted_value: Vec<u8>,      // Encrypted value
+    pub encrypted_key: Vec<u8>,        // Encrypted key (or plaintext if is_encrypted=false)
+    pub encrypted_value: Vec<u8>,      // Encrypted value (or plaintext if is_encrypted=false)
+    #[serde(default = "default_true")]
+    pub is_encrypted: bool,            // false = public storage, readable by other projects
 }
+
+fn default_true() -> bool { true }
 
 /// Request to get a storage key
 #[derive(Debug, Deserialize)]
@@ -74,6 +78,21 @@ pub struct StorageClearProjectRequest {
     pub project_uuid: String,
 }
 
+/// Request to get public storage from another project
+#[derive(Debug, Deserialize)]
+pub struct StorageGetPublicRequest {
+    pub owner: String,              // Project owner (NEAR account)
+    pub project_id: String,         // Project ID
+    pub key_hash: String,           // SHA256 of plaintext key
+}
+
+/// Response for public storage get
+#[derive(Debug, Serialize)]
+pub struct StorageGetPublicResponse {
+    pub exists: bool,
+    pub value: Option<Vec<u8>>,     // Plaintext value (only for is_encrypted=false)
+}
+
 /// Response for storage get
 #[derive(Debug, Serialize)]
 pub struct StorageGetResponse {
@@ -81,7 +100,10 @@ pub struct StorageGetResponse {
     pub encrypted_key: Option<Vec<u8>>,
     pub encrypted_value: Option<Vec<u8>>,
     pub wasm_hash: Option<String>,  // Which version wrote this
+    #[serde(default)]
+    pub is_encrypted: bool,         // false = plaintext public storage
 }
+
 
 /// Response for storage list
 #[derive(Debug, Serialize)]
@@ -158,8 +180,8 @@ pub async fn storage_set(
     Json(req): Json<StorageSetRequest>,
 ) -> Result<StatusCode, StatusCode> {
     debug!(
-        "storage_set: project_uuid={:?}, account={}, key_hash={}",
-        req.project_uuid, req.account_id, req.key_hash
+        "storage_set: project_uuid={:?}, account={}, key_hash={}, is_encrypted={}",
+        req.project_uuid, req.account_id, req.key_hash, req.is_encrypted
     );
 
     let data_size = (req.encrypted_key.len() + req.encrypted_value.len()) as i64;
@@ -167,12 +189,13 @@ pub async fn storage_set(
     // Insert or update storage data
     let result = sqlx::query(
         r#"
-        INSERT INTO storage_data (project_uuid, wasm_hash, account_id, key_hash, encrypted_key, encrypted_value)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        INSERT INTO storage_data (project_uuid, wasm_hash, account_id, key_hash, encrypted_key, encrypted_value, is_encrypted)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         ON CONFLICT (project_uuid, account_id, key_hash)
         DO UPDATE SET
             encrypted_value = $6,
             wasm_hash = $2,
+            is_encrypted = $7,
             updated_at = NOW()
         "#,
     )
@@ -182,6 +205,7 @@ pub async fn storage_set(
     .bind(&req.key_hash)
     .bind(&req.encrypted_key)
     .bind(&req.encrypted_value)
+    .bind(req.is_encrypted)
     .execute(&state.db)
     .await;
 
@@ -194,8 +218,8 @@ pub async fn storage_set(
     update_project_usage(&state.db, &req.project_uuid, &req.account_id).await;
 
     info!(
-        "storage_set success: project_uuid={:?}, account={}, key_hash={}, size={}",
-        req.project_uuid, req.account_id, req.key_hash, data_size
+        "storage_set success: project_uuid={:?}, account={}, key_hash={}, size={}, is_encrypted={}",
+        req.project_uuid, req.account_id, req.key_hash, data_size, req.is_encrypted
     );
     Ok(StatusCode::OK)
 }
@@ -353,9 +377,9 @@ pub async fn storage_get(
         req.project_uuid, req.account_id, req.key_hash
     );
 
-    let result = sqlx::query_as::<_, (Vec<u8>, Vec<u8>, String)>(
+    let result = sqlx::query_as::<_, (Vec<u8>, Vec<u8>, String, bool)>(
         r#"
-        SELECT encrypted_key, encrypted_value, wasm_hash
+        SELECT encrypted_key, encrypted_value, wasm_hash, is_encrypted
         FROM storage_data
         WHERE project_uuid = $1
           AND account_id = $2
@@ -369,13 +393,14 @@ pub async fn storage_get(
     .await;
 
     match result {
-        Ok(Some((encrypted_key, encrypted_value, wasm_hash))) => {
-            debug!("storage_get found: key_hash={}", req.key_hash);
+        Ok(Some((encrypted_key, encrypted_value, wasm_hash, is_encrypted))) => {
+            debug!("storage_get found: key_hash={}, is_encrypted={}", req.key_hash, is_encrypted);
             Json(StorageGetResponse {
                 exists: true,
                 encrypted_key: Some(encrypted_key),
                 encrypted_value: Some(encrypted_value),
                 wasm_hash: Some(wasm_hash),
+                is_encrypted,
             })
         }
         Ok(None) => {
@@ -385,6 +410,7 @@ pub async fn storage_get(
                 encrypted_key: None,
                 encrypted_value: None,
                 wasm_hash: None,
+                is_encrypted: true,
             })
         }
         Err(e) => {
@@ -394,6 +420,7 @@ pub async fn storage_get(
                 encrypted_key: None,
                 encrypted_value: None,
                 wasm_hash: None,
+                is_encrypted: true,
             })
         }
     }
@@ -409,9 +436,9 @@ pub async fn storage_get_by_version(
         req.wasm_hash, req.account_id, req.key_hash
     );
 
-    let result = sqlx::query_as::<_, (Vec<u8>, Vec<u8>, String)>(
+    let result = sqlx::query_as::<_, (Vec<u8>, Vec<u8>, String, bool)>(
         r#"
-        SELECT encrypted_key, encrypted_value, wasm_hash
+        SELECT encrypted_key, encrypted_value, wasm_hash, is_encrypted
         FROM storage_data
         WHERE wasm_hash = $1
           AND account_id = $2
@@ -425,12 +452,13 @@ pub async fn storage_get_by_version(
     .await;
 
     match result {
-        Ok(Some((encrypted_key, encrypted_value, wasm_hash))) => {
+        Ok(Some((encrypted_key, encrypted_value, wasm_hash, is_encrypted))) => {
             Json(StorageGetResponse {
                 exists: true,
                 encrypted_key: Some(encrypted_key),
                 encrypted_value: Some(encrypted_value),
                 wasm_hash: Some(wasm_hash),
+                is_encrypted,
             })
         }
         Ok(None) => Json(StorageGetResponse {
@@ -438,6 +466,7 @@ pub async fn storage_get_by_version(
             encrypted_key: None,
             encrypted_value: None,
             wasm_hash: None,
+            is_encrypted: true,
         }),
         Err(e) => {
             error!("storage_get_by_version error: {}", e);
@@ -446,6 +475,7 @@ pub async fn storage_get_by_version(
                 encrypted_key: None,
                 encrypted_value: None,
                 wasm_hash: None,
+                is_encrypted: true,
             })
         }
     }
@@ -762,6 +792,96 @@ pub async fn storage_clear_project(
         }
         (Err(e), _) | (_, Err(e)) => {
             error!("storage_clear_project error: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+/// Get public storage from another project (cross-project read)
+/// Only returns data if is_encrypted=false
+pub async fn storage_get_public(
+    State(state): State<AppState>,
+    Json(req): Json<StorageGetPublicRequest>,
+) -> Result<Json<StorageGetPublicResponse>, StatusCode> {
+    debug!(
+        "storage_get_public: owner={}, project_id={}, key_hash={}",
+        req.owner, req.project_id, req.key_hash
+    );
+
+    // First, look up project_uuid from owner and project_id
+    let project_result = sqlx::query_as::<_, (String,)>(
+        r#"
+        SELECT uuid FROM projects
+        WHERE owner = $1 AND project_id = $2
+        "#,
+    )
+    .bind(&req.owner)
+    .bind(&req.project_id)
+    .fetch_optional(&state.db)
+    .await;
+
+    let project_uuid = match project_result {
+        Ok(Some((uuid,))) => uuid,
+        Ok(None) => {
+            debug!("storage_get_public: project not found owner={} project_id={}", req.owner, req.project_id);
+            return Ok(Json(StorageGetPublicResponse {
+                exists: false,
+                value: None,
+            }));
+        }
+        Err(e) => {
+            error!("storage_get_public: failed to lookup project: {}", e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    // Now get the storage value, but only if it's public (is_encrypted=false)
+    let result = sqlx::query_as::<_, (Vec<u8>, bool)>(
+        r#"
+        SELECT encrypted_value, is_encrypted
+        FROM storage_data
+        WHERE project_uuid = $1
+          AND account_id = '@worker'
+          AND key_hash = $2
+        "#,
+    )
+    .bind(&project_uuid)
+    .bind(&req.key_hash)
+    .fetch_optional(&state.db)
+    .await;
+
+    match result {
+        Ok(Some((value, is_encrypted))) => {
+            if is_encrypted {
+                // Data exists but is encrypted - not accessible cross-project
+                debug!(
+                    "storage_get_public: key exists but is encrypted, denying access: owner={} project_id={} key_hash={}",
+                    req.owner, req.project_id, req.key_hash
+                );
+                return Err(StatusCode::FORBIDDEN);
+            }
+            // Public data - return plaintext value
+            debug!(
+                "storage_get_public: found public data: owner={} project_id={} key_hash={}",
+                req.owner, req.project_id, req.key_hash
+            );
+            Ok(Json(StorageGetPublicResponse {
+                exists: true,
+                value: Some(value),
+            }))
+        }
+        Ok(None) => {
+            debug!(
+                "storage_get_public: key not found: owner={} project_id={} key_hash={}",
+                req.owner, req.project_id, req.key_hash
+            );
+            Ok(Json(StorageGetPublicResponse {
+                exists: false,
+                value: None,
+            }))
+        }
+        Err(e) => {
+            error!("storage_get_public error: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }

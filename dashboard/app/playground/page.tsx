@@ -272,7 +272,7 @@ const PROXY_PRESETS: ProxyPreset[] = [
 const PRESETS: Preset[] = [...DIRECT_PRESETS, ...PROXY_PRESETS];
 
 function PlaygroundContent() {
-  const { accountId, isConnected, connect, signAndSendTransaction, network, contractId, shouldReopenModal, clearReopenModal } = useNearWallet();
+  const { accountId, isConnected, connect, signAndSendTransaction, network, contractId, viewMethod, stablecoin, shouldReopenModal, clearReopenModal } = useNearWallet();
   const searchParams = useSearchParams();
 
   // Filter presets by current network
@@ -312,6 +312,9 @@ function PlaygroundContent() {
   const [projectId, setProjectId] = useState('');
   // Version hash for specific version execution
   const [versionKey, setVersionKey] = useState('');
+  // Attached USDC for developer payments
+  const [attachedUsdc, setAttachedUsdc] = useState('');
+  const [usdcBalance, setUsdcBalance] = useState<string>('0');
 
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ transaction: Record<string, unknown>; executionOutput: string | null; transactionHash: string } | null>(null);
@@ -326,6 +329,27 @@ function PlaygroundContent() {
       clearReopenModal();
     }
   }, [shouldReopenModal, isConnected, clearReopenModal]);
+
+  // Load stablecoin balance for attached_usd feature
+  useEffect(() => {
+    if (!isConnected || !accountId) {
+      setUsdcBalance('0');
+      return;
+    }
+    const loadBalance = async () => {
+      try {
+        const balance = await viewMethod({
+          contractId,
+          method: 'get_user_stablecoin_balance',
+          args: { account_id: accountId },
+        });
+        setUsdcBalance(typeof balance === 'string' ? balance : (balance as { toString: () => string })?.toString() || '0');
+      } catch {
+        setUsdcBalance('0');
+      }
+    };
+    loadBalance();
+  }, [isConnected, accountId, contractId, viewMethod]);
 
   // Load preset from URL on mount and handle hash
   useEffect(() => {
@@ -637,6 +661,11 @@ function PlaygroundContent() {
           };
         }
 
+        // Calculate attached_usd in minimal units (6 decimals)
+        const attachedUsdMinimal = attachedUsdc && parseFloat(attachedUsdc) > 0
+          ? BigInt(Math.floor(parseFloat(attachedUsdc) * 10 ** stablecoin.decimals))
+          : null;
+
         const transactionArgs: Record<string, unknown> = {
           source: projectSource,
           resource_limits: {
@@ -649,6 +678,12 @@ function PlaygroundContent() {
         };
         if (secretsRef) {
           transactionArgs.secrets_ref = secretsRef;
+        }
+        // Add attached_usd for developer payment (only for Project source) - inside params!
+        if (attachedUsdMinimal) {
+          transactionArgs.params = {
+            attached_usd: attachedUsdMinimal.toString(),
+          };
         }
 
         action = actionCreators.functionCall(
@@ -997,6 +1032,34 @@ function PlaygroundContent() {
                       />
                       <p className="mt-1 text-xs text-gray-500">
                         For WasmUrl: use hash. For GitHub: use &quot;repo@commit&quot;. Leave empty for active version.
+                      </p>
+                    </div>
+                    {/* Attached USDC for developer payment */}
+                    <div className="mb-6">
+                      <label htmlFor="attachedUsdc" className="block text-sm font-medium text-gray-700">
+                        Attached {stablecoin.symbol} (Optional)
+                      </label>
+                      <div className="mt-1 flex gap-2 items-center">
+                        <div className="relative flex-1">
+                          <span className="absolute left-3 top-2 text-gray-500">$</span>
+                          <input
+                            type="number"
+                            id="attachedUsdc"
+                            min="0"
+                            step="0.01"
+                            value={attachedUsdc}
+                            onChange={(e) => setAttachedUsdc(e.target.value)}
+                            placeholder="0.00"
+                            className="block w-full pl-7 pr-3 py-2 rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm"
+                          />
+                        </div>
+                        <span className="text-sm text-gray-500">
+                          Balance: ${(parseInt(usdcBalance || '0') / 10 ** stablecoin.decimals).toFixed(2)}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-gray-500">
+                        Payment to project developer. Deposit {stablecoin.symbol} at{' '}
+                        <a href="/workspace" className="text-blue-600 hover:underline">My Workspace</a> first.
                       </p>
                     </div>
                   </>

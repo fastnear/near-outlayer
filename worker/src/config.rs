@@ -90,6 +90,12 @@ pub struct Config {
     // RPC Proxy configuration (for WASM host functions)
     #[allow(dead_code)]
     pub rpc_proxy: RpcProxyConfig,
+
+    // WASM cache configuration
+    /// Maximum size of local WASM cache in MB (0 = disabled)
+    pub wasm_cache_max_size_mb: u64,
+    /// Directory for cached WASM files
+    pub wasm_cache_dir: String,
 }
 
 /// RPC Proxy configuration for WASM host functions
@@ -435,6 +441,24 @@ impl Config {
             allow_transactions: rpc_proxy_allow_transactions,
         };
 
+        // WASM cache configuration
+        let wasm_cache_max_size_mb = env::var("WASM_CACHE_MAX_SIZE_MB")
+            .unwrap_or_else(|_| "100".to_string()) // Default: 100MB
+            .parse::<u64>()
+            .context("WASM_CACHE_MAX_SIZE_MB must be a valid number")?;
+
+        // WASM cache directory - MUST be outside /tmp because WASI P2 has access to /tmp
+        // Default to ~/.cache/outlayer/wasm or /var/cache/outlayer/wasm
+        let wasm_cache_dir = env::var("WASM_CACHE_DIR").unwrap_or_else(|_| {
+            // Try user cache dir first
+            if let Some(cache_dir) = dirs::cache_dir() {
+                cache_dir.join("outlayer").join("wasm").to_string_lossy().to_string()
+            } else {
+                // Fallback to /var/cache (requires proper permissions)
+                "/var/cache/outlayer/wasm".to_string()
+            }
+        });
+
         Ok(Self {
             api_base_url,
             api_auth_token,
@@ -473,6 +497,8 @@ impl Config {
             fastfs_receiver,
             fastfs_sender_signer,
             rpc_proxy,
+            wasm_cache_max_size_mb,
+            wasm_cache_dir,
         })
     }
 
@@ -621,6 +647,8 @@ mod tests {
                 max_calls_per_execution: 100,
                 allow_transactions: true,
             },
+            wasm_cache_max_size_mb: 100,
+            wasm_cache_dir: "/tmp/wasm_cache_test".to_string(),
         }
     }
 }

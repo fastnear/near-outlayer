@@ -212,7 +212,23 @@ pub fn list_keys(prefix: &str) -> Result<Vec<String>> {
 /// storage::set_worker("last_run_timestamp", &timestamp.to_le_bytes())?;
 /// ```
 pub fn set_worker(key: &str, value: &[u8]) -> Result<()> {
-    let error = raw::set_worker(key, value);
+    set_worker_with_options(key, value, None)
+}
+
+/// Store worker data with encryption control
+///
+/// # Arguments
+/// * `key` - The key to store the value under
+/// * `value` - The value to store (as bytes)
+/// * `is_encrypted` - None or Some(true) = encrypted (default), Some(false) = plaintext (readable by other projects)
+///
+/// # Example
+/// ```rust,ignore
+/// // Store public data that other projects can read (e.g., oracle price feed)
+/// storage::set_worker_with_options("price:ETH", price_bytes, Some(false))?;
+/// ```
+pub fn set_worker_with_options(key: &str, value: &[u8], is_encrypted: Option<bool>) -> Result<()> {
+    let error = raw::set_worker(key, value, is_encrypted);
     if error.is_empty() {
         Ok(())
     } else {
@@ -238,7 +254,30 @@ pub fn set_worker(key: &str, value: &[u8]) -> Result<()> {
 /// }
 /// ```
 pub fn get_worker(key: &str) -> Result<Option<Vec<u8>>> {
-    let (data, error) = raw::get_worker(key);
+    get_worker_from_project(key, None)
+}
+
+/// Get worker data from another project (public data only)
+///
+/// # Arguments
+/// * `key` - The key to retrieve
+/// * `project` - None = current project, Some("owner.near/project-id") = read from another project
+///
+/// # Returns
+/// * `Ok(Some(bytes))` - Value found
+/// * `Ok(None)` - Key doesn't exist or is encrypted (for cross-project reads)
+/// * `Err(StorageError)` - Storage operation failed
+///
+/// # Example
+/// ```rust,ignore
+/// // Read public oracle price from another project
+/// if let Some(price_data) = storage::get_worker_from_project("price:ETH", Some("oracle.near/price-feed"))? {
+///     let price = f64::from_le_bytes(price_data.try_into()?);
+///     println!("ETH price: ${}", price);
+/// }
+/// ```
+pub fn get_worker_from_project(key: &str, project: Option<&str>) -> Result<Option<Vec<u8>>> {
+    let (data, error) = raw::get_worker(key, project);
     if !error.is_empty() {
         return Err(StorageError(error));
     }

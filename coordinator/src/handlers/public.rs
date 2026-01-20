@@ -605,15 +605,29 @@ pub async fn get_project_owner_earnings(
     }
 }
 
-/// Single earning record from HTTPS API calls
+/// Single earning record from unified earnings_history table
 #[derive(Debug, Serialize)]
 pub struct EarningRecord {
     pub id: i64,
-    pub call_id: String,
     pub project_id: String,
-    pub payer_owner: String,       // Payment key owner who paid
-    pub payer_nonce: i32,
-    pub attached_deposit: String,  // Amount earned from this call (USD minimal units)
+    pub attached_usd: String,     // Amount user attached (stablecoin minimal units)
+    pub refund_usd: String,       // Amount refunded to user
+    pub amount: String,            // Net amount earned (attached - refund)
+    pub source: String,            // 'blockchain' or 'https'
+    // Blockchain-specific fields (null for HTTPS)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tx_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caller: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<i64>,
+    // HTTPS-specific fields (null for blockchain)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payment_key_owner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payment_key_nonce: Option<i32>,
     pub created_at: i64,
 }
 
@@ -629,9 +643,11 @@ pub struct EarningsHistoryResponse {
 pub struct EarningsHistoryQuery {
     pub limit: Option<i64>,
     pub offset: Option<i64>,
+    /// Filter by source: 'blockchain', 'https', or None for all
+    pub source: Option<String>,
 }
 
-/// Get earnings history for a project owner (from payment_key_usage where attached_deposit > 0)
+/// Get earnings history for a project owner from unified earnings_history table
 pub async fn get_project_owner_earnings_history(
     State(state): State<AppState>,
     Path(project_owner): Path<String>,
@@ -640,50 +656,79 @@ pub async fn get_project_owner_earnings_history(
     let limit = params.limit.unwrap_or(50).min(100);
     let offset = params.offset.unwrap_or(0);
 
+    use sqlx::Row;
+
     // Get total count
-    // project_id format: "owner.near/project-name", extract owner with split_part
-    let count_row = sqlx::query(
-        r#"
-        SELECT COUNT(*)::BIGINT as count
-        FROM payment_key_usage u
-        JOIN https_calls c ON u.call_id = c.call_id
-        WHERE split_part(c.project_id, '/', 1) = $1 AND u.attached_deposit > 0
-        "#
-    )
-    .bind(&project_owner)
-    .fetch_one(&state.db)
-    .await
+    let total_count: i64 = if let Some(ref source) = params.source {
+        sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)::BIGINT
+            FROM earnings_history
+            WHERE project_owner = $1 AND source = $2
+            "#
+        )
+        .bind(&project_owner)
+        .bind(source)
+        .fetch_one(&state.db)
+        .await
+    } else {
+        sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)::BIGINT
+            FROM earnings_history
+            WHERE project_owner = $1
+            "#
+        )
+        .bind(&project_owner)
+        .fetch_one(&state.db)
+        .await
+    }
     .map_err(|e| {
         error!("Failed to count earnings: {}", e);
         (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e))
     })?;
 
-    use sqlx::Row;
-    let total_count: i64 = count_row.get("count");
-
     // Get earnings records
-    let rows = sqlx::query(
-        r#"
-        SELECT
-            u.id,
-            u.call_id::TEXT as call_id,
-            u.project_id,
-            u.owner as payer_owner,
-            u.nonce as payer_nonce,
-            u.attached_deposit,
-            u.created_at
-        FROM payment_key_usage u
-        JOIN https_calls c ON u.call_id = c.call_id
-        WHERE split_part(c.project_id, '/', 1) = $1 AND u.attached_deposit > 0
-        ORDER BY u.created_at DESC
-        LIMIT $2 OFFSET $3
-        "#
-    )
-    .bind(&project_owner)
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(&state.db)
-    .await
+    let rows = if let Some(ref source) = params.source {
+        sqlx::query(
+            r#"
+            SELECT
+                id, project_id, attached_usd, refund_usd, amount, source,
+                tx_hash, caller, request_id,
+                call_id::TEXT, payment_key_owner, payment_key_nonce,
+                created_at
+            FROM earnings_history
+            WHERE project_owner = $1 AND source = $2
+            ORDER BY created_at DESC
+            LIMIT $3 OFFSET $4
+            "#
+        )
+        .bind(&project_owner)
+        .bind(source)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.db)
+        .await
+    } else {
+        sqlx::query(
+            r#"
+            SELECT
+                id, project_id, attached_usd, refund_usd, amount, source,
+                tx_hash, caller, request_id,
+                call_id::TEXT, payment_key_owner, payment_key_nonce,
+                created_at
+            FROM earnings_history
+            WHERE project_owner = $1
+            ORDER BY created_at DESC
+            LIMIT $2 OFFSET $3
+            "#
+        )
+        .bind(&project_owner)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.db)
+        .await
+    }
     .map_err(|e| {
         error!("Failed to query earnings history: {}", e);
         (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e))
@@ -692,15 +737,23 @@ pub async fn get_project_owner_earnings_history(
     let earnings: Vec<EarningRecord> = rows
         .iter()
         .map(|row| {
-            let attached_deposit: sqlx::types::BigDecimal = row.get("attached_deposit");
+            let attached_usd: sqlx::types::BigDecimal = row.get("attached_usd");
+            let refund_usd: sqlx::types::BigDecimal = row.get("refund_usd");
+            let amount: sqlx::types::BigDecimal = row.get("amount");
             let created_at: chrono::DateTime<chrono::Utc> = row.get("created_at");
             EarningRecord {
                 id: row.get("id"),
-                call_id: row.get("call_id"),
                 project_id: row.get("project_id"),
-                payer_owner: row.get("payer_owner"),
-                payer_nonce: row.get("payer_nonce"),
-                attached_deposit: attached_deposit.to_string(),
+                attached_usd: attached_usd.to_string(),
+                refund_usd: refund_usd.to_string(),
+                amount: amount.to_string(),
+                source: row.get("source"),
+                tx_hash: row.get("tx_hash"),
+                caller: row.get("caller"),
+                request_id: row.get("request_id"),
+                call_id: row.get("call_id"),
+                payment_key_owner: row.get("payment_key_owner"),
+                payment_key_nonce: row.get("payment_key_nonce"),
                 created_at: created_at.timestamp(),
             }
         })

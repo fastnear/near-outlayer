@@ -120,6 +120,9 @@ pub struct ExecutionRequest {
     pub user_account_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub near_payment_yocto: Option<String>,
+    /// Payment to project developer (stablecoin, minimal token units) for blockchain calls
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attached_usd: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transaction_hash: Option<String>,
     /// If true, only compile the code without executing
@@ -457,6 +460,10 @@ pub struct CompleteJobRequest {
     /// When set, executor should call resolve_execution with this value without running WASM
     #[serde(default)]
     pub compile_result: Option<String>,
+    /// Refund amount to return to user from attached_usd (stablecoin, minimal token units)
+    /// Set by WASI via refund_usd host function. If None or 0, full attached_usd goes to developer.
+    #[serde(default)]
+    pub refund_usd: Option<String>,
 }
 
 /// Legacy: Complete task request
@@ -578,6 +585,9 @@ pub struct CreateTaskRequest {
     pub user_account_id: Option<String>,
     #[serde(default)]
     pub near_payment_yocto: Option<String>,
+    /// Payment to project developer (stablecoin, minimal token units)
+    #[serde(default)]
+    pub attached_usd: Option<String>,
     #[serde(default)]
     pub transaction_hash: Option<String>,
     /// If true, only compile the code without executing

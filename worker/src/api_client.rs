@@ -79,6 +79,9 @@ pub struct ExecutionRequest {
     pub user_account_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub near_payment_yocto: Option<String>,
+    /// Payment to project developer (stablecoin, minimal token units)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attached_usd: Option<String>,
     /// If true, only compile the code without executing
     #[serde(default)]
     pub compile_only: bool,
@@ -263,6 +266,8 @@ pub struct CreateTaskParams {
     pub context: ExecutionContext,
     pub user_account_id: Option<String>,
     pub near_payment_yocto: Option<String>,
+    /// Payment to project developer (stablecoin, minimal token units)
+    pub attached_usd: Option<String>,
     pub compile_only: bool,
     pub force_rebuild: bool,
     pub store_on_fastfs: bool,
@@ -299,6 +304,9 @@ pub struct ExecutionResult {
     pub instructions: u64,
     pub compile_time_ms: Option<u64>, // Compilation time if WASM was compiled in this execution
     pub compilation_note: Option<String>, // e.g., "Cached WASM from 2025-01-10 14:30 UTC"
+    /// Refund amount to return to user from attached_usd (stablecoin, minimal token units)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refund_usd: Option<u64>,
 }
 
 /// Job type - compile or execute
@@ -1115,6 +1123,8 @@ impl ApiClient {
             user_account_id: Option<String>,
             #[serde(skip_serializing_if = "Option::is_none")]
             near_payment_yocto: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            attached_usd: Option<String>,
             compile_only: bool,
             force_rebuild: bool,
             store_on_fastfs: bool,
@@ -1141,6 +1151,7 @@ impl ApiClient {
             context: params.context,
             user_account_id: params.user_account_id,
             near_payment_yocto: params.near_payment_yocto,
+            attached_usd: params.attached_usd,
             compile_only: params.compile_only,
             force_rebuild: params.force_rebuild,
             store_on_fastfs: params.store_on_fastfs,

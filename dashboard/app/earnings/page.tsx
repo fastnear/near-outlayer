@@ -4,25 +4,36 @@ import { useState, useEffect, useCallback } from 'react';
 import { useNearWallet } from '@/contexts/NearWalletContext';
 import WalletConnectionModal from '@/components/WalletConnectionModal';
 import { getCoordinatorApiUrl } from '@/lib/api';
+import { actionCreators } from '@near-js/transactions';
 
-interface EarningsBalance {
+// HTTPS earnings balance (from coordinator)
+interface HttpsEarningsBalance {
   project_owner: string;
   balance: string;
   total_earned: string;
   updated_at: number | null;
 }
 
+// Unified earning record from earnings_history table
 interface EarningRecord {
   id: number;
-  call_id: string;
   project_id: string;
-  payer_owner: string;
-  payer_nonce: number;
-  attached_deposit: string;
+  attached_usd: string;
+  refund_usd: string;
+  amount: string; // Net amount (attached - refund)
+  source: 'blockchain' | 'https';
+  // Blockchain-specific
+  tx_hash?: string;
+  caller?: string;
+  request_id?: number;
+  // HTTPS-specific
+  call_id?: string;
+  payment_key_owner?: string;
+  payment_key_nonce?: number;
   created_at: number;
 }
 
-interface EarningsHistory {
+interface EarningsHistoryResponse {
   project_owner: string;
   earnings: EarningRecord[];
   total_count: number;
@@ -44,20 +55,49 @@ export default function EarningsPage() {
     isConnected,
     network,
     stablecoin,
+    contractId,
+    viewMethod,
+    signAndSendTransaction,
     shouldReopenModal,
     clearReopenModal,
   } = useNearWallet();
   const coordinatorUrl = getCoordinatorApiUrl(network);
 
-  const [balance, setBalance] = useState<EarningsBalance | null>(null);
+  // Blockchain earnings (from contract)
+  const [blockchainBalance, setBlockchainBalance] = useState<string>('0');
+  // HTTPS earnings (from coordinator)
+  const [httpsBalance, setHttpsBalance] = useState<HttpsEarningsBalance | null>(null);
+  // Unified history
   const [history, setHistory] = useState<EarningRecord[]>([]);
   const [totalCount, setTotalCount] = useState(0);
+  const [sourceFilter, setSourceFilter] = useState<'all' | 'blockchain' | 'https'>('all');
+
   const [loading, setLoading] = useState(false);
   const [showWalletModal, setShowWalletModal] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+  const [withdrawing, setWithdrawing] = useState(false);
 
-  // Load earnings balance
-  const loadBalance = useCallback(async () => {
+  // Load blockchain earnings from contract
+  const loadBlockchainBalance = useCallback(async () => {
+    if (!accountId) return;
+
+    try {
+      const balance = await viewMethod({
+        contractId,
+        method: 'get_developer_earnings',
+        args: { account_id: accountId },
+      });
+      // Contract returns U128 as string
+      setBlockchainBalance(typeof balance === 'string' ? balance : (balance as { toString: () => string })?.toString() || '0');
+    } catch (err) {
+      console.error('Failed to load blockchain earnings:', err);
+      setBlockchainBalance('0');
+    }
+  }, [accountId, contractId, viewMethod]);
+
+  // Load HTTPS earnings from coordinator
+  const loadHttpsBalance = useCallback(async () => {
     if (!accountId) return;
 
     try {
@@ -66,24 +106,25 @@ export default function EarningsPage() {
       );
       if (response.ok) {
         const data = await response.json();
-        setBalance(data);
+        setHttpsBalance(data);
       }
     } catch (err) {
-      console.error('Failed to load earnings balance:', err);
+      console.error('Failed to load HTTPS earnings balance:', err);
     }
   }, [accountId, coordinatorUrl]);
 
-  // Load earnings history
+  // Load unified earnings history
   const loadHistory = useCallback(async () => {
     if (!accountId) return;
 
     setLoading(true);
     try {
+      const sourceParam = sourceFilter !== 'all' ? `&source=${sourceFilter}` : '';
       const response = await fetch(
-        `${coordinatorUrl}/public/project-earnings/${accountId}/history?limit=50`
+        `${coordinatorUrl}/public/project-earnings/${accountId}/history?limit=50${sourceParam}`
       );
       if (response.ok) {
-        const data: EarningsHistory = await response.json();
+        const data: EarningsHistoryResponse = await response.json();
         setHistory(data.earnings);
         setTotalCount(data.total_count);
       }
@@ -93,7 +134,41 @@ export default function EarningsPage() {
     } finally {
       setLoading(false);
     }
-  }, [accountId, coordinatorUrl]);
+  }, [accountId, coordinatorUrl, sourceFilter]);
+
+  // Withdraw blockchain earnings
+  const handleWithdraw = async () => {
+    if (!accountId || BigInt(blockchainBalance || '0') <= BigInt(0)) return;
+
+    setWithdrawing(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const action = actionCreators.functionCall(
+        'withdraw_developer_earnings',
+        {},
+        BigInt('50000000000000'), // 50 TGas
+        BigInt('1') // 1 yoctoNEAR required
+      );
+
+      await signAndSendTransaction({
+        receiverId: contractId,
+        actions: [action],
+      });
+
+      setSuccess(`Successfully withdrew ${formatUsd(blockchainBalance, stablecoin.decimals)} to your wallet!`);
+      // Reload balances after withdrawal
+      setTimeout(() => {
+        loadBlockchainBalance();
+        loadHistory();
+      }, 2000);
+    } catch (err) {
+      setError((err as Error).message || 'Withdrawal failed');
+    } finally {
+      setWithdrawing(false);
+    }
+  };
 
   // Auto-open modal if we switched networks
   useEffect(() => {
@@ -106,18 +181,29 @@ export default function EarningsPage() {
   // Load data when connected
   useEffect(() => {
     if (isConnected && accountId) {
-      loadBalance();
+      loadBlockchainBalance();
+      loadHttpsBalance();
       loadHistory();
     }
-  }, [isConnected, accountId, loadBalance, loadHistory]);
+  }, [isConnected, accountId, loadBlockchainBalance, loadHttpsBalance, loadHistory]);
 
-  // Clear error after 5 seconds
+  // Reload history when filter changes
   useEffect(() => {
-    if (error) {
-      const timer = setTimeout(() => setError(null), 5000);
+    if (isConnected && accountId) {
+      loadHistory();
+    }
+  }, [sourceFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Clear messages after 5 seconds
+  useEffect(() => {
+    if (error || success) {
+      const timer = setTimeout(() => {
+        setError(null);
+        setSuccess(null);
+      }, 5000);
       return () => clearTimeout(timer);
     }
-  }, [error]);
+  }, [error, success]);
 
   return (
     <div className="max-w-4xl mx-auto">
@@ -126,13 +212,13 @@ export default function EarningsPage() {
         <div>
           <h1 className="text-3xl font-bold text-gray-900">My Earnings</h1>
           <p className="mt-2 text-sm text-gray-700">
-            Track earnings from HTTPS API calls to your projects
+            Track earnings from blockchain calls and HTTPS API calls to your projects
           </p>
         </div>
         {isConnected && (
           <div className="mt-4 sm:mt-0">
             <button
-              onClick={() => { loadBalance(); loadHistory(); }}
+              onClick={() => { loadBlockchainBalance(); loadHttpsBalance(); loadHistory(); }}
               className="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 shadow-sm"
             >
               <svg className="h-4 w-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -162,66 +248,104 @@ export default function EarningsPage() {
         onClose={() => setShowWalletModal(false)}
       />
 
-      {/* Error Display */}
+      {/* Error/Success Display */}
       {error && (
         <div className="mt-4 bg-red-50 border border-red-200 rounded-md p-3">
           <p className="text-sm text-red-800">{error}</p>
         </div>
       )}
+      {success && (
+        <div className="mt-4 bg-green-50 border border-green-200 rounded-md p-3">
+          <p className="text-sm text-green-800">{success}</p>
+        </div>
+      )}
 
-      {/* Balance Cards */}
+      {/* Balance Cards - Two Columns */}
       {isConnected && (
         <div className="mt-8 grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Available Balance Card */}
-          <div className="bg-white shadow rounded-lg p-6 border border-gray-200">
-            <div className="flex items-center">
+          {/* Blockchain Earnings Card */}
+          <div className="bg-gradient-to-br from-purple-50 to-indigo-50 shadow rounded-lg p-6 border border-purple-200">
+            <div className="flex items-center mb-4">
+              <div className="flex-shrink-0">
+                <div className="w-12 h-12 bg-purple-100 rounded-full flex items-center justify-center">
+                  <svg className="h-6 w-6 text-purple-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+                  </svg>
+                </div>
+              </div>
+              <div className="ml-4">
+                <p className="text-sm font-medium text-purple-700">Blockchain Earnings</p>
+                <p className="text-xs text-purple-500">From smart contract calls</p>
+              </div>
+            </div>
+            <p className="text-3xl font-bold text-purple-600 mb-4">
+              {formatUsd(blockchainBalance, stablecoin.decimals)}
+            </p>
+            <button
+              onClick={handleWithdraw}
+              disabled={withdrawing || BigInt(blockchainBalance || '0') <= BigInt(0)}
+              className="w-full inline-flex justify-center items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400 disabled:cursor-not-allowed shadow-sm"
+            >
+              {withdrawing ? (
+                <>
+                  <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  Withdrawing...
+                </>
+              ) : (
+                <>Withdraw to Wallet</>
+              )}
+            </button>
+            <p className="mt-2 text-xs text-purple-500 text-center">
+              Stored in OutLayer contract
+            </p>
+          </div>
+
+          {/* HTTPS Earnings Card */}
+          <div className="bg-gradient-to-br from-green-50 to-emerald-50 shadow rounded-lg p-6 border border-green-200">
+            <div className="flex items-center mb-4">
               <div className="flex-shrink-0">
                 <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center">
                   <svg className="h-6 w-6 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
                   </svg>
                 </div>
               </div>
               <div className="ml-4">
-                <p className="text-sm font-medium text-gray-500">Available Balance</p>
-                <p className="text-2xl font-bold text-green-600">
-                  {balance ? formatUsd(balance.balance, stablecoin.decimals) : '$0.000000'}
-                </p>
+                <p className="text-sm font-medium text-green-700">HTTPS API Earnings</p>
+                <p className="text-xs text-green-500">From payment key calls</p>
               </div>
             </div>
-            <div className="mt-4">
-              <button
-                disabled
-                className="w-full inline-flex justify-center items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-400 bg-gray-100 cursor-not-allowed"
-                title="Withdrawal coming soon"
-              >
-                Withdraw (Coming Soon)
-              </button>
-            </div>
+            <p className="text-3xl font-bold text-green-600 mb-4">
+              {httpsBalance ? formatUsd(httpsBalance.balance, stablecoin.decimals) : '$0.000000'}
+            </p>
+            <button
+              disabled
+              className="w-full inline-flex justify-center items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-400 bg-gray-100 cursor-not-allowed"
+              title="Withdrawal coming soon"
+            >
+              Withdraw (Coming Soon)
+            </button>
+            <p className="mt-2 text-xs text-green-500 text-center">
+              Stored in coordinator database
+            </p>
           </div>
+        </div>
+      )}
 
-          {/* Total Earned Card */}
-          <div className="bg-white shadow rounded-lg p-6 border border-gray-200">
-            <div className="flex items-center">
-              <div className="flex-shrink-0">
-                <div className="w-12 h-12 bg-[#cc6600]/10 rounded-full flex items-center justify-center">
-                  <svg className="h-6 w-6 text-[#cc6600]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-                  </svg>
-                </div>
-              </div>
-              <div className="ml-4">
-                <p className="text-sm font-medium text-gray-500">Total Earned</p>
-                <p className="text-2xl font-bold text-[#cc6600]">
-                  {balance ? formatUsd(balance.total_earned, stablecoin.decimals) : '$0.000000'}
-                </p>
-              </div>
-            </div>
-            {balance?.updated_at && (
-              <p className="mt-4 text-xs text-gray-500">
-                Last updated: {new Date(balance.updated_at * 1000).toLocaleString()}
-              </p>
-            )}
+      {/* Total Summary */}
+      {isConnected && (
+        <div className="mt-4 bg-white shadow rounded-lg p-4 border border-gray-200">
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-medium text-gray-600">Total Available</span>
+            <span className="text-xl font-bold text-gray-900">
+              {formatUsd(
+                (BigInt(blockchainBalance || '0') + BigInt(httpsBalance?.balance || '0')).toString(),
+                stablecoin.decimals
+              )}
+            </span>
           </div>
         </div>
       )}
@@ -229,7 +353,7 @@ export default function EarningsPage() {
       {/* Earnings History */}
       {isConnected && (
         <div className="mt-8 bg-white shadow rounded-lg border border-gray-200 overflow-hidden">
-          <div className="px-6 py-4 border-b border-gray-200">
+          <div className="px-6 py-4 border-b border-gray-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <h2 className="text-lg font-semibold text-gray-900">
               Earnings History
               {totalCount > 0 && (
@@ -238,6 +362,39 @@ export default function EarningsPage() {
                 </span>
               )}
             </h2>
+            {/* Source Filter */}
+            <div className="flex gap-2">
+              <button
+                onClick={() => setSourceFilter('all')}
+                className={`px-3 py-1 text-xs font-medium rounded-full ${
+                  sourceFilter === 'all'
+                    ? 'bg-gray-800 text-white'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+              >
+                All
+              </button>
+              <button
+                onClick={() => setSourceFilter('blockchain')}
+                className={`px-3 py-1 text-xs font-medium rounded-full ${
+                  sourceFilter === 'blockchain'
+                    ? 'bg-purple-600 text-white'
+                    : 'bg-purple-100 text-purple-600 hover:bg-purple-200'
+                }`}
+              >
+                Blockchain
+              </button>
+              <button
+                onClick={() => setSourceFilter('https')}
+                className={`px-3 py-1 text-xs font-medium rounded-full ${
+                  sourceFilter === 'https'
+                    ? 'bg-green-600 text-white'
+                    : 'bg-green-100 text-green-600 hover:bg-green-200'
+                }`}
+              >
+                HTTPS
+              </button>
+            </div>
           </div>
 
           {loading ? (
@@ -264,8 +421,9 @@ export default function EarningsPage() {
                 <thead className="bg-gray-50">
                   <tr className="text-left text-gray-500">
                     <th className="px-6 py-3 font-medium">Date</th>
+                    <th className="px-6 py-3 font-medium">Source</th>
                     <th className="px-6 py-3 font-medium">Project</th>
-                    <th className="px-6 py-3 font-medium">Payer</th>
+                    <th className="px-6 py-3 font-medium">Details</th>
                     <th className="px-6 py-3 font-medium text-right">Amount</th>
                   </tr>
                 </thead>
@@ -276,20 +434,45 @@ export default function EarningsPage() {
                         {new Date(record.created_at * 1000).toLocaleString()}
                       </td>
                       <td className="px-6 py-4">
+                        {record.source === 'blockchain' ? (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800">
+                            Blockchain
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">
+                            HTTPS
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-6 py-4">
                         <span className="text-[#cc6600] font-mono text-xs">
-                          {record.project_id.length > 25
-                            ? record.project_id.slice(0, 25) + '...'
+                          {record.project_id.length > 20
+                            ? record.project_id.slice(0, 20) + '...'
                             : record.project_id}
                         </span>
                       </td>
-                      <td className="px-6 py-4">
-                        <span className="text-gray-700">{record.payer_owner}</span>
-                        <span className="text-gray-400 text-xs ml-1">#{record.payer_nonce}</span>
+                      <td className="px-6 py-4 text-xs text-gray-500">
+                        {record.source === 'blockchain' ? (
+                          record.caller ? (
+                            <span>by {record.caller.length > 15 ? record.caller.slice(0, 15) + '...' : record.caller}</span>
+                          ) : '-'
+                        ) : (
+                          record.payment_key_owner ? (
+                            <span>{record.payment_key_owner}#{record.payment_key_nonce}</span>
+                          ) : '-'
+                        )}
                       </td>
                       <td className="px-6 py-4 text-right">
-                        <span className="text-green-600 font-semibold">
-                          +{formatUsd(record.attached_deposit, stablecoin.decimals)}
-                        </span>
+                        <div>
+                          <span className="text-green-600 font-semibold">
+                            +{formatUsd(record.amount, stablecoin.decimals)}
+                          </span>
+                          {BigInt(record.refund_usd || '0') > BigInt(0) && (
+                            <span className="text-xs text-gray-400 ml-1">
+                              (refund: {formatUsd(record.refund_usd, stablecoin.decimals)})
+                            </span>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -305,28 +488,23 @@ export default function EarningsPage() {
         <h3 className="text-sm font-semibold text-blue-900 mb-3">
           About Earnings
         </h3>
-        <ul className="text-sm text-blue-800 space-y-2 list-disc list-inside">
-          <li>
-            <strong>HTTPS API Deposits</strong>: When users call your projects via HTTPS API with X-Attached-Deposit header
-          </li>
-          <li>
-            <strong>Stablecoin</strong>: Earnings are in {stablecoin.symbol} ({stablecoin.contract})
-          </li>
-          <li>
-            <strong>Instant Credit</strong>: Deposits are credited immediately after successful execution
-          </li>
-          <li>
-            <strong>Withdrawal</strong>: Coming soon - withdraw to your NEAR wallet
-          </li>
-        </ul>
-
-        <div className="mt-4 p-3 bg-white rounded border border-blue-200">
-          <h4 className="text-xs font-semibold text-blue-900 mb-2">Example API Call with Deposit</h4>
-          <code className="text-xs text-blue-800 font-mono block whitespace-pre-wrap">
-{`curl -X POST https://api.outlayer.io/call/${accountId || 'yourname.near'}/project
-  -H "X-Payment-Key: owner:nonce:key"
-  -H "X-Attached-Deposit: 10000"  # $0.01 in minimal units`}
-          </code>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm text-blue-800">
+          <div>
+            <h4 className="font-medium text-purple-700 mb-1">Blockchain Earnings</h4>
+            <ul className="space-y-1 list-disc list-inside text-xs">
+              <li>From request_execution with attached_usd</li>
+              <li>Stored in OutLayer smart contract</li>
+              <li>Withdraw directly to your wallet</li>
+            </ul>
+          </div>
+          <div>
+            <h4 className="font-medium text-green-700 mb-1">HTTPS API Earnings</h4>
+            <ul className="space-y-1 list-disc list-inside text-xs">
+              <li>From payment key calls with X-Attached-Deposit</li>
+              <li>Stored in coordinator database</li>
+              <li>Withdrawal coming soon</li>
+            </ul>
+          </div>
         </div>
       </div>
     </div>

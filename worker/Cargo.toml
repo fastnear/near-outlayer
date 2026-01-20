@@ -72,9 +72,11 @@ uuid = { version = "1.0", features = ["v4"] }
 regex = "1.10"
 rand = "0.8"
 urlencoding = "2.1"
+dirs = "5.0"
 
 # Phala dstack SDK for TDX attestation
 dstack-sdk = "0.1"
 log = "0.4.28"
 
 [dev-dependencies]
+tempfile = "3.10"

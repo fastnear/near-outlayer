@@ -320,12 +320,15 @@ impl Executor {
         let execution_time_ms = start.elapsed().as_millis() as u64;
 
         match result {
-            Ok((output_bytes, instructions)) => {
+            Ok((output_bytes, instructions, refund_usd)) => {
                 info!(
                     "WASM execution succeeded in {} ms, consumed {} instructions",
                     execution_time_ms, instructions
                 );
                 info!("📦 Raw output size: {} bytes", output_bytes.len());
+                if let Some(refund) = refund_usd {
+                    info!("💰 WASM requested refund of {} USD", refund);
+                }
 
                 if output_bytes.is_empty() {
                     warn!("⚠️ WASM produced empty output (stdout was empty)");
@@ -361,6 +364,7 @@ impl Executor {
                                     instructions,
                                     compile_time_ms: None, // Compilation not tracked in executor
                                     compilation_note: None,
+                                    refund_usd: None,
                                 });
                             }
                         }
@@ -375,6 +379,7 @@ impl Executor {
                     instructions,
                     compile_time_ms: None, // Compilation not tracked in executor
                     compilation_note: None,
+                    refund_usd,
                 })
             }
             Err(e) => {
@@ -387,6 +392,7 @@ impl Executor {
                     instructions: 0,
                     compile_time_ms: None, // Compilation not tracked in executor
                     compilation_note: None,
+                    refund_usd: None, // No refund on failure
                 })
             }
         }
@@ -401,6 +407,8 @@ impl Executor {
     /// 1. WASI Preview 2 component (HTTP, modern features, RPC proxy)
     /// 2. WASI Preview 1 module (standard WASI)
     /// 3. Error if no format matches
+    ///
+    /// Returns: (output_bytes, instructions, refund_usd)
     async fn execute_async(
         &self,
         wasm_bytes: &[u8],
@@ -409,7 +417,7 @@ impl Executor {
         env_vars: Option<HashMap<String, String>>,
         build_target: Option<&str>,
         storage_config: Option<StorageConfig>,
-    ) -> Result<(Vec<u8>, u64)> {
+    ) -> Result<(Vec<u8>, u64, Option<u64>)> {
         // Create effective execution context with storage_config override
         let effective_ctx: Option<ExecutionContext> = if let Some(storage_cfg) = storage_config {
             // Create new context with storage config (merge with existing if present)

@@ -165,6 +165,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/storage/clear-all", post(handlers::storage::storage_clear_all))
         .route("/storage/clear-version", post(handlers::storage::storage_clear_version))
         .route("/storage/clear-project", post(handlers::storage::storage_clear_project))
+        .route("/storage/get-public", post(handlers::storage::storage_get_public))
         // Project endpoints (worker-protected)
         .route("/projects/uuid", get(handlers::projects::resolve_project_uuid))
         .route("/projects/cache", delete(handlers::projects::invalidate_project_cache))

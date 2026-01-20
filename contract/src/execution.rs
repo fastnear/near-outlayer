@@ -102,14 +102,43 @@ impl Contract {
             self.estimate_cost(&limits)
         };
 
+        // Parse attached_usd for project owner (developer payment in stablecoin)
+        let attached_usd = request_params.attached_usd.map(|d| d.0).unwrap_or(0);
+
+        // Validate: attached_usd only valid for Project source
+        if attached_usd > 0 {
+            assert!(
+                matches!(source, ExecutionSource::Project { .. }),
+                "attached_usd is only valid for Project execution source"
+            );
+
+            // Check user has enough stablecoin balance
+            let caller = env::predecessor_account_id();
+            let user_balance = self.user_stablecoin_balances.get(&caller).unwrap_or(0);
+            assert!(
+                user_balance >= attached_usd,
+                "Insufficient stablecoin balance. Required: {}, available: {}",
+                attached_usd,
+                user_balance
+            );
+
+            // Deduct from user's stablecoin balance
+            self.user_stablecoin_balances.insert(&caller, &(user_balance - attached_usd));
+            log!(
+                "Deducted {} stablecoin from {} for developer payment (remaining: {})",
+                attached_usd,
+                caller,
+                user_balance - attached_usd
+            );
+        }
+
+        // NEAR payment is only for compute costs now
         let payment = env::attached_deposit().as_yoctonear();
 
         assert!(
             payment >= estimated_cost,
-            "Insufficient payment: required {} yoctoNEAR for requested limits (max_instructions: {:?}, max_execution_seconds: {:?}), got {} yoctoNEAR",
+            "Insufficient payment: required {} yoctoNEAR for compute, got {} yoctoNEAR",
             estimated_cost,
-            limits.max_instructions,
-            limits.max_execution_seconds,
             payment
         );
 
@@ -142,6 +171,7 @@ impl Contract {
             "secrets_ref": secrets_ref.as_ref(),
             "response_format": format,
             "payment": U128::from(payment),
+            "attached_usd": U128::from(attached_usd),
             "timestamp": env::block_timestamp(),
             "compile_only": compile_only,
             "force_rebuild": request_params.force_rebuild,
@@ -181,6 +211,7 @@ impl Contract {
             response_format: format.clone(),
             input_data,
             payer_account_id,
+            attached_usd,
             pending_output: None,
             output_submitted: false,
         };
@@ -242,6 +273,7 @@ impl Contract {
             error,
             resources_used,
             compilation_note,
+            refund_usd: None, // Large output flow doesn't support refund
         };
 
         log!(
@@ -288,17 +320,51 @@ impl Contract {
                     // If output was submitted separately, retrieve it from storage
                     if request.output_submitted && exec_response.success {
                         log!("Retrieving large output from storage for request_id: {}", request_id);
-                        if let Some(stored_output) = request.pending_output {
+                        if let Some(stored_output) = request.pending_output.clone() {
                             let output: crate::ExecutionOutput = stored_output.into();
                             exec_response.output = Some(output);
                         }
                     }
 
                     if exec_response.success {
-                        // Calculate actual cost
+                        // Calculate actual cost (NEAR only)
                         let cost = self.calculate_cost(&exec_response.resources_used);
 
-                        // Refund excess payment
+                        // Handle stablecoin payment with refund support
+                        if request.attached_usd > 0 {
+                            // Get refund amount from WASM (if called refund_usd())
+                            let refund_usd = exec_response.refund_usd.map(|r| r as u128).unwrap_or(0);
+                            // Clamp refund to attached amount (safety check)
+                            let refund_usd = refund_usd.min(request.attached_usd);
+                            let developer_amount = request.attached_usd.saturating_sub(refund_usd);
+
+                            // Refund stablecoin to user's balance
+                            if refund_usd > 0 {
+                                let current_balance = self.user_stablecoin_balances.get(&request.sender_id).unwrap_or(0);
+                                self.user_stablecoin_balances.insert(&request.sender_id, &(current_balance + refund_usd));
+                                log!(
+                                    "Refunded {} stablecoin to {} (WASM requested partial refund)",
+                                    refund_usd,
+                                    request.sender_id
+                                );
+                            }
+
+                            // Credit developer earnings if developer_amount > 0
+                            if developer_amount > 0 {
+                                if let ExecutionSource::Project { project_id, .. } = &request.execution_source {
+                                    if let Some(project) = self.projects.get(project_id) {
+                                        let current = self.developer_earnings.get(&project.owner).unwrap_or(0);
+                                        self.developer_earnings.insert(&project.owner, &(current + developer_amount));
+                                        log!(
+                                            "Credited {} stablecoin to developer {} for project {} (attached={}, refund={})",
+                                            developer_amount, project.owner, project_id, request.attached_usd, refund_usd
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
+                        // Refund excess NEAR payment (minus compute cost only, stablecoin is separate)
                         let refund = payment.0.saturating_sub(cost);
                         if refund > 0 {
                             // Transfer refund to payer account
@@ -392,12 +458,25 @@ impl Contract {
                             None
                         }
                     } else {
-                        // Execution failed - refund everything except base fee
+                        // Execution failed - refund NEAR (except base fee) and stablecoin
+                        // Developer gets nothing on failure
+
+                        // Refund NEAR (minus base fee)
                         let refund = payment.0.saturating_sub(self.base_fee);
                         if refund > 0 {
-                            // Transfer refund to payer account
                             near_sdk::Promise::new(request.payer_account_id.clone())
                                 .transfer(NearToken::from_yoctonear(refund));
+                        }
+
+                        // Refund stablecoin to user's balance
+                        if request.attached_usd > 0 {
+                            let current = self.user_stablecoin_balances.get(&request.sender_id).unwrap_or(0);
+                            self.user_stablecoin_balances.insert(&request.sender_id, &(current + request.attached_usd));
+                            log!(
+                                "Refunded {} stablecoin to {} (execution failed)",
+                                request.attached_usd,
+                                request.sender_id
+                            );
                         }
 
                         self.total_fees_collected += self.base_fee;
@@ -436,12 +515,25 @@ impl Contract {
                     }
                 }
                 Err(promise_error) => {
-                    // Promise failed - refund everything except base fee
+                    // Promise failed - refund NEAR (except base fee) and stablecoin
+                    // Developer gets nothing on failure
+
+                    // Refund NEAR (minus base fee)
                     let refund = payment.0.saturating_sub(self.base_fee);
                     if refund > 0 {
-                        // Transfer refund to payer account
                         near_sdk::Promise::new(request.payer_account_id.clone())
                             .transfer(NearToken::from_yoctonear(refund));
+                    }
+
+                    // Refund stablecoin to user's balance
+                    if request.attached_usd > 0 {
+                        let current = self.user_stablecoin_balances.get(&request.sender_id).unwrap_or(0);
+                        self.user_stablecoin_balances.insert(&request.sender_id, &(current + request.attached_usd));
+                        log!(
+                            "Refunded {} stablecoin to {} (promise failed)",
+                            request.attached_usd,
+                            request.sender_id
+                        );
                     }
 
                     self.total_fees_collected += self.base_fee;

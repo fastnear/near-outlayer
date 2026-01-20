@@ -75,6 +75,9 @@ pub struct RequestData {
     #[serde(default)]
     pub secrets_ref: Option<crate::api_client::SecretsReference>,
     pub payment: String,
+    /// Payment to project developer (stablecoin, minimal token units)
+    #[serde(default)]
+    pub attached_usd: Option<String>,
     pub timestamp: u64,
     #[serde(default)]
     pub response_format: crate::api_client::ResponseFormat,
@@ -802,6 +805,7 @@ impl EventMonitor {
             context,
             user_account_id: Some(request_data.sender_id.clone()),
             near_payment_yocto: Some(request_data.payment.clone()),
+            attached_usd: request_data.attached_usd.clone(),
             compile_only: request_data.compile_only,
             force_rebuild: request_data.force_rebuild,
             store_on_fastfs: request_data.store_on_fastfs,

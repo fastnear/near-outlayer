@@ -26,12 +26,13 @@ use wasmtime_wasi_http::{WasiHttpCtx, WasiHttpView};
 use crate::api_client::ResourceLimits;
 use crate::outlayer_rpc::RpcHostState;
 use crate::outlayer_storage::{StorageClient, StorageHostState, add_storage_to_linker};
+use crate::outlayer_payment::{PaymentHostState, add_payment_to_linker};
 
 use super::ExecutionContext;
 
 /// Host state for WASI P2 execution
 ///
-/// Contains WASI context, HTTP context, and optionally RPC proxy and storage state.
+/// Contains WASI context, HTTP context, and optionally RPC proxy, storage and payment state.
 struct HostState {
     wasi_ctx: WasiCtx,
     wasi_http_ctx: WasiHttpCtx,
@@ -40,6 +41,8 @@ struct HostState {
     rpc_state: Option<RpcHostState>,
     /// Storage state (only present if ExecutionContext has storage_config)
     storage_state: Option<StorageHostState>,
+    /// Payment state (only present if attached_usd > 0)
+    payment_state: Option<PaymentHostState>,
 }
 
 impl WasiView for HostState {
@@ -72,6 +75,11 @@ impl HostState {
     fn storage_state_mut(&mut self) -> &mut StorageHostState {
         self.storage_state.as_mut().expect("Storage state not initialized")
     }
+
+    /// Get payment host state (for host function callbacks)
+    fn payment_state_mut(&mut self) -> &mut PaymentHostState {
+        self.payment_state.as_mut().expect("Payment state not initialized")
+    }
 }
 
 /// Execute WASI Preview 2 component
@@ -80,12 +88,13 @@ impl HostState {
 /// * `wasm_bytes` - WASM component binary
 /// * `input_data` - JSON input via stdin
 /// * `limits` - Resource limits (memory, instructions, time)
-/// * `env_vars` - Environment variables (from encrypted secrets)
+/// * `env_vars` - Environment variables (from encrypted secrets, includes ATTACHED_USD)
 /// * `print_stderr` - Print WASM stderr to worker logs
 /// * `exec_ctx` - Execution context with optional RPC proxy
 ///
 /// # Returns
-/// * `Ok((output, fuel_consumed))` - Execution succeeded
+/// * `Ok((output, fuel_consumed, refund_usd))` - Execution succeeded
+///   - `refund_usd` is Some if WASM called refund_usd() host function
 /// * `Err(_)` - Not a valid P2 component or execution failed
 pub async fn execute(
     wasm_bytes: &[u8],
@@ -94,7 +103,7 @@ pub async fn execute(
     env_vars: Option<HashMap<String, String>>,
     print_stderr: bool,
     exec_ctx: Option<&ExecutionContext>,
-) -> Result<(Vec<u8>, u64)> {
+) -> Result<(Vec<u8>, u64, Option<u64>)> {
     // Configure wasmtime engine for WASI Preview 2
     let mut config = Config::new();
     config.wasm_component_model(true); // Enable component model
@@ -215,6 +224,38 @@ pub async fn execute(
         None
     };
 
+    // Extract attached_usd from env_vars for payment state
+    // Must be done before env_vars is consumed by wasi_builder
+    let attached_usd: u64 = env_vars
+        .as_ref()
+        .and_then(|env| env.get("ATTACHED_USD"))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+
+    // Check if component imports payment interface
+    let has_payment_import = component.component_type().imports(&engine)
+        .any(|(name, _)| name.contains("near:payment/api"));
+
+    // Add payment host functions if WASM imports payment interface
+    // Even if attached_usd=0, we add the linker so WASM doesn't crash when calling refund_usd
+    // Instead, it will get an error message "Refund amount X exceeds attached USD 0"
+    let payment_state = if has_payment_import {
+        debug!("Adding payment host functions to linker, attached_usd={}", attached_usd);
+
+        // Add payment host functions to linker
+        add_payment_to_linker(&mut linker, |state: &mut HostState| {
+            state.payment_state_mut()
+        })?;
+
+        Some(PaymentHostState::new(attached_usd))
+    } else if attached_usd > 0 {
+        // WASM has attached_usd but doesn't import payment interface - log warning
+        debug!("WASM has attached_usd={} but doesn't import near:payment/api interface, refund not possible", attached_usd);
+        None
+    } else {
+        None
+    };
+
     // Prepare stdin/stdout/stderr pipes
     let stdin_pipe = wasmtime_wasi::pipe::MemoryInputPipe::new(input_data.to_vec());
     let stdout_pipe =
@@ -255,6 +296,7 @@ pub async fn execute(
         table: ResourceTable::new(),
         rpc_state,
         storage_state,
+        payment_state,
     };
 
     // Create store with fuel limit
@@ -290,6 +332,15 @@ pub async fn execute(
         }
     }
 
+    // Get refund_usd from payment state (if WASM called refund_usd())
+    let refund_usd = store.data().payment_state.as_ref().map(|ps| {
+        let refund = ps.get_refund_usd();
+        if refund > 0 {
+            debug!("Component requested refund of {} USD", refund);
+        }
+        refund
+    }).filter(|&r| r > 0);
+
     // Check execution result
     // Read stderr for debugging (if flag is enabled)
     let stderr_contents = stderr_pipe.contents();
@@ -302,7 +353,7 @@ pub async fn execute(
         Ok(Ok(())) => {
             debug!("Component execution completed successfully");
             let output = stdout_pipe.contents().to_vec();
-            Ok((output, fuel_consumed))
+            Ok((output, fuel_consumed, refund_usd))
         }
         Ok(Err(_)) | Err(_) => {
             // Component exited with error or trapped

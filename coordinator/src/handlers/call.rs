@@ -762,6 +762,7 @@ async fn finalize_call(
     reserved_amount: u128,
     actual_cost: u128,
     attached_deposit: u128,
+    refund_usd: u128,
     success: bool,
     error: Option<String>,
     job_id: Option<i64>,
@@ -769,8 +770,12 @@ async fn finalize_call(
     let mut tx = state.db.begin().await
         .map_err(|e| CallError::InternalError(format!("Database error: {}", e)))?;
 
+    // Calculate developer earnings: attached_deposit - refund
+    let developer_amount = attached_deposit.saturating_sub(refund_usd);
+
     // 1. Release reserved and update spent
-    let total_spent = actual_cost + attached_deposit;
+    // Note: spent includes actual_cost + developer_amount (refund goes back to available)
+    let total_spent = actual_cost + developer_amount;
     sqlx::query(
         r#"
         UPDATE payment_key_balances
@@ -803,14 +808,14 @@ async fn finalize_call(
     .bind(BigDecimal::from_str(&actual_cost.to_string()).unwrap_or_default())
     .bind(BigDecimal::from_str(&attached_deposit.to_string()).unwrap_or_default())
     .bind(status_str)
-    .bind(error)
+    .bind(&error)
     .bind(job_id)
     .execute(&mut *tx)
     .await
     .map_err(|e| CallError::InternalError(format!("Database error: {}", e)))?;
 
-    // 3. Update project owner earnings (only if attached_deposit > 0)
-    if attached_deposit > 0 {
+    // 3. Update project owner earnings (only if developer_amount > 0)
+    if developer_amount > 0 {
         sqlx::query(
             r#"
             INSERT INTO project_owner_earnings (project_owner, balance, total_earned, updated_at)
@@ -822,7 +827,29 @@ async fn finalize_call(
             "#
         )
         .bind(project_owner)
+        .bind(BigDecimal::from_str(&developer_amount.to_string()).unwrap_or_default())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| CallError::InternalError(format!("Database error: {}", e)))?;
+
+        // 4. Record in earnings_history for HTTPS calls
+        sqlx::query(
+            r#"
+            INSERT INTO earnings_history (
+                project_owner, project_id, attached_usd, refund_usd, amount, source,
+                call_id, payment_key_owner, payment_key_nonce
+            )
+            VALUES ($1, $2, $3, $4, $5, 'https', $6, $7, $8)
+            "#
+        )
+        .bind(project_owner)
+        .bind(project_id)
         .bind(BigDecimal::from_str(&attached_deposit.to_string()).unwrap_or_default())
+        .bind(BigDecimal::from_str(&refund_usd.to_string()).unwrap_or_default())
+        .bind(BigDecimal::from_str(&developer_amount.to_string()).unwrap_or_default())
+        .bind(call_id)
+        .bind(owner)
+        .bind(nonce as i32)
         .execute(&mut *tx)
         .await
         .map_err(|e| CallError::InternalError(format!("Database error: {}", e)))?;
@@ -832,8 +859,8 @@ async fn finalize_call(
         .map_err(|e| CallError::InternalError(format!("Database error: {}", e)))?;
 
     info!(
-        "💰 HTTPS call finalized: call_id={} cost={} attached_deposit={} status={}",
-        call_id, actual_cost, attached_deposit, status_str
+        "💰 HTTPS call finalized: call_id={} cost={} attached_deposit={} refund={} developer_amount={} status={}",
+        call_id, actual_cost, attached_deposit, refund_usd, developer_amount, status_str
     );
 
     Ok(())
@@ -856,6 +883,9 @@ pub struct CompleteHttpsCallRequest {
     pub instructions: u64,
     #[serde(default)]
     pub time_ms: u64,
+    /// Refund amount to return to user from attached_usd (stablecoin, minimal token units)
+    #[serde(default)]
+    pub refund_usd: Option<u64>,
 }
 
 /// Response for completing HTTPS call
@@ -969,6 +999,9 @@ pub async fn complete_https_call(
     .await
     .map_err(|e| CallError::InternalError(format!("Database error: {}", e)))?;
 
+    // Get refund_usd from request (default 0)
+    let refund_usd = req.refund_usd.unwrap_or(0) as u128;
+
     // Finalize balances
     finalize_call(
         &state,
@@ -980,6 +1013,7 @@ pub async fn complete_https_call(
         reserved_amount,
         actual_cost,
         attached_deposit_u128,
+        refund_usd,
         req.success,
         req.error.clone(),
         job_id,
