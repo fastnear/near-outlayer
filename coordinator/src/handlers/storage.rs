@@ -81,8 +81,7 @@ pub struct StorageClearProjectRequest {
 /// Request to get public storage from another project
 #[derive(Debug, Deserialize)]
 pub struct StorageGetPublicRequest {
-    pub owner: String,              // Project owner (NEAR account)
-    pub project_id: String,         // Project ID
+    pub project_uuid: String,       // Project UUID
     pub key_hash: String,           // SHA256 of plaintext key
 }
 
@@ -804,38 +803,11 @@ pub async fn storage_get_public(
     Json(req): Json<StorageGetPublicRequest>,
 ) -> Result<Json<StorageGetPublicResponse>, StatusCode> {
     debug!(
-        "storage_get_public: owner={}, project_id={}, key_hash={}",
-        req.owner, req.project_id, req.key_hash
+        "storage_get_public: project_uuid={}, key_hash={}",
+        req.project_uuid, req.key_hash
     );
 
-    // First, look up project_uuid from owner and project_id
-    let project_result = sqlx::query_as::<_, (String,)>(
-        r#"
-        SELECT uuid FROM projects
-        WHERE owner = $1 AND project_id = $2
-        "#,
-    )
-    .bind(&req.owner)
-    .bind(&req.project_id)
-    .fetch_optional(&state.db)
-    .await;
-
-    let project_uuid = match project_result {
-        Ok(Some((uuid,))) => uuid,
-        Ok(None) => {
-            debug!("storage_get_public: project not found owner={} project_id={}", req.owner, req.project_id);
-            return Ok(Json(StorageGetPublicResponse {
-                exists: false,
-                value: None,
-            }));
-        }
-        Err(e) => {
-            error!("storage_get_public: failed to lookup project: {}", e);
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
-    };
-
-    // Now get the storage value, but only if it's public (is_encrypted=false)
+    // Get the storage value, but only if it's public (is_encrypted=false)
     let result = sqlx::query_as::<_, (Vec<u8>, bool)>(
         r#"
         SELECT encrypted_value, is_encrypted
@@ -845,7 +817,7 @@ pub async fn storage_get_public(
           AND key_hash = $2
         "#,
     )
-    .bind(&project_uuid)
+    .bind(&req.project_uuid)
     .bind(&req.key_hash)
     .fetch_optional(&state.db)
     .await;
@@ -855,15 +827,15 @@ pub async fn storage_get_public(
             if is_encrypted {
                 // Data exists but is encrypted - not accessible cross-project
                 debug!(
-                    "storage_get_public: key exists but is encrypted, denying access: owner={} project_id={} key_hash={}",
-                    req.owner, req.project_id, req.key_hash
+                    "storage_get_public: key exists but is encrypted, denying access: project_uuid={} key_hash={}",
+                    req.project_uuid, req.key_hash
                 );
                 return Err(StatusCode::FORBIDDEN);
             }
             // Public data - return plaintext value
             debug!(
-                "storage_get_public: found public data: owner={} project_id={} key_hash={}",
-                req.owner, req.project_id, req.key_hash
+                "storage_get_public: found public data: project_uuid={} key_hash={}",
+                req.project_uuid, req.key_hash
             );
             Ok(Json(StorageGetPublicResponse {
                 exists: true,
@@ -872,8 +844,8 @@ pub async fn storage_get_public(
         }
         Ok(None) => {
             debug!(
-                "storage_get_public: key not found: owner={} project_id={} key_hash={}",
-                req.owner, req.project_id, req.key_hash
+                "storage_get_public: key not found: project_uuid={} key_hash={}",
+                req.project_uuid, req.key_hash
             );
             Ok(Json(StorageGetPublicResponse {
                 exists: false,

@@ -1,16 +1,18 @@
 //! Storage Test Ark - Test suite for OutLayer persistent storage
 //!
 //! Uses the `outlayer` SDK for storage operations.
+//!
+//! Env variables (set by OutLayer runtime):
+//! - OUTLAYER_PROJECT_UUID = "p0000000000000001" (used for cross-project public storage reads)
+//! - OUTLAYER_PROJECT_ID = "owner/name"
+//! - OUTLAYER_PROJECT_OWNER = "owner"
+//! - OUTLAYER_PROJECT_NAME = "name"
 
-use outlayer::{metadata, storage, env};
+use outlayer::{storage, env};
 use serde::{Deserialize, Serialize};
-
-// Required for project-based execution
-// IMPORTANT: project must match your project_id on the OutLayer contract
-metadata! {
-    project: "zavodil2.testnet/test-storage",
-    version: "1.0.0",
-}
+use std::time::Duration;
+use wasi_http_client::Client;
+use base64::{Engine, engine::general_purpose::STANDARD};
 
 #[derive(Debug, Deserialize)]
 struct Input {
@@ -25,6 +27,10 @@ struct Input {
     expected: String,        // For set_if_equals
     #[serde(default)]
     delta: i64,              // For increment/decrement
+    #[serde(default)]
+    project: String,         // For cross-project public storage reads (e.g., "owner.near/project-id")
+    #[serde(default)]
+    coordinator_url: String, // For HTTP verification of public storage (e.g., "https://coordinator.outlayer.network")
 }
 
 #[derive(Debug, Serialize)]
@@ -112,8 +118,13 @@ fn process_command(input: &Input) -> Output {
         "set_if_equals" => cmd_set_if_equals(&input.key, &input.expected, &input.value),
         "increment" => cmd_increment(&input.key, input.delta),
         "decrement" => cmd_decrement(&input.key, input.delta),
+        // Public storage commands (unencrypted, readable by other projects)
+        "set_public" => cmd_set_public(&input.key, &input.value),
+        "get_public_cross" => cmd_get_public_cross(&input.key, &input.project),
+        "verify_public_http" => cmd_verify_public_http(&input.key, &input.coordinator_url),
         // Tests
         "test_all" => cmd_test_all(),
+        "test_public_storage" => cmd_test_public_storage(&input.coordinator_url),
         _ => error_output(&input.command, &format!("Unknown command: {}", input.command)),
     }
 }
@@ -308,6 +319,158 @@ fn cmd_clear_all() -> Output {
         },
         Err(e) => error_output("clear_all", &e.to_string()),
     }
+}
+
+// ==================== Public Storage Commands ====================
+
+/// Set public storage (unencrypted, readable by other projects via coordinator API)
+fn cmd_set_public(key: &str, value: &str) -> Output {
+    match storage::set_worker_with_options(key, value.as_bytes(), Some(false)) {
+        Ok(()) => Output {
+            success: true,
+            command: "set_public".to_string(),
+            value: Some(format!("Stored {} bytes as PUBLIC at key '{}'", value.len(), key)),
+            exists: None,
+            deleted: None,
+            keys: None,
+            inserted: None,
+            updated: None,
+            current: None,
+            numeric_value: None,
+            error: None,
+            tests: None,
+        },
+        Err(e) => error_output("set_public", &e.to_string()),
+    }
+}
+
+/// Get public storage from another project (cross-project read)
+fn cmd_get_public_cross(key: &str, project: &str) -> Output {
+    if project.is_empty() {
+        return error_output("get_public_cross", "project parameter is required (project_uuid, e.g., 'p0000000000000001')");
+    }
+
+    match storage::get_worker_from_project(key, Some(project)) {
+        Ok(Some(data)) => {
+            let value = String::from_utf8(data)
+                .unwrap_or_else(|e| format!("<binary data, {} bytes>", e.as_bytes().len()));
+            Output {
+                success: true,
+                command: "get_public_cross".to_string(),
+                value: Some(value),
+                exists: Some(true),
+                deleted: None,
+                keys: None,
+                inserted: None,
+                updated: None,
+                current: None,
+                numeric_value: None,
+                error: None,
+                tests: None,
+            }
+        }
+        Ok(None) => Output {
+            success: true,
+            command: "get_public_cross".to_string(),
+            value: None,
+            exists: Some(false),
+            deleted: None,
+            keys: None,
+            inserted: None,
+            updated: None,
+            current: None,
+            numeric_value: None,
+            error: None,
+            tests: None,
+        },
+        Err(e) => error_output("get_public_cross", &e.to_string()),
+    }
+}
+
+/// Verify public storage via coordinator HTTP API
+fn cmd_verify_public_http(key: &str, coordinator_url: &str) -> Output {
+    if coordinator_url.is_empty() {
+        return error_output("verify_public_http", "coordinator_url parameter is required");
+    }
+
+    let project_uuid = std::env::var("OUTLAYER_PROJECT_UUID").unwrap_or_default();
+
+    if project_uuid.is_empty() {
+        return error_output("verify_public_http", "OUTLAYER_PROJECT_UUID env not set");
+    }
+
+    match verify_public_storage_http(key, coordinator_url, &project_uuid) {
+        Ok(Some(value)) => Output {
+            success: true,
+            command: "verify_public_http".to_string(),
+            value: Some(value),
+            exists: Some(true),
+            deleted: None,
+            keys: None,
+            inserted: None,
+            updated: None,
+            current: None,
+            numeric_value: None,
+            error: None,
+            tests: None,
+        },
+        Ok(None) => Output {
+            success: true,
+            command: "verify_public_http".to_string(),
+            value: None,
+            exists: Some(false),
+            deleted: None,
+            keys: None,
+            inserted: None,
+            updated: None,
+            current: None,
+            numeric_value: None,
+            error: None,
+            tests: None,
+        },
+        Err(e) => error_output("verify_public_http", &e),
+    }
+}
+
+/// HTTP request to coordinator's public storage endpoint
+fn verify_public_storage_http(key: &str, coordinator_url: &str, project_uuid: &str) -> Result<Option<String>, String> {
+    let url = format!(
+        "{}/public/storage/get?project_uuid={}&key={}",
+        coordinator_url.trim_end_matches('/'),
+        project_uuid,
+        key
+    );
+
+    let response = Client::new()
+        .get(&url)
+        .connect_timeout(Duration::from_secs(10))
+        .send()
+        .map_err(|e| format!("HTTP request failed: {}", e))?;
+
+    let status = response.status();
+    if status == 403 {
+        return Err("Storage key exists but is encrypted (not public)".to_string());
+    }
+    if status < 200 || status >= 300 {
+        return Err(format!("HTTP {}", status));
+    }
+
+    let body = response.body().map_err(|e| format!("Failed to read response: {}", e))?;
+    let json: serde_json::Value = serde_json::from_slice(&body)
+        .map_err(|e| format!("Failed to parse JSON: {}", e))?;
+
+    let exists = json.get("exists").and_then(|v| v.as_bool()).unwrap_or(false);
+    if !exists {
+        return Ok(None);
+    }
+
+    let value_b64 = json.get("value").and_then(|v| v.as_str()).unwrap_or("");
+    let value_bytes = STANDARD.decode(value_b64)
+        .map_err(|e| format!("Failed to decode base64: {}", e))?;
+    let value = String::from_utf8(value_bytes)
+        .map_err(|e| format!("Invalid UTF-8: {}", e))?;
+
+    Ok(Some(value))
 }
 
 // ==================== Conditional Write Commands ====================
@@ -541,7 +704,27 @@ fn cmd_test_all() -> Output {
     if test.success { passed += 1; } else { failed += 1; }
     results.push(test);
 
-    // Test 25: Clear all and verify
+    // ==================== Public Storage Tests ====================
+
+    // Test 25: Set public data (unencrypted)
+    let test = test_set_public("public-test-key", "public-test-value");
+    if test.success { passed += 1; } else { failed += 1; }
+    results.push(test);
+
+    // Test 26: Read public data back via worker storage
+    let test = test_get_worker("public-test-key", Some("public-test-value"));
+    if test.success { passed += 1; } else { failed += 1; }
+    results.push(test);
+
+    // Test 27: Cross-project read of public data (from self, using project_uuid)
+    let project_uuid = std::env::var("OUTLAYER_PROJECT_UUID").unwrap_or_default();
+    if !project_uuid.is_empty() {
+        let test = test_get_public_cross("public-test-key", &project_uuid, Some("public-test-value"));
+        if test.success { passed += 1; } else { failed += 1; }
+        results.push(test);
+    }
+
+    // Final: Clear all and verify
     let test = test_clear_all_and_verify();
     if test.success { passed += 1; } else { failed += 1; }
     results.push(test);
@@ -837,6 +1020,293 @@ fn test_decrement(key: &str, delta: i64, expected_value: i64) -> TestResult {
             name: format!("decrement({}, {})", key, delta),
             success: false,
             error: Some(e.to_string()),
+        },
+    }
+}
+
+// ==================== Public Storage Test Functions ====================
+
+/// Test public storage functionality
+/// Tests writing unencrypted data and reading it back (simulating cross-project reads)
+/// If coordinator_url is provided, also verifies via HTTP API
+fn cmd_test_public_storage(coordinator_url: &str) -> Output {
+    let mut results = Vec::new();
+    let mut passed = 0;
+    let mut failed = 0;
+
+    // Get project info from env (use project_uuid for cross-project reads)
+    let project_uuid = std::env::var("OUTLAYER_PROJECT_UUID").unwrap_or_default();
+
+    // Test 1: Set public data
+    let test = test_set_public("public-key-1", "public-value-1");
+    if test.success { passed += 1; } else { failed += 1; }
+    results.push(test);
+
+    // Test 2: Read public data back via worker storage
+    let test = test_get_worker("public-key-1", Some("public-value-1"));
+    if test.success { passed += 1; } else { failed += 1; }
+    results.push(test);
+
+    // Test 3: Set another public value (JSON data like oracle price)
+    let json_value = r#"{"price":"1234.56","timestamp":1704067200}"#;
+    let test = test_set_public("oracle:ETH", json_value);
+    if test.success { passed += 1; } else { failed += 1; }
+    results.push(test);
+
+    // Test 4: Read JSON public data back
+    let test = test_get_worker("oracle:ETH", Some(json_value));
+    if test.success { passed += 1; } else { failed += 1; }
+    results.push(test);
+
+    // Test 5: Cross-project read from self (simulates reading from another project using project_uuid)
+    if !project_uuid.is_empty() {
+        let test = test_get_public_cross("public-key-1", &project_uuid, Some("public-value-1"));
+        if test.success { passed += 1; } else { failed += 1; }
+        results.push(test);
+
+        // Test 6: Cross-project read of oracle data
+        let test = test_get_public_cross("oracle:ETH", &project_uuid, Some(json_value));
+        if test.success { passed += 1; } else { failed += 1; }
+        results.push(test);
+    }
+
+    // Test 7: Overwrite public data
+    let test = test_set_public("public-key-1", "updated-public-value");
+    if test.success { passed += 1; } else { failed += 1; }
+    results.push(test);
+
+    // Test 8: Verify overwrite worked
+    let test = test_get_worker("public-key-1", Some("updated-public-value"));
+    if test.success { passed += 1; } else { failed += 1; }
+    results.push(test);
+
+    // Test 9: Cross-project read of non-existent key
+    if !project_uuid.is_empty() {
+        let test = test_get_public_cross("non-existent-public-key", &project_uuid, None);
+        if test.success { passed += 1; } else { failed += 1; }
+        results.push(test);
+    }
+
+    // Test 10: Mix of public and private storage
+    let _ = storage::set_worker("private-key", b"private-value");
+    if !project_uuid.is_empty() {
+        let test = test_private_not_accessible_cross("private-key", &project_uuid);
+        if test.success { passed += 1; } else { failed += 1; }
+        results.push(test);
+    }
+
+    // HTTP verification tests (if coordinator_url provided)
+    if !coordinator_url.is_empty() && !project_uuid.is_empty() {
+        // Test HTTP: Verify public data via coordinator API
+        let test = test_verify_http("public-key-1", "updated-public-value", coordinator_url, &project_uuid);
+        if test.success { passed += 1; } else { failed += 1; }
+        results.push(test);
+
+        // Test HTTP: Verify oracle data
+        let test = test_verify_http("oracle:ETH", json_value, coordinator_url, &project_uuid);
+        if test.success { passed += 1; } else { failed += 1; }
+        results.push(test);
+
+        // Test HTTP: Non-existent key returns exists=false
+        let test = test_verify_http_not_exists("non-existent-http-key", coordinator_url, &project_uuid);
+        if test.success { passed += 1; } else { failed += 1; }
+        results.push(test);
+
+        // Test HTTP: Private key should return 403 or not exist
+        let test = test_verify_http_private_forbidden("private-key", coordinator_url, &project_uuid);
+        if test.success { passed += 1; } else { failed += 1; }
+        results.push(test);
+    }
+
+    Output {
+        success: failed == 0,
+        command: "test_public_storage".to_string(),
+        value: Some(format!("{}/{} public storage tests passed", passed, passed + failed)),
+        exists: None,
+        deleted: None,
+        keys: None,
+        inserted: None,
+        updated: None,
+        current: None,
+        numeric_value: None,
+        error: if failed > 0 { Some(format!("{} tests failed", failed)) } else { None },
+        tests: Some(TestResults {
+            total: passed + failed,
+            passed,
+            failed,
+            results,
+        }),
+    }
+}
+
+fn test_set_public(key: &str, value: &str) -> TestResult {
+    match storage::set_worker_with_options(key, value.as_bytes(), Some(false)) {
+        Ok(()) => TestResult {
+            name: format!("set_public({})", key),
+            success: true,
+            error: None,
+        },
+        Err(e) => TestResult {
+            name: format!("set_public({})", key),
+            success: false,
+            error: Some(e.to_string()),
+        },
+    }
+}
+
+fn test_get_public_cross(key: &str, project: &str, expected: Option<&str>) -> TestResult {
+    match storage::get_worker_from_project(key, Some(project)) {
+        Ok(data) => {
+            match (data, expected) {
+                (Some(bytes), Some(exp)) => {
+                    let actual = String::from_utf8(bytes).unwrap_or_default();
+                    if actual == exp {
+                        TestResult {
+                            name: format!("get_public_cross({}, {})", key, project),
+                            success: true,
+                            error: None,
+                        }
+                    } else {
+                        TestResult {
+                            name: format!("get_public_cross({}, {})", key, project),
+                            success: false,
+                            error: Some(format!("Expected '{}' but got '{}'", exp, actual)),
+                        }
+                    }
+                }
+                (None, None) => TestResult {
+                    name: format!("get_public_cross({}, {}) -> None", key, project),
+                    success: true,
+                    error: None,
+                },
+                (Some(bytes), None) => {
+                    let actual = String::from_utf8(bytes).unwrap_or_else(|_| "<binary>".to_string());
+                    TestResult {
+                        name: format!("get_public_cross({}, {}) -> None", key, project),
+                        success: false,
+                        error: Some(format!("Expected None but got '{}'", actual)),
+                    }
+                }
+                (None, Some(exp)) => TestResult {
+                    name: format!("get_public_cross({}, {})", key, project),
+                    success: false,
+                    error: Some(format!("Expected '{}' but got None", exp)),
+                },
+            }
+        }
+        Err(e) => TestResult {
+            name: format!("get_public_cross({}, {})", key, project),
+            success: false,
+            error: Some(e.to_string()),
+        },
+    }
+}
+
+/// Test that private (encrypted) data is NOT accessible via cross-project read
+fn test_private_not_accessible_cross(key: &str, project: &str) -> TestResult {
+    match storage::get_worker_from_project(key, Some(project)) {
+        Ok(None) => TestResult {
+            name: format!("private_not_accessible_cross({}, {})", key, project),
+            success: true,
+            error: None,
+        },
+        Ok(Some(_)) => TestResult {
+            name: format!("private_not_accessible_cross({}, {})", key, project),
+            success: false,
+            error: Some("Private data should NOT be accessible cross-project".to_string()),
+        },
+        Err(e) => {
+            // An error (like FORBIDDEN) is also acceptable - means access denied
+            if e.to_string().contains("FORBIDDEN") || e.to_string().contains("403") || e.to_string().contains("encrypted") {
+                TestResult {
+                    name: format!("private_not_accessible_cross({}, {}) -> access denied", key, project),
+                    success: true,
+                    error: None,
+                }
+            } else {
+                TestResult {
+                    name: format!("private_not_accessible_cross({}, {})", key, project),
+                    success: false,
+                    error: Some(format!("Unexpected error: {}", e)),
+                }
+            }
+        }
+    }
+}
+
+// ==================== HTTP Verification Test Functions ====================
+
+fn test_verify_http(key: &str, expected: &str, coordinator_url: &str, project_uuid: &str) -> TestResult {
+    match verify_public_storage_http(key, coordinator_url, project_uuid) {
+        Ok(Some(actual)) => {
+            if actual == expected {
+                TestResult {
+                    name: format!("verify_http({})", key),
+                    success: true,
+                    error: None,
+                }
+            } else {
+                TestResult {
+                    name: format!("verify_http({})", key),
+                    success: false,
+                    error: Some(format!("Expected '{}' but got '{}'", expected, actual)),
+                }
+            }
+        }
+        Ok(None) => TestResult {
+            name: format!("verify_http({})", key),
+            success: false,
+            error: Some(format!("Expected '{}' but got None", expected)),
+        },
+        Err(e) => TestResult {
+            name: format!("verify_http({})", key),
+            success: false,
+            error: Some(e),
+        },
+    }
+}
+
+fn test_verify_http_not_exists(key: &str, coordinator_url: &str, project_uuid: &str) -> TestResult {
+    match verify_public_storage_http(key, coordinator_url, project_uuid) {
+        Ok(None) => TestResult {
+            name: format!("verify_http_not_exists({})", key),
+            success: true,
+            error: None,
+        },
+        Ok(Some(value)) => TestResult {
+            name: format!("verify_http_not_exists({})", key),
+            success: false,
+            error: Some(format!("Expected None but got '{}'", value)),
+        },
+        Err(e) => TestResult {
+            name: format!("verify_http_not_exists({})", key),
+            success: false,
+            error: Some(e),
+        },
+    }
+}
+
+fn test_verify_http_private_forbidden(key: &str, coordinator_url: &str, project_uuid: &str) -> TestResult {
+    match verify_public_storage_http(key, coordinator_url, project_uuid) {
+        Ok(None) => TestResult {
+            name: format!("verify_http_private_forbidden({}) -> not found", key),
+            success: true,
+            error: None,
+        },
+        Ok(Some(_)) => TestResult {
+            name: format!("verify_http_private_forbidden({})", key),
+            success: false,
+            error: Some("Private data should NOT be accessible via HTTP".to_string()),
+        },
+        Err(e) if e.contains("403") || e.contains("FORBIDDEN") || e.contains("encrypted") => TestResult {
+            name: format!("verify_http_private_forbidden({}) -> 403", key),
+            success: true,
+            error: None,
+        },
+        Err(e) => TestResult {
+            name: format!("verify_http_private_forbidden({})", key),
+            success: false,
+            error: Some(format!("Unexpected error: {}", e)),
         },
     }
 }

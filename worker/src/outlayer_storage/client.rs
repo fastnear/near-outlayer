@@ -567,17 +567,17 @@ impl StorageClient {
     }
 
     /// Get worker storage (account_id = "@worker")
-    /// project: None = read from current project (private or public)
-    ///          Some("owner.near/project-id") = read public data from another project
-    pub fn get_worker(&self, key: &str, project: Option<&str>) -> Result<Option<Vec<u8>>> {
-        match project {
+    /// project_uuid: None = read from current project (private or public)
+    ///               Some("p0000000000000001") = read public data from another project by UUID
+    pub fn get_worker(&self, key: &str, project_uuid: Option<&str>) -> Result<Option<Vec<u8>>> {
+        match project_uuid {
             None => {
                 // Read from own project - may be encrypted or public
                 self.get_worker_own(key)
             }
-            Some(project_path) => {
+            Some(uuid) => {
                 // Read from another project - only public data allowed
-                self.get_worker_public(key, project_path)
+                self.get_worker_public(key, uuid)
             }
         }
     }
@@ -642,28 +642,19 @@ impl StorageClient {
         }
     }
 
-    /// Get public worker storage from another project
-    fn get_worker_public(&self, key: &str, project_path: &str) -> Result<Option<Vec<u8>>> {
-        // Parse project_path: "owner.near/project-id" -> lookup project_uuid
-        let parts: Vec<&str> = project_path.splitn(2, '/').collect();
-        if parts.len() != 2 {
-            anyhow::bail!("Invalid project path format. Expected 'owner.near/project-id', got '{}'", project_path);
-        }
-        let owner = parts[0];
-        let project_id = parts[1];
-
+    /// Get public worker storage from another project by UUID
+    fn get_worker_public(&self, key: &str, project_uuid: &str) -> Result<Option<Vec<u8>>> {
         let key_hash = self.hash_key(key);
 
         debug!(
-            "storage_get_worker_public: owner={}, project_id={}, key_hash={}",
-            owner, project_id, key_hash
+            "storage_get_worker_public: project_uuid={}, key_hash={}",
+            project_uuid, key_hash
         );
 
         // Request public storage from coordinator
         // Coordinator will check is_encrypted=false before returning
         let body = serde_json::json!({
-            "owner": owner,
-            "project_id": project_id,
+            "project_uuid": project_uuid,
             "key_hash": key_hash,
         });
 
@@ -682,7 +673,7 @@ impl StorageClient {
                 return Ok(None);
             }
             if status == reqwest::StatusCode::FORBIDDEN {
-                anyhow::bail!("Storage key '{}' in project '{}' is not public", key, project_path);
+                anyhow::bail!("Storage key '{}' in project '{}' is not public (encrypted)", key, project_uuid);
             }
             let error_text = response.text().unwrap_or_default();
             error!("Storage get-public failed: {} - {}", status, error_text);

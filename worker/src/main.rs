@@ -837,6 +837,13 @@ fn merge_env_vars(
     // Add project context (same for both modes)
     if let Some(proj_id) = project_id {
         env_vars.insert("OUTLAYER_PROJECT_ID".to_string(), proj_id.clone());
+        // Split by first '/' only (project name may contain '/')
+        if let Some(slash_pos) = proj_id.find('/') {
+            let owner = &proj_id[..slash_pos];
+            let name = &proj_id[slash_pos + 1..];
+            env_vars.insert("OUTLAYER_PROJECT_OWNER".to_string(), owner.to_string());
+            env_vars.insert("OUTLAYER_PROJECT_NAME".to_string(), name.to_string());
+        }
     }
     if let Some(proj_uuid) = project_uuid {
         env_vars.insert("OUTLAYER_PROJECT_UUID".to_string(), proj_uuid.clone());
@@ -1558,128 +1565,15 @@ async fn handle_execute_job(
         (bytes, job.compile_time_ms, created_at, None, need_cache)
     };
 
-    // Extract metadata from WASM
-    let wasm_metadata = executor::extract_metadata(&wasm_bytes);
-
-    // STRICT VALIDATION: If job has project_id and WASM has metadata, they MUST match
-    // This prevents using WASM built for one project with execution requests for another project
-    if let (Some(ref job_project_id), Some(ref metadata)) = (&job.project_id, &wasm_metadata) {
-        if job_project_id != &metadata.project {
-            let error_msg = format!(
-                "Project mismatch: WASM declares project '{}' in metadata but execution was requested for project '{}'. \
-                 Either rebuild WASM with correct metadata! {{ project: \"{}\" }} or use the correct project_id in request.",
-                metadata.project, job_project_id, job_project_id
-            );
-            error!("❌ {}", error_msg);
-
-            // Fail the job - report to contract
-            let error_result = ExecutionResult {
-                success: false,
-                output: None,
-                error: Some(error_msg.clone()),
-                execution_time_ms: 0,
-                instructions: 0,
-                compile_time_ms: None,
-                compilation_note: None,
-                refund_usd: None,
-            };
-
-            let _ = near_client.submit_execution_result(request_id, &error_result).await;
-            api_client
-                .complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None)
-                .await?;
-            return Ok(());
-        }
-        info!("✅ Project ID validated: WASM metadata '{}' matches request '{}'", metadata.project, job_project_id);
-    }
-
-    // Resolve project UUID - either from job or from WASM metadata
-    let project_uuid = if let Some(ref job_uuid) = job.project_uuid {
-        // Job has project_uuid - verify it matches WASM metadata if present
-        if let Some(ref metadata) = wasm_metadata {
-            // Resolve metadata.project to UUID and compare
-            match api_client.resolve_project_uuid(&metadata.project).await {
-                Ok(Some(project_info)) => {
-                    if &project_info.uuid != job_uuid {
-                        let error_msg = format!(
-                            "Project mismatch: WASM metadata declares project '{}' (uuid={}) but execution requested for uuid={}",
-                            metadata.project, project_info.uuid, job_uuid
-                        );
-                        error!("❌ {}", error_msg);
-
-                        // Fail the job
-                        let error_result = ExecutionResult {
-                            success: false,
-                            output: None,
-                            error: Some(error_msg.clone()),
-                            execution_time_ms: 0,
-                            instructions: 0,
-                            compile_time_ms: None,
-                            compilation_note: None,
-                            refund_usd: None,
-                        };
-
-                        let _ = near_client.submit_execution_result(request_id, &error_result).await;
-                        api_client
-                            .complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None)
-                            .await?;
-                        return Ok(());
-                    }
-                    info!("✅ Project metadata verified: {} -> {}", metadata.project, job_uuid);
-                }
-                Ok(None) => {
-                    let error_msg = format!(
-                        "Project '{}' from WASM metadata not found on contract",
-                        metadata.project
-                    );
-                    error!("❌ {}", error_msg);
-
-                    let error_result = ExecutionResult {
-                        success: false,
-                        output: None,
-                        error: Some(error_msg.clone()),
-                        execution_time_ms: 0,
-                        instructions: 0,
-                        compile_time_ms: None,
-                        compilation_note: None,
-                        refund_usd: None,
-                    };
-
-                    let _ = near_client.submit_execution_result(request_id, &error_result).await;
-                    api_client
-                        .complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None)
-                        .await?;
-                    return Ok(());
-                }
-                Err(e) => {
-                    warn!("⚠️ Failed to verify project metadata: {}. Continuing with job UUID.", e);
-                }
-            }
-        }
-        Some(job_uuid.clone())
-    } else if let Some(ref metadata) = wasm_metadata {
-        // No job UUID but WASM has metadata - resolve from metadata
-        info!("📋 Extracted WASM metadata: project={}, version={}", metadata.project, metadata.version);
-
-        match api_client.resolve_project_uuid(&metadata.project).await {
-            Ok(Some(project_info)) => {
-                info!("✅ Resolved project UUID: {} -> {}", metadata.project, project_info.uuid);
-                Some(project_info.uuid)
-            }
-            Ok(None) => {
-                warn!("⚠️ Project '{}' not found on contract. Storage will be disabled.", metadata.project);
-                None
-            }
-            Err(e) => {
-                warn!("⚠️ Failed to resolve project UUID: {}. Storage will be disabled.", e);
-                None
-            }
-        }
+    // Project UUID comes from the contract via coordinator - no need to extract from WASM metadata
+    // The contract determines which CodeSource to use for a project, and the coordinator passes project_uuid
+    // This is secure because WASM cannot fake its project - the binding is enforced by the contract
+    let project_uuid = job.project_uuid.clone();
+    if let Some(ref uuid) = project_uuid {
+        info!("📋 Running in project context: project_id={:?}, project_uuid={}", job.project_id, uuid);
     } else {
-        // No job UUID and no metadata - standalone WASM without project
         debug!("No project context - running as standalone WASM (storage disabled)");
-        None
-    };
+    }
 
     // Decrypt secrets from contract if provided (new repo-based system)
     info!("🔍 DEBUG secrets_ref: {:?}", secrets_ref);
@@ -1738,16 +1632,23 @@ async fn handle_execute_job(
             Err(e) => {
                 // Error message already user-friendly from keystore_client
                 let error_msg = e.to_string();
-                error!("❌ Secrets decryption failed: {}", error_msg);
 
-                // Determine error category based on error message
-                let error_category = if error_msg.contains("Access") && error_msg.contains("denied") {
-                    api_client::JobStatus::AccessDenied
-                } else if error_msg.contains("not found") || error_msg.contains("Invalid secrets format") {
-                    api_client::JobStatus::Custom // Secrets not found or invalid format - user configuration issue
+                // "Secrets not found" is not a fatal error - WASM may not need secrets
+                // Continue with empty secrets map
+                if error_msg.contains("not found") {
+                    info!("ℹ️  No secrets configured for this project/source, continuing without secrets");
+                    Some(std::collections::HashMap::new())
                 } else {
-                    api_client::JobStatus::Failed // Generic secret error - infrastructure issue
-                };
+                    error!("❌ Secrets decryption failed: {}", error_msg);
+
+                    // Determine error category based on error message
+                    let error_category = if error_msg.contains("Access") && error_msg.contains("denied") {
+                        api_client::JobStatus::AccessDenied
+                    } else if error_msg.contains("Invalid secrets format") {
+                        api_client::JobStatus::Custom // Invalid format - user configuration issue
+                    } else {
+                        api_client::JobStatus::Failed // Generic secret error - infrastructure issue
+                    };
 
                 // Send error to NEAR contract
                 let error_result = ExecutionResult {
@@ -1794,7 +1695,8 @@ async fn handle_execute_job(
                         None, // No compile_result
                     )
                     .await?;
-                return Ok(());
+                    return Ok(());
+                }
             }
         }
     } else {

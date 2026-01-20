@@ -214,6 +214,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             get(handlers::public::get_user_earnings),
         )
         .route("/public/projects/storage", get(handlers::public::get_project_storage))
+        .route("/public/storage/get", get(handlers::public::get_public_storage))
         // Payment Key balance and usage (public - no auth required)
         .route(
             "/public/payment-keys/:owner/:nonce/balance",

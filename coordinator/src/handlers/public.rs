@@ -765,3 +765,115 @@ pub async fn get_project_owner_earnings_history(
         total_count,
     }))
 }
+
+// ============================================================================
+// Public Storage Endpoint (read-only access to public storage)
+// ============================================================================
+
+/// Query params for public storage GET
+#[derive(Debug, Deserialize)]
+pub struct PublicStorageQuery {
+    /// Project UUID (available as OUTLAYER_PROJECT_UUID env in WASM)
+    pub project_uuid: String,
+    /// Storage key (plaintext)
+    pub key: String,
+    /// Output format: "json" (default) or "raw"
+    /// - json: {"exists":true,"value":"<base64>"}
+    /// - raw: raw bytes with Content-Type: application/octet-stream
+    #[serde(default)]
+    pub format: Option<String>,
+}
+
+/// Response for public storage GET
+#[derive(Debug, Serialize)]
+pub struct PublicStorageResponse {
+    pub exists: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,  // Base64-encoded value
+}
+
+/// Public endpoint: Get public storage value
+///
+/// Reads storage data that was written with `is_encrypted=false`.
+/// Only returns data from `@worker` account (worker-private storage made public).
+///
+/// Query params:
+/// - project_uuid: Project UUID (from OUTLAYER_PROJECT_UUID env)
+/// - key: Storage key (plaintext, will be hashed internally)
+/// - format: "json" (default) or "raw"
+pub async fn get_public_storage(
+    State(state): State<AppState>,
+    Query(params): Query<PublicStorageQuery>,
+) -> Result<axum::response::Response, (StatusCode, String)> {
+    use axum::response::IntoResponse;
+    use axum::http::header;
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use sha2::{Sha256, Digest};
+
+    let is_raw = params.format.as_deref() == Some("raw");
+
+    // Hash the key (coordinator stores key_hash, not plaintext key)
+    let key_hash = {
+        let mut hasher = Sha256::new();
+        hasher.update(params.key.as_bytes());
+        hex::encode(hasher.finalize())
+    };
+
+    // Get the storage value, but only if it's public (is_encrypted=false)
+    let result = sqlx::query_as::<_, (Vec<u8>, bool)>(
+        r#"
+        SELECT encrypted_value, is_encrypted
+        FROM storage_data
+        WHERE project_uuid = $1
+          AND account_id = '@worker'
+          AND key_hash = $2
+        "#,
+    )
+    .bind(&params.project_uuid)
+    .bind(&key_hash)
+    .fetch_optional(&state.db)
+    .await;
+
+    match result {
+        Ok(Some((value, is_encrypted))) => {
+            if is_encrypted {
+                // Data exists but is encrypted - not publicly accessible
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    "Storage key exists but is encrypted (not public)".to_string(),
+                ));
+            }
+
+            if is_raw {
+                // Raw format - return bytes directly
+                Ok((
+                    StatusCode::OK,
+                    [(header::CONTENT_TYPE, "application/octet-stream")],
+                    value,
+                ).into_response())
+            } else {
+                // JSON format (default) - return base64-encoded value
+                Ok(Json(PublicStorageResponse {
+                    exists: true,
+                    value: Some(STANDARD.encode(&value)),
+                }).into_response())
+            }
+        }
+        Ok(None) => {
+            if is_raw {
+                // Raw format - return 404 for not found
+                Err((StatusCode::NOT_FOUND, "Key not found".to_string()))
+            } else {
+                // JSON format - return exists: false
+                Ok(Json(PublicStorageResponse {
+                    exists: false,
+                    value: None,
+                }).into_response())
+            }
+        }
+        Err(e) => {
+            error!("get_public_storage error: {}", e);
+            Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))
+        }
+    }
+}

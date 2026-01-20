@@ -261,7 +261,7 @@ pub fn get_worker(key: &str) -> Result<Option<Vec<u8>>> {
 ///
 /// # Arguments
 /// * `key` - The key to retrieve
-/// * `project` - None = current project, Some("owner.near/project-id") = read from another project
+/// * `project_uuid` - None = current project, Some("p0000000000000001") = read from another project by UUID
 ///
 /// # Returns
 /// * `Ok(Some(bytes))` - Value found
@@ -270,14 +270,15 @@ pub fn get_worker(key: &str) -> Result<Option<Vec<u8>>> {
 ///
 /// # Example
 /// ```rust,ignore
-/// // Read public oracle price from another project
-/// if let Some(price_data) = storage::get_worker_from_project("price:ETH", Some("oracle.near/price-feed"))? {
+/// // Read public oracle price from another project (by UUID)
+/// // Get project UUID via contract's get_project("oracle.near/price-feed") view call
+/// if let Some(price_data) = storage::get_worker_from_project("price:ETH", Some("p0000000000000042"))? {
 ///     let price = f64::from_le_bytes(price_data.try_into()?);
 ///     println!("ETH price: ${}", price);
 /// }
 /// ```
-pub fn get_worker_from_project(key: &str, project: Option<&str>) -> Result<Option<Vec<u8>>> {
-    let (data, error) = raw::get_worker(key, project);
+pub fn get_worker_from_project(key: &str, project_uuid: Option<&str>) -> Result<Option<Vec<u8>>> {
+    let (data, error) = raw::get_worker(key, project_uuid);
     if !error.is_empty() {
         return Err(StorageError(error));
     }

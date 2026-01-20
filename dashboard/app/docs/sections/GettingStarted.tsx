@@ -546,7 +546,7 @@ export default function GettingStartedSection() {
                 <strong>Option A:</strong> HTTPS API — call directly from any app
               </p>
               <pre className="text-xs bg-gray-100 p-2 rounded mt-1 overflow-x-auto">
-{`curl -X POST https://api.outlayer.io/call/owner/project \\
+{`curl -X POST https://api.outlayer.fastnear.com/call/owner/project \\
   -H "X-Payment-Key: pk_..." \\
   -d '{"param": 123}'`}
               </pre>

@@ -61,9 +61,9 @@ interface api {
     set-worker: func(key: string, value: list<u8>, is-encrypted: option<bool>) -> string;
 
     /// Get worker data
-    /// project: none = read from current project (any encryption type)
-    ///          some("owner.near/project-id") = read public data from another project
-    get-worker: func(key: string, project: option<string>) -> tuple<list<u8>, string>;
+    /// project-uuid: none = read from current project (any encryption type)
+    ///               some("p0000000000000001") = read public data from another project by UUID
+    get-worker: func(key: string, project-uuid: option<string>) -> tuple<list<u8>, string>;
 
     // ==================== Version Migration ====================
 

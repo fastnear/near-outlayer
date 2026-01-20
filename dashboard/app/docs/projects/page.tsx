@@ -104,55 +104,186 @@ Examples:
         </div>
       </section>
 
-      {/* Project Binding in WASM Code */}
+      {/* How Project Binding Works */}
       <section className="mb-12">
-        <AnchorHeading id="wasm-metadata">Project Binding in WASM Code</AnchorHeading>
+        <AnchorHeading id="wasm-metadata">How Project Binding Works</AnchorHeading>
 
         <p className="text-gray-700 mb-4">
-          For storage to work correctly, your WASM code <strong>must declare which project it belongs to</strong> using
-          the <code>metadata!</code> macro from the OutLayer SDK:
+          When you execute code via a project, the contract automatically binds your WASM to the project context.
+          <strong> You don&apos;t need to declare the project in your code</strong> — the binding is enforced by the contract.
         </p>
 
         <SyntaxHighlighter language="rust" style={vscDarkPlus} className="rounded-lg mb-4">
-          {`use outlayer::{metadata, storage};
+          {`use outlayer::storage;
 
-// REQUIRED for project-based execution and storage
-// project must match your project_id on the OutLayer contract!
-metadata! {
-    project: "alice.near/my-app",  // Format: {owner_account_id}/{project_name}
-    version: "1.0.0",               // Optional: for tracking
+fn main() {
+    // Storage automatically uses your project context
+    // The contract passes project_uuid to the worker
+    storage::set("counter", &42i64.to_le_bytes()).unwrap();
+
+    if let Some(data) = storage::get("counter").unwrap() {
+        let value = i64::from_le_bytes(data.try_into().unwrap());
+        println!("Counter: {}", value);
+    }
 }`}
         </SyntaxHighlighter>
 
-        <div className="bg-red-50 border-l-4 border-red-400 p-4 mb-6">
-          <p className="text-sm text-red-800">
-            <strong>Critical:</strong> The <code>project</code> field <strong>must exactly match</strong> your project ID
-            on the contract (e.g., <code>alice.near/my-app</code>). If they don&apos;t match, storage operations will fail
-            or use the wrong namespace.
-          </p>
+        <h4 className="font-semibold text-gray-900 mb-2">How it works:</h4>
+
+        <ul className="list-disc list-inside text-gray-700 space-y-2 mb-6">
+          <li>You call <code>request_execution(Project &#123; project_id &#125;)</code></li>
+          <li>Contract looks up the project and resolves the CodeSource (GitHub or WasmUrl)</li>
+          <li>Contract sends <code>project_uuid</code> to the worker</li>
+          <li>Worker uses <code>project_uuid</code> for storage namespace and encryption</li>
+        </ul>
+
+        <AnchorHeading id="project-env-vars" level={3}>Project Environment Variables</AnchorHeading>
+
+        <p className="text-gray-700 mb-4">
+          Your WASM code can access project information via environment variables:
+        </p>
+
+        <div className="overflow-x-auto mb-6">
+          <table className="min-w-full divide-y divide-gray-200 text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Variable</th>
+                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Example</th>
+                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Description</th>
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              <tr>
+                <td className="px-3 py-2 font-mono">OUTLAYER_PROJECT_ID</td>
+                <td className="px-3 py-2"><code>alice.near/my-app</code></td>
+                <td className="px-3 py-2">Full project ID (owner/name)</td>
+              </tr>
+              <tr>
+                <td className="px-3 py-2 font-mono">OUTLAYER_PROJECT_OWNER</td>
+                <td className="px-3 py-2"><code>alice.near</code></td>
+                <td className="px-3 py-2">Project owner account</td>
+              </tr>
+              <tr>
+                <td className="px-3 py-2 font-mono">OUTLAYER_PROJECT_NAME</td>
+                <td className="px-3 py-2"><code>my-app</code></td>
+                <td className="px-3 py-2">Project name (may contain &quot;/&quot;)</td>
+              </tr>
+              <tr>
+                <td className="px-3 py-2 font-mono">OUTLAYER_PROJECT_UUID</td>
+                <td className="px-3 py-2"><code>550e8400-...</code></td>
+                <td className="px-3 py-2">Internal UUID (for storage)</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
 
-        <h4 className="font-semibold text-gray-900 mb-2">Why is this needed?</h4>
+        <SyntaxHighlighter language="rust" style={vscDarkPlus} className="rounded-lg mb-6">
+          {`// Access project info in your WASM code
+let project_id = std::env::var("OUTLAYER_PROJECT_ID").ok();
+let owner = std::env::var("OUTLAYER_PROJECT_OWNER").ok();
+let name = std::env::var("OUTLAYER_PROJECT_NAME").ok();
 
-        <ul className="list-disc list-inside text-gray-700 space-y-2 mb-6">
-          <li><strong>Storage namespace</strong>: The project ID determines which storage namespace your code uses</li>
-          <li><strong>Encryption key</strong>: Storage encryption keys are derived from <code>storage:{'{'}project_uuid{'}'}</code></li>
-          <li><strong>Version continuity</strong>: All versions of the same project share storage because they have the same project ID</li>
-          <li><strong>Secrets access</strong>: Project secrets are only accessible to WASM with matching project ID</li>
-        </ul>
+// Example: "zavodil2.testnet/my/nested/app"
+// owner = "zavodil2.testnet"
+// name = "my/nested/app"  (split by first "/" only)`}
+        </SyntaxHighlighter>
 
-        <h4 className="font-semibold text-gray-900 mb-2">What happens without metadata?</h4>
+        <div className="bg-green-50 border-l-4 border-green-400 p-4 mb-6">
+          <p className="text-sm text-green-800">
+            <strong>Security:</strong> WASM cannot fake its project — the contract determines which CodeSource
+            runs for which project. The binding is enforced at the contract level, not in the WASM code.
+          </p>
+        </div>
+      </section>
 
-        <ul className="list-disc list-inside text-gray-700 space-y-2 mb-6">
-          <li>Storage calls will fail with &quot;project not found&quot; error</li>
-          <li>Secrets won&apos;t be decrypted (project binding validation fails)</li>
-          <li>Each WASM hash gets isolated storage instead of shared project storage</li>
-        </ul>
+      {/* Storage Security */}
+      <section className="mb-12">
+        <AnchorHeading id="storage-security">Storage Security Model</AnchorHeading>
 
-        <div className="bg-blue-50 border-l-4 border-blue-400 p-4 mb-6">
+        <p className="text-gray-700 mb-4">
+          How does OutLayer ensure that a malicious WASM cannot access another project&apos;s storage?
+        </p>
+
+        <h4 className="font-semibold text-gray-900 mb-3">The Security Chain</h4>
+
+        <div className="bg-gray-50 rounded-lg p-4 mb-6 font-mono text-sm">
+          <div className="space-y-2">
+            <p>1. User calls: <code className="bg-gray-200 px-1">request_execution(Project &#123; project_id: &quot;alice.near/app&quot; &#125;)</code></p>
+            <p className="pl-4">↓</p>
+            <p>2. Contract looks up project → finds registered CodeSource (GitHub repo or WASM URL)</p>
+            <p className="pl-4">↓</p>
+            <p>3. Contract sends to worker: <code className="bg-gray-200 px-1">&#123; code_source, project_uuid: &quot;uuid-123&quot; &#125;</code></p>
+            <p className="pl-4">↓</p>
+            <p>4. Worker compiles/downloads WASM from the CodeSource</p>
+            <p className="pl-4">↓</p>
+            <p>5. Worker executes WASM with storage bound to <code className="bg-gray-200 px-1">project_uuid</code></p>
+          </div>
+        </div>
+
+        <h4 className="font-semibold text-gray-900 mb-3">Key Security Properties</h4>
+
+        <div className="grid md:grid-cols-2 gap-4 mb-6">
+          <div className="border border-gray-200 rounded-lg p-4">
+            <h5 className="font-semibold text-gray-900 mb-2">Contract Controls Source</h5>
+            <p className="text-sm text-gray-600">
+              Only the project owner can register CodeSources. When you request execution for <code>alice.near/app</code>,
+              the contract decides which code runs — you cannot override it.
+            </p>
+          </div>
+          <div className="border border-gray-200 rounded-lg p-4">
+            <h5 className="font-semibold text-gray-900 mb-2">UUID from Contract</h5>
+            <p className="text-sm text-gray-600">
+              The <code>project_uuid</code> is generated by the contract when the project is created.
+              WASM receives it from the worker, it cannot choose or fake its own UUID.
+            </p>
+          </div>
+          <div className="border border-gray-200 rounded-lg p-4">
+            <h5 className="font-semibold text-gray-900 mb-2">Deterministic WASM Hash</h5>
+            <p className="text-sm text-gray-600">
+              The WASM checksum is calculated from CodeSource: <code>SHA256(repo:commit:target)</code>.
+              Same source always produces the same hash — no way to substitute different code.
+            </p>
+          </div>
+          <div className="border border-gray-200 rounded-lg p-4">
+            <h5 className="font-semibold text-gray-900 mb-2">Storage Isolation</h5>
+            <p className="text-sm text-gray-600">
+              All storage operations are keyed by <code>(project_uuid, account_id, key)</code>.
+              Different projects have different UUIDs, so storage is completely isolated.
+            </p>
+          </div>
+        </div>
+
+        <h4 className="font-semibold text-gray-900 mb-3">Attack Scenarios (Why They Fail)</h4>
+
+        <div className="space-y-4 mb-6">
+          <div className="border-l-4 border-red-400 pl-4">
+            <p className="font-medium text-gray-900">❌ &quot;I&apos;ll create WASM that claims to be alice.near/app&quot;</p>
+            <p className="text-sm text-gray-600">
+              Doesn&apos;t matter what your WASM claims. The contract looks up <code>alice.near/app</code> and runs
+              whatever CodeSource Alice registered, not your code.
+            </p>
+          </div>
+          <div className="border-l-4 border-red-400 pl-4">
+            <p className="font-medium text-gray-900">❌ &quot;I&apos;ll call storage with alice&apos;s project_uuid&quot;</p>
+            <p className="text-sm text-gray-600">
+              You can&apos;t. The <code>project_uuid</code> is passed by the worker based on contract data.
+              Your WASM only sees storage calls that are automatically scoped to your project&apos;s UUID.
+            </p>
+          </div>
+          <div className="border-l-4 border-red-400 pl-4">
+            <p className="font-medium text-gray-900">❌ &quot;I&apos;ll modify alice&apos;s project registration&quot;</p>
+            <p className="text-sm text-gray-600">
+              Contract enforces that only <code>alice.near</code> can modify projects under <code>alice.near/*</code>.
+              Your account cannot change her project&apos;s CodeSource.
+            </p>
+          </div>
+        </div>
+
+        <div className="bg-blue-50 border-l-4 border-blue-400 p-4">
           <p className="text-sm text-blue-800">
-            <strong>Tip:</strong> Copy the exact project ID from the <Link href="/projects" className="text-[var(--primary-orange)] hover:underline">Projects dashboard</Link> to
-            avoid typos. The format is always <code>{'{'}owner_account_id{'}'}/{'{'}project_name{'}'}</code>.
+            <strong>Bottom line:</strong> The contract is the source of truth. It maps project IDs to code sources,
+            and workers blindly trust the contract&apos;s <code>project_uuid</code>. There&apos;s no way for WASM
+            to choose which project&apos;s storage it accesses.
           </p>
         </div>
       </section>
