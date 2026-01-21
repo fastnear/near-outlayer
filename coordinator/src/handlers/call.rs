@@ -84,6 +84,9 @@ pub struct PaymentKeyMetadata {
     pub project_ids: Vec<String>,
     pub max_per_call: Option<String>,
     pub key_hash: String, // SHA256 hash of the key for validation
+    /// Grant keys cannot use X-Attached-Deposit (no earnings transfer)
+    #[serde(default)]
+    pub is_grant: bool,
 }
 
 
@@ -105,6 +108,8 @@ pub enum CallError {
     ProjectNotFound,
     KeystoreError(String),
     InternalError(String),
+    /// Grant keys cannot use X-Attached-Deposit
+    GrantKeyNoDeposit,
 }
 
 impl axum::response::IntoResponse for CallError {
@@ -151,6 +156,9 @@ impl axum::response::IntoResponse for CallError {
             }
             CallError::InternalError(msg) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, msg)
+            }
+            CallError::GrantKeyNoDeposit => {
+                (StatusCode::FORBIDDEN, "Grant keys cannot use X-Attached-Deposit".to_string())
             }
         };
 
@@ -208,6 +216,11 @@ pub async fn https_call(
     // 6. Check project is allowed
     if !metadata.project_ids.is_empty() && !metadata.project_ids.contains(&project_id) {
         return Err(CallError::ProjectNotAllowed);
+    }
+
+    // 6.5. Grant keys cannot use X-Attached-Deposit
+    if metadata.is_grant && attached_deposit > 0 {
+        return Err(CallError::GrantKeyNoDeposit);
     }
 
     // 7. Check max_per_call (0 or empty = unlimited)
@@ -468,7 +481,7 @@ async fn validate_payment_key(
     // Query PostgreSQL for payment key metadata
     let row = sqlx::query(
         r#"
-        SELECT key_hash, initial_balance, project_ids, max_per_call
+        SELECT key_hash, initial_balance, project_ids, max_per_call, is_grant
         FROM payment_keys
         WHERE owner = $1 AND nonce = $2 AND deleted_at IS NULL
         "#
@@ -493,6 +506,7 @@ async fn validate_payment_key(
     let initial_balance: String = row.get("initial_balance");
     let project_ids: Vec<String> = row.get("project_ids");
     let max_per_call: Option<String> = row.get("max_per_call");
+    let is_grant: bool = row.get("is_grant");
 
     // Validate key hash: SHA256(provided_key) == stored_key_hash
     let provided_key_hash = hex::encode(Sha256::digest(payment_key.key.as_bytes()));
@@ -509,6 +523,7 @@ async fn validate_payment_key(
         initial_balance,
         project_ids,
         max_per_call,
+        is_grant,
     })
 }
 

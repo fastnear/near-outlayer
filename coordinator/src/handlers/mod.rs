@@ -1,6 +1,7 @@
 pub mod attestations;
 pub mod call;
 pub mod github;
+pub mod grant_keys;
 pub mod internal;
 pub mod jobs;
 pub mod locks;

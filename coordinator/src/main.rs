@@ -246,6 +246,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build admin routes (require admin bearer token)
     let admin = Router::new()
         .route("/admin/compile-logs/:job_id", get(handlers::internal::get_compile_logs))
+        // Grant keys management
+        .route("/admin/grant-keys", post(handlers::grant_keys::create_grant_key))
+        .route("/admin/grant-keys", get(handlers::grant_keys::list_grant_keys))
+        .route("/admin/grant-keys/:owner/:nonce", delete(handlers::grant_keys::delete_grant_key))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::admin_auth::admin_auth,
