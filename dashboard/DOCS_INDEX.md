@@ -371,6 +371,14 @@ Coordinator API (/storage/*)
 PostgreSQL (storage_data table)
 ```
 
+### OutLayer SDK
+Published on crates.io: [`outlayer`](https://crates.io/crates/outlayer)
+
+```toml
+[dependencies]
+outlayer = "0.1"
+```
+
 ### Storage API (WIT Interface)
 Located at: `sdk/outlayer/wit/deps/storage.wit`
 

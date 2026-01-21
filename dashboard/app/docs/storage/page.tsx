@@ -72,6 +72,15 @@ export default function StoragePage() {
       <section className="mb-12">
         <AnchorHeading id="quick-start">Quick Start</AnchorHeading>
 
+        <p className="text-gray-700 mb-4">
+          Add the OutLayer SDK to your <code>Cargo.toml</code>:
+        </p>
+
+        <SyntaxHighlighter language="toml" style={vscDarkPlus} className="rounded-lg mb-4">
+          {`[dependencies]
+outlayer = "0.1"`}
+        </SyntaxHighlighter>
+
         <SyntaxHighlighter language="rust" style={vscDarkPlus} className="rounded-lg mb-4">
           {`use outlayer::storage;
 
