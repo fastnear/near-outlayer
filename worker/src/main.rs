@@ -1864,21 +1864,25 @@ async fn handle_execute_job(
                 }
 
                 // NEAR contract calls: continue to normal flow (will be handled below)
+                // The result (including success=false) will be submitted to NEAR contract
             }
 
-            if let Some(ct) = compile_time_ms {
-                info!(
-                    "✅ Execution successful: compile={}ms execute={}ms instructions={}{}",
-                    ct, execution_result.execution_time_ms, execution_result.instructions,
-                    effective_published_url.as_ref().map(|u| format!(" published: {}", u)).unwrap_or_default()
-                );
-            } else {
-                info!(
-                    "✅ Execution successful: time={}ms instructions={} (using cached WASM{})",
-                    execution_result.execution_time_ms,
-                    execution_result.instructions,
-                    created_at.as_ref().map(|t| format!(" from {}", t)).unwrap_or_default()
-                );
+            // Log execution result (only log success for successful executions)
+            if execution_result.success {
+                if let Some(ct) = compile_time_ms {
+                    info!(
+                        "✅ Execution successful: compile={}ms execute={}ms instructions={}{}",
+                        ct, execution_result.execution_time_ms, execution_result.instructions,
+                        effective_published_url.as_ref().map(|u| format!(" published: {}", u)).unwrap_or_default()
+                    );
+                } else {
+                    info!(
+                        "✅ Execution successful: time={}ms instructions={} (using cached WASM{})",
+                        execution_result.execution_time_ms,
+                        execution_result.instructions,
+                        created_at.as_ref().map(|t| format!(" from {}", t)).unwrap_or_default()
+                    );
+                }
             }
 
             // HTTPS calls go to coordinator, not NEAR contract
@@ -2051,13 +2055,13 @@ async fn handle_execute_job(
                             actual_cost, actual_cost as f64 / 1e24);
                     }
 
-                    // Report success to coordinator (async, can fail without breaking flow)
+                    // Report to coordinator (async, can fail without breaking flow)
                     if let Err(e) = api_client
                         .complete_job(
                             job.job_id,
-                            true,
+                            execution_result.success,
                             execution_result.output.clone(),
-                            None,
+                            execution_result.error.clone(),
                             execution_result.execution_time_ms,
                             execution_result.instructions,
                             None,
