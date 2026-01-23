@@ -11,6 +11,7 @@ mod storage;
 use axum::{
     routing::{delete, get, post},
     Router,
+    extract::DefaultBodyLimit,
     http::{HeaderValue, Method},
 };
 use std::sync::Arc;
@@ -279,8 +280,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             middleware::ip_rate_limit::ip_rate_limit_middleware,
         ))
         .layer(cors_permissive)
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024)) // 10 MB for large attachments
         .with_state(state.clone());
-    info!("HTTPS API routes initialized (100 req/min IP rate limit, permissive CORS)");
+    info!("HTTPS API routes initialized (100 req/min IP rate limit, permissive CORS, 10MB body limit)");
 
     // Configure CORS with allowed origins from config (for dashboard/internal routes)
     let cors_restricted = CorsLayer::new()
