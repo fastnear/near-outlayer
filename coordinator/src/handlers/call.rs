@@ -35,6 +35,9 @@ pub struct HttpsCallRequest {
     /// Async mode: false = wait for result (default), true = return call_id immediately
     #[serde(default)]
     pub r#async: bool,
+    /// Reference to contract-stored secrets (same as transaction mode)
+    #[serde(default)]
+    pub secrets_ref: Option<crate::models::SecretsReference>,
 }
 
 /// Resource limits from request (all optional)
@@ -292,6 +295,7 @@ pub async fn https_call(
         payment_key.nonce,
         compute_limit,
         attached_deposit,
+        body.secrets_ref.as_ref(),
     ).await?;
 
     if !task_created {
@@ -646,10 +650,11 @@ async fn create_execution_task(
     payment_key_nonce: u32,
     compute_limit: u128,
     attached_deposit: u128,
+    secrets_ref: Option<&crate::models::SecretsReference>,
 ) -> Result<bool, CallError> {
     // Create execution request for HTTPS call
     // Worker will resolve project_id -> code_source from contract
-    let execution_request = serde_json::json!({
+    let mut execution_request = serde_json::json!({
         "request_id": 0, // HTTPS calls don't have request_id
         "data_id": call_id.to_string(),
         "project_id": project_id, // Worker resolves this to code_source
@@ -669,6 +674,14 @@ async fn create_execution_task(
         "payment_key_nonce": payment_key_nonce, // Payment Key nonce (for attestation)
         "usd_payment": attached_deposit.to_string() // USD payment to project owner (X-Attached-Deposit)
     });
+
+    // Add secrets_ref if provided (for WASI modules that need secrets)
+    if let Some(sr) = secrets_ref {
+        execution_request["secrets_ref"] = serde_json::json!({
+            "profile": sr.profile,
+            "account_id": sr.account_id
+        });
+    }
 
     let request_json = serde_json::to_string(&execution_request)
         .map_err(|e| CallError::InternalError(format!("JSON serialize error: {}", e)))?;

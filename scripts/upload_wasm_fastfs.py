@@ -150,6 +150,30 @@ def main():
 
         # FastFS doesn't have actual contract code - the indexer picks up the transaction
         # So "CodeDoesNotExist" error is expected and means success
+        # But other errors should be reported
+
+        if result.returncode != 0:
+            # Check if it's the expected "CodeDoesNotExist" error
+            stderr = result.stderr or ''
+            stdout = result.stdout or ''
+            output = stderr + stdout
+
+            if 'CodeDoesNotExist' in output:
+                # This is expected - FastFS has no contract, indexer picks up the tx
+                pass
+            else:
+                print("ERROR: Transaction failed!")
+                print()
+                if stdout:
+                    print("STDOUT:")
+                    print(stdout)
+                if stderr:
+                    print("STDERR:")
+                    print(stderr)
+                print()
+                print("Hint: If the payload is too large, NEAR has a ~4MB transaction limit.")
+                print(f"      Your payload size: {len(payload)} bytes ({len(payload) / 1024 / 1024:.2f} MB)")
+                sys.exit(1)
 
         print()
         if tx_hash:
