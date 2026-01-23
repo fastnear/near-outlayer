@@ -689,9 +689,16 @@ async fn create_execution_task(
     let mut conn = state.redis.get_multiplexed_async_connection().await
         .map_err(|e| CallError::InternalError(format!("Redis error: {}", e)))?;
 
+    // Store execution request in Redis for potential compile queue redirect
+    // This is needed when executor's claim_job discovers WASM is not cached
+    // and needs to push task to compile queue for downloading
+    let request_key = format!("https_request:{}", call_id);
+    let _: () = conn.set_ex(&request_key, &request_json, 3600).await // 1 hour TTL
+        .map_err(|e| CallError::InternalError(format!("Redis error: {}", e)))?;
+
     // Push to execute queue (assuming WASM is compiled via projects)
     let queue_name = &state.config.redis_queue_execute;
-    let _: () = conn.lpush(queue_name, request_json).await
+    let _: () = conn.lpush(queue_name, &request_json).await
         .map_err(|e| CallError::InternalError(format!("Redis error: {}", e)))?;
 
     info!("📤 HTTPS call task created: call_id={} project_id={}", call_id, project_id);

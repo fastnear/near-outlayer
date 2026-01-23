@@ -202,7 +202,72 @@ pub async fn claim_job(
 
         // If WASM doesn't exist, no compile error, and no compile_result, executor can't do anything
         // Note: use wasm_file_exists (real state), not needs_compilation (force_rebuild affects only compiler)
+        // Exception: WasmUrl sources - trigger on-demand download via compile queue
         if !wasm_file_exists && compile_error.is_none() && !has_compile_result {
+            // Check if this is a WasmUrl source - can trigger on-demand download
+            if matches!(payload.code_source, CodeSource::WasmUrl { .. }) {
+                // Check if compile job already exists for downloading (another executor already triggered)
+                let existing_download = sqlx::query!(
+                    "SELECT job_id FROM jobs WHERE request_id = $1 AND data_id = $2 AND job_type = 'compile'",
+                    payload.request_id as i64,
+                    payload.data_id
+                )
+                .fetch_optional(&state.db)
+                .await
+                .map_err(|e| {
+                    error!("Failed to check existing download job: {}", e);
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
+
+                if existing_download.is_none() {
+                    info!(
+                        "📥 WasmUrl not in cache - pushing to compile queue for download: request_id={} data_id={}",
+                        payload.request_id, payload.data_id
+                    );
+
+                    // Get execution request and push to compile queue
+                    // For HTTPS calls (request_id=0): use Redis cache
+                    // For blockchain calls: use execution_requests table
+                    let is_https_call = payload.request_id == 0;
+
+                    if let Ok(mut conn) = state.redis.get_multiplexed_async_connection().await {
+                        let request_json: Option<String> = if is_https_call {
+                            // HTTPS call - get from Redis cache
+                            let request_key = format!("https_request:{}", payload.data_id);
+                            conn.get(&request_key).await.ok().flatten()
+                        } else {
+                            // Blockchain call - reconstruct from execution_requests table
+                            // This is same logic as complete_job uses
+                            match reconstruct_execution_request_json(&state.db, payload.request_id, &payload.data_id, &payload.code_source).await {
+                                Ok(json) => Some(json),
+                                Err(e) => {
+                                    warn!("⚠️ Failed to reconstruct execution request: {}", e);
+                                    None
+                                }
+                            }
+                        };
+
+                        if let Some(json) = request_json {
+                            let compile_queue = &state.config.redis_queue_compile;
+                            let push_result: Result<(), _> = conn.lpush(compile_queue, &json).await;
+                            if push_result.is_ok() {
+                                info!("📤 Pushed task to compile queue for WasmUrl download: {}", compile_queue);
+                            } else {
+                                error!("Failed to push to compile queue");
+                            }
+                        } else {
+                            warn!("⚠️ No execution request found for request_id={} data_id={}", payload.request_id, payload.data_id);
+                        }
+                    }
+                } else {
+                    debug!("⏳ Compile job already exists for WasmUrl download, waiting...");
+                }
+
+                // Return empty jobs - task will come back via execute queue after download
+                let pricing = state.pricing.read().await.clone();
+                return Ok(Json(ClaimJobResponse { jobs: vec![], pricing }));
+            }
+
             debug!(
                 "❌ WASM not available and no compile error/result for request_id={}, executor cannot proceed",
                 payload.request_id
@@ -897,4 +962,114 @@ pub async fn complete_job(
 
     debug!("Job {} marked as {}", payload.job_id, status);
     StatusCode::OK
+}
+
+/// Reconstruct ExecutionRequest JSON from execution_requests table
+/// Used for blockchain calls with WasmUrl that need to be pushed to compile queue
+async fn reconstruct_execution_request_json(
+    db: &sqlx::PgPool,
+    request_id: u64,
+    data_id: &str,
+    code_source: &CodeSource,
+) -> Result<String, String> {
+    use sqlx::Row;
+
+    let row = sqlx::query(
+        r#"
+        SELECT input_data, max_instructions, max_memory_mb, max_execution_seconds,
+               secrets_profile, secrets_account_id, response_format,
+               context_sender_id, context_block_height, context_block_timestamp,
+               context_contract_id, context_transaction_hash, context_receipt_id,
+               context_predecessor_id, context_signer_public_key, context_gas_burnt,
+               compile_only, force_rebuild, store_on_fastfs, project_uuid, project_id,
+               attached_usd
+        FROM execution_requests WHERE request_id = $1
+        "#
+    )
+    .bind(request_id as i64)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| format!("DB error: {}", e))?
+    .ok_or_else(|| format!("No execution_requests record for request_id={}", request_id))?;
+
+    let code_source_json = match code_source {
+        CodeSource::GitHub { repo, commit, build_target } => serde_json::json!({
+            "GitHub": {
+                "repo": repo,
+                "commit": commit,
+                "build_target": build_target
+            }
+        }),
+        CodeSource::WasmUrl { url, hash, build_target } => serde_json::json!({
+            "WasmUrl": {
+                "url": url,
+                "hash": hash,
+                "build_target": build_target
+            }
+        }),
+    };
+
+    let input_data: Option<String> = row.get("input_data");
+    let max_instructions: Option<i64> = row.get("max_instructions");
+    let max_memory_mb: Option<i32> = row.get("max_memory_mb");
+    let max_execution_seconds: Option<i64> = row.get("max_execution_seconds");
+    let secrets_profile: Option<String> = row.get("secrets_profile");
+    let secrets_account_id: Option<String> = row.get("secrets_account_id");
+    let response_format: Option<String> = row.get("response_format");
+    let context_sender_id: Option<String> = row.get("context_sender_id");
+    let context_block_height: Option<i64> = row.get("context_block_height");
+    let context_block_timestamp: Option<i64> = row.get("context_block_timestamp");
+    let context_contract_id: Option<String> = row.get("context_contract_id");
+    let context_transaction_hash: Option<String> = row.get("context_transaction_hash");
+    let context_receipt_id: Option<String> = row.get("context_receipt_id");
+    let context_predecessor_id: Option<String> = row.get("context_predecessor_id");
+    let context_signer_public_key: Option<String> = row.get("context_signer_public_key");
+    let context_gas_burnt: Option<i64> = row.get("context_gas_burnt");
+    let compile_only: bool = row.get("compile_only");
+    let force_rebuild: bool = row.get("force_rebuild");
+    let store_on_fastfs: bool = row.get("store_on_fastfs");
+    let project_uuid: Option<String> = row.get("project_uuid");
+    let project_id: Option<String> = row.get("project_id");
+    let attached_usd: Option<String> = row.get("attached_usd");
+
+    let execution_request = serde_json::json!({
+        "request_id": request_id,
+        "data_id": data_id,
+        "code_source": code_source_json,
+        "resource_limits": {
+            "max_instructions": max_instructions.unwrap_or(1_000_000_000),
+            "max_memory_mb": max_memory_mb.unwrap_or(128),
+            "max_execution_seconds": max_execution_seconds.unwrap_or(60)
+        },
+        "input_data": input_data.unwrap_or_default(),
+        "secrets_ref": if secrets_profile.is_some() && secrets_account_id.is_some() {
+            serde_json::json!({
+                "profile": secrets_profile,
+                "account_id": secrets_account_id
+            })
+        } else {
+            serde_json::Value::Null
+        },
+        "response_format": response_format.unwrap_or_else(|| "text".to_string()),
+        "context": {
+            "sender_id": context_sender_id,
+            "block_height": context_block_height,
+            "block_timestamp": context_block_timestamp,
+            "contract_id": context_contract_id,
+            "transaction_hash": context_transaction_hash,
+            "receipt_id": context_receipt_id,
+            "predecessor_id": context_predecessor_id,
+            "signer_public_key": context_signer_public_key,
+            "gas_burnt": context_gas_burnt
+        },
+        "compile_only": compile_only,
+        "force_rebuild": force_rebuild,
+        "store_on_fastfs": store_on_fastfs,
+        "project_uuid": project_uuid,
+        "project_id": project_id,
+        "attached_usd": attached_usd
+    });
+
+    serde_json::to_string(&execution_request)
+        .map_err(|e| format!("JSON serialize error: {}", e))
 }
