@@ -271,6 +271,26 @@ pub async fn create_task(
             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24
         )
         ON CONFLICT (request_id) DO UPDATE SET
+            data_id = EXCLUDED.data_id,
+            input_data = EXCLUDED.input_data,
+            max_instructions = EXCLUDED.max_instructions,
+            max_memory_mb = EXCLUDED.max_memory_mb,
+            max_execution_seconds = EXCLUDED.max_execution_seconds,
+            secrets_profile = EXCLUDED.secrets_profile,
+            secrets_account_id = EXCLUDED.secrets_account_id,
+            response_format = EXCLUDED.response_format,
+            context_sender_id = EXCLUDED.context_sender_id,
+            context_block_height = EXCLUDED.context_block_height,
+            context_block_timestamp = EXCLUDED.context_block_timestamp,
+            context_contract_id = EXCLUDED.context_contract_id,
+            context_transaction_hash = EXCLUDED.context_transaction_hash,
+            context_receipt_id = EXCLUDED.context_receipt_id,
+            context_predecessor_id = EXCLUDED.context_predecessor_id,
+            context_signer_public_key = EXCLUDED.context_signer_public_key,
+            context_gas_burnt = EXCLUDED.context_gas_burnt,
+            compile_only = EXCLUDED.compile_only,
+            force_rebuild = EXCLUDED.force_rebuild,
+            store_on_fastfs = EXCLUDED.store_on_fastfs,
             attached_usd = COALESCE(EXCLUDED.attached_usd, execution_requests.attached_usd),
             project_id = COALESCE(EXCLUDED.project_id, execution_requests.project_id),
             project_uuid = COALESCE(EXCLUDED.project_uuid, execution_requests.project_uuid)
