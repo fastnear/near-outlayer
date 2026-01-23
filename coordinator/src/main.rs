@@ -258,7 +258,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Build HTTPS API routes (Payment Key authenticated)
     // Rate limited by IP (100 req/min) before payment key validation
+    // These routes have permissive CORS (allow any origin) since they're public API
     let https_ip_rate_limiter = Arc::new(middleware::ip_rate_limit::IpRateLimiter::new(100));
+    let cors_permissive = CorsLayer::new()
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderName::from_static("x-payment-key"),
+            axum::http::HeaderName::from_static("x-compute-limit"),
+            axum::http::HeaderName::from_static("x-attached-deposit"),
+        ])
+        .allow_origin(tower_http::cors::Any);
     let https_api = Router::new()
         // HTTPS API call endpoint: POST /call/{project_owner}/{project_name}
         .route("/call/:project_owner/:project_name", post(handlers::call::https_call))
@@ -268,11 +278,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             https_ip_rate_limiter.clone(),
             middleware::ip_rate_limit::ip_rate_limit_middleware,
         ))
+        .layer(cors_permissive)
         .with_state(state.clone());
-    info!("HTTPS API routes initialized (100 req/min IP rate limit)");
+    info!("HTTPS API routes initialized (100 req/min IP rate limit, permissive CORS)");
 
-    // Configure CORS with allowed origins from config
-    let cors = CorsLayer::new()
+    // Configure CORS with allowed origins from config (for dashboard/internal routes)
+    let cors_restricted = CorsLayer::new()
         .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
         .allow_headers([
             axum::http::header::CONTENT_TYPE,
@@ -289,14 +300,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
 
     // Combine routers
+    // Note: https_api has its own permissive CORS layer applied above
     let app = Router::new()
         .merge(protected)
         .merge(public)
         .merge(secrets_routes)
         .merge(internal)
         .merge(admin)
+        .layer(cors_restricted)
         .merge(https_api)
-        .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
