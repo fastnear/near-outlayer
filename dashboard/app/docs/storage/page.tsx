@@ -72,14 +72,17 @@ export default function StoragePage() {
       <section className="mb-12">
         <AnchorHeading id="quick-start">Quick Start</AnchorHeading>
 
-        <SyntaxHighlighter language="rust" style={vscDarkPlus} className="rounded-lg mb-4">
-          {`use outlayer::{metadata, storage};
+        <p className="text-gray-700 mb-4">
+          Add the OutLayer SDK to your <code>Cargo.toml</code>:
+        </p>
 
-// REQUIRED: declare which project this code belongs to
-metadata! {
-    project: "alice.near/my-app",
-    version: "1.0.0",
-}
+        <SyntaxHighlighter language="toml" style={vscDarkPlus} className="rounded-lg mb-4">
+          {`[dependencies]
+outlayer = "0.1"`}
+        </SyntaxHighlighter>
+
+        <SyntaxHighlighter language="rust" style={vscDarkPlus} className="rounded-lg mb-4">
+          {`use outlayer::storage;
 
 fn main() {
     // Store data
@@ -97,10 +100,11 @@ fn main() {
 }`}
         </SyntaxHighlighter>
 
-        <div className="bg-red-50 border-l-4 border-red-400 p-4 mb-6">
-          <p className="text-sm text-red-800">
-            <strong>Critical:</strong> The <code>project</code> in metadata must exactly match your project ID
-            on the contract. If they don&apos;t match, storage operations will fail.
+        <div className="bg-blue-50 border-l-4 border-blue-400 p-4 mb-6">
+          <p className="text-sm text-blue-800">
+            <strong>Note:</strong> Storage automatically uses your project context. When you call
+            <code>request_execution(Project &#123; project_id &#125;)</code>, the contract passes the project UUID
+            to the worker, which uses it for storage namespace and encryption.
           </p>
         </div>
       </section>
@@ -114,7 +118,7 @@ fn main() {
         </p>
 
         <SyntaxHighlighter language="text" style={vscDarkPlus} className="rounded-lg mb-4">
-          {`interface storage {
+          {`interface api {
     // Basic operations
     set: func(key: string, value: list<u8>) -> string;
     get: func(key: string) -> tuple<list<u8>, string>;
@@ -128,9 +132,11 @@ fn main() {
     increment: func(key: string, delta: s64) -> tuple<s64, string>;
     decrement: func(key: string, delta: s64) -> tuple<s64, string>;
 
-    // Worker-private storage (shared across all users)
-    set-worker: func(key: string, value: list<u8>) -> string;
-    get-worker: func(key: string) -> tuple<list<u8>, string>;
+    // Worker storage (with public option for cross-project reads)
+    // is-encrypted: true (default) = encrypted, false = plaintext (public)
+    set-worker: func(key: string, value: list<u8>, is-encrypted: option<bool>) -> string;
+    // project-uuid: none = current project, some("p...") = read from another project
+    get-worker: func(key: string, project-uuid: option<string>) -> tuple<list<u8>, string>;
 
     // Version migration
     get-by-version: func(key: string, wasm-hash: string) -> tuple<list<u8>, string>;
@@ -202,13 +208,13 @@ fn main() {
                 <td className="px-4 py-3 text-sm text-gray-600">(new_value: i64, error)</td>
               </tr>
               <tr>
-                <td className="px-4 py-3 text-sm font-mono">set-worker(key, value)</td>
-                <td className="px-4 py-3 text-sm text-gray-600">Store worker-private data</td>
+                <td className="px-4 py-3 text-sm font-mono">set-worker(key, value, is_encrypted)</td>
+                <td className="px-4 py-3 text-sm text-gray-600">Store worker data (public if is_encrypted=false)</td>
                 <td className="px-4 py-3 text-sm text-gray-600">Error string</td>
               </tr>
               <tr>
-                <td className="px-4 py-3 text-sm font-mono">get-worker(key)</td>
-                <td className="px-4 py-3 text-sm text-gray-600">Get worker-private data</td>
+                <td className="px-4 py-3 text-sm font-mono">get-worker(key, project_uuid)</td>
+                <td className="px-4 py-3 text-sm text-gray-600">Get worker data (cross-project if project_uuid set)</td>
                 <td className="px-4 py-3 text-sm text-gray-600">(data, error)</td>
               </tr>
             </tbody>
@@ -339,6 +345,77 @@ storage::set_worker("balances", balances_json);  // Shared across all users
         </div>
       </section>
 
+      {/* Public Storage */}
+      <section className="mb-12">
+        <AnchorHeading id="public-storage">Public Storage (Cross-Project Reads)</AnchorHeading>
+
+        <p className="text-gray-700 mb-4">
+          Public storage is <strong>unencrypted</strong> worker storage that can be read by other projects.
+          This enables use cases like shared oracle price feeds, public configuration, or cross-project data sharing.
+        </p>
+
+        <div className="bg-orange-50 border-l-4 border-orange-400 p-4 mb-6">
+          <p className="text-sm text-orange-800">
+            <strong>Important:</strong> Public storage is NOT encrypted. Only store data you want to be readable
+            by other projects and external HTTP clients. Use regular worker storage for private data.
+          </p>
+        </div>
+
+        <SyntaxHighlighter language="rust" style={vscDarkPlus} className="rounded-lg mb-4">
+          {`use outlayer::storage;
+
+// Store PUBLIC data (is_encrypted = false)
+storage::set_worker_with_options(
+    "oracle:ETH",
+    price_json.as_bytes(),
+    Some(false)  // <-- Makes it public!
+)?;
+
+// Read from current project (works for both public and private)
+let data = storage::get_worker("oracle:ETH")?;
+
+// Read PUBLIC data from ANOTHER project by UUID
+let price = storage::get_worker_from_project(
+    "oracle:ETH",
+    Some("p0000000000000001")  // Target project UUID
+)?;`}
+        </SyntaxHighlighter>
+
+        <AnchorHeading id="public-http-api" level={3}>External HTTP API</AnchorHeading>
+
+        <p className="text-gray-700 mb-4">
+          Public storage can also be read by external clients via HTTP:
+        </p>
+
+        <SyntaxHighlighter language="bash" style={vscDarkPlus} className="rounded-lg mb-4">
+          {`# JSON format (default) - value is base64-encoded
+curl "https://api.outlayer.fastnear.com/public/storage/get?project_uuid=p0000000000000001&key=oracle:ETH"
+# {"exists":true,"value":"eyJwcmljZSI6IjM1MDAuMDAifQ=="}
+
+# Raw format - returns raw bytes directly
+curl "https://api.outlayer.fastnear.com/public/storage/get?project_uuid=p0000000000000001&key=oracle:ETH&format=raw"
+# {"price":"3500.00"}`}
+        </SyntaxHighlighter>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+          <div className="border border-orange-200 rounded-lg p-4 bg-orange-50">
+            <h4 className="font-semibold text-orange-900 mb-2">Oracle Price Feeds</h4>
+            <p className="text-sm text-gray-600">Share price data across projects without API calls</p>
+          </div>
+          <div className="border border-orange-200 rounded-lg p-4 bg-orange-50">
+            <h4 className="font-semibold text-orange-900 mb-2">Public Configuration</h4>
+            <p className="text-sm text-gray-600">Share settings that other projects can read</p>
+          </div>
+        </div>
+
+        <div className="bg-blue-50 border-l-4 border-blue-400 p-4 mb-6">
+          <p className="text-sm text-blue-800">
+            <strong>Note:</strong> Encrypted (default) worker data is NOT accessible via cross-project reads.
+            Only data stored with <code>is_encrypted=false</code> can be read by other projects.
+          </p>
+        </div>
+      </section>
+
       {/* Security */}
       <section className="mb-12">
         <AnchorHeading id="security">Security</AnchorHeading>
@@ -386,6 +463,14 @@ storage::set_worker("balances", balances_json);  // Shared across all users
           <div className="border border-purple-200 rounded-lg p-4 bg-purple-50">
             <h4 className="font-semibold text-purple-900 mb-2">Rate Limiting</h4>
             <p className="text-sm text-gray-600">Track API calls per user with atomic counters</p>
+          </div>
+          <div className="border border-orange-200 rounded-lg p-4 bg-orange-50">
+            <h4 className="font-semibold text-orange-900 mb-2">Oracle Price Feeds</h4>
+            <p className="text-sm text-gray-600">Share public data across projects (set is_encrypted=false)</p>
+          </div>
+          <div className="border border-orange-200 rounded-lg p-4 bg-orange-50">
+            <h4 className="font-semibold text-orange-900 mb-2">Distributed Locks</h4>
+            <p className="text-sm text-gray-600">Use set_if_absent for implementing locks</p>
           </div>
         </div>
       </section>

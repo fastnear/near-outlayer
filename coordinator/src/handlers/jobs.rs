@@ -458,28 +458,35 @@ pub async fn complete_job(
         // For now, fetch from a pending execute task or store in a separate table
 
         // Try to get the original execution request from pending execute jobs or a task table
-        let original_request = sqlx::query!(
+        use sqlx::Row;
+        let original_request = sqlx::query(
             r#"
             SELECT input_data, max_instructions, max_memory_mb, max_execution_seconds,
                    secrets_profile, secrets_account_id, response_format,
                    context_sender_id, context_block_height, context_block_timestamp,
                    context_contract_id, context_transaction_hash, context_receipt_id,
                    context_predecessor_id, context_signer_public_key, context_gas_burnt,
-                   compile_only, force_rebuild, store_on_fastfs, project_uuid, project_id
+                   compile_only, force_rebuild, store_on_fastfs, project_uuid, project_id,
+                   attached_usd
             FROM execution_requests
             WHERE request_id = $1
-            "#,
-            job.request_id
+            "#
         )
+        .bind(job.request_id)
         .fetch_optional(&state.db)
         .await;
 
         let execution_request = match original_request {
-            Ok(Some(req)) => {
+            Ok(Some(row)) => {
+                let project_uuid: Option<String> = row.get("project_uuid");
+                let project_id: Option<String> = row.get("project_id");
+                let compile_only: bool = row.get("compile_only");
+                let attached_usd: Option<String> = row.get("attached_usd");
+
                 info!("📋 Fetched execution_requests for request_id={}: project_uuid={:?} project_id={:?}",
-                    job.request_id, req.project_uuid, req.project_id);
+                    job.request_id, project_uuid, project_id);
                 // Check if this was compile-only request
-                if req.compile_only {
+                if compile_only {
                     // If compile_result is provided, create execute task for executor to send result to contract
                     if let Some(ref compile_result) = payload.compile_result {
                         info!(
@@ -487,11 +494,11 @@ pub async fn complete_job(
                             job.request_id, compile_result
                         );
                         // Save compile_result to execution_requests for executor to pick up
-                        if let Err(e) = sqlx::query!(
-                            "UPDATE execution_requests SET compile_result = $1 WHERE request_id = $2",
-                            compile_result,
-                            job.request_id
+                        if let Err(e) = sqlx::query(
+                            "UPDATE execution_requests SET compile_result = $1 WHERE request_id = $2"
                         )
+                        .bind(compile_result)
+                        .bind(job.request_id)
                         .execute(&state.db)
                         .await {
                             error!("Failed to save compile_result: {}", e);
@@ -506,46 +513,66 @@ pub async fn complete_job(
                     }
                 }
 
+                let max_instructions: Option<i64> = row.get("max_instructions");
+                let max_memory_mb: Option<i32> = row.get("max_memory_mb");
+                let max_execution_seconds: Option<i64> = row.get("max_execution_seconds");
+                let input_data: Option<String> = row.get("input_data");
+                let secrets_profile: Option<String> = row.get("secrets_profile");
+                let secrets_account_id: Option<String> = row.get("secrets_account_id");
+                let response_format: Option<String> = row.get("response_format");
+                let context_sender_id: Option<String> = row.get("context_sender_id");
+                let context_block_height: Option<i64> = row.get("context_block_height");
+                let context_block_timestamp: Option<i64> = row.get("context_block_timestamp");
+                let context_contract_id: Option<String> = row.get("context_contract_id");
+                let context_transaction_hash: Option<String> = row.get("context_transaction_hash");
+                let context_receipt_id: Option<String> = row.get("context_receipt_id");
+                let context_predecessor_id: Option<String> = row.get("context_predecessor_id");
+                let context_signer_public_key: Option<String> = row.get("context_signer_public_key");
+                let context_gas_burnt: Option<i64> = row.get("context_gas_burnt");
+                let force_rebuild: bool = row.get("force_rebuild");
+                let store_on_fastfs: bool = row.get("store_on_fastfs");
+
                 ExecutionRequest {
                     request_id: job.request_id as u64,
                     data_id: job.data_id.clone(),
                     code_source: Some(code_source),
                     resource_limits: ResourceLimits {
-                        max_instructions: req.max_instructions.unwrap_or(1_000_000_000) as u64,
-                        max_memory_mb: req.max_memory_mb.unwrap_or(128) as u32,
-                        max_execution_seconds: req.max_execution_seconds.unwrap_or(60) as u64,
+                        max_instructions: max_instructions.unwrap_or(1_000_000_000) as u64,
+                        max_memory_mb: max_memory_mb.unwrap_or(128) as u32,
+                        max_execution_seconds: max_execution_seconds.unwrap_or(60) as u64,
                     },
-                    input_data: req.input_data.unwrap_or_default(),
-                    secrets_ref: if let (Some(profile), Some(account_id)) = (req.secrets_profile.clone(), req.secrets_account_id.clone()) {
+                    input_data: input_data.unwrap_or_default(),
+                    secrets_ref: if let (Some(profile), Some(account_id)) = (secrets_profile.clone(), secrets_account_id.clone()) {
                         Some(SecretsReference { profile, account_id })
                     } else {
                         None
                     },
-                    response_format: match req.response_format.as_deref() {
+                    response_format: match response_format.as_deref() {
                         Some("bytes") => ResponseFormat::Bytes,
                         Some("json") => ResponseFormat::Json,
                         _ => ResponseFormat::Text,
                     },
                     context: ExecutionContext {
-                        sender_id: req.context_sender_id,
-                        block_height: req.context_block_height.map(|h| h as u64),
-                        block_timestamp: req.context_block_timestamp.map(|t| t as u64),
-                        contract_id: req.context_contract_id,
-                        transaction_hash: req.context_transaction_hash,
-                        receipt_id: req.context_receipt_id,
-                        predecessor_id: req.context_predecessor_id,
-                        signer_public_key: req.context_signer_public_key,
-                        gas_burnt: req.context_gas_burnt.map(|g| g as u64),
+                        sender_id: context_sender_id,
+                        block_height: context_block_height.map(|h| h as u64),
+                        block_timestamp: context_block_timestamp.map(|t| t as u64),
+                        contract_id: context_contract_id,
+                        transaction_hash: context_transaction_hash,
+                        receipt_id: context_receipt_id,
+                        predecessor_id: context_predecessor_id,
+                        signer_public_key: context_signer_public_key,
+                        gas_burnt: context_gas_burnt.map(|g| g as u64),
                     },
                     user_account_id: job.user_account_id.clone(),
                     near_payment_yocto: job.near_payment_yocto.clone(),
+                    attached_usd,
                     transaction_hash: job.transaction_hash.clone(),
-                    compile_only: req.compile_only,
-                    force_rebuild: req.force_rebuild,
-                    store_on_fastfs: req.store_on_fastfs,
+                    compile_only,
+                    force_rebuild,
+                    store_on_fastfs,
                     compile_result: payload.compile_result.clone(),
-                    project_uuid: req.project_uuid.clone(),
-                    project_id: req.project_id.clone(),
+                    project_uuid,
+                    project_id,
                     // HTTPS API fields - not used for NEAR contract calls
                     is_https_call: false,
                     call_id: None,
@@ -575,6 +602,7 @@ pub async fn complete_job(
                     context: ExecutionContext::default(),
                     user_account_id: job.user_account_id.clone(),
                     near_payment_yocto: job.near_payment_yocto.clone(),
+                    attached_usd: None,
                     transaction_hash: job.transaction_hash.clone(),
                     compile_only: false,
                     force_rebuild: false,
@@ -610,6 +638,7 @@ pub async fn complete_job(
                     context: ExecutionContext::default(),
                     user_account_id: job.user_account_id.clone(),
                     near_payment_yocto: job.near_payment_yocto.clone(),
+                    attached_usd: None,
                     transaction_hash: job.transaction_hash.clone(),
                     compile_only: false,
                     force_rebuild: false,
@@ -709,6 +738,7 @@ pub async fn complete_job(
             context: ExecutionContext::default(),
             user_account_id: job.user_account_id.clone(),
             near_payment_yocto: job.near_payment_yocto.clone(),
+            attached_usd: None,
             transaction_hash: job.transaction_hash.clone(),
             compile_only: false,
             force_rebuild: false,
@@ -802,6 +832,67 @@ pub async fn complete_job(
     if let Err(e) = history_result {
         error!("Failed to save execution history for job {}: {}", payload.job_id, e);
         // Don't fail the request, just log the error
+    }
+
+    // Log developer earnings to earnings_history for blockchain calls
+    // (only for successful execute jobs with attached_usd > 0)
+    if job.job_type == "execute" && payload.success {
+        // Fetch attached_usd and project_id from execution_requests
+        if let Ok(Some(req_data)) = sqlx::query!(
+            "SELECT attached_usd, project_id, context_sender_id FROM execution_requests WHERE request_id = $1",
+            job.request_id
+        )
+        .fetch_optional(&state.db)
+        .await
+        {
+            let attached_usd_str = req_data.attached_usd.unwrap_or_default();
+            let attached_usd: i64 = attached_usd_str.parse().unwrap_or(0);
+
+            if attached_usd > 0 {
+                if let Some(ref project_id) = req_data.project_id {
+                    // Extract project owner from project_id (format: "owner.near/project-name")
+                    let project_owner = project_id.split('/').next().unwrap_or(project_id.as_str());
+
+                    // Parse refund_usd from payload
+                    let refund_usd: i64 = payload.refund_usd
+                        .as_ref()
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0);
+                    let developer_amount = attached_usd - refund_usd;
+
+                    // Insert into earnings_history (blockchain calls only log history, balance is in contract)
+                    let attached_usd_bd = sqlx::types::BigDecimal::from(attached_usd);
+                    let refund_usd_bd = sqlx::types::BigDecimal::from(refund_usd);
+                    let developer_amount_bd = sqlx::types::BigDecimal::from(developer_amount);
+
+                    if let Err(e) = sqlx::query!(
+                        r#"
+                        INSERT INTO earnings_history
+                        (project_owner, project_id, attached_usd, refund_usd, amount, source, tx_hash, caller, request_id)
+                        VALUES ($1, $2, $3, $4, $5, 'blockchain', $6, $7, $8)
+                        "#,
+                        project_owner,
+                        project_id,
+                        attached_usd_bd,
+                        refund_usd_bd,
+                        developer_amount_bd,
+                        job.transaction_hash.as_deref(),
+                        req_data.context_sender_id.as_deref(),
+                        job.request_id
+                    )
+                    .execute(&state.db)
+                    .await
+                    {
+                        error!("Failed to log earnings_history for request_id={}: {}", job.request_id, e);
+                    } else {
+                        info!(
+                            "💰 Logged blockchain earnings: project_owner={}, amount={} (attached={}, refund={})",
+                            project_owner, developer_amount, attached_usd, refund_usd
+                        );
+                    }
+                }
+            }
+        }
     }
 
     debug!("Job {} marked as {}", payload.job_id, status);

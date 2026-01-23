@@ -68,17 +68,18 @@ impl near::storage::api::Host for StorageHostState {
         }
     }
 
-    fn set_worker(&mut self, key: String, value: Vec<u8>) -> String {
-        debug!("storage::set_worker key={}, value_len={}", key, value.len());
-        match self.client.set_worker(&key, &value) {
+    fn set_worker(&mut self, key: String, value: Vec<u8>, is_encrypted: Option<bool>) -> String {
+        let encrypted = is_encrypted.unwrap_or(true);
+        debug!("storage::set_worker key={}, value_len={}, is_encrypted={}", key, value.len(), encrypted);
+        match self.client.set_worker(&key, &value, encrypted) {
             Ok(()) => String::new(),
             Err(e) => e.to_string(),
         }
     }
 
-    fn get_worker(&mut self, key: String) -> (Vec<u8>, String) {
-        debug!("storage::get_worker key={}", key);
-        match self.client.get_worker(&key) {
+    fn get_worker(&mut self, key: String, project: Option<String>) -> (Vec<u8>, String) {
+        debug!("storage::get_worker key={}, project={:?}", key, project);
+        match self.client.get_worker(&key, project.as_deref()) {
             Ok(Some(value)) => (value, String::new()),
             Ok(None) => (Vec::new(), String::new()),
             Err(e) => (Vec::new(), e.to_string()),

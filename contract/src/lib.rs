@@ -2,6 +2,7 @@ use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use near_sdk::collections::{LookupMap, UnorderedMap, UnorderedSet};
 use near_sdk::json_types::U128;
 use near_sdk::serde::Serialize;
+use near_sdk::serde_json;
 use near_sdk::{
     env, log, near, near_bindgen, AccountId, BorshStorageKey, Gas, GasWeight, NearToken,
     PanicOnDefault, PromiseError,
@@ -45,6 +46,10 @@ enum StorageKey {
     ProjectVersions { project_uuid: String },
     UserProjects,
     UserProjectsList { account_id: AccountId },
+    // Developer earnings (stablecoin)
+    DeveloperEarnings,
+    // User stablecoin balances for developer payments
+    UserStablecoinBalances,
 }
 
 /// Execution source - GitHub repo, pre-compiled WASM URL, or project reference
@@ -111,6 +116,12 @@ pub struct RequestParams {
     /// Used by worker to enable persistent storage for the project
     #[serde(default)]
     pub project_uuid: Option<String>,
+
+    /// Payment to project owner in stablecoin (minimal units, e.g., 1_000_000 = $1 USD)
+    /// Only valid for ExecutionSource::Project
+    /// Deducted from user's stablecoin balance in contract
+    #[serde(default)]
+    pub attached_usd: Option<U128>,
 }
 
 /// Response format for execution output
@@ -166,6 +177,7 @@ pub struct ExecutionRequest {
     pub response_format: ResponseFormat,
     pub input_data: Option<String>, // Optional input data for execution
     pub payer_account_id: AccountId, // Account to receive refunds (explicit or defaults to sender)
+    pub attached_usd: u128, // Payment to project developer (stablecoin minimal units)
 
     // Large output handling (2-call flow)
     pub pending_output: Option<StoredOutput>, // Temporary storage for large output data
@@ -230,6 +242,10 @@ pub struct ExecutionResponse {
     pub error: Option<String>,
     pub resources_used: ResourceMetrics,
     pub compilation_note: Option<String>, // e.g., "Cached WASM from 2025-01-10 14:30 UTC"
+    /// Refund amount to return to user from attached_usd (stablecoin minimal units)
+    /// Set by WASM via refund_usd() host function
+    #[serde(default)]
+    pub refund_usd: Option<u64>,
 }
 
 /// Resource usage metrics
@@ -440,6 +456,13 @@ pub struct Contract {
 
     // Next project UUID counter
     next_project_id: u64,
+
+    // Developer earnings: project_owner -> accumulated balance (stablecoin minimal units)
+    developer_earnings: LookupMap<AccountId, u128>,
+
+    // User stablecoin balances: user_account -> balance (stablecoin minimal units)
+    // Used for attached_usd payments to project developers
+    user_stablecoin_balances: LookupMap<AccountId, u128>,
 }
 
 #[near_bindgen]
@@ -476,6 +499,93 @@ impl Contract {
             project_versions: LookupMap::new(b"pv".to_vec()),
             user_projects_index: LookupMap::new(StorageKey::UserProjects),
             next_project_id: 0,
+            // Developer earnings (stablecoin)
+            developer_earnings: LookupMap::new(StorageKey::DeveloperEarnings),
+            // User stablecoin balances
+            user_stablecoin_balances: LookupMap::new(StorageKey::UserStablecoinBalances),
+        }
+    }
+
+    /// Withdraw accumulated developer earnings (stablecoin)
+    ///
+    /// Only the project owner themselves can withdraw their earnings.
+    /// Withdraws entire balance to caller via ft_transfer.
+    /// Uses callback pattern to rollback on transfer failure.
+    ///
+    /// # Returns
+    /// Promise to transfer stablecoin to the caller
+    #[payable]
+    pub fn withdraw_developer_earnings(&mut self) -> near_sdk::Promise {
+        assert!(
+            env::attached_deposit().as_yoctonear() >= 1,
+            "Requires attached deposit of at least 1 yoctoNEAR"
+        );
+
+        let caller = env::predecessor_account_id();
+        let balance = self.developer_earnings.get(&caller).unwrap_or(0);
+
+        assert!(balance > 0, "No earnings to withdraw");
+
+        // Get payment token contract
+        let token_contract = self.payment_token_contract.as_ref()
+            .expect("Payment token contract not configured");
+
+        // Remove entry (balance becomes 0) - will be restored in callback if transfer fails
+        self.developer_earnings.remove(&caller);
+
+        log!(
+            "Developer {} initiating withdrawal of {} stablecoin",
+            caller,
+            balance
+        );
+
+        // Transfer stablecoin to caller via ft_transfer with callback
+        // ft_transfer requires 1 yoctoNEAR attached deposit
+        near_sdk::Promise::new(token_contract.clone())
+            .function_call(
+                "ft_transfer".to_string(),
+                serde_json::json!({
+                    "receiver_id": caller,
+                    "amount": U128(balance),
+                    "memo": Some("Developer earnings withdrawal")
+                }).to_string().into_bytes(),
+                NearToken::from_yoctonear(1),
+                Gas::from_tgas(10),
+            )
+            .then(
+                Self::ext(env::current_account_id())
+                    .with_static_gas(Gas::from_tgas(5))
+                    .on_withdraw_developer_earnings(caller, U128(balance))
+            )
+    }
+
+    /// Callback for withdraw_developer_earnings
+    /// Restores balance if ft_transfer failed
+    #[private]
+    pub fn on_withdraw_developer_earnings(
+        &mut self,
+        developer: AccountId,
+        amount: U128,
+        #[callback_result] transfer_result: Result<(), PromiseError>,
+    ) {
+        match transfer_result {
+            Ok(()) => {
+                log!(
+                    "Developer {} successfully withdrew {} stablecoin",
+                    developer,
+                    amount.0
+                );
+            }
+            Err(_) => {
+                // Transfer failed - restore balance
+                let current = self.developer_earnings.get(&developer).unwrap_or(0);
+                self.developer_earnings.insert(&developer, &(current + amount.0));
+                log!(
+                    "ft_transfer failed, restored {} stablecoin to developer {}",
+                    amount.0,
+                    developer
+                );
+            }
         }
     }
 }

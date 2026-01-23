@@ -6,6 +6,7 @@ import { useNearWallet } from '@/contexts/NearWalletContext';
 import WalletConnectionModal from '@/components/WalletConnectionModal';
 import NetworkSwitcher from '@/components/NetworkSwitcher';
 import { getCoordinatorApiUrl, fetchUserEarnings, UserEarnings } from '@/lib/api';
+import { actionCreators } from '@near-js/transactions';
 
 // Types for data
 interface ProjectView {
@@ -46,6 +47,7 @@ export default function WorkspacePage() {
     disconnect,
     contractId,
     viewMethod,
+    signAndSendTransaction,
     network,
     stablecoin,
     shouldReopenModal,
@@ -62,6 +64,14 @@ export default function WorkspacePage() {
   const [paymentKeysCount, setPaymentKeysCount] = useState(0);
   const [earningsBalance, setEarningsBalance] = useState<EarningsBalance | null>(null);
   const [usageStats, setUsageStats] = useState<UserEarnings | null>(null);
+
+  // USDC Balance state
+  const [usdcBalance, setUsdcBalance] = useState<string>('0');
+  const [showDepositModal, setShowDepositModal] = useState(false);
+  const [depositAmount, setDepositAmount] = useState('');
+  const [depositing, setDepositing] = useState(false);
+  const [depositError, setDepositError] = useState<string | null>(null);
+  const [depositSuccess, setDepositSuccess] = useState<string | null>(null);
 
   // Auto-open modal if we switched networks
   useEffect(() => {
@@ -126,12 +136,70 @@ export default function WorkspacePage() {
       } catch {
         // Ignore - stats might not exist
       }
+
+      // Load USDC balance from OutLayer contract
+      try {
+        const balance = await viewMethod({
+          contractId,
+          method: 'get_user_stablecoin_balance',
+          args: { account_id: accountId },
+        });
+        // Contract returns U128 as string
+        setUsdcBalance(typeof balance === 'string' ? balance : (balance as { toString: () => string })?.toString() || '0');
+      } catch {
+        setUsdcBalance('0');
+      }
     } catch (err) {
       console.error('Failed to load workspace data:', err);
     } finally {
       setLoading(false);
     }
   }, [accountId, contractId, viewMethod, coordinatorUrl]);
+
+  // Handle USDC deposit via ft_transfer_call
+  const handleDeposit = async () => {
+    if (!depositAmount || parseFloat(depositAmount) <= 0) {
+      setDepositError('Please enter a valid amount');
+      return;
+    }
+
+    setDepositing(true);
+    setDepositError(null);
+    setDepositSuccess(null);
+
+    try {
+      // Convert USD to minimal units (6 decimals)
+      const amountMinimal = BigInt(Math.floor(parseFloat(depositAmount) * 10 ** stablecoin.decimals));
+
+      // ft_transfer_call to stablecoin contract with msg = "deposit_balance"
+      const action = actionCreators.functionCall(
+        'ft_transfer_call',
+        {
+          receiver_id: contractId,
+          amount: amountMinimal.toString(),
+          msg: JSON.stringify({ action: 'deposit_balance' }),
+        },
+        BigInt('100000000000000'), // 100 TGas
+        BigInt('1') // 1 yoctoNEAR required
+      );
+
+      await signAndSendTransaction({
+        receiverId: stablecoin.contract,
+        actions: [action],
+      });
+
+      setDepositSuccess(`Successfully deposited $${depositAmount} ${stablecoin.symbol}`);
+      setDepositAmount('');
+      setShowDepositModal(false);
+
+      // Reload data after a short delay
+      setTimeout(() => loadData(), 2000);
+    } catch (err) {
+      setDepositError((err as Error).message || 'Deposit failed');
+    } finally {
+      setDepositing(false);
+    }
+  };
 
   useEffect(() => {
     if (isConnected && accountId) {
@@ -189,6 +257,18 @@ export default function WorkspacePage() {
         </div>
       </div>
 
+      {/* Deposit Success/Error Messages */}
+      {depositSuccess && (
+        <div className="mb-4 bg-green-50 border border-green-200 rounded-md p-3">
+          <p className="text-sm text-green-800">{depositSuccess}</p>
+        </div>
+      )}
+      {depositError && (
+        <div className="mb-4 bg-red-50 border border-red-200 rounded-md p-3">
+          <p className="text-sm text-red-800">{depositError}</p>
+        </div>
+      )}
+
       {loading ? (
         <div className="flex items-center justify-center py-12">
           <svg className="animate-spin h-8 w-8 text-[#cc6600]" fill="none" viewBox="0 0 24 24">
@@ -198,6 +278,95 @@ export default function WorkspacePage() {
         </div>
       ) : (
         <>
+          {/* USDC Balance Block */}
+          <div className="bg-gradient-to-r from-green-50 to-emerald-50 shadow rounded-lg p-6 mb-6 border border-green-200">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+              <div className="flex items-center gap-4">
+                <div className="w-14 h-14 bg-green-100 rounded-full flex items-center justify-center">
+                  <svg className="h-7 w-7 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-gray-600">{stablecoin.symbol} Balance (for Developer Payments)</p>
+                  <p className="text-3xl font-bold text-green-600">
+                    {formatUsd(usdcBalance, stablecoin.decimals)}
+                  </p>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Available for attached_usd in request_execution
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowDepositModal(true)}
+                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700 shadow-sm"
+              >
+                <svg className="h-4 w-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
+                Deposit {stablecoin.symbol}
+              </button>
+            </div>
+          </div>
+
+          {/* Deposit Modal */}
+          {showDepositModal && (
+            <div className="fixed inset-0 z-50 overflow-y-auto">
+              <div className="flex min-h-full items-center justify-center p-4">
+                <div className="fixed inset-0 bg-gray-500 bg-opacity-75" onClick={() => setShowDepositModal(false)} />
+                <div className="relative bg-white rounded-lg shadow-xl max-w-md w-full p-6">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                    Deposit {stablecoin.symbol}
+                  </h3>
+                  <p className="text-sm text-gray-600 mb-4">
+                    Deposit {stablecoin.symbol} to use as attached_usd when calling projects.
+                    This balance will be used to pay project developers.
+                  </p>
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Amount ({stablecoin.symbol})
+                    </label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-2 text-gray-500">$</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={depositAmount}
+                        onChange={(e) => setDepositAmount(e.target.value)}
+                        placeholder="10.00"
+                        className="block w-full pl-7 pr-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-green-500 focus:border-green-500"
+                      />
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500">
+                      Token: {stablecoin.contract}
+                    </p>
+                  </div>
+                  {depositError && (
+                    <div className="mb-4 bg-red-50 border border-red-200 rounded-md p-2">
+                      <p className="text-xs text-red-800">{depositError}</p>
+                    </div>
+                  )}
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => setShowDepositModal(false)}
+                      className="flex-1 px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleDeposit}
+                      disabled={depositing || !depositAmount}
+                      className="flex-1 px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
+                    >
+                      {depositing ? 'Depositing...' : 'Deposit'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Main 4-Block Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
             {/* Projects Block */}

@@ -8,7 +8,7 @@ This file describes the dashboard documentation structure and source → rendere
 > 2. Update navigation in `/dashboard/app/docs/layout.tsx`
 > 3. Then update this index to reflect the changes
 >
-> Users read documentation at https://dashboard.outlayer.io/docs, not this file!
+> Users read documentation at https://outlayer.fastnear.com/docs, not this file!
 
 ## Core Value Proposition
 
@@ -25,7 +25,7 @@ Both modes provide the same cryptographic proof via Intel TDX attestation.
 - **Sections**: `/dashboard/app/docs/sections/` - Reusable documentation components
 - **Examples**: `/wasi-examples/*/README.md` - Source for example documentation
 - **Navigation**: `/dashboard/app/docs/layout.tsx` - Sidebar menu configuration
-- **Live Site**: https://dashboard.outlayer.io/docs
+- **Live Site**: https://outlayer.fastnear.com/docs
 
 ## Documentation Structure
 
@@ -302,24 +302,23 @@ Projects allow users to organize WASM code versions with shared persistent stora
 ```
 Example: `alice.near/my-app`
 
-### Project Binding in WASM (CRITICAL)
+### How Project Binding Works
 
-For storage to work, your WASM code **must declare which project it belongs to** using the `metadata!` macro:
+When you call `request_execution(Project { project_id, ... })`, the contract:
+1. Looks up your project and resolves the active version's `CodeSource`
+2. Passes `project_uuid` to the worker along with the execution request
+3. Worker uses `project_uuid` for storage namespace and encryption
+
+**You don't need to declare project ID in your WASM** - the contract determines which WASM runs for which project. This is secure because WASM cannot fake its project binding.
 
 ```rust
-use outlayer::{metadata, storage};
+use outlayer::storage;
 
-// REQUIRED for project-based execution and storage
-metadata! {
-    project: "alice.near/my-app",  // Must match your project_id!
-    version: "1.0.0",
+fn main() {
+    // Storage just works - project_uuid comes from contract
+    storage::set("my-key", b"my-value").unwrap();
 }
 ```
-
-**Why is this needed?**
-- Storage namespace is determined by project ID
-- Encryption keys are derived from `storage:{project_uuid}`
-- Without metadata, storage calls will fail
 
 ### Dashboard Pages
 - `/projects` - List, create, manage projects
@@ -372,11 +371,19 @@ Coordinator API (/storage/*)
 PostgreSQL (storage_data table)
 ```
 
+### OutLayer SDK
+Published on crates.io: [`outlayer`](https://crates.io/crates/outlayer)
+
+```toml
+[dependencies]
+outlayer = "0.1"
+```
+
 ### Storage API (WIT Interface)
-Located at: `worker/wit/deps/storage.wit`
+Located at: `sdk/outlayer/wit/deps/storage.wit`
 
 ```wit
-interface storage {
+interface api {
     // Basic operations
     set: func(key: string, value: list<u8>) -> string;
     get: func(key: string) -> tuple<list<u8>, string>;
@@ -390,9 +397,12 @@ interface storage {
     increment: func(key: string, delta: s64) -> tuple<s64, string>;
     decrement: func(key: string, delta: s64) -> tuple<s64, string>;
 
-    // Worker-private storage (not accessible by users)
-    set-worker: func(key: string, value: list<u8>) -> string;
-    get-worker: func(key: string) -> tuple<list<u8>, string>;
+    // Worker storage (with public option for cross-project reads)
+    // is-encrypted: true (default) = encrypted, only this project can read
+    //               false = plaintext, other projects can read via get-worker with project-uuid
+    set-worker: func(key: string, value: list<u8>, is-encrypted: option<bool>) -> string;
+    // project-uuid: none = current project, some("p0000000000000001") = read from another project
+    get-worker: func(key: string, project-uuid: option<string>) -> tuple<list<u8>, string>;
 
     // Version migration
     get-by-version: func(key: string, wasm-hash: string) -> tuple<list<u8>, string>;
@@ -461,6 +471,39 @@ storage::get_worker("total_count")  // → "100" (same data)
 
 **Key point:** Worker storage is shared, but users cannot directly access it. Only WASM code can call `get_worker`/`set_worker`. Users interact with worker data only through WASM logic (e.g., calling a method that returns aggregated stats).
 
+**Public Storage (cross-project readable)**
+
+Public storage is unencrypted worker storage that can be read by other projects. Use case: oracle price feeds, shared configuration.
+
+```rust
+use outlayer::storage;
+
+// Store public data (is_encrypted = false)
+storage::set_worker_with_options("oracle:ETH", price_json.as_bytes(), Some(false))?;
+
+// Read from current project
+let data = storage::get_worker("oracle:ETH")?;
+
+// Read from another project by UUID (public data only)
+let data = storage::get_worker_from_project("oracle:ETH", Some("p0000000000000001"))?;
+```
+
+**External HTTP API:**
+```bash
+# JSON format (default) - base64 encoded value
+curl "https://api.outlayer.fastnear.com/public/storage/get?project_uuid=p0000000000000001&key=oracle:ETH"
+# {"exists":true,"value":"<base64-encoded-value>"}
+
+# Raw format - returns raw bytes directly
+curl "https://api.outlayer.fastnear.com/public/storage/get?...&format=raw"
+```
+
+**Key points:**
+- `is_encrypted=false` makes data readable by other projects
+- Other projects read via `project_uuid` (e.g., `p0000000000000001`)
+- External clients read via HTTP endpoint (returns base64-encoded value)
+- Encrypted (default) worker data is NOT accessible cross-project
+
 ### Version Migration
 
 The `wasm_hash` is stored with each record but NOT included in the unique key constraint. This means:
@@ -475,15 +518,21 @@ The `wasm_hash` is stored with each record but NOT included in the unique key co
 
 ### Test Example
 - **test-storage-ark**: `wasi-examples/test-storage-ark/`
-- Tests all storage host functions
-- Commands: set, get, delete, has, list, set_worker, get_worker, clear_all, test_all
+- Tests all storage host functions including public storage
+- Basic: set, get, delete, has, list, set_worker, get_worker, clear_all
+- Conditional: set_if_absent, set_if_equals, increment, decrement
+- Public: set_public, get_public_cross, verify_public_http
+- Tests: test_all, test_public_storage
 
 ### Use Cases
 - User preferences across executions
-- Counters and state persistence
+- Counters and state persistence (use `increment`/`decrement` for thread-safe counters)
 - Caching expensive computations
 - Session data storage
 - Private WASM-only state
+- **Oracle price feeds** (public storage for cross-project reads)
+- **Distributed locks** (use `set_if_absent`)
+- **Optimistic updates** (use `set_if_equals` for compare-and-swap)
 
 ## HTTPS API & Payment Keys
 
@@ -513,7 +562,7 @@ HTTPS API is one of two equal ways to use OutLayer (alongside Blockchain/NEAR in
 
 **How it works:**
 1. Create Payment Key at `/payment-keys` with USD deposit
-2. Call: `POST https://api.outlayer.io/call/{owner}/{project}` with `X-Payment-Key` header
+2. Call: `POST https://aoi.outlayer.fastnear.com/call/{owner}/{project}` with `X-Payment-Key` header
 3. Optionally attach payment to project author via `X-Attached-Deposit` header
 4. WASM reads payment via `USD_PAYMENT` env var
 

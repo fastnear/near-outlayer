@@ -165,6 +165,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/storage/clear-all", post(handlers::storage::storage_clear_all))
         .route("/storage/clear-version", post(handlers::storage::storage_clear_version))
         .route("/storage/clear-project", post(handlers::storage::storage_clear_project))
+        .route("/storage/get-public", post(handlers::storage::storage_get_public))
         // Project endpoints (worker-protected)
         .route("/projects/uuid", get(handlers::projects::resolve_project_uuid))
         .route("/projects/cache", delete(handlers::projects::invalidate_project_cache))
@@ -213,6 +214,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             get(handlers::public::get_user_earnings),
         )
         .route("/public/projects/storage", get(handlers::public::get_project_storage))
+        .route("/public/storage/get", get(handlers::public::get_public_storage))
         // Payment Key balance and usage (public - no auth required)
         .route(
             "/public/payment-keys/:owner/:nonce/balance",
@@ -244,6 +246,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build admin routes (require admin bearer token)
     let admin = Router::new()
         .route("/admin/compile-logs/:job_id", get(handlers::internal::get_compile_logs))
+        // Grant keys management
+        .route("/admin/grant-keys", post(handlers::grant_keys::create_grant_key))
+        .route("/admin/grant-keys", get(handlers::grant_keys::list_grant_keys))
+        .route("/admin/grant-keys/:owner/:nonce", delete(handlers::grant_keys::delete_grant_key))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::admin_auth::admin_auth,

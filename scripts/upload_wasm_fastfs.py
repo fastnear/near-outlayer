@@ -126,12 +126,38 @@ def main():
         ]
 
         print("Running:", ' '.join(cmd[:10]) + ' ...')
-        subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        # Print CLI output for debugging
+        if result.stdout:
+            print("\n--- NEAR CLI stdout ---")
+            print(result.stdout)
+        if result.stderr:
+            print("\n--- NEAR CLI stderr ---")
+            print(result.stderr)
+
+        # Try to extract transaction hash from output
+        tx_hash = None
+        for line in (result.stdout or '').split('\n') + (result.stderr or '').split('\n'):
+            # near-cli-rs outputs: "Transaction ID: <hash>"
+            if 'Transaction ID:' in line:
+                tx_hash = line.split('Transaction ID:')[1].strip().split()[0]
+                break
+            # Alternative format: "Transaction sent: <hash>"
+            if 'Transaction sent:' in line:
+                tx_hash = line.split(':')[1].strip().split()[0]
+                break
 
         # FastFS doesn't have actual contract code - the indexer picks up the transaction
         # So "CodeDoesNotExist" error is expected and means success
 
-        # Always show result
+        print()
+        if tx_hash:
+            print(f"Transaction hash: {tx_hash}")
+            print(f"Explorer: https://testnet.nearblocks.io/txns/{tx_hash}")
+        elif result.returncode != 0:
+            print(f"Warning: near CLI returned exit code {result.returncode}")
+
         print()
         print("Upload complete!")
         print()

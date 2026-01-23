@@ -88,4 +88,32 @@ impl Contract {
             .map(|req| req.output_submitted)
             .unwrap_or(false)
     }
+
+    /// Get developer earnings balance for an account (stablecoin)
+    ///
+    /// Earnings are credited when users call request_execution with attached_usd
+    /// for projects owned by this account.
+    ///
+    /// # Arguments
+    /// * `account_id` - Developer account (project owner)
+    ///
+    /// # Returns
+    /// Balance in minimal stablecoin units (e.g., 1000000 = 1 USD with 6 decimals)
+    pub fn get_developer_earnings(&self, account_id: AccountId) -> U128 {
+        U128(self.developer_earnings.get(&account_id).unwrap_or(0))
+    }
+
+    /// Get user's stablecoin balance for attached_usd payments
+    ///
+    /// Users deposit stablecoins via ft_transfer_call with action=deposit_balance.
+    /// This balance is used when calling request_execution with attached_usd parameter.
+    ///
+    /// # Arguments
+    /// * `account_id` - User account
+    ///
+    /// # Returns
+    /// Balance in minimal stablecoin units (e.g., 1000000 = 1 USD with 6 decimals)
+    pub fn get_user_stablecoin_balance(&self, account_id: AccountId) -> U128 {
+        U128(self.user_stablecoin_balances.get(&account_id).unwrap_or(0))
+    }
 }

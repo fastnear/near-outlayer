@@ -211,6 +211,7 @@ pub async fn create_task(
         context: payload.context,
         user_account_id: payload.user_account_id,
         near_payment_yocto: payload.near_payment_yocto,
+        attached_usd: payload.attached_usd.clone(),
         transaction_hash: payload.transaction_hash,
         compile_only: payload.compile_only,
         force_rebuild: payload.force_rebuild,
@@ -255,7 +256,7 @@ pub async fn create_task(
         crate::models::ResponseFormat::Json => "json",
     };
 
-    let _ = sqlx::query!(
+    let _ = sqlx::query(
         r#"
         INSERT INTO execution_requests (
             request_id, data_id, input_data,
@@ -264,36 +265,61 @@ pub async fn create_task(
             context_sender_id, context_block_height, context_block_timestamp,
             context_contract_id, context_transaction_hash, context_receipt_id,
             context_predecessor_id, context_signer_public_key, context_gas_burnt,
-            compile_only, force_rebuild, store_on_fastfs, project_uuid, project_id
+            compile_only, force_rebuild, store_on_fastfs, project_uuid, project_id,
+            attached_usd
         ) VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24
         )
-        ON CONFLICT (request_id) DO NOTHING
-        "#,
-        request_id as i64,
-        execution_request.data_id,
-        execution_request.input_data,
-        execution_request.resource_limits.max_instructions as i64,
-        execution_request.resource_limits.max_memory_mb as i32,
-        execution_request.resource_limits.max_execution_seconds as i64,
-        secrets_profile,
-        secrets_account_id,
-        response_format,
-        execution_request.context.sender_id,
-        execution_request.context.block_height.map(|h| h as i64),
-        execution_request.context.block_timestamp.map(|t| t as i64),
-        execution_request.context.contract_id,
-        execution_request.context.transaction_hash,
-        execution_request.context.receipt_id,
-        execution_request.context.predecessor_id,
-        execution_request.context.signer_public_key,
-        execution_request.context.gas_burnt.map(|g| g as i64),
-        execution_request.compile_only,
-        execution_request.force_rebuild,
-        execution_request.store_on_fastfs,
-        execution_request.project_uuid,
-        execution_request.project_id
+        ON CONFLICT (request_id) DO UPDATE SET
+            data_id = EXCLUDED.data_id,
+            input_data = EXCLUDED.input_data,
+            max_instructions = EXCLUDED.max_instructions,
+            max_memory_mb = EXCLUDED.max_memory_mb,
+            max_execution_seconds = EXCLUDED.max_execution_seconds,
+            secrets_profile = EXCLUDED.secrets_profile,
+            secrets_account_id = EXCLUDED.secrets_account_id,
+            response_format = EXCLUDED.response_format,
+            context_sender_id = EXCLUDED.context_sender_id,
+            context_block_height = EXCLUDED.context_block_height,
+            context_block_timestamp = EXCLUDED.context_block_timestamp,
+            context_contract_id = EXCLUDED.context_contract_id,
+            context_transaction_hash = EXCLUDED.context_transaction_hash,
+            context_receipt_id = EXCLUDED.context_receipt_id,
+            context_predecessor_id = EXCLUDED.context_predecessor_id,
+            context_signer_public_key = EXCLUDED.context_signer_public_key,
+            context_gas_burnt = EXCLUDED.context_gas_burnt,
+            compile_only = EXCLUDED.compile_only,
+            force_rebuild = EXCLUDED.force_rebuild,
+            store_on_fastfs = EXCLUDED.store_on_fastfs,
+            attached_usd = COALESCE(EXCLUDED.attached_usd, execution_requests.attached_usd),
+            project_id = COALESCE(EXCLUDED.project_id, execution_requests.project_id),
+            project_uuid = COALESCE(EXCLUDED.project_uuid, execution_requests.project_uuid)
+        "#
     )
+    .bind(request_id as i64)
+    .bind(&execution_request.data_id)
+    .bind(&execution_request.input_data)
+    .bind(execution_request.resource_limits.max_instructions as i64)
+    .bind(execution_request.resource_limits.max_memory_mb as i32)
+    .bind(execution_request.resource_limits.max_execution_seconds as i64)
+    .bind(secrets_profile)
+    .bind(secrets_account_id)
+    .bind(response_format)
+    .bind(&execution_request.context.sender_id)
+    .bind(execution_request.context.block_height.map(|h| h as i64))
+    .bind(execution_request.context.block_timestamp.map(|t| t as i64))
+    .bind(&execution_request.context.contract_id)
+    .bind(&execution_request.context.transaction_hash)
+    .bind(&execution_request.context.receipt_id)
+    .bind(&execution_request.context.predecessor_id)
+    .bind(&execution_request.context.signer_public_key)
+    .bind(execution_request.context.gas_burnt.map(|g| g as i64))
+    .bind(execution_request.compile_only)
+    .bind(execution_request.force_rebuild)
+    .bind(execution_request.store_on_fastfs)
+    .bind(&execution_request.project_uuid)
+    .bind(&execution_request.project_id)
+    .bind(&execution_request.attached_usd)
     .execute(&state.db)
     .await
     .map(|result| {

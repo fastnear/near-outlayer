@@ -6,7 +6,6 @@
 //!
 //! - **Storage**: Persistent encrypted storage across executions
 //! - **Environment**: Access to execution context (signer, input/output)
-//! - **Metadata**: Required metadata for project-based execution
 //!
 //! ## Requirements
 //!
@@ -16,13 +15,7 @@
 //! ## Quick Start
 //!
 //! ```rust,ignore
-//! use outlayer::{metadata, storage, env};
-//!
-//! // Required for project-based execution
-//! metadata! {
-//!     project: "alice.near/my-app",
-//!     version: "1.0.0",
-//! }
+//! use outlayer::{storage, env};
 //!
 //! fn main() {
 //!     // Get input from execution request
@@ -70,9 +63,6 @@ wit_bindgen::generate!({
 
 pub mod storage;
 pub mod env;
-
-// Re-export the metadata macro
-pub use outlayer_macros::metadata;
 
 /// Low-level access to generated WIT bindings
 ///

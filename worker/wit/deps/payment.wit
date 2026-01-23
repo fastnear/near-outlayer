@@ -1,0 +1,30 @@
+package near:payment@0.1.0;
+
+/// Payment API for OutLayer executions
+///
+/// Allows WASI modules to refund part of the attached_usd back to the caller.
+/// The refund amount is subtracted from the developer earnings.
+interface api {
+    /// Refund part of attached USD back to caller
+    ///
+    /// amount: amount to refund in minimal token units (e.g., 1000000 = 1 USD with 6 decimals)
+    ///
+    /// Rules:
+    /// - Can only be called once per execution
+    /// - Total refund cannot exceed ATTACHED_USD env var
+    /// - On error, returns error message; on success, returns empty string
+    ///
+    /// Example:
+    /// ```
+    /// // User attached 3 USD, WASI only needs 2 USD
+    /// let err = refund_usd(1_000_000); // Refund 1 USD
+    /// if !err.is_empty() {
+    ///     // Handle error
+    /// }
+    /// ```
+    refund-usd: func(amount: u64) -> string;
+}
+
+world payment-host {
+    import api;
+}

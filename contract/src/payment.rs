@@ -1,10 +1,9 @@
 //! Payment Key Top-Up via NEP-141 ft_transfer_call
 //!
-//! This module handles topping up Payment Keys with stablecoins (USDT/USDC).
+//! This module handles topping up Payment Keys with stablecoins (stablecoins).
 //! Uses yield/resume mechanism similar to request_execution.
 
 use crate::*;
-use near_sdk::borsh;
 use near_sdk::serde_json::json;
 use near_sdk::{env, log, near_bindgen, AccountId, Gas, GasWeight};
 
@@ -21,6 +20,8 @@ pub const TOP_UP_CALLBACK_GAS: Gas = Gas::from_tgas(30);
 pub enum FtTransferAction {
     /// Top up a Payment Key balance
     TopUpPaymentKey { nonce: u32 },
+    /// Deposit stablecoin to user's balance (for attached_usd payments)
+    DepositBalance,
 }
 
 /// Result of top-up operation (sent via yield/resume)
@@ -102,7 +103,25 @@ impl Contract {
             FtTransferAction::TopUpPaymentKey { nonce } => {
                 self.handle_top_up(sender_id, amount, nonce)
             }
+            FtTransferAction::DepositBalance => {
+                self.handle_deposit_balance(sender_id, amount)
+            }
         }
+    }
+
+    /// Handle stablecoin deposit to user's balance
+    /// Used for attached_usd payments to project developers
+    fn handle_deposit_balance(&mut self, sender_id: AccountId, amount: U128) {
+        // Add to user's stablecoin balance
+        let current = self.user_stablecoin_balances.get(&sender_id).unwrap_or(0);
+        self.user_stablecoin_balances.insert(&sender_id, &(current + amount.0));
+
+        log!(
+            "Deposited {} stablecoin to {} (new balance: {})",
+            amount.0,
+            sender_id,
+            current + amount.0
+        );
     }
 
     /// Handle Payment Key top-up with yield/resume

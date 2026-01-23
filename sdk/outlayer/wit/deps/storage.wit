@@ -50,15 +50,20 @@ interface api {
     /// Returns (new_value: s64, error: string)
     decrement: func(key: string, delta: s64) -> tuple<s64, string>;
 
-    // ==================== Worker-Private Storage ====================
+    // ==================== Worker Storage ====================
     // These functions store data with "@worker" as account_id
     // This data is only accessible within WASM, not by the user
+    // Can be public (is_encrypted=false) for cross-project reads (e.g., oracle price feeds)
 
-    /// Store worker-private data
-    set-worker: func(key: string, value: list<u8>) -> string;
+    /// Store worker data
+    /// is_encrypted: true (default) = encrypted, only this project can read
+    ///               false = plaintext, other projects can read via get-worker with project param
+    set-worker: func(key: string, value: list<u8>, is-encrypted: option<bool>) -> string;
 
-    /// Get worker-private data
-    get-worker: func(key: string) -> tuple<list<u8>, string>;
+    /// Get worker data
+    /// project-uuid: none = read from current project (any encryption type)
+    ///               some("p0000000000000001") = read public data from another project by UUID
+    get-worker: func(key: string, project-uuid: option<string>) -> tuple<list<u8>, string>;
 
     // ==================== Version Migration ====================
 

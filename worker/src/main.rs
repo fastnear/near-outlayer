@@ -10,12 +10,16 @@ mod near_client;
 mod registration;
 mod outlayer_rpc;
 mod outlayer_storage;
+mod outlayer_payment;
 mod tdx_attestation;
+mod wasm_cache;
 
 use anyhow::{Context, Result};
+use std::sync::{Arc, Mutex};
 use tracing::{debug, error, info, warn};
 
 use api_client::{ApiClient, CodeSource, ExecutionResult, JobInfo, JobStatus, JobType};
+use wasm_cache::WasmCache;
 use collateral_fetcher::fetch_collateral_from_phala;
 use compiler::Compiler;
 use config::Config;
@@ -76,6 +80,50 @@ async fn main() -> Result<()> {
     // Initialize API client
     let api_client = ApiClient::new(config.api_base_url.clone(), config.api_auth_token.clone())
         .context("Failed to create API client")?;
+
+    // Initialize WASM cache (if enabled)
+    let wasm_cache = if config.wasm_cache_max_size_mb > 0 {
+        // Determine cache directory - try configured dir first, fall back to /tmp if not writable
+        let cache_dir = {
+            let configured_dir = std::path::PathBuf::from(&config.wasm_cache_dir);
+
+            // Try to create and write to configured directory
+            let configured_ok = std::fs::create_dir_all(&configured_dir).is_ok() && {
+                let test_file = configured_dir.join(".write_test");
+                let write_ok = std::fs::write(&test_file, b"test").is_ok();
+                let _ = std::fs::remove_file(&test_file);
+                write_ok
+            };
+
+            if configured_ok {
+                info!("📦 WASM cache directory: {} (writable)", configured_dir.display());
+                configured_dir
+            } else {
+                // Fall back to /tmp subdirectory (TEE environment like Phala)
+                // Security note: WASI P2 has access to /tmp, but cache has checksum verification
+                // so tampering would be detected. In TEE only /tmp is writable.
+                let fallback_dir = std::path::PathBuf::from("/tmp/outlayer-wasm-cache");
+                warn!(
+                    "⚠️  Configured cache directory '{}' is not writable, falling back to '{}'",
+                    configured_dir.display(),
+                    fallback_dir.display()
+                );
+                warn!("   Note: /tmp fallback is less secure - WASI has access to /tmp");
+                warn!("   Cache integrity is protected by checksum verification.");
+                fallback_dir
+            }
+        };
+
+        info!("📦 WASM cache enabled: max_size={}MB, dir={}", config.wasm_cache_max_size_mb, cache_dir.display());
+        let cache = WasmCache::new(
+            cache_dir,
+            config.wasm_cache_max_size_mb,
+        ).context("Failed to initialize WASM cache")?;
+        Some(Arc::new(Mutex::new(cache)))
+    } else {
+        info!("📦 WASM cache disabled (WASM_CACHE_MAX_SIZE_MB=0)");
+        None
+    };
 
     // Initialize compiler (only if compilation capability enabled)
     let compiler = if config.capabilities.can_compile() {
@@ -367,6 +415,7 @@ async fn main() -> Result<()> {
             keystore_client.as_ref(),
             &tdx_client,
             &config,
+            wasm_cache.as_ref(),
         )
         .await
         {
@@ -396,6 +445,7 @@ async fn worker_iteration(
     keystore_client: Option<&KeystoreClient>,
     tdx_client: &tdx_attestation::TdxClient,
     config: &Config,
+    wasm_cache: Option<&Arc<Mutex<WasmCache>>>,
 ) -> Result<bool> {
     // Poll for a task (with long-polling) - specify capabilities to poll correct queue
     let capabilities = config.capabilities.to_array();
@@ -422,6 +472,7 @@ async fn worker_iteration(
     let context = execution_request.context.clone();
     let user_account_id = execution_request.user_account_id.clone();
     let near_payment_yocto = execution_request.near_payment_yocto.clone();
+    let attached_usd = execution_request.attached_usd.clone();
     let transaction_hash = context.transaction_hash.clone();
     let store_on_fastfs = execution_request.store_on_fastfs;
     let compile_only = execution_request.compile_only;
@@ -632,6 +683,7 @@ async fn worker_iteration(
                     &context,
                     user_account_id.as_ref(),
                     near_payment_yocto.as_ref(),
+                    attached_usd.as_ref(),
                     transaction_hash.as_ref(),
                     request_id,
                     &data_id,
@@ -645,6 +697,7 @@ async fn worker_iteration(
                     payment_key_owner.as_ref(),
                     payment_key_nonce,
                     usd_payment.as_ref(),
+                    wasm_cache,
                 )
                 .await?;
             }
@@ -668,6 +721,7 @@ fn merge_env_vars(
     request_id: u64,
     user_account_id: Option<&String>,
     near_payment_yocto: Option<&String>,
+    attached_usd: Option<&String>,
     transaction_hash: Option<&String>,
     project_id: Option<&String>,
     project_uuid: Option<&String>,
@@ -706,8 +760,9 @@ fn merge_env_vars(
         env_vars.insert("NEAR_TRANSACTION_HASH".to_string(), "".to_string());
         env_vars.insert("NEAR_REQUEST_ID".to_string(), "".to_string());
 
-        // HTTPS has no NEAR payment
+        // HTTPS has no NEAR payment or attached deposit
         env_vars.insert("NEAR_PAYMENT_YOCTO".to_string(), "0".to_string());
+        env_vars.insert("ATTACHED_USD".to_string(), "0".to_string());
 
         // HTTPS-specific: USD payment to project owner
         env_vars.insert(
@@ -757,6 +812,11 @@ fn merge_env_vars(
         if let Some(payment) = near_payment_yocto {
             env_vars.insert("NEAR_PAYMENT_YOCTO".to_string(), payment.clone());
         }
+        if let Some(deposit) = attached_usd {
+            env_vars.insert("ATTACHED_USD".to_string(), deposit.clone());
+        } else {
+            env_vars.insert("ATTACHED_USD".to_string(), "0".to_string());
+        }
         if let Some(tx_hash) = transaction_hash {
             env_vars.insert("NEAR_TRANSACTION_HASH".to_string(), tx_hash.clone());
         }
@@ -777,6 +837,13 @@ fn merge_env_vars(
     // Add project context (same for both modes)
     if let Some(proj_id) = project_id {
         env_vars.insert("OUTLAYER_PROJECT_ID".to_string(), proj_id.clone());
+        // Split by first '/' only (project name may contain '/')
+        if let Some(slash_pos) = proj_id.find('/') {
+            let owner = &proj_id[..slash_pos];
+            let name = &proj_id[slash_pos + 1..];
+            env_vars.insert("OUTLAYER_PROJECT_OWNER".to_string(), owner.to_string());
+            env_vars.insert("OUTLAYER_PROJECT_NAME".to_string(), name.to_string());
+        }
     }
     if let Some(proj_uuid) = project_uuid {
         env_vars.insert("OUTLAYER_PROJECT_UUID".to_string(), proj_uuid.clone());
@@ -1193,6 +1260,7 @@ async fn handle_execute_job(
     context: &api_client::ExecutionContext,
     user_account_id: Option<&String>,
     near_payment_yocto: Option<&String>,
+    attached_usd: Option<&String>,
     transaction_hash: Option<&String>,
     request_id: u64,
     data_id: &str,
@@ -1206,6 +1274,7 @@ async fn handle_execute_job(
     payment_key_owner: Option<&String>, // Payment Key owner for HTTPS calls
     payment_key_nonce: Option<i32>, // Payment Key nonce for HTTPS calls
     usd_payment: Option<&String>, // USD payment amount for HTTPS calls
+    wasm_cache: Option<&Arc<Mutex<WasmCache>>>, // Local WASM LRU cache
 ) -> Result<()> {
     info!("⚙️ Starting execution job_id={}", job.job_id);
 
@@ -1234,6 +1303,7 @@ async fn handle_execute_job(
             instructions: 0, // No execution
             compile_time_ms: None, // Already counted in compile job
             compilation_note: Some(compilation_note),
+            refund_usd: None,
         };
 
         match near_client.submit_execution_result(request_id, &result).await {
@@ -1314,6 +1384,7 @@ async fn handle_execute_job(
             instructions: 0,
             compile_time_ms: None,
             compilation_note: Some("Compilation failed".to_string()),
+            refund_usd: None,
         };
 
         let near_result = near_client
@@ -1386,11 +1457,13 @@ async fn handle_execute_job(
     let wasm_checksum = job.wasm_checksum.as_ref()
         .ok_or_else(|| anyhow::anyhow!("Execute job missing wasm_checksum"))?;
 
-    // Get WASM bytes, compile time, creation timestamp, and published URL - use local cache if available, otherwise download
-    let (wasm_bytes, compile_time_ms, created_at, published_url) = if let Some((cached_checksum, cached_bytes, cached_compile_time, cached_created_at, cached_published_url)) = compiled_wasm {
+    // Get WASM bytes, compile time, creation timestamp, published URL, and whether to cache after execution
+    // need_to_cache is true when we downloaded fresh WASM (not from LRU cache or local compile)
+    let (wasm_bytes, compile_time_ms, created_at, published_url, need_to_cache) = if let Some((cached_checksum, cached_bytes, cached_compile_time, cached_created_at, cached_published_url)) = compiled_wasm {
         if cached_checksum == wasm_checksum {
             info!("✅ Using locally compiled WASM: {} bytes (freshly compiled!) compiled in {}ms", cached_bytes.len(), cached_compile_time);
-            (cached_bytes.clone(), Some(*cached_compile_time), cached_created_at.map(|s| s.to_string()), cached_published_url.map(|s| s.to_string()))
+            // Freshly compiled - no need to cache (not downloaded from coordinator)
+            (cached_bytes.clone(), Some(*cached_compile_time), cached_created_at.map(|s| s.to_string()), cached_published_url.map(|s| s.to_string()), false)
         } else {
             warn!("⚠️ Checksum mismatch - downloading from coordinator");
             // Check cache metadata to get created_at timestamp
@@ -1403,22 +1476,46 @@ async fn handle_execute_job(
                     return Ok(());
                 }
             };
-            info!("📥 Downloading WASM: checksum={} (cached since: {:?})", wasm_checksum, created_at);
-            let bytes = match api_client.download_wasm(wasm_checksum).await {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    let error_msg = format!("Failed to download WASM: {}", e);
-                    error!("❌ {}", error_msg);
-                    api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None).await?;
-                    return Ok(());
+            // Try local LRU cache first
+            let (bytes, need_cache) = if let Some(cache) = wasm_cache {
+                let cached = cache.lock().ok().and_then(|mut c| c.get(wasm_checksum));
+                if let Some(cached_bytes) = cached {
+                    info!("✅ WASM LRU cache hit: {} ({}KB)", wasm_checksum, cached_bytes.len() / 1024);
+                    (cached_bytes, false) // cache hit
+                } else {
+                    info!("📥 Downloading WASM: checksum={} (cached since: {:?})", wasm_checksum, created_at);
+                    let bytes = match api_client.download_wasm(wasm_checksum).await {
+                        Ok(bytes) => bytes,
+                        Err(e) => {
+                            let error_msg = format!("Failed to download WASM: {}", e);
+                            error!("❌ {}", error_msg);
+                            api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None).await?;
+                            return Ok(());
+                        }
+                    };
+                    // Note: Cache AFTER execution to prevent WASI tampering
+                    info!("✅ Downloaded WASM: {} bytes (will cache after execution)", bytes.len());
+                    (bytes, true) // need to cache
                 }
+            } else {
+                info!("📥 Downloading WASM: checksum={} (cached since: {:?})", wasm_checksum, created_at);
+                let bytes = match api_client.download_wasm(wasm_checksum).await {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        let error_msg = format!("Failed to download WASM: {}", e);
+                        error!("❌ {}", error_msg);
+                        api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None).await?;
+                        return Ok(());
+                    }
+                };
+                info!("✅ Downloaded WASM: {} bytes (cache disabled)", bytes.len());
+                (bytes, false) // cache disabled
             };
-            info!("✅ Downloaded WASM: {} bytes", bytes.len());
             // Use compile_time_ms from job info (if compiled by separate worker)
-            (bytes, job.compile_time_ms, created_at, None) // No published_url when downloading from coordinator
+            (bytes, job.compile_time_ms, created_at, None, need_cache)
         }
     } else {
-        // No local cache - download from coordinator
+        // No local compile cache - try LRU cache or download from coordinator
         // Check cache metadata to get created_at timestamp
         let (_exists, created_at) = match api_client.wasm_exists(wasm_checksum).await {
             Ok(result) => result,
@@ -1429,140 +1526,54 @@ async fn handle_execute_job(
                 return Ok(());
             }
         };
-        info!("📥 Downloading WASM: checksum={} (cached since: {:?})", wasm_checksum, &created_at);
-        let bytes = match api_client.download_wasm(wasm_checksum).await {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                let error_msg = format!("Failed to download WASM: {}", e);
-                error!("❌ {}", error_msg);
-                api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None).await?;
-                return Ok(());
-            }
-        };
-        info!("✅ Downloaded WASM: {} bytes, created_at={:?}", bytes.len(), &created_at);
-        // Use compile_time_ms from job info (if compiled by separate worker)
-        (bytes, job.compile_time_ms, created_at, None) // No published_url when downloading from coordinator
-    };
-
-    // Extract metadata from WASM
-    let wasm_metadata = executor::extract_metadata(&wasm_bytes);
-
-    // STRICT VALIDATION: If job has project_id and WASM has metadata, they MUST match
-    // This prevents using WASM built for one project with execution requests for another project
-    if let (Some(ref job_project_id), Some(ref metadata)) = (&job.project_id, &wasm_metadata) {
-        if job_project_id != &metadata.project {
-            let error_msg = format!(
-                "Project mismatch: WASM declares project '{}' in metadata but execution was requested for project '{}'. \
-                 Either rebuild WASM with correct metadata! {{ project: \"{}\" }} or use the correct project_id in request.",
-                metadata.project, job_project_id, job_project_id
-            );
-            error!("❌ {}", error_msg);
-
-            // Fail the job - report to contract
-            let error_result = ExecutionResult {
-                success: false,
-                output: None,
-                error: Some(error_msg.clone()),
-                execution_time_ms: 0,
-                instructions: 0,
-                compile_time_ms: None,
-                compilation_note: None,
-            };
-
-            let _ = near_client.submit_execution_result(request_id, &error_result).await;
-            api_client
-                .complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None)
-                .await?;
-            return Ok(());
-        }
-        info!("✅ Project ID validated: WASM metadata '{}' matches request '{}'", metadata.project, job_project_id);
-    }
-
-    // Resolve project UUID - either from job or from WASM metadata
-    let project_uuid = if let Some(ref job_uuid) = job.project_uuid {
-        // Job has project_uuid - verify it matches WASM metadata if present
-        if let Some(ref metadata) = wasm_metadata {
-            // Resolve metadata.project to UUID and compare
-            match api_client.resolve_project_uuid(&metadata.project).await {
-                Ok(Some(project_info)) => {
-                    if &project_info.uuid != job_uuid {
-                        let error_msg = format!(
-                            "Project mismatch: WASM metadata declares project '{}' (uuid={}) but execution requested for uuid={}",
-                            metadata.project, project_info.uuid, job_uuid
-                        );
+        // Try local LRU cache first
+        let (bytes, need_cache) = if let Some(cache) = wasm_cache {
+            let cached = cache.lock().ok().and_then(|mut c| c.get(wasm_checksum));
+            if let Some(cached_bytes) = cached {
+                info!("✅ WASM LRU cache hit: {} ({}KB)", wasm_checksum, cached_bytes.len() / 1024);
+                (cached_bytes, false) // cache hit, no need to cache
+            } else {
+                info!("📥 Downloading WASM: checksum={} (cached since: {:?})", wasm_checksum, &created_at);
+                let bytes = match api_client.download_wasm(wasm_checksum).await {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        let error_msg = format!("Failed to download WASM: {}", e);
                         error!("❌ {}", error_msg);
-
-                        // Fail the job
-                        let error_result = ExecutionResult {
-                            success: false,
-                            output: None,
-                            error: Some(error_msg.clone()),
-                            execution_time_ms: 0,
-                            instructions: 0,
-                            compile_time_ms: None,
-                            compilation_note: None,
-                        };
-
-                        let _ = near_client.submit_execution_result(request_id, &error_result).await;
-                        api_client
-                            .complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None)
-                            .await?;
+                        api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None).await?;
                         return Ok(());
                     }
-                    info!("✅ Project metadata verified: {} -> {}", metadata.project, job_uuid);
-                }
-                Ok(None) => {
-                    let error_msg = format!(
-                        "Project '{}' from WASM metadata not found on contract",
-                        metadata.project
-                    );
+                };
+                // Note: Cache AFTER execution to prevent WASI tampering
+                info!("✅ Downloaded WASM: {} bytes (will cache after execution)", bytes.len());
+                (bytes, true) // downloaded fresh, need to cache
+            }
+        } else {
+            info!("📥 Downloading WASM: checksum={} (cached since: {:?})", wasm_checksum, &created_at);
+            let bytes = match api_client.download_wasm(wasm_checksum).await {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    let error_msg = format!("Failed to download WASM: {}", e);
                     error!("❌ {}", error_msg);
-
-                    let error_result = ExecutionResult {
-                        success: false,
-                        output: None,
-                        error: Some(error_msg.clone()),
-                        execution_time_ms: 0,
-                        instructions: 0,
-                        compile_time_ms: None,
-                        compilation_note: None,
-                    };
-
-                    let _ = near_client.submit_execution_result(request_id, &error_result).await;
-                    api_client
-                        .complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None)
-                        .await?;
+                    api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None).await?;
                     return Ok(());
                 }
-                Err(e) => {
-                    warn!("⚠️ Failed to verify project metadata: {}. Continuing with job UUID.", e);
-                }
-            }
-        }
-        Some(job_uuid.clone())
-    } else if let Some(ref metadata) = wasm_metadata {
-        // No job UUID but WASM has metadata - resolve from metadata
-        info!("📋 Extracted WASM metadata: project={}, version={}", metadata.project, metadata.version);
-
-        match api_client.resolve_project_uuid(&metadata.project).await {
-            Ok(Some(project_info)) => {
-                info!("✅ Resolved project UUID: {} -> {}", metadata.project, project_info.uuid);
-                Some(project_info.uuid)
-            }
-            Ok(None) => {
-                warn!("⚠️ Project '{}' not found on contract. Storage will be disabled.", metadata.project);
-                None
-            }
-            Err(e) => {
-                warn!("⚠️ Failed to resolve project UUID: {}. Storage will be disabled.", e);
-                None
-            }
-        }
-    } else {
-        // No job UUID and no metadata - standalone WASM without project
-        debug!("No project context - running as standalone WASM (storage disabled)");
-        None
+            };
+            info!("✅ Downloaded WASM: {} bytes (cache disabled)", bytes.len());
+            (bytes, false) // cache disabled
+        };
+        // Use compile_time_ms from job info (if compiled by separate worker)
+        (bytes, job.compile_time_ms, created_at, None, need_cache)
     };
+
+    // Project UUID comes from the contract via coordinator - no need to extract from WASM metadata
+    // The contract determines which CodeSource to use for a project, and the coordinator passes project_uuid
+    // This is secure because WASM cannot fake its project - the binding is enforced by the contract
+    let project_uuid = job.project_uuid.clone();
+    if let Some(ref uuid) = project_uuid {
+        info!("📋 Running in project context: project_id={:?}, project_uuid={}", job.project_id, uuid);
+    } else {
+        debug!("No project context - running as standalone WASM (storage disabled)");
+    }
 
     // Decrypt secrets from contract if provided (new repo-based system)
     info!("🔍 DEBUG secrets_ref: {:?}", secrets_ref);
@@ -1621,16 +1632,23 @@ async fn handle_execute_job(
             Err(e) => {
                 // Error message already user-friendly from keystore_client
                 let error_msg = e.to_string();
-                error!("❌ Secrets decryption failed: {}", error_msg);
 
-                // Determine error category based on error message
-                let error_category = if error_msg.contains("Access") && error_msg.contains("denied") {
-                    api_client::JobStatus::AccessDenied
-                } else if error_msg.contains("not found") || error_msg.contains("Invalid secrets format") {
-                    api_client::JobStatus::Custom // Secrets not found or invalid format - user configuration issue
+                // "Secrets not found" is not a fatal error - WASM may not need secrets
+                // Continue with empty secrets map
+                if error_msg.contains("not found") {
+                    info!("ℹ️  No secrets configured for this project/source, continuing without secrets");
+                    Some(std::collections::HashMap::new())
                 } else {
-                    api_client::JobStatus::Failed // Generic secret error - infrastructure issue
-                };
+                    error!("❌ Secrets decryption failed: {}", error_msg);
+
+                    // Determine error category based on error message
+                    let error_category = if error_msg.contains("Access") && error_msg.contains("denied") {
+                        api_client::JobStatus::AccessDenied
+                    } else if error_msg.contains("Invalid secrets format") {
+                        api_client::JobStatus::Custom // Invalid format - user configuration issue
+                    } else {
+                        api_client::JobStatus::Failed // Generic secret error - infrastructure issue
+                    };
 
                 // Send error to NEAR contract
                 let error_result = ExecutionResult {
@@ -1641,6 +1659,7 @@ async fn handle_execute_job(
                     instructions: 0,
                     compile_time_ms: None,
                     compilation_note: None,
+                    refund_usd: None,
                 };
 
                 // Extract actual cost from contract logs (base_fee on failure)
@@ -1676,7 +1695,8 @@ async fn handle_execute_job(
                         None, // No compile_result
                     )
                     .await?;
-                return Ok(());
+                    return Ok(());
+                }
             }
         }
     } else {
@@ -1691,6 +1711,7 @@ async fn handle_execute_job(
         request_id,
         user_account_id,
         near_payment_yocto,
+        attached_usd,
         transaction_hash,
         job.project_id.as_ref(),
         project_uuid.as_ref(),
@@ -1755,6 +1776,20 @@ async fn handle_execute_job(
             storage_config,
         )
         .await;
+
+    // Cache WASM after execution (not before) to prevent WASI from tampering with cache
+    // This is a security measure: WASI P2 has access to /tmp, so we cache only after WASI exits
+    if need_to_cache {
+        if let Some(cache) = wasm_cache {
+            if let Ok(mut c) = cache.lock() {
+                if let Err(e) = c.put(wasm_checksum, &wasm_bytes) {
+                    warn!("Failed to cache WASM after execution: {}", e);
+                } else {
+                    info!("📦 Cached WASM after execution: {} ({}KB)", wasm_checksum, wasm_bytes.len() / 1024);
+                }
+            }
+        }
+    }
 
     match exec_result {
         Ok(mut execution_result) => {
@@ -1829,21 +1864,25 @@ async fn handle_execute_job(
                 }
 
                 // NEAR contract calls: continue to normal flow (will be handled below)
+                // The result (including success=false) will be submitted to NEAR contract
             }
 
-            if let Some(ct) = compile_time_ms {
-                info!(
-                    "✅ Execution successful: compile={}ms execute={}ms instructions={}{}",
-                    ct, execution_result.execution_time_ms, execution_result.instructions,
-                    effective_published_url.as_ref().map(|u| format!(" published: {}", u)).unwrap_or_default()
-                );
-            } else {
-                info!(
-                    "✅ Execution successful: time={}ms instructions={} (using cached WASM{})",
-                    execution_result.execution_time_ms,
-                    execution_result.instructions,
-                    created_at.as_ref().map(|t| format!(" from {}", t)).unwrap_or_default()
-                );
+            // Log execution result (only log success for successful executions)
+            if execution_result.success {
+                if let Some(ct) = compile_time_ms {
+                    info!(
+                        "✅ Execution successful: compile={}ms execute={}ms instructions={}{}",
+                        ct, execution_result.execution_time_ms, execution_result.instructions,
+                        effective_published_url.as_ref().map(|u| format!(" published: {}", u)).unwrap_or_default()
+                    );
+                } else {
+                    info!(
+                        "✅ Execution successful: time={}ms instructions={} (using cached WASM{})",
+                        execution_result.execution_time_ms,
+                        execution_result.instructions,
+                        created_at.as_ref().map(|t| format!(" from {}", t)).unwrap_or_default()
+                    );
+                }
             }
 
             // HTTPS calls go to coordinator, not NEAR contract
@@ -2016,13 +2055,13 @@ async fn handle_execute_job(
                             actual_cost, actual_cost as f64 / 1e24);
                     }
 
-                    // Report success to coordinator (async, can fail without breaking flow)
+                    // Report to coordinator (async, can fail without breaking flow)
                     if let Err(e) = api_client
                         .complete_job(
                             job.job_id,
-                            true,
+                            execution_result.success,
                             execution_result.output.clone(),
-                            None,
+                            execution_result.error.clone(),
                             execution_result.execution_time_ms,
                             execution_result.instructions,
                             None,
@@ -2209,6 +2248,7 @@ async fn handle_execute_job(
                 instructions: 0,
                 compile_time_ms,
                 compilation_note: None,
+                refund_usd: None,
             };
 
             // Submit error to NEAR contract (critical path) and extract actual cost

@@ -71,6 +71,7 @@ export default function WasiSection() {
             <li><strong>Environment variables:</strong> Access encrypted secrets via <code className="bg-gray-100 px-2 py-1 rounded">std::env::var()</code></li>
             <li><strong>Random numbers:</strong> Cryptographically secure random generation (WASI P1 & P2)</li>
             <li><strong>HTTP requests:</strong> Make external API calls (WASI P2 only, via <code className="bg-gray-100 px-2 py-1 rounded">wasi-http-client</code>)</li>
+            <li><strong>Persistent storage:</strong> Encrypted key-value storage (WASI P2 only, via <code className="bg-gray-100 px-2 py-1 rounded">outlayer</code> SDK from <a href="https://crates.io/crates/outlayer" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">crates.io</a>)</li>
             <li><strong>File I/O (limited):</strong> Basic file operations in sandboxed environment</li>
             <li><strong>NEAR context:</strong> Access execution metadata via env vars (<code className="bg-gray-100 px-2 py-1 rounded">NEAR_SENDER_ID</code>, <code className="bg-gray-100 px-2 py-1 rounded">NEAR_BLOCK_HEIGHT</code>, etc.)</li>
           </ul>
