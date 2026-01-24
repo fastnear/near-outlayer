@@ -649,40 +649,101 @@ pub async fn complete_job(
                 }
             }
             Ok(None) => {
-                // Fallback: create minimal request with defaults
-                // This happens if execution_requests table doesn't have the data
-                warn!("⚠️ No execution_requests record for request_id={}, using defaults (project_uuid=None, project_id=None)", job.request_id);
-                ExecutionRequest {
-                    request_id: job.request_id as u64,
-                    data_id: job.data_id.clone(),
-                    code_source: Some(code_source),
-                    resource_limits: ResourceLimits {
-                        max_instructions: 1_000_000_000,
-                        max_memory_mb: 128,
-                        max_execution_seconds: 60,
-                    },
-                    input_data: String::new(),
-                    secrets_ref: None,
-                    response_format: ResponseFormat::Text,
-                    context: ExecutionContext::default(),
-                    user_account_id: job.user_account_id.clone(),
-                    near_payment_yocto: job.near_payment_yocto.clone(),
-                    attached_usd: None,
-                    transaction_hash: job.transaction_hash.clone(),
-                    compile_only: false,
-                    force_rebuild: false,
-                    store_on_fastfs: false,
-                    compile_result: None,
-                    project_uuid: None,
-                    project_id: None,
-                    // HTTPS API fields - not used for NEAR contract calls
-                    is_https_call: false,
-                    call_id: None,
-                    payment_key_owner: None,
-                    payment_key_nonce: None,
-                    usd_payment: None,
-                    compute_limit_usd: None,
-                    attached_deposit_usd: None,
+                // For HTTPS calls (request_id=0), try to get from Redis cache
+                if job.request_id == 0 {
+                    let request_key = format!("https_request:{}", job.data_id);
+                    let mut found_request: Option<ExecutionRequest> = None;
+
+                    if let Ok(mut conn) = state.redis.get_multiplexed_async_connection().await {
+                        let cached: Result<Option<String>, _> = conn.get(&request_key).await;
+                        if let Ok(Some(json)) = cached {
+                            if let Ok(req) = serde_json::from_str::<ExecutionRequest>(&json) {
+                                info!("📋 Fetched HTTPS execution request from Redis for data_id={}: project_uuid={:?} project_id={:?}",
+                                    job.data_id, req.project_uuid, req.project_id);
+                                // Return request with updated code_source (compiler may have updated it)
+                                found_request = Some(ExecutionRequest {
+                                    code_source: Some(code_source.clone()),
+                                    compile_result: payload.compile_result.clone(),
+                                    ..req
+                                });
+                            } else {
+                                warn!("⚠️ Failed to parse HTTPS execution request from Redis for data_id={}", job.data_id);
+                            }
+                        } else {
+                            warn!("⚠️ No HTTPS execution request in Redis for data_id={}", job.data_id);
+                        }
+                    } else {
+                        warn!("⚠️ Failed to connect to Redis for HTTPS execution request");
+                    }
+
+                    found_request.unwrap_or_else(|| {
+                        warn!("⚠️ Using defaults for HTTPS request (project_uuid=None)");
+                        ExecutionRequest {
+                            request_id: job.request_id as u64,
+                            data_id: job.data_id.clone(),
+                            code_source: Some(code_source.clone()),
+                            resource_limits: ResourceLimits {
+                                max_instructions: 1_000_000_000,
+                                max_memory_mb: 128,
+                                max_execution_seconds: 60,
+                            },
+                            input_data: String::new(),
+                            secrets_ref: None,
+                            response_format: ResponseFormat::Text,
+                            context: ExecutionContext::default(),
+                            user_account_id: job.user_account_id.clone(),
+                            near_payment_yocto: job.near_payment_yocto.clone(),
+                            attached_usd: None,
+                            transaction_hash: job.transaction_hash.clone(),
+                            compile_only: false,
+                            force_rebuild: false,
+                            store_on_fastfs: false,
+                            compile_result: payload.compile_result.clone(),
+                            project_uuid: None,
+                            project_id: None,
+                            is_https_call: true,
+                            call_id: None,
+                            payment_key_owner: None,
+                            payment_key_nonce: None,
+                            usd_payment: None,
+                            compute_limit_usd: None,
+                            attached_deposit_usd: None,
+                        }
+                    })
+                } else {
+                    // Fallback: create minimal request with defaults for blockchain calls
+                    warn!("⚠️ No execution_requests record for request_id={}, using defaults (project_uuid=None, project_id=None)", job.request_id);
+                    ExecutionRequest {
+                        request_id: job.request_id as u64,
+                        data_id: job.data_id.clone(),
+                        code_source: Some(code_source),
+                        resource_limits: ResourceLimits {
+                            max_instructions: 1_000_000_000,
+                            max_memory_mb: 128,
+                            max_execution_seconds: 60,
+                        },
+                        input_data: String::new(),
+                        secrets_ref: None,
+                        response_format: ResponseFormat::Text,
+                        context: ExecutionContext::default(),
+                        user_account_id: job.user_account_id.clone(),
+                        near_payment_yocto: job.near_payment_yocto.clone(),
+                        attached_usd: None,
+                        transaction_hash: job.transaction_hash.clone(),
+                        compile_only: false,
+                        force_rebuild: false,
+                        store_on_fastfs: false,
+                        compile_result: payload.compile_result.clone(),
+                        project_uuid: None,
+                        project_id: None,
+                        is_https_call: false,
+                        call_id: None,
+                        payment_key_owner: None,
+                        payment_key_nonce: None,
+                        usd_payment: None,
+                        compute_limit_usd: None,
+                        attached_deposit_usd: None,
+                    }
                 }
             }
             Err(e) => {
@@ -708,10 +769,9 @@ pub async fn complete_job(
                     compile_only: false,
                     force_rebuild: false,
                     store_on_fastfs: false,
-                    compile_result: None,
+                    compile_result: payload.compile_result.clone(),
                     project_uuid: None,
                     project_id: None,
-                    // HTTPS API fields - not used for NEAR contract calls
                     is_https_call: false,
                     call_id: None,
                     payment_key_owner: None,

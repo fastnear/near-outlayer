@@ -292,21 +292,15 @@ export interface AttestationResponse {
 }
 
 /**
- * Fetch attestation for a specific task by job ID (requires API key)
- * Returns null if attestation doesn't exist (backward compatibility)
+ * Fetch attestation for a specific task by job ID (public endpoint)
+ * Returns null if attestation doesn't exist
  */
 export async function fetchAttestation(
-  taskId: number,
-  apiKey: string
+  taskId: number
 ): Promise<AttestationResponse | null> {
   try {
     const response = await axios.get(
-      `${API_BASE_URL}/attestations/${taskId}`,
-      {
-        headers: {
-          'X-API-Key': apiKey,
-        },
-      }
+      `${API_BASE_URL}/attestations/${taskId}`
     );
     return response.data;
   } catch (error) {

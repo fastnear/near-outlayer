@@ -44,20 +44,6 @@ export default function JobsPage() {
       return; // No job_id available
     }
 
-    const requireApiKey = process.env.NEXT_PUBLIC_REQUIRE_ATTESTATION_API_KEY === 'true';
-    const apiKey = process.env.NEXT_PUBLIC_COORDINATOR_API_KEY || '';
-
-    if (requireApiKey && !apiKey) {
-      setAttestationModal({
-        jobId: job.job_id,
-        isHttpsCall: job.is_https_call,
-        attestation: null,
-        loading: false,
-        error: 'API key not configured. Please set NEXT_PUBLIC_COORDINATOR_API_KEY in .env'
-      });
-      return;
-    }
-
     setAttestationModal({
       jobId: job.job_id,
       isHttpsCall: job.is_https_call,
@@ -68,7 +54,7 @@ export default function JobsPage() {
 
     try {
       // Always use job_id to fetch attestation (works for both NEAR and HTTPS calls)
-      const data = await fetchAttestation(job.job_id, apiKey || 'not-required');
+      const data = await fetchAttestation(job.job_id);
 
       if (!data) {
         setAttestationModal({

@@ -30,18 +30,9 @@ export default function AttestationPage() {
   }, [jobId]);
 
   const loadAttestation = async (id: number) => {
-    const requireApiKey = process.env.NEXT_PUBLIC_REQUIRE_ATTESTATION_API_KEY === 'true';
-    const apiKey = process.env.NEXT_PUBLIC_COORDINATOR_API_KEY || '';
-
-    if (requireApiKey && !apiKey) {
-      setError('API key not configured');
-      setLoading(false);
-      return;
-    }
-
     try {
       const { fetchAttestation } = await import('@/lib/api');
-      const data = await fetchAttestation(id, apiKey || 'not-required');
+      const data = await fetchAttestation(id);
 
       if (!data) {
         setError('No attestation found for this job');

@@ -70,8 +70,7 @@ export function PaymentKeyCard({
     setAttestationModal({ jobId, attestation: null, loading: true, error: null });
 
     try {
-      const apiKey = process.env.NEXT_PUBLIC_COORDINATOR_API_KEY || 'not-required';
-      const data = await fetchAttestation(jobId, apiKey);
+      const data = await fetchAttestation(jobId);
 
       if (!data) {
         setAttestationModal({
