@@ -639,6 +639,62 @@ async fn create_https_call(
     Ok(())
 }
 
+/// Resolve project_uuid from Redis cache, falling back to contract
+/// Uses same cache as /projects/uuid endpoint (cached forever)
+async fn resolve_project_uuid_cached(
+    state: &AppState,
+    project_id: &str,
+) -> Result<String, CallError> {
+    use crate::near_client;
+
+    let cache_key = format!("project_uuid:{}", project_id);
+
+    let mut conn = state.redis.get_multiplexed_async_connection().await
+        .map_err(|e| CallError::InternalError(format!("Redis error: {}", e)))?;
+
+    // Try Redis cache first
+    let cached: Option<String> = conn.get(&cache_key).await.unwrap_or(None);
+
+    if let Some(cached_json) = cached {
+        // Parse cached data (format: {"uuid": "...", "active_version": "..."})
+        if let Ok(cached_data) = serde_json::from_str::<serde_json::Value>(&cached_json) {
+            if let Some(uuid) = cached_data.get("uuid").and_then(|v| v.as_str()) {
+                debug!("📋 Cache hit for project_uuid: {} -> {}", project_id, uuid);
+                return Ok(uuid.to_string());
+            }
+        }
+    }
+
+    // Cache miss - fetch from contract
+    info!("📋 Cache miss for project_uuid: {}, fetching from contract", project_id);
+
+    let project = near_client::fetch_project_from_contract(
+        &state.config.near_rpc_url,
+        &state.config.contract_id,
+        project_id,
+    )
+    .await
+    .map_err(|e| CallError::InternalError(format!("Contract query failed: {}", e)))?;
+
+    match project {
+        Some(project_info) => {
+            // Cache the result (forever - UUIDs don't change)
+            let cache_data = serde_json::json!({
+                "uuid": project_info.uuid,
+                "active_version": project_info.active_version
+            });
+
+            if let Ok(cache_json) = serde_json::to_string(&cache_data) {
+                let _: Result<(), _> = conn.set(&cache_key, &cache_json).await;
+                debug!("📋 Cached project_uuid: {} -> {}", project_id, project_info.uuid);
+            }
+
+            Ok(project_info.uuid)
+        }
+        None => Err(CallError::ProjectNotFound),
+    }
+}
+
 /// Create execution task in Redis queue
 async fn create_execution_task(
     state: &AppState,
@@ -652,12 +708,16 @@ async fn create_execution_task(
     attached_deposit: u128,
     secrets_ref: Option<&crate::models::SecretsReference>,
 ) -> Result<bool, CallError> {
+    // Resolve project_uuid from cache (uses Redis cache, falls back to contract)
+    let project_uuid = resolve_project_uuid_cached(state, project_id).await?;
+
     // Create execution request for HTTPS call
     // Worker will resolve project_id -> code_source from contract
     let mut execution_request = serde_json::json!({
         "request_id": 0, // HTTPS calls don't have request_id
         "data_id": call_id.to_string(),
         "project_id": project_id, // Worker resolves this to code_source
+        "project_uuid": project_uuid, // Pre-resolved for storage access
         "resource_limits": resource_limits,
         "input_data": input_data,
         "response_format": "Json",
