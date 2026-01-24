@@ -1033,17 +1033,16 @@ pub async fn complete_https_call(
     let attached_deposit: BigDecimal = call.get("attached_deposit");
     let attached_deposit_u128: u128 = attached_deposit.to_string().parse().unwrap_or(0);
 
-    // Calculate compute cost based on actual resources used
-    // For now, use a simple formula based on instructions and time
+    // Calculate compute cost based on actual resources used (from contract pricing)
     let pricing = state.pricing.read().await;
-    let per_instruction_usd = 1u128; // 0.000001 USD per million instructions
-    let per_ms_usd = 10u128; // 0.00001 USD per ms
+    let base_fee_usd: u128 = pricing.base_fee_usd.parse().unwrap_or(1000);
+    let per_instruction_usd: u128 = pricing.per_instruction_fee_usd.parse().unwrap_or(1);
+    let per_ms_usd: u128 = pricing.per_ms_fee_usd.parse().unwrap_or(10);
+    drop(pricing);
 
     let instruction_cost = (req.instructions / 1_000_000) as u128 * per_instruction_usd;
     let time_cost = req.time_ms as u128 * per_ms_usd;
-    let base_fee_usd = 1000u128; // $0.001 base fee
     let actual_cost = base_fee_usd + instruction_cost + time_cost;
-    drop(pricing);
 
     // Get reserved amount (compute_limit + attached_deposit)
     // For simplicity, estimate based on actual cost + attached_deposit

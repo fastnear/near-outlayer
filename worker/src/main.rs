@@ -730,9 +730,15 @@ fn merge_env_vars(
     call_id: Option<&String>,
     payment_key_owner: Option<&String>,
     usd_payment: Option<&String>,
+    // Network configuration
+    near_rpc_url: &str,
 ) -> std::collections::HashMap<String, String> {
 
     let mut env_vars = user_secrets.unwrap_or_default();
+
+    // Determine network from RPC URL
+    let network_id = if near_rpc_url.contains("mainnet") { "mainnet" } else { "testnet" };
+    env_vars.insert("NEAR_NETWORK_ID".to_string(), network_id.to_string());
 
     // Set execution type
     env_vars.insert(
@@ -1720,6 +1726,8 @@ async fn handle_execute_job(
         call_id,
         payment_key_owner,
         usd_payment,
+        // Network configuration
+        &config.near_rpc_url,
     );
 
     // Get build target from code source

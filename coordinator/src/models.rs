@@ -3,10 +3,17 @@ use serde::{Deserialize, Serialize};
 /// Pricing configuration from NEAR contract
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PricingConfig {
+    // NEAR pricing (for blockchain transactions)
     pub base_fee: String,                // yoctoNEAR
     pub per_instruction_fee: String,     // yoctoNEAR per million instructions
     pub per_ms_fee: String,              // yoctoNEAR per millisecond (execution)
     pub per_compile_ms_fee: String,      // yoctoNEAR per millisecond (compilation)
+    // USD pricing (for HTTPS API, in minimal token units e.g. 1 = 0.000001 USDT)
+    pub base_fee_usd: String,
+    pub per_instruction_fee_usd: String, // per million instructions
+    pub per_ms_fee_usd: String,          // per millisecond (execution)
+    pub per_compile_ms_fee_usd: String,  // per millisecond (compilation)
+    // Limits
     pub max_compilation_seconds: u64,    // Maximum compilation time (from pricing)
     pub max_instructions: u64,           // Hard cap on instructions
     pub max_execution_seconds: u64,      // Hard cap on execution time

@@ -356,6 +356,11 @@ curl -X POST https://api.outlayer.fastnear.com/call/alice.near/my-assistant \\
                 <td className="px-3 py-2">&quot;NEAR&quot;</td>
                 <td className="px-3 py-2">&quot;HTTPS&quot;</td>
               </tr>
+              <tr className="bg-blue-50">
+                <td className="px-3 py-2 font-mono">NEAR_NETWORK_ID</td>
+                <td className="px-3 py-2">&quot;testnet&quot; or &quot;mainnet&quot;</td>
+                <td className="px-3 py-2">&quot;testnet&quot; or &quot;mainnet&quot;</td>
+              </tr>
               <tr>
                 <td className="px-3 py-2 font-mono">NEAR_SENDER_ID</td>
                 <td className="px-3 py-2">Transaction signer</td>

@@ -102,8 +102,8 @@ phala deploy \
     --name "$CVM_NAME" \
     --compose "$COMPOSE_FILE" \
     -e "$ENV_FILE" \
-    --vcpu 1 \
-    --memory 1G \
+    --vcpu 2 \
+    --memory 2G \
     --disk-size 1G \
     --kms-id phala-prod10
 

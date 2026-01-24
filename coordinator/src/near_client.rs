@@ -62,6 +62,21 @@ async fn call_view<T: DeserializeOwned>(
         .with_context(|| format!("Failed to parse {} JSON: {}", method, result_str))
 }
 
+/// Response from get_pricing_full contract view method
+#[derive(Debug, Clone, serde::Deserialize)]
+struct PricingFullResponse {
+    // NEAR pricing
+    pub base_fee: String,
+    pub per_million_instructions_fee: String,
+    pub per_ms_fee: String,
+    pub per_compile_ms_fee: String,
+    // USD pricing
+    pub base_fee_usd: String,
+    pub per_million_instructions_fee_usd: String,
+    pub per_ms_fee_usd: String,
+    pub per_compile_ms_fee_usd: String,
+}
+
 /// Fetch pricing configuration from NEAR contract
 pub async fn fetch_pricing_from_contract(
     rpc_url: &str,
@@ -71,39 +86,39 @@ pub async fn fetch_pricing_from_contract(
 
     let client = Client::new();
 
-    // Call get_pricing view method
-    let pricing_array: Vec<String> = call_view(&client, rpc_url, contract_id, "get_pricing", None).await?;
-
-    if pricing_array.len() != 4 {
-        anyhow::bail!("Expected 4 pricing values, got {}", pricing_array.len());
-    }
-
-    let pricing = (
-        pricing_array[0].clone(),
-        pricing_array[1].clone(),
-        pricing_array[2].clone(),
-        pricing_array[3].clone(),
-    );
+    // Call get_pricing_full view method (includes USD pricing)
+    let pricing: PricingFullResponse = call_view(&client, rpc_url, contract_id, "get_pricing_full", None).await?;
 
     // Call get_max_limits view method
     let limits: (u64, u64, u64) = call_view(&client, rpc_url, contract_id, "get_max_limits", None).await?;
 
     let config = PricingConfig {
-        base_fee: pricing.0,
-        per_instruction_fee: pricing.1,
-        per_ms_fee: pricing.2,
-        per_compile_ms_fee: pricing.3,
+        // NEAR pricing
+        base_fee: pricing.base_fee,
+        per_instruction_fee: pricing.per_million_instructions_fee,
+        per_ms_fee: pricing.per_ms_fee,
+        per_compile_ms_fee: pricing.per_compile_ms_fee,
+        // USD pricing
+        base_fee_usd: pricing.base_fee_usd,
+        per_instruction_fee_usd: pricing.per_million_instructions_fee_usd,
+        per_ms_fee_usd: pricing.per_ms_fee_usd,
+        per_compile_ms_fee_usd: pricing.per_compile_ms_fee_usd,
+        // Limits
         max_compilation_seconds: limits.2,
         max_instructions: limits.0,
         max_execution_seconds: limits.1,
     };
 
     info!(
-        "✅ Fetched pricing: base={} per_inst={} per_ms={} per_compile_ms={} max_compile_sec={} max_inst={} max_exec_sec={}",
+        "✅ Fetched pricing: base={} per_inst={} per_ms={} per_compile_ms={} base_usd={} per_inst_usd={} per_ms_usd={} per_compile_ms_usd={} max_compile_sec={} max_inst={} max_exec_sec={}",
         config.base_fee,
         config.per_instruction_fee,
         config.per_ms_fee,
         config.per_compile_ms_fee,
+        config.base_fee_usd,
+        config.per_instruction_fee_usd,
+        config.per_ms_fee_usd,
+        config.per_compile_ms_fee_usd,
         config.max_compilation_seconds,
         config.max_instructions,
         config.max_execution_seconds
@@ -116,10 +131,17 @@ pub async fn fetch_pricing_from_contract(
 pub fn get_default_pricing() -> PricingConfig {
     warn!("⚠️ Using default pricing (failed to fetch from contract)");
     PricingConfig {
+        // NEAR pricing
         base_fee: "10000000000000000000000".to_string(),       // 0.01 NEAR
         per_instruction_fee: "1000000000000000".to_string(),   // 0.000001 NEAR per million instructions
         per_ms_fee: "1000000000000000000".to_string(),         // 0.001 NEAR per ms
         per_compile_ms_fee: "2000000000000000000".to_string(), // 0.002 NEAR per ms (compilation)
+        // USD pricing (in minimal token units, e.g. 1 = 0.000001 USDT)
+        base_fee_usd: "1000".to_string(),                      // $0.001
+        per_instruction_fee_usd: "1".to_string(),              // $0.000001 per million instructions
+        per_ms_fee_usd: "10".to_string(),                      // $0.00001 per ms (execution)
+        per_compile_ms_fee_usd: "10".to_string(),              // $0.00001 per ms (compilation)
+        // Limits
         max_compilation_seconds: 300,                           // 5 minutes
         max_instructions: 100_000_000_000,                      // 100B instructions
         max_execution_seconds: 60,                              // 60 seconds

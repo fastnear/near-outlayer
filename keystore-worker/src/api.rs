@@ -469,6 +469,7 @@ async fn pubkey_handler(
         "NEAR_MAX_MEMORY_MB",
         "NEAR_MAX_EXECUTION_SECONDS",
         "NEAR_REQUEST_ID",
+        "NEAR_NETWORK_ID",
         "OUTLAYER_PROJECT_ID",
         "OUTLAYER_PROJECT_UUID",
     ];
@@ -1112,6 +1113,7 @@ async fn add_generated_secret_handler(
         "NEAR_MAX_MEMORY_MB",
         "NEAR_MAX_EXECUTION_SECONDS",
         "NEAR_REQUEST_ID",
+        "NEAR_NETWORK_ID",
         "OUTLAYER_PROJECT_ID",
         "OUTLAYER_PROJECT_UUID",
     ];

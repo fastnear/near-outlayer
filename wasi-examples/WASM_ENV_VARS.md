@@ -21,10 +21,15 @@ let value = std::env::var("VAR_NAME").unwrap();  // panics if not set!
 | Variable | Values | Always Set |
 |----------|--------|------------|
 | `OUTLAYER_EXECUTION_TYPE` | `"NEAR"` or `"HTTPS"` | Yes |
+| `NEAR_NETWORK_ID` | `"testnet"` or `"mainnet"` | Yes |
 
 ```rust
 let is_https = std::env::var("OUTLAYER_EXECUTION_TYPE")
     .map(|v| v == "HTTPS")
+    .unwrap_or(false);
+
+let is_mainnet = std::env::var("NEAR_NETWORK_ID")
+    .map(|v| v == "mainnet")
     .unwrap_or(false);
 ```
 
@@ -183,6 +188,7 @@ fn main() {
 | Variable | NEAR | HTTPS | Project-only |
 |----------|------|-------|--------------|
 | `OUTLAYER_EXECUTION_TYPE` | `"NEAR"` | `"HTTPS"` | No |
+| `NEAR_NETWORK_ID` | `"testnet"` or `"mainnet"` | `"testnet"` or `"mainnet"` | No |
 | `NEAR_SENDER_ID` | Yes | Yes | No |
 | `NEAR_USER_ACCOUNT_ID` | Yes | Yes | No |
 | `OUTLAYER_PROJECT_ID` | If project | If project | **Yes** |
