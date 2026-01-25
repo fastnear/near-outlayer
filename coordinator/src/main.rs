@@ -186,7 +186,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::auth_middleware,
-        ));
+        ))
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024)); // 10 MB for worker responses
 
     // Build secrets routes (rate limited to protect keystore)
     // These endpoints proxy to keystore which runs in TEE and may be slow
