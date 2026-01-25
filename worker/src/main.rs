@@ -1,5 +1,6 @@
 mod api_client;
 mod collateral_fetcher;
+mod compiled_cache;
 mod compiler;
 mod config;
 mod event_monitor;
@@ -19,6 +20,7 @@ use std::sync::{Arc, Mutex};
 use tracing::{debug, error, info, warn};
 
 use api_client::{ApiClient, CodeSource, ExecutionResult, JobInfo, JobStatus, JobType};
+use compiled_cache::CompiledCache;
 use wasm_cache::WasmCache;
 use collateral_fetcher::fetch_collateral_from_phala;
 use compiler::Compiler;
@@ -149,17 +151,7 @@ async fn main() -> Result<()> {
         None
     };
 
-    // Initialize executor with RPC proxy context
-    let executor = if let Some(proxy) = rpc_proxy {
-        let runtime_handle = tokio::runtime::Handle::current();
-        let exec_context = ExecutionContext::new(runtime_handle.clone())
-            .with_outlayer_rpc(proxy);
-
-        Executor::new(config.default_max_instructions, config.print_wasm_stderr)
-            .with_context(exec_context)
-    } else {
-        Executor::new(config.default_max_instructions, config.print_wasm_stderr)
-    };
+    // NOTE: Executor creation moved to after registration (needs secret key for compiled cache)
 
     // Initialize keystore client (optional)
     let keystore_client = if let (Some(keystore_url), Some(keystore_token)) = (
@@ -309,6 +301,63 @@ async fn main() -> Result<()> {
         info!("   ⚠️  This mode is for testnet only - use TEE registration for production!");
     }
 
+    // Initialize compiled cache (requires secret key from registration/config)
+    // This caches pre-compiled wasmtime components for ~10x faster WASM startup
+    let compiled_cache: Option<Arc<Mutex<CompiledCache>>> = if config.wasm_cache_max_size_mb > 0 {
+        // Get secret key bytes from operator signer
+        let secret_key = &config.get_operator_signer().secret_key;
+        let secret_key_bytes: [u8; 32] = match secret_key {
+            near_crypto::SecretKey::ED25519(ed_key) => {
+                // ED25519 secret key is 64 bytes (seed + public), we need first 32 (seed)
+                let mut bytes = [0u8; 32];
+                bytes.copy_from_slice(&ed_key.0[..32]);
+                bytes
+            }
+            _ => {
+                warn!("⚠️ Compiled cache requires ED25519 key, skipping");
+                [0u8; 32] // Won't be used
+            }
+        };
+
+        // Only create cache if we have a valid key
+        if secret_key_bytes != [0u8; 32] {
+            let compiled_cache_dir = std::path::PathBuf::from(&config.wasm_cache_dir).join("compiled");
+            match CompiledCache::new(compiled_cache_dir.clone(), config.wasm_cache_max_size_mb, &secret_key_bytes) {
+                Ok(cache) => {
+                    info!("⚡ Compiled cache enabled: dir={}, max_size={}MB",
+                        compiled_cache_dir.display(), config.wasm_cache_max_size_mb);
+                    Some(Arc::new(Mutex::new(cache)))
+                }
+                Err(e) => {
+                    warn!("⚠️ Failed to initialize compiled cache: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        info!("⚡ Compiled cache disabled (WASM_CACHE_MAX_SIZE_MB=0)");
+        None
+    };
+
+    // Initialize executor with RPC proxy and compiled cache
+    let executor = {
+        let runtime_handle = tokio::runtime::Handle::current();
+        let mut exec_context = ExecutionContext::new(runtime_handle);
+
+        if let Some(proxy) = rpc_proxy {
+            exec_context = exec_context.with_outlayer_rpc(proxy);
+        }
+
+        if let Some(ref cache) = compiled_cache {
+            exec_context = exec_context.with_compiled_cache(cache.clone());
+        }
+
+        Executor::new(config.default_max_instructions, config.print_wasm_stderr)
+            .with_context(exec_context)
+    };
+
     // Create NearClient with operator signer from registration
     let near_client = NearClient::new(
         config.near_rpc_url.clone(),
@@ -416,6 +465,7 @@ async fn main() -> Result<()> {
             &tdx_client,
             &config,
             wasm_cache.as_ref(),
+            compiled_cache.as_ref(),
         )
         .await
         {
@@ -446,6 +496,7 @@ async fn worker_iteration(
     tdx_client: &tdx_attestation::TdxClient,
     config: &Config,
     wasm_cache: Option<&Arc<Mutex<WasmCache>>>,
+    compiled_cache: Option<&Arc<Mutex<CompiledCache>>>,
 ) -> Result<bool> {
     // Poll for a task (with long-polling) - specify capabilities to poll correct queue
     let capabilities = config.capabilities.to_array();
@@ -698,6 +749,7 @@ async fn worker_iteration(
                     payment_key_nonce,
                     usd_payment.as_ref(),
                     wasm_cache,
+                    compiled_cache,
                 )
                 .await?;
             }
@@ -856,6 +908,39 @@ fn merge_env_vars(
     }
 
     env_vars
+}
+
+/// Fetch WASM bytes from coordinator or local cache
+///
+/// For P1: uses WasmCache (raw bytes LRU cache)
+/// For P2: downloads directly (CompiledCache handles caching in executor)
+async fn fetch_wasm_bytes(
+    api_client: &ApiClient,
+    wasm_checksum: &str,
+    wasm_cache: Option<&Arc<Mutex<WasmCache>>>,
+    is_p2: bool,
+    created_at: &Option<String>,
+) -> Result<Vec<u8>> {
+    // P1: try WasmCache first (raw bytes cache)
+    if !is_p2 {
+        if let Some(cache) = wasm_cache {
+            if let Some(cached_bytes) = cache.lock().ok().and_then(|mut c| c.get(wasm_checksum)) {
+                info!("✅ WASM LRU cache hit (P1): {} ({}KB)", wasm_checksum, cached_bytes.len() / 1024);
+                return Ok(cached_bytes);
+            }
+        }
+    }
+
+    // Download from coordinator
+    info!("📥 Downloading WASM: checksum={} (cached since: {:?}) is_p2={}", wasm_checksum, created_at, is_p2);
+    let bytes = api_client.download_wasm(wasm_checksum).await
+        .map_err(|e| {
+            error!("❌ Failed to download WASM: {}", e);
+            anyhow::anyhow!("Failed to download WASM: {}", e)
+        })?;
+
+    info!("✅ Downloaded WASM: {} bytes", bytes.len());
+    Ok(bytes)
 }
 
 /// Handle a compile job
@@ -1280,7 +1365,8 @@ async fn handle_execute_job(
     payment_key_owner: Option<&String>, // Payment Key owner for HTTPS calls
     payment_key_nonce: Option<i32>, // Payment Key nonce for HTTPS calls
     usd_payment: Option<&String>, // USD payment amount for HTTPS calls
-    wasm_cache: Option<&Arc<Mutex<WasmCache>>>, // Local WASM LRU cache
+    wasm_cache: Option<&Arc<Mutex<WasmCache>>>, // Local WASM LRU cache (P1 only)
+    compiled_cache: Option<&Arc<Mutex<CompiledCache>>>, // Compiled component cache (P2 only)
 ) -> Result<()> {
     info!("⚙️ Starting execution job_id={}", job.job_id);
 
@@ -1463,112 +1549,66 @@ async fn handle_execute_job(
     let wasm_checksum = job.wasm_checksum.as_ref()
         .ok_or_else(|| anyhow::anyhow!("Execute job missing wasm_checksum"))?;
 
-    // Get WASM bytes, compile time, creation timestamp, published URL, and whether to cache after execution
-    // need_to_cache is true when we downloaded fresh WASM (not from LRU cache or local compile)
-    let (wasm_bytes, compile_time_ms, created_at, published_url, need_to_cache) = if let Some((cached_checksum, cached_bytes, cached_compile_time, cached_created_at, cached_published_url)) = compiled_wasm {
+    // Get build target early to decide caching strategy
+    // P2 uses CompiledCache (native code), P1 uses WasmCache (raw bytes)
+    let build_target = match code_source {
+        CodeSource::GitHub { build_target, .. } => build_target.as_str(),
+        CodeSource::WasmUrl { build_target, .. } => build_target.as_str(),
+    };
+    let is_p2 = build_target == "wasm32-wasip2";
+
+    // For P2: validate CompiledCache entry BEFORE downloading raw bytes
+    // validate_entry() checks: files exist + signature valid
+    // If valid, skip download - executor will load from compiled cache
+    // If invalid (missing files, bad signature), entry is removed - must download WASM
+    let compiled_cache_valid = if is_p2 {
+        compiled_cache
+            .and_then(|c| c.lock().ok())
+            .map(|mut c| c.validate_entry(wasm_checksum))
+            .unwrap_or(false)
+    } else {
+        false
+    };
+
+    // Get WASM bytes, compile time, creation timestamp, published URL
+    // P2 + valid compiled cache: skip download (executor loads from cache)
+    // P2 + invalid/no cache: download from coordinator
+    // P1: use WasmCache (raw bytes LRU)
+    let (wasm_bytes, compile_time_ms, created_at, published_url) = if let Some((cached_checksum, cached_bytes, cached_compile_time, cached_created_at, cached_published_url)) = compiled_wasm {
+        // Local compile cache from same execution (freshly compiled)
         if cached_checksum == wasm_checksum {
             info!("✅ Using locally compiled WASM: {} bytes (freshly compiled!) compiled in {}ms", cached_bytes.len(), cached_compile_time);
-            // Freshly compiled - no need to cache (not downloaded from coordinator)
-            (cached_bytes.clone(), Some(*cached_compile_time), cached_created_at.map(|s| s.to_string()), cached_published_url.map(|s| s.to_string()), false)
+            (cached_bytes.clone(), Some(*cached_compile_time), cached_created_at.map(|s| s.to_string()), cached_published_url.map(|s| s.to_string()))
         } else {
-            warn!("⚠️ Checksum mismatch - downloading from coordinator");
-            // Check cache metadata to get created_at timestamp
-            let (_exists, created_at) = match api_client.wasm_exists(wasm_checksum).await {
-                Ok(result) => result,
-                Err(e) => {
-                    let error_msg = format!("Failed to check WASM existence: {}", e);
-                    error!("❌ {}", error_msg);
-                    api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None).await?;
-                    return Ok(());
-                }
-            };
-            // Try local LRU cache first
-            let (bytes, need_cache) = if let Some(cache) = wasm_cache {
-                let cached = cache.lock().ok().and_then(|mut c| c.get(wasm_checksum));
-                if let Some(cached_bytes) = cached {
-                    info!("✅ WASM LRU cache hit: {} ({}KB)", wasm_checksum, cached_bytes.len() / 1024);
-                    (cached_bytes, false) // cache hit
-                } else {
-                    info!("📥 Downloading WASM: checksum={} (cached since: {:?})", wasm_checksum, created_at);
-                    let bytes = match api_client.download_wasm(wasm_checksum).await {
-                        Ok(bytes) => bytes,
-                        Err(e) => {
-                            let error_msg = format!("Failed to download WASM: {}", e);
-                            error!("❌ {}", error_msg);
-                            api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None).await?;
-                            return Ok(());
-                        }
-                    };
-                    // Note: Cache AFTER execution to prevent WASI tampering
-                    info!("✅ Downloaded WASM: {} bytes (will cache after execution)", bytes.len());
-                    (bytes, true) // need to cache
-                }
-            } else {
-                info!("📥 Downloading WASM: checksum={} (cached since: {:?})", wasm_checksum, created_at);
-                let bytes = match api_client.download_wasm(wasm_checksum).await {
-                    Ok(bytes) => bytes,
-                    Err(e) => {
-                        let error_msg = format!("Failed to download WASM: {}", e);
-                        error!("❌ {}", error_msg);
-                        api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None).await?;
-                        return Ok(());
-                    }
-                };
-                info!("✅ Downloaded WASM: {} bytes (cache disabled)", bytes.len());
-                (bytes, false) // cache disabled
-            };
-            // Use compile_time_ms from job info (if compiled by separate worker)
-            (bytes, job.compile_time_ms, created_at, None, need_cache)
-        }
-    } else {
-        // No local compile cache - try LRU cache or download from coordinator
-        // Check cache metadata to get created_at timestamp
-        let (_exists, created_at) = match api_client.wasm_exists(wasm_checksum).await {
-            Ok(result) => result,
-            Err(e) => {
-                let error_msg = format!("Failed to check WASM existence: {}", e);
-                error!("❌ {}", error_msg);
-                api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None).await?;
-                return Ok(());
-            }
-        };
-        // Try local LRU cache first
-        let (bytes, need_cache) = if let Some(cache) = wasm_cache {
-            let cached = cache.lock().ok().and_then(|mut c| c.get(wasm_checksum));
-            if let Some(cached_bytes) = cached {
-                info!("✅ WASM LRU cache hit: {} ({}KB)", wasm_checksum, cached_bytes.len() / 1024);
-                (cached_bytes, false) // cache hit, no need to cache
-            } else {
-                info!("📥 Downloading WASM: checksum={} (cached since: {:?})", wasm_checksum, &created_at);
-                let bytes = match api_client.download_wasm(wasm_checksum).await {
-                    Ok(bytes) => bytes,
-                    Err(e) => {
-                        let error_msg = format!("Failed to download WASM: {}", e);
-                        error!("❌ {}", error_msg);
-                        api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None).await?;
-                        return Ok(());
-                    }
-                };
-                // Note: Cache AFTER execution to prevent WASI tampering
-                info!("✅ Downloaded WASM: {} bytes (will cache after execution)", bytes.len());
-                (bytes, true) // downloaded fresh, need to cache
-            }
-        } else {
-            info!("📥 Downloading WASM: checksum={} (cached since: {:?})", wasm_checksum, &created_at);
-            let bytes = match api_client.download_wasm(wasm_checksum).await {
-                Ok(bytes) => bytes,
+            warn!("⚠️ Checksum mismatch - need to fetch WASM");
+            let created_at = api_client.wasm_exists(wasm_checksum).await.ok().and_then(|(_, ca)| ca);
+            match fetch_wasm_bytes(api_client, wasm_checksum, wasm_cache, is_p2, &created_at).await {
+                Ok(bytes) => (bytes, job.compile_time_ms, created_at, None),
                 Err(e) => {
                     let error_msg = format!("Failed to download WASM: {}", e);
                     error!("❌ {}", error_msg);
                     api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None).await?;
                     return Ok(());
                 }
-            };
-            info!("✅ Downloaded WASM: {} bytes (cache disabled)", bytes.len());
-            (bytes, false) // cache disabled
-        };
-        // Use compile_time_ms from job info (if compiled by separate worker)
-        (bytes, job.compile_time_ms, created_at, None, need_cache)
+            }
+        }
+    } else if compiled_cache_valid {
+        // P2 compiled cache is valid - skip download
+        info!("⚡ CompiledCache valid for {} - skipping WASM download", wasm_checksum);
+        let created_at = api_client.wasm_exists(wasm_checksum).await.ok().and_then(|(_, ca)| ca);
+        (Vec::new(), job.compile_time_ms, created_at, None)
+    } else {
+        // Need to fetch WASM bytes (P1, or P2 with no/invalid cache)
+        let created_at = api_client.wasm_exists(wasm_checksum).await.ok().and_then(|(_, ca)| ca);
+        match fetch_wasm_bytes(api_client, wasm_checksum, wasm_cache, is_p2, &created_at).await {
+            Ok(bytes) => (bytes, job.compile_time_ms, created_at, None),
+            Err(e) => {
+                let error_msg = format!("Failed to download WASM: {}", e);
+                error!("❌ {}", error_msg);
+                api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None).await?;
+                return Ok(());
+            }
+        }
     };
 
     // Project UUID comes from the contract via coordinator - no need to extract from WASM metadata
@@ -1776,6 +1816,7 @@ async fn handle_execute_job(
     let exec_result = executor
         .execute(
             &wasm_bytes,
+            Some(wasm_checksum),
             input_data.as_bytes(),
             resource_limits,
             Some(env_vars),
@@ -1785,9 +1826,9 @@ async fn handle_execute_job(
         )
         .await;
 
-    // Cache WASM after execution (not before) to prevent WASI from tampering with cache
+    // Cache raw WASM after execution - only for P1 (P2 uses CompiledCache for native code)
     // This is a security measure: WASI P2 has access to /tmp, so we cache only after WASI exits
-    if need_to_cache {
+    if !is_p2 && !wasm_bytes.is_empty() {
         if let Some(cache) = wasm_cache {
             if let Ok(mut c) = cache.lock() {
                 if let Err(e) = c.put(wasm_checksum, &wasm_bytes) {

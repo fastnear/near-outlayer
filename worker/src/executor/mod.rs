@@ -32,11 +32,12 @@
 
 use anyhow::Result;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tracing::{info, warn};
 
 use crate::api_client::{ExecutionOutput, ExecutionResult, ResourceLimits, ResponseFormat};
+use crate::compiled_cache::CompiledCache;
 use crate::outlayer_rpc::RpcProxy;
 use crate::outlayer_storage::client::StorageConfig;
 
@@ -49,6 +50,7 @@ mod wasi_p2;
 /// Currently supports:
 /// - RPC Proxy: Allows WASM to make NEAR RPC calls without exposing API keys
 /// - Storage: Persistent storage for projects and standalone WASM
+/// - Compiled Cache: Pre-compiled WASM components for ~10x faster startup
 ///
 /// Future extensions might include:
 /// - External API clients
@@ -61,6 +63,8 @@ pub struct ExecutionContext {
     pub storage_config: Option<StorageConfig>,
     /// Tokio runtime handle for async operations in host functions
     pub runtime_handle: tokio::runtime::Handle,
+    /// Compiled component cache for fast WASM startup
+    pub compiled_cache: Option<Arc<Mutex<CompiledCache>>>,
 }
 
 impl ExecutionContext {
@@ -71,6 +75,7 @@ impl ExecutionContext {
             outlayer_rpc: None,
             storage_config: None,
             runtime_handle,
+            compiled_cache: None,
         }
     }
 
@@ -85,6 +90,13 @@ impl ExecutionContext {
     #[allow(dead_code)]
     pub fn with_storage(mut self, config: StorageConfig) -> Self {
         self.storage_config = Some(config);
+        self
+    }
+
+    /// Create context with compiled cache
+    #[allow(dead_code)]
+    pub fn with_compiled_cache(mut self, cache: Arc<Mutex<CompiledCache>>) -> Self {
+        self.compiled_cache = Some(cache);
         self
     }
 
@@ -134,6 +146,7 @@ impl Executor {
     ///
     /// # Arguments
     /// * `wasm_bytes` - WASM binary to execute
+    /// * `wasm_checksum` - SHA256 checksum for compiled cache
     /// * `input_data` - Input data passed to WASM via stdin
     /// * `limits` - Resource limits for execution
     /// * `env_vars` - Environment variables (from secrets)
@@ -143,6 +156,7 @@ impl Executor {
     pub async fn execute(
         &self,
         wasm_bytes: &[u8],
+        wasm_checksum: Option<&str>,
         input_data: &[u8],
         limits: &ResourceLimits,
         env_vars: Option<HashMap<String, String>>,
@@ -158,7 +172,7 @@ impl Executor {
         let start = Instant::now();
 
         // Try to execute with different WASI versions
-        let result = self.execute_async(wasm_bytes, input_data, limits, env_vars, build_target, storage_config).await;
+        let result = self.execute_async(wasm_bytes, wasm_checksum, input_data, limits, env_vars, build_target, storage_config).await;
 
         let execution_time_ms = start.elapsed().as_millis() as u64;
 
@@ -255,6 +269,7 @@ impl Executor {
     async fn execute_async(
         &self,
         wasm_bytes: &[u8],
+        wasm_checksum: Option<&str>,
         input_data: &[u8],
         limits: &ResourceLimits,
         env_vars: Option<HashMap<String, String>>,
@@ -269,6 +284,7 @@ impl Executor {
                     outlayer_rpc: base_ctx.outlayer_rpc.clone(),
                     storage_config: Some(storage_cfg),
                     runtime_handle: base_ctx.runtime_handle.clone(),
+                    compiled_cache: base_ctx.compiled_cache.clone(),
                 })
             } else {
                 // No base context, create minimal one with just storage
@@ -276,12 +292,16 @@ impl Executor {
                     outlayer_rpc: None,
                     storage_config: Some(storage_cfg),
                     runtime_handle: tokio::runtime::Handle::current(),
+                    compiled_cache: None,
                 })
             }
         } else {
             // No override, use existing context as-is
             self.context.clone()
         };
+
+        // Get compiled cache from context
+        let compiled_cache = effective_ctx.as_ref().and_then(|ctx| ctx.compiled_cache.clone());
 
         // Optimize: if we know build_target, try appropriate executor first
         if let Some(target) = build_target {
@@ -290,9 +310,11 @@ impl Executor {
                 "wasm32-wasip2" => {
                     tracing::debug!("🔹 Trying WASI P2 executor (target: wasm32-wasip2)");
                     // When target is known, return error directly (don't fallback to other formats)
-                    // Pass execution context (RPC proxy + storage) to P2 executor
+                    // Pass execution context (RPC proxy + storage) and compiled cache to P2 executor
                     return wasi_p2::execute(
                         wasm_bytes,
+                        wasm_checksum,
+                        compiled_cache.as_ref(),
                         input_data,
                         limits,
                         env_vars,
@@ -303,7 +325,7 @@ impl Executor {
                 "wasm32-wasip1" | "wasm32-wasi" => {
                     tracing::debug!("🔹 Trying WASI P1 executor (target: {})", target);
                     // When target is known, return error directly (don't fallback to other formats)
-                    // P1 does not support RPC proxy or storage (no component model)
+                    // P1 does not support RPC proxy, storage, or compiled cache (no component model)
                     return wasi_p1::execute(wasm_bytes, input_data, limits, env_vars, self.print_wasm_stderr).await;
                 }
                 _ => {
@@ -316,9 +338,11 @@ impl Executor {
         }
 
         // Fallback: auto-detect format (for unknown targets or if specific executor failed)
-        // Try WASI P2 component first (with RPC proxy and storage support)
+        // Try WASI P2 component first (with RPC proxy, storage, and compiled cache support)
         if let Ok(result) = wasi_p2::execute(
             wasm_bytes,
+            wasm_checksum,
+            compiled_cache.as_ref(),
             input_data,
             limits,
             env_vars.clone(),
@@ -329,7 +353,7 @@ impl Executor {
             return Ok(result);
         }
 
-        // Try WASI P1 module (no RPC proxy or storage)
+        // Try WASI P1 module (no RPC proxy, storage, or compiled cache)
         if let Ok(result) = wasi_p1::execute(wasm_bytes, input_data, limits, env_vars.clone(), self.print_wasm_stderr).await
         {
             return Ok(result);

@@ -52,7 +52,7 @@ async fn test_wasm_execution() {
     use offchainvm_worker::api_client::ResponseFormat;
     let response_format = ResponseFormat::Text;
 
-    match executor.execute(&wasm_bytes, &input_data, &resource_limits, None, None, &response_format).await {
+    match executor.execute(&wasm_bytes, None, &input_data, &resource_limits, None, None, &response_format, None).await {
         Ok(result) => {
             println!("✅ Execution result:");
             println!("   Success: {}", result.success);
@@ -97,7 +97,7 @@ async fn test_minimal_wasm() {
     use offchainvm_worker::api_client::ResponseFormat;
     let response_format = ResponseFormat::Text;
 
-    match executor.execute(&minimal_wasm, &[], &resource_limits, None, None, &response_format).await {
+    match executor.execute(&minimal_wasm, None, &[], &resource_limits, None, None, &response_format, None).await {
         Ok(result) => {
             println!("Result: success={}, error={:?}", result.success, result.error);
         }

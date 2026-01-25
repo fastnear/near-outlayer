@@ -14,12 +14,40 @@
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use tracing::debug;
 use wasmtime::*;
 use wasmtime_wasi::preview1::{self, WasiP1Ctx};
 use wasmtime_wasi::WasiCtxBuilder;
 
 use crate::api_client::ResourceLimits;
+
+/// Global WASM engine for WASI P1 modules (core modules, NOT components)
+///
+/// IMPORTANT: This engine is ONLY for P1 modules. P2 components have their own engine.
+///
+/// Configuration:
+/// - wasm_component_model = false (P1 uses core modules)
+/// - async_support = true (for async execution)
+/// - consume_fuel = true (instruction metering)
+///
+/// Creating Engine is expensive (~50-100ms). By reusing a single instance,
+/// we avoid this overhead on every execution.
+static WASM_ENGINE_P1: OnceLock<Engine> = OnceLock::new();
+
+/// Get or initialize the global P1 engine
+///
+/// This engine has component_model=false and is NOT compatible with P2 components.
+fn get_p1_engine() -> &'static Engine {
+    WASM_ENGINE_P1.get_or_init(|| {
+        let mut config = Config::new();
+        // NO component_model - P1 uses core modules
+        config.async_support(true);   // Async execution
+        config.consume_fuel(true);    // Instruction metering
+        tracing::info!("⚡ Initialized global WASM engine for P1 (core modules)");
+        Engine::new(&config).expect("Failed to create P1 WASM engine")
+    })
+}
 
 /// Execute WASI Preview 1 module
 ///
@@ -41,12 +69,8 @@ pub async fn execute(
     env_vars: Option<HashMap<String, String>>,
     print_stderr: bool,
 ) -> Result<(Vec<u8>, u64, Option<u64>)> {
-    // Configure wasmtime engine for WASI Preview 1
-    let mut config = Config::new();
-    config.async_support(true);
-    config.consume_fuel(true);
-
-    let engine = Engine::new(&config)?;
+    // Use global P1 engine (avoids ~50-100ms overhead per execution)
+    let engine = get_p1_engine();
 
     // Try to load as module
     let module = wasmtime::Module::from_binary(&engine, wasm_bytes)

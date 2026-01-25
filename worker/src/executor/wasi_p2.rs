@@ -16,14 +16,46 @@
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 use tracing::debug;
 use wasmtime::component::{Component, Linker};
 use wasmtime::*;
+
+/// Global WASM engine for WASI P2 components (component model)
+///
+/// IMPORTANT: This engine is ONLY for P2 components. P1 modules have their own engine.
+///
+/// Configuration:
+/// - wasm_component_model = true (required for P2)
+/// - async_support = true (required for wasi-http)
+/// - consume_fuel = true (instruction metering)
+///
+/// Creating Engine is expensive (~50-100ms). By reusing a single instance,
+/// we avoid this overhead on every execution.
+///
+/// Note: CompiledCache entries are tied to this Engine configuration.
+/// If config changes, cached entries will fail to deserialize and be recompiled.
+static WASM_ENGINE_P2: OnceLock<Engine> = OnceLock::new();
+
+/// Get or initialize the global P2 engine
+///
+/// This engine has component_model=true and is NOT compatible with P1 modules.
+fn get_p2_engine() -> &'static Engine {
+    WASM_ENGINE_P2.get_or_init(|| {
+        let mut config = Config::new();
+        config.wasm_component_model(true); // P2 ONLY: component model
+        config.async_support(true);        // Required for wasi-http
+        config.consume_fuel(true);         // Instruction metering
+        tracing::info!("⚡ Initialized global WASM engine for P2 (component model)");
+        Engine::new(&config).expect("Failed to create P2 WASM engine")
+    })
+}
 use wasmtime_wasi::{DirPerms, FilePerms, ResourceTable, WasiCtx, WasiCtxBuilder, WasiView};
 use wasmtime_wasi::bindings::Command;
 use wasmtime_wasi_http::{WasiHttpCtx, WasiHttpView};
 
 use crate::api_client::ResourceLimits;
+use crate::compiled_cache::CompiledCache;
 use crate::outlayer_rpc::RpcHostState;
 use crate::outlayer_storage::{StorageClient, StorageHostState, add_storage_to_linker};
 use crate::outlayer_payment::{PaymentHostState, add_payment_to_linker};
@@ -63,6 +95,18 @@ impl WasiHttpView for HostState {
     fn table(&mut self) -> &mut ResourceTable {
         &mut self.table
     }
+
+    /// Increase the max chunk size for outgoing HTTP request bodies
+    /// Default is too small for large attachments (wasi-http-client sends entire body in one write)
+    fn outgoing_body_buffer_chunks(&mut self) -> usize {
+        tracing::info!("🔧 outgoing_body_buffer_chunks called, returning 16");
+        16 // Allow more buffered chunks (default is 1)
+    }
+
+    fn outgoing_body_chunk_size(&mut self) -> usize {
+        tracing::info!("🔧 outgoing_body_chunk_size called, returning 16MB");
+        16 * 1024 * 1024 // 16MB max per write (default might be too small)
+    }
 }
 
 impl HostState {
@@ -86,6 +130,8 @@ impl HostState {
 ///
 /// # Arguments
 /// * `wasm_bytes` - WASM component binary
+/// * `wasm_checksum` - SHA256 checksum of WASM bytes (for compiled cache key)
+/// * `compiled_cache` - Optional compiled component cache for ~10x speedup
 /// * `input_data` - JSON input via stdin
 /// * `limits` - Resource limits (memory, instructions, time)
 /// * `env_vars` - Environment variables (from encrypted secrets, includes ATTACHED_USD)
@@ -98,23 +144,45 @@ impl HostState {
 /// * `Err(_)` - Not a valid P2 component or execution failed
 pub async fn execute(
     wasm_bytes: &[u8],
+    wasm_checksum: Option<&str>,
+    compiled_cache: Option<&Arc<Mutex<CompiledCache>>>,
     input_data: &[u8],
     limits: &ResourceLimits,
     env_vars: Option<HashMap<String, String>>,
     print_stderr: bool,
     exec_ctx: Option<&ExecutionContext>,
 ) -> Result<(Vec<u8>, u64, Option<u64>)> {
-    // Configure wasmtime engine for WASI Preview 2
-    let mut config = Config::new();
-    config.wasm_component_model(true); // Enable component model
-    config.async_support(true); // HTTP requires async
-    config.consume_fuel(true); // Instruction metering
+    // Use global P2 engine (avoids ~50-100ms overhead per execution)
+    let engine = get_p2_engine();
 
-    let engine = Engine::new(&config)?;
+    // Try to load from compiled cache first (if checksum provided)
+    let component = if let (Some(checksum), Some(cache)) = (wasm_checksum, compiled_cache) {
+        // Try cache hit
+        let cached = cache.lock().ok().and_then(|mut c| c.get(checksum, &engine));
 
-    // Try to load as component
-    let component = Component::from_binary(&engine, wasm_bytes)
-        .context("Not a valid WASI Preview 2 component")?;
+        if let Some(cached_component) = cached {
+            debug!("⚡ Using compiled cache for {}", checksum);
+            cached_component
+        } else {
+            // Cache miss - compile from bytes
+            debug!("🔨 Compiling component (cache miss): {}", checksum);
+            let component = Component::from_binary(&engine, wasm_bytes)
+                .context("Not a valid WASI Preview 2 component")?;
+
+            // Store in cache for next time
+            if let Ok(mut c) = cache.lock() {
+                if let Err(e) = c.put(checksum, &component) {
+                    tracing::warn!("Failed to cache compiled component: {}", e);
+                }
+            }
+
+            component
+        }
+    } else {
+        // No cache available - compile directly
+        Component::from_binary(&engine, wasm_bytes)
+            .context("Not a valid WASI Preview 2 component")?
+    };
 
     debug!("Loaded as WASI Preview 2 component");
 
