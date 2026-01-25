@@ -32,7 +32,7 @@ base64 = "0.21"
 uuid = { version = "1.0", features = ["v4", "serde"] }
 
 # TDX attestation parsing - using dcap-qvl (same as register-contract and MPC Node)
-dcap-qvl = { version = "0.3.2", default-features = false, features = ["std"] }
+dcap-qvl = { version = "0.3.9", default-features = false, features = ["std"] }
 
 # Regex
 regex = "1.10"
