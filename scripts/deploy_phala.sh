@@ -4,11 +4,12 @@
 #
 # Usage:
 #   ./scripts/deploy_phala.sh keystore [testnet|mainnet]
-#   ./scripts/deploy_phala.sh worker [testnet|mainnet]
+#   ./scripts/deploy_phala.sh worker [testnet|mainnet] [instance-name]
 #
 # Examples:
 #   ./scripts/deploy_phala.sh keystore testnet
-#   ./scripts/deploy_phala.sh worker testnet
+#   ./scripts/deploy_phala.sh worker testnet           # creates outlayer-testnet-worker
+#   ./scripts/deploy_phala.sh worker testnet worker2   # creates outlayer-testnet-worker2
 #
 
 set -euo pipefail
@@ -22,13 +23,14 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 # Check arguments
-if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
-    echo -e "${RED}Usage: $0 <keystore|worker> [testnet|mainnet]${NC}"
+if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
+    echo -e "${RED}Usage: $0 <keystore|worker> [testnet|mainnet] [instance-name]${NC}"
     exit 1
 fi
 
 COMPONENT="$1"
 NETWORK="${2:-testnet}"
+INSTANCE_NAME="${3:-}"
 
 # Validate component
 if [[ "$COMPONENT" != "keystore" && "$COMPONENT" != "worker" ]]; then
@@ -49,7 +51,8 @@ case "$COMPONENT" in
         BUILD_ARGS="zavodil latest"
         ;;
     worker)
-        CVM_NAME="outlayer-${NETWORK}-worker"
+        WORKER_SUFFIX="${INSTANCE_NAME:-worker}"
+        CVM_NAME="outlayer-${NETWORK}-${WORKER_SUFFIX}"
         COMPOSE_FILE="docker-compose.phala.yml"
         ENV_FILE=".env.${NETWORK}-worker-phala"
         DAO_CONTRACT="worker.outlayer.${NETWORK}"
@@ -59,6 +62,12 @@ case "$COMPONENT" in
         BUILD_ARGS="zavodil latest worker"
         ;;
 esac
+
+# Validate: instance name only for worker
+if [ -n "$INSTANCE_NAME" ] && [ "$COMPONENT" != "worker" ]; then
+    echo -e "${RED}Error: Instance name is only supported for worker component${NC}"
+    exit 1
+fi
 
 cd "$(dirname "$0")/.."
 
@@ -147,18 +156,35 @@ if [ -z "$RTMR3" ]; then
     exit 1
 fi
 
-# Step 6: Add RTMR3 to DAO
-echo -e "${YELLOW}[6/7] Adding RTMR3 to DAO contract...${NC}"
+# Step 6: Add RTMR3 to DAO (if not already approved)
+echo -e "${YELLOW}[6/7] Checking if RTMR3 is already approved...${NC}"
 
-near contract call-function as-transaction "$DAO_CONTRACT" add_approved_rtmr3 \
-    json-args "{\"rtmr3\": \"$RTMR3\", \"clear_others\": true}" \
-    prepaid-gas '30.0 Tgas' \
-    attached-deposit '0 NEAR' \
-    sign-as "$SIGNER_ACCOUNT" \
-    network-config "$NETWORK" \
-    sign-with-keychain send
+RTMR3_APPROVED=$(near contract call-function as-read-only "$DAO_CONTRACT" is_rtmr3_approved \
+    json-args "{\"rtmr3\": \"$RTMR3\"}" \
+    network-config "$NETWORK" 2>/dev/null | grep -o 'true\|false' | head -1 || echo "false")
 
-echo -e "${GREEN}✓ RTMR3 added to DAO${NC}"
+if [ "$RTMR3_APPROVED" = "true" ]; then
+    echo -e "${GREEN}✓ RTMR3 already approved, skipping add_approved_rtmr3${NC}"
+else
+    echo -e "${YELLOW}RTMR3 not approved, adding to DAO contract...${NC}"
+
+    # If this is an additional instance (has INSTANCE_NAME), don't clear others
+    if [ -n "$INSTANCE_NAME" ]; then
+        CLEAR_OTHERS="false"
+    else
+        CLEAR_OTHERS="true"
+    fi
+
+    near contract call-function as-transaction "$DAO_CONTRACT" add_approved_rtmr3 \
+        json-args "{\"rtmr3\": \"$RTMR3\", \"clear_others\": $CLEAR_OTHERS}" \
+        prepaid-gas '30.0 Tgas' \
+        attached-deposit '0 NEAR' \
+        sign-as "$SIGNER_ACCOUNT" \
+        network-config "$NETWORK" \
+        sign-with-keychain send
+
+    echo -e "${GREEN}✓ RTMR3 added to DAO${NC}"
+fi
 
 # Step 7: Restart CVM (and wait for proposal if keystore)
 echo -e "${YELLOW}[7/7] Restarting CVM...${NC}"
