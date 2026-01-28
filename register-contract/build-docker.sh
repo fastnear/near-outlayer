@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
 
+# cargo generate-lockfile
+
 echo "Building register-contract in Docker (following MPC pattern)..."
 
 # Use the same Docker image as MPC contract

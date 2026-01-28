@@ -42,6 +42,10 @@ impl Collateral {
             })
         }
 
+         fn get_str_optional(v: &Value, key: &str) -> Option<String> {
+            v.get(key).and_then(Value::as_str).map(String::from)
+        }
+
         let quote_collateral = QuoteCollateralV3 {
             tcb_info_issuer_chain: get_str(&v, "tcb_info_issuer_chain")?,
             tcb_info: get_str(&v, "tcb_info")?,
@@ -52,6 +56,7 @@ impl Collateral {
             pck_crl_issuer_chain: get_str(&v, "pck_crl_issuer_chain")?,
             root_ca_crl: get_hex(&v, "root_ca_crl")?,
             pck_crl: get_hex(&v, "pck_crl")?,
+            pck_certificate_chain: get_str_optional(&v, "pck_certificate_chain"),
         };
         Ok(Self(quote_collateral))
     }

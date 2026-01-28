@@ -8,6 +8,8 @@ use schemars::JsonSchema;
 mod collateral;
 use collateral::Collateral;
 
+mod migration;
+
 // Custom getrandom implementation for WASM (same as MPC Node)
 // We don't need actual randomness in this contract (only verification)
 #[cfg(target_arch = "wasm32")]
@@ -18,9 +20,6 @@ fn randomness_unsupported(_: &mut [u8]) -> Result<(), Error> {
 }
 #[cfg(target_arch = "wasm32")]
 register_custom_getrandom!(randomness_unsupported);
-
-// OffchainVM contract ID where worker will call resolve_execution
-const OFFCHAINVM_CONTRACT_ID: &str = "outlayer.testnet";
 
 #[derive(BorshSerialize, BorshStorageKey)]
 #[borsh(crate = "near_sdk::borsh")]
@@ -63,6 +62,8 @@ pub struct RegisterContract {
     /// Quote collateral data (cached, updated periodically by owner)
     /// This is Intel's reference data needed for TDX quote verification
     pub quote_collateral: Option<String>,
+
+    pub outlayer_contract_id: AccountId
 }
 
 impl Default for RegisterContract {
@@ -84,12 +85,13 @@ pub struct WorkerKeyInfo {
 impl RegisterContract {
     /// Initialize contract
     #[init]
-    pub fn new(owner_id: AccountId, init_worker_account: AccountId) -> Self {
+    pub fn new(owner_id: AccountId, init_worker_account: AccountId, outlayer_contract_id: AccountId) -> Self {
         Self {
             owner_id,
             init_worker_account,
             approved_rtmr3: UnorderedSet::new(StorageKey::ApprovedRtmr3),
             quote_collateral: None,
+            outlayer_contract_id
         }
     }
 
@@ -169,19 +171,17 @@ impl RegisterContract {
         let allowance: Allowance = Allowance::limited(NearToken::from_near(10)).unwrap(); // 10 NEAR for gas
         let method_names = "resolve_execution,submit_execution_output_and_resolve,resume_topup,resume_delete_payment_key".to_string();
         let current_account = env::current_account_id();
-
-        let offchainvm_contract_id: AccountId = OFFCHAINVM_CONTRACT_ID.parse().unwrap();
-
+        
         env::log_str(&format!(
             "Adding access key to {}: pubkey={:?}, allowance=10 NEAR, methods={}, receiver={}",
-            current_account.clone(), public_key, method_names, offchainvm_contract_id
+            current_account.clone(), public_key, method_names, self.outlayer_contract_id
         ));
 
         // Add key to this account (self) with permissions for offchainvm_contract_id
         Promise::new(current_account.clone()).add_access_key_allowance(
             public_key,
             allowance,
-            offchainvm_contract_id,
+            self.outlayer_contract_id.clone(),
             method_names,
         )
     }
@@ -323,6 +323,8 @@ impl RegisterContract {
         );
     }
 }
+
+
 
 #[cfg(test)]
 mod tests {
