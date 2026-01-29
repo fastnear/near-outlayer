@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
 
+# cargo generate-lockfile
+
 echo "Building keystore-dao-contract in Docker..."
 
 # Use the same Docker image as MPC/register contracts
