@@ -32,6 +32,13 @@ COMPONENT="$1"
 NETWORK="${2:-testnet}"
 INSTANCE_NAME="${3:-}"
 
+# Set account suffix based on network
+if [ "$NETWORK" = "mainnet" ]; then
+    ACCOUNT_SUFFIX="near"
+else
+    ACCOUNT_SUFFIX="testnet"
+fi
+
 # Validate component
 if [[ "$COMPONENT" != "keystore" && "$COMPONENT" != "worker" ]]; then
     echo -e "${RED}Error: Component must be 'keystore' or 'worker'${NC}"
@@ -44,9 +51,9 @@ case "$COMPONENT" in
         CVM_NAME="outlayer-${NETWORK}-keystore"
         COMPOSE_FILE="docker-compose.keystore-phala.yml"
         ENV_FILE=".env.${NETWORK}-keystore-phala"
-        DAO_CONTRACT="dao.outlayer.${NETWORK}"
-        SIGNER_ACCOUNT="owner.outlayer.${NETWORK}"
-        VOTER_ACCOUNT="zavodil.${NETWORK}"
+        DAO_CONTRACT="dao.outlayer.${ACCOUNT_SUFFIX}"
+        SIGNER_ACCOUNT="owner.outlayer.${ACCOUNT_SUFFIX}"
+        VOTER_ACCOUNT="zavodil.${ACCOUNT_SUFFIX}"
         BUILD_SCRIPT="./scripts/build_and_push_keystore_tee.sh"
         BUILD_ARGS="zavodil latest"
         ;;
@@ -55,9 +62,9 @@ case "$COMPONENT" in
         CVM_NAME="outlayer-${NETWORK}-${WORKER_SUFFIX}"
         COMPOSE_FILE="docker-compose.phala.yml"
         ENV_FILE=".env.${NETWORK}-worker-phala"
-        DAO_CONTRACT="worker.outlayer.${NETWORK}"
-        SIGNER_ACCOUNT="owner.outlayer.${NETWORK}"
-        VOTER_ACCOUNT="zavodil.${NETWORK}"
+        DAO_CONTRACT="worker.outlayer.${ACCOUNT_SUFFIX}"
+        SIGNER_ACCOUNT="owner.outlayer.${ACCOUNT_SUFFIX}"
+        VOTER_ACCOUNT="zavodil.${ACCOUNT_SUFFIX}"
         BUILD_SCRIPT="./scripts/build_and_push_phala.sh"
         BUILD_ARGS="zavodil latest worker"
         ;;
