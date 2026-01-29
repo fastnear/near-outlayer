@@ -1246,9 +1246,36 @@ async fn update_user_secrets_handler(
         }
     }
 
-    // 3. Verify public key belongs to owner
-    // TODO: For now we trust the signature, but ideally should verify via NEAR RPC
-    // that the public_key belongs to req.owner account
+    // 3. Verify public key belongs to owner via NEAR RPC
+    let near_client = state.near_client.as_ref();
+    if let Some(client) = near_client {
+        match client.verify_access_key_owner(&req.owner, &req.public_key).await {
+            Ok(()) => {
+                tracing::info!(
+                    owner = %req.owner,
+                    public_key = %req.public_key,
+                    "✅ Access key ownership verified via NEAR RPC"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    owner = %req.owner,
+                    public_key = %req.public_key,
+                    error = %e,
+                    "❌ Access key ownership verification failed"
+                );
+                return Err(ApiError::Unauthorized(format!(
+                    "Public key {} does not belong to account {}: {}",
+                    req.public_key, req.owner, e
+                )));
+            }
+        }
+    } else {
+        tracing::warn!(
+            "NEAR client not configured - skipping access key ownership verification. \
+            This is a security risk! Set NEAR_RPC_URL and NEAR_CONTRACT_ID."
+        );
+    }
 
     // 4. Validate user secrets don't contain PROTECTED_ prefix
     let protected_in_user_secrets: Vec<&String> = req.secrets.keys()

@@ -563,4 +563,66 @@ impl NearClient {
 
         Ok(false)
     }
+
+    /// Verify that a public key belongs to an account
+    ///
+    /// Calls: view_access_key_list for account_id
+    /// Returns: Ok(()) if public_key is found, Err if not found or RPC error
+    pub async fn verify_access_key_owner(
+        &self,
+        account_id: &str,
+        public_key: &str,
+    ) -> Result<()> {
+        let account_id_parsed = AccountId::from_str(account_id)
+            .context("Invalid account ID")?;
+
+        tracing::debug!(
+            account_id = %account_id,
+            public_key = %public_key,
+            "Verifying access key ownership"
+        );
+
+        let query = methods::query::RpcQueryRequest {
+            block_reference: BlockReference::latest(),
+            request: near_primitives::views::QueryRequest::ViewAccessKeyList {
+                account_id: account_id_parsed,
+            },
+        };
+
+        let response = self
+            .rpc_client
+            .call(query)
+            .await
+            .context("Failed to query access keys")?;
+
+        let access_keys = match response.kind {
+            QueryResponseKind::AccessKeyList(list) => list.keys,
+            _ => anyhow::bail!("Unexpected query response"),
+        };
+
+        // Check if public_key is in the access key list
+        let key_found = access_keys.iter().any(|key| {
+            key.public_key.to_string() == public_key
+        });
+
+        if key_found {
+            tracing::debug!(
+                account_id = %account_id,
+                public_key = %public_key,
+                "✅ Access key verified"
+            );
+            Ok(())
+        } else {
+            tracing::warn!(
+                account_id = %account_id,
+                public_key = %public_key,
+                keys_count = access_keys.len(),
+                "❌ Access key not found for account"
+            );
+            anyhow::bail!(
+                "Public key {} does not belong to account {}",
+                public_key, account_id
+            )
+        }
+    }
 }
