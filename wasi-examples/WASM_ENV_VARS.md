@@ -2,6 +2,8 @@
 
 Environment variables available to your WASM code during execution.
 
+> **Note**: For WASI P2 modules, consider using the [OutLayer SDK](./WASI_TUTORIAL.md#outlayer-sdk) instead of raw env vars. The SDK provides type-safe access via `outlayer::env::signer_account_id()` and persistent storage via `outlayer::storage`.
+
 ## Safe Access Pattern
 
 **IMPORTANT**: Not all variables are always set. Use safe access patterns:
@@ -31,6 +33,15 @@ let is_https = std::env::var("OUTLAYER_EXECUTION_TYPE")
 let is_mainnet = std::env::var("NEAR_NETWORK_ID")
     .map(|v| v == "mainnet")
     .unwrap_or(false);
+
+// Common pattern: determine account suffix for user-facing strings
+let account_suffix = match std::env::var("NEAR_NETWORK_ID").as_deref() {
+    Ok("testnet") => ".testnet",
+    _ => ".near",
+};
+
+// Example: strip suffix for display
+let display_name = sender_id.strip_suffix(account_suffix).unwrap_or(&sender_id);
 ```
 
 ## User Identity
@@ -41,6 +52,17 @@ let is_mainnet = std::env::var("NEAR_NETWORK_ID")
 | `NEAR_USER_ACCOUNT_ID` | Same as sender | Same as sender |
 
 Always set in both modes.
+
+**Recommended**: For WASI P2, use the OutLayer SDK instead:
+
+```rust
+use outlayer::env;
+
+// Type-safe, returns Option<String>
+let signer = env::signer_account_id();
+```
+
+See [OutLayer SDK](./WASI_TUTORIAL.md#outlayer-sdk) for details.
 
 ## Project Variables
 
@@ -204,3 +226,9 @@ fn main() {
 | `NEAR_MAX_INSTRUCTIONS` | Yes | Yes | No |
 | `NEAR_MAX_MEMORY_MB` | Yes | Yes | No |
 | `NEAR_MAX_EXECUTION_SECONDS` | Yes | Yes | No |
+
+## See Also
+
+- [WASI Tutorial](./WASI_TUTORIAL.md) - Complete guide to WASI development
+- [OutLayer SDK](./WASI_TUTORIAL.md#outlayer-sdk) - Type-safe access to env vars and storage
+- [Best Practices](./BEST_PRACTICES_OUTLAYER_NEAR.md) - Frontend integration patterns

@@ -54,10 +54,11 @@ cargo build --target wasm32-unknown-unknown --release
 3. [Quick Start: WASI P1](#quick-start-wasi-p1)
 4. [Quick Start: WASI P2](#quick-start-wasi-p2)
 5. [Input/Output Format](#inputoutput-format)
-6. [Important Requirements](#important-requirements)
-7. [Testing Your Module](#testing-your-module)
-8. [Common Pitfalls](#common-pitfalls)
-9. [Examples](#examples)
+6. [OutLayer SDK](#outlayer-sdk)
+7. [Important Requirements](#important-requirements)
+8. [Testing Your Module](#testing-your-module)
+9. [Common Pitfalls](#common-pitfalls)
+10. [Examples](#examples)
 
 ## Overview
 
@@ -293,7 +294,9 @@ echo '{"url":"https://api.example.com/data"}' | wasmtime target/wasm32-wasip2/re
 1. **Input**: Always read from `stdin` (not command-line arguments)
 2. **Output**: Always write to `stdout` (not stderr)
 3. **Format**: JSON only (UTF-8 encoded)
-4. **Size limit**: Output must be ≤900 bytes (NEAR Protocol limit)
+4. **Size limit**: Depends on how OutLayer is called:
+   - **Blockchain mode** (via `near call`): ≤900 bytes (NEAR Protocol limit)
+   - **HTTPS API mode** (via Payment Key): Up to 25MB
 5. **No buffering**: Call `stdout().flush()` after writing
 
 ### Example Pattern
@@ -324,6 +327,134 @@ fn main() {
 // ❌ WRONG: Writing to stderr
 fn main() {
     eprintln!("result"); // Won't be captured!
+}
+```
+
+## OutLayer SDK
+
+The `outlayer` crate provides access to OutLayer-specific features for WASI P2 modules.
+
+### Installation
+
+```toml
+[dependencies]
+outlayer = "0.1"
+```
+
+### Getting the Caller's NEAR Account
+
+When your WASI module is called via blockchain transaction, you can identify who called it:
+
+```rust
+use outlayer::env;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Returns the NEAR account that signed the transaction
+    let signer = env::signer_account_id()
+        .ok_or("No signer - must be called via NEAR transaction or Payment Key")?;
+
+    println!("Called by: {}", signer);  // e.g., "alice.near"
+
+    // Use signer for:
+    // - Access control
+    // - Per-user data isolation
+    // - Audit logging
+    Ok(())
+}
+```
+
+**Note**: `signer_account_id()` returns:
+- `Some(account_id)` when called via blockchain transaction
+- `Some(payment_key_owner)` when called via HTTPS API with Payment Key
+- `None` when called via HTTPS API without authentication
+
+### Persistent Storage
+
+OutLayer provides worker-encrypted storage that persists across executions:
+
+```rust
+use outlayer::storage;
+
+// Write data (encrypted at rest, only this worker can read)
+storage::set_worker("my_key", b"my_value")?;
+
+// Read data
+if let Some(data) = storage::get_worker("my_key")? {
+    let value = String::from_utf8(data)?;
+    println!("Stored value: {}", value);
+}
+```
+
+**Use cases:**
+- Store API keys/secrets (migrated from env vars)
+- Cache expensive computations
+- Maintain state between executions
+
+### Environment Variables
+
+OutLayer injects useful environment variables:
+
+```rust
+// Detect network (mainnet/testnet)
+let network = std::env::var("NEAR_NETWORK_ID").unwrap_or("mainnet".to_string());
+let suffix = if network == "testnet" { ".testnet" } else { ".near" };
+
+// Example: construct email address
+let email = format!("{}@near.email", account_id.strip_suffix(suffix).unwrap_or(&account_id));
+```
+
+### Complete Example
+
+```rust
+use outlayer::{env, storage};
+use serde::{Deserialize, Serialize};
+use std::io::{self, Read, Write};
+
+#[derive(Deserialize)]
+struct Input {
+    action: String,
+    data: Option<String>,
+}
+
+#[derive(Serialize)]
+struct Output {
+    success: bool,
+    account: String,
+    result: String,
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 1. Get caller
+    let account = env::signer_account_id()
+        .ok_or("Authentication required")?;
+
+    // 2. Read input
+    let mut input_str = String::new();
+    io::stdin().read_to_string(&mut input_str)?;
+    let input: Input = serde_json::from_str(&input_str)?;
+
+    // 3. Process based on action
+    let result = match input.action.as_str() {
+        "save" => {
+            let key = format!("user:{}", account);
+            storage::set_worker(&key, input.data.unwrap_or_default().as_bytes())?;
+            "Data saved".to_string()
+        }
+        "load" => {
+            let key = format!("user:{}", account);
+            storage::get_worker(&key)?
+                .map(|d| String::from_utf8_lossy(&d).to_string())
+                .unwrap_or_else(|| "No data".to_string())
+        }
+        _ => "Unknown action".to_string(),
+    };
+
+    // 4. Output
+    let output = Output { success: true, account, result };
+    print!("{}", serde_json::to_string(&output)?);
+    io::stdout().flush()?;
+
+    Ok(())
 }
 ```
 
@@ -688,7 +819,33 @@ if output.len() > 800 {
 
 **Solution**: Use `wasm32-wasip2` target and `wasi-http-client` crate
 
-### 7. Frontend transaction errors with wallet-selector
+### 7. Popup window blocked in browser
+
+**Problem**: Multiple consecutive wallet calls trigger browser popup blocker
+
+**Error**: `Popup window blocked. Please allow popups for this site.`
+
+**Solution**: Only make ONE wallet call per user action. Never chain multiple `signMessage` or `signAndSendTransaction` calls:
+
+```typescript
+// ❌ WRONG - Multiple calls in sequence
+async function badPattern() {
+  const sig1 = await wallet.signMessage({...}); // First popup OK
+  const sig2 = await wallet.signMessage({...}); // BLOCKED!
+}
+
+// ✅ CORRECT - One call per user click
+async function handleUserClick() {
+  const sig = await wallet.signMessage({...}); // User initiated
+  // Cache signature for reuse
+}
+```
+
+**Best practice**: Cache signatures on frontend (50-60 min) to avoid repeated popups.
+
+See [BEST_PRACTICES_OUTLAYER_NEAR.md](./BEST_PRACTICES_OUTLAYER_NEAR.md) for signature caching pattern.
+
+### 8. Frontend transaction errors with wallet-selector
 
 **Problem**: Using manual action format like `{ type: 'FunctionCall', params: {...} }`
 
@@ -731,7 +888,7 @@ await wallet.signAndSendTransaction({
 
 **See working example**: `wasi-examples/captcha-ark/launchpad-app/src/App.tsx`
 
-### 8. OutLayer callback deserialization errors
+### 9. OutLayer callback deserialization errors
 
 **Problem**: Callback receives OutLayer response but fails to deserialize
 
@@ -821,6 +978,14 @@ pub fn on_outlayer_callback(
    - OpenAI API integration
    - Component model
 
+3. **[near-email](./near-email/)** - WASI P2 (Complex)
+   - Full email service with encryption
+   - OutLayer SDK: `signer_account_id()`, `storage`
+   - External HTTP API (db-api) integration
+   - Next.js frontend with wallet-selector
+   - NEP-413 signature verification
+   - See [BEST_PRACTICES_OUTLAYER_NEAR.md](./BEST_PRACTICES_OUTLAYER_NEAR.md) for patterns
+
 ### Minimal Example (Copy-Paste Ready)
 
 ```rust
@@ -884,6 +1049,8 @@ echo '{"value":21}' | wasmtime target/wasm32-wasip1/release/example.wasm
 
 ## Deployment to NEAR OutLayer
 
+### Option 1: Blockchain Mode (via NEAR transaction)
+
 1. **Push code to GitHub**
 2. **Call contract**:
 
@@ -904,6 +1071,40 @@ near call outlayer.testnet request_execution '{
 ```
 
 3. **Check result** in NEAR Explorer
+
+**Pros:** Fully on-chain, trustless
+**Cons:** Requires transaction approval, output ≤900 bytes
+
+### Option 2: HTTPS API Mode (via Payment Key)
+
+For better UX (no popups, larger payloads), use Payment Keys:
+
+1. **Create Payment Key** at OutLayer Dashboard
+2. **Call via HTTPS**:
+
+```bash
+curl -X POST https://outlayer.fastnear.com/call/your-account.near/your-project \
+  -H "Content-Type: application/json" \
+  -H "X-Payment-Key: alice.near:0:your-secret-key" \
+  -d '{
+    "input": {"action": "process", "data": "hello"},
+    "resource_limits": {
+      "max_instructions": 2000000000,
+      "max_memory_mb": 512,
+      "max_execution_seconds": 120
+    }
+  }'
+```
+
+**Pros:** No popups, faster, output up to 25MB
+**Cons:** Requires pre-paid balance
+
+### Frontend Integration
+
+See [BEST_PRACTICES_OUTLAYER_NEAR.md](./BEST_PRACTICES_OUTLAYER_NEAR.md) for:
+- Wallet-selector setup (avoid popup blocking)
+- Payment Key integration
+- NEP-413 signature authentication
 
 ## Working with Embedded NEAR Contracts
 
@@ -1170,9 +1371,10 @@ cargo near --version
 - Check [examples](./random-ark/) for working code
 - Use [test runner](./WASI_TEST_RUNNER.md) to validate your module
 - Review [common pitfalls](#common-pitfalls) section
+- Read [BEST_PRACTICES_OUTLAYER_NEAR.md](./BEST_PRACTICES_OUTLAYER_NEAR.md) for frontend patterns
 - Test locally with wasmtime before deploying
 
 ---
 
-**Last updated**: 2025-10-15
-**Compatible with**: wasmtime 28+, NEAR OutLayer MVP
+**Last updated**: 2025-01
+**Compatible with**: wasmtime 28+, NEAR OutLayer

@@ -333,6 +333,15 @@ near contract call-function as-transaction usdc.fakes.testnet storage_deposit js
 near contract deploy dev.outlayer.testnet use-file res/local/outlayer_contract.wasm without-init-call network-config testnet sign-with-keychain send
 ```
 
+```bash
+near contract deploy outlayer.testnet use-file res/local/outlayer_contract.wasm without-init-call network-config testnet sign-with-keychain send
+```
+
+# Mainnet
+```
+near contract deploy outlayer.near use-file res/local/outlayer_contract.wasm without-init-call network-config mainnet sign-with-keychain send
+```
+
 ### Test
 
 ```bash

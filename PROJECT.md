@@ -688,6 +688,51 @@ fn validate_code_source(source: &CodeSource) -> Result<()> {
 
 ---
 
+## Production Applications
+
+### near.email - Secure Blockchain Email
+
+**Live at**: [near.email](https://near.email) | **Docs**: [near.email/docs](https://near.email/docs)
+
+The first production application built on NEAR OutLayer. Provides secure, private email for NEAR ecosystem users.
+
+#### Features
+- **Wallet-based identity**: Your NEAR account = your email (alice.near → alice@near.email)
+- **End-to-end encryption**: ECIES with secp256k1, emails encrypted before storage
+- **TEE-protected server**: Intel TDX ensures operators cannot read emails
+- **NEAR MPC key derivation**: Encryption keys derived via Chain Signatures network
+- **Internal email**: NEAR-to-NEAR emails never touch external SMTP servers
+- **External email**: Full compatibility with Gmail, Outlook, etc.
+
+#### Security Model
+- Server receives email → **immediately encrypts** → stores encrypted blob → **deletes original**
+- Only wallet owner can decrypt their emails
+- TEE attestation proves correct code execution
+- To compromise: must break Intel TDX OR compromise 27+ MPC validators
+
+#### Access Modes
+| Feature | Blockchain Mode | HTTPS Mode (Payment Key) |
+|---------|----------------|-------------------------|
+| Authentication | Wallet signature | Payment Key |
+| Cost | ~0.001 NEAR gas | ~$0.001 per operation |
+| Attachment download | 1.1 MB max | 18 MB max |
+| Security | TEE + MPC | TEE + MPC (identical) |
+
+#### Technical Stack
+- **Frontend**: Next.js with TypeScript
+- **WASM Module**: Rust with WASI
+- **Encryption**: ECIES (secp256k1) + AES-GCM
+- **Key derivation**: NEAR Chain Signatures MPC
+- **TEE**: Intel TDX via Phala Cloud
+
+#### Documentation Features
+- Comparison with Gmail/ProtonMail
+- Detailed security explanation for technical and non-technical users
+- FAQ covering pricing, privacy, and trust model
+- "What would it take to compromise" section
+
+---
+
 ## Ecosystem Impact
 
 ### For Developers
