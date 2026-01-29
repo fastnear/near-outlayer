@@ -97,6 +97,13 @@ export default function JobsPage() {
     return near.toFixed(6) + ' Ⓝ';
   };
 
+  // Format USD from stablecoin minimal units (6 decimals)
+  const formatUsd = (amount: string | null) => {
+    if (!amount) return 'N/A';
+    const usd = parseFloat(amount) / 1e6;
+    return '$' + usd.toFixed(4);
+  };
+
   // Calculate payment for display: for execute jobs, subtract compile_cost if exists
   const getDisplayPayment = (job: JobHistoryEntry) => {
     if (job.job_type === 'execute' && job.actual_cost_yocto && job.compile_cost_yocto) {
@@ -207,7 +214,7 @@ export default function JobsPage() {
                     <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Type</th>
                     <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Status</th>
                     <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Worker</th>
-                    <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">GitHub Repo</th>
+                    <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Source</th>
                     <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">User</th>
                     <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Time (ms)</th>
                     <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900" title="Instructions">Fuel</th>
@@ -290,12 +297,19 @@ export default function JobsPage() {
                           </div>
                         </td>
                         <td className="px-3 py-4 text-sm text-gray-500">
-                          {job.github_repo ? (
+                          {job.project_id ? (
+                            <span
+                              className="max-w-[120px] truncate block"
+                              title={job.project_id}
+                            >
+                              {job.project_id.split('/').pop() || job.project_id}
+                            </span>
+                          ) : job.github_repo ? (
                             <a
                               href={`${job.github_repo}/tree/${job.github_commit}`}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="text-blue-600 hover:text-blue-800 hover:underline max-w-[100px] truncate block"
+                              className="text-blue-600 hover:text-blue-800 hover:underline max-w-[120px] truncate block"
                               title={`${job.github_repo} @ ${job.github_commit}`}
                             >
                               {job.github_repo.replace(/^https?:\/\/(www\.)?github\.com\//, '')}
@@ -322,7 +336,9 @@ export default function JobsPage() {
                           {job.job_type === 'compile' ? '-' : formatInstructions(job.instructions_used)}
                         </td>
                         <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-900">
-                          {formatYoctoNEAR(getDisplayPayment(job))}
+                          {job.is_https_call
+                            ? formatUsd(job.compute_cost_usd)
+                            : formatYoctoNEAR(getDisplayPayment(job))}
                         </td>
                         <td className="whitespace-nowrap px-3 py-4 text-sm">
                           {job.transaction_hash ? (

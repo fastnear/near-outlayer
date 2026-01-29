@@ -38,6 +38,9 @@ pub struct HttpsCallRequest {
     /// Reference to contract-stored secrets (same as transaction mode)
     #[serde(default)]
     pub secrets_ref: Option<crate::models::SecretsReference>,
+    /// Version key for specific project version (if None, uses active_version)
+    #[serde(default)]
+    pub version_key: Option<String>,
 }
 
 /// Resource limits from request (all optional)
@@ -296,6 +299,7 @@ pub async fn https_call(
         compute_limit,
         attached_deposit,
         body.secrets_ref.as_ref(),
+        body.version_key.as_deref(),
     ).await?;
 
     if !task_created {
@@ -707,6 +711,7 @@ async fn create_execution_task(
     compute_limit: u128,
     attached_deposit: u128,
     secrets_ref: Option<&crate::models::SecretsReference>,
+    version_key: Option<&str>,
 ) -> Result<bool, CallError> {
     // Resolve project_uuid from cache (uses Redis cache, falls back to contract)
     let project_uuid = resolve_project_uuid_cached(state, project_id).await?;
@@ -717,6 +722,7 @@ async fn create_execution_task(
         "request_id": 0, // HTTPS calls don't have request_id
         "data_id": call_id.to_string(),
         "project_id": project_id, // Worker resolves this to code_source
+        "version_key": version_key, // Specific version (null = use active_version)
         "project_uuid": project_uuid, // Pre-resolved for storage access
         "resource_limits": resource_limits,
         "input_data": input_data,
@@ -981,6 +987,9 @@ pub struct CompleteHttpsCallRequest {
     /// Refund amount to return to user from attached_usd (stablecoin, minimal token units)
     #[serde(default)]
     pub refund_usd: Option<u64>,
+    /// Job ID for attestation linking (passed directly from worker)
+    #[serde(default)]
+    pub job_id: Option<i64>,
 }
 
 /// Response for completing HTTPS call
@@ -1079,19 +1088,8 @@ pub async fn complete_https_call(
     // Extract project owner from project_id (format: "owner.near/project-name")
     let project_owner = project_id.split('/').next().unwrap_or(&project_id).to_string();
 
-    // Find execute job's job_id for attestation lookup
-    let job_id: Option<i64> = sqlx::query_scalar(
-        r#"
-        SELECT job_id FROM execution_history
-        WHERE data_id = $1 AND job_type = 'execute'
-        ORDER BY created_at DESC
-        LIMIT 1
-        "#
-    )
-    .bind(call_id.to_string())
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| CallError::InternalError(format!("Database error: {}", e)))?;
+    // Use job_id directly from worker request (avoids race condition with execution_history write)
+    let job_id = req.job_id;
 
     // Get refund_usd from request (default 0)
     let refund_usd = req.refund_usd.unwrap_or(0) as u128;

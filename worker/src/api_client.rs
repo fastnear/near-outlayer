@@ -101,6 +101,9 @@ pub struct ExecutionRequest {
     /// Project ID for project-based secrets (e.g., "alice.near/my-app")
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
+    /// Version key for specific project version (if None, uses active_version)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_key: Option<String>,
     /// HTTPS API call flag - if true, don't call contract, call coordinator instead
     #[serde(default)]
     pub is_https_call: bool,
@@ -762,6 +765,7 @@ impl ApiClient {
     /// * `error` - Error message (if failed)
     /// * `instructions` - Instructions consumed
     /// * `time_ms` - Execution time in milliseconds
+    /// * `job_id` - Job ID for attestation linking
     pub async fn complete_https_call(
         &self,
         call_id: &str,
@@ -770,6 +774,7 @@ impl ApiClient {
         error: Option<String>,
         instructions: u64,
         time_ms: u64,
+        job_id: Option<i64>,
     ) -> Result<()> {
         let url = format!("{}/https-calls/complete", self.base_url);
 
@@ -783,6 +788,8 @@ impl ApiClient {
             error: Option<String>,
             instructions: u64,
             time_ms: u64,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            job_id: Option<i64>,
         }
 
         let request = CompleteHttpsCallRequest {
@@ -792,6 +799,7 @@ impl ApiClient {
             error: error.clone(),
             instructions,
             time_ms,
+            job_id,
         };
 
         tracing::info!(

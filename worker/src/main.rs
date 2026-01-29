@@ -545,8 +545,10 @@ async fn worker_iteration(
     async fn resolve_code_source_from_project(
         near_client: &near_client::NearClient,
         project_id: &str,
+        version_key: Option<&str>,
     ) -> Result<ResolvedProject> {
-        info!("📦 Resolving code_source from project_id: {}", project_id);
+        // Treat empty string as None
+        let version_key = version_key.filter(|v| !v.is_empty());
 
         // Fetch project from contract
         let project = near_client.fetch_project(project_id).await?
@@ -554,20 +556,31 @@ async fn worker_iteration(
 
         let project_uuid = project.uuid.clone();
 
+        // Use provided version_key or fall back to active_version
+        let version_to_fetch = version_key.unwrap_or(&project.active_version);
+        let using_explicit_version = version_key.is_some();
+
+        info!(
+            "📦 Resolving project: {} version: {} ({})",
+            project_id,
+            version_to_fetch,
+            if using_explicit_version { "explicit" } else { "active" }
+        );
+
         // Fetch version info
-        let version_view = near_client.fetch_project_version(project_id, &project.active_version).await?
-            .ok_or_else(|| anyhow::anyhow!("Project version not found: {} @ {}", project_id, project.active_version))?;
+        let version_view = near_client.fetch_project_version(project_id, version_to_fetch).await?
+            .ok_or_else(|| anyhow::anyhow!("Project version not found: {} @ {}", project_id, version_to_fetch))?;
 
         // Convert contract's CodeSource to worker's api_client::CodeSource
         let code_source = match version_view.source {
             near_client::ContractCodeSource::GitHub { repo, commit, build_target } => {
                 let build_target = build_target.unwrap_or_else(|| "wasm32-wasip1".to_string());
-                info!("✅ Resolved code_source: repo={} commit={} target={}", repo, commit, build_target);
+                info!("✅ Resolved: repo={} commit={} target={}", repo, commit, build_target);
                 api_client::CodeSource::GitHub { repo, commit, build_target }
             }
             near_client::ContractCodeSource::WasmUrl { url, hash, build_target } => {
                 let build_target = build_target.unwrap_or_else(|| "wasm32-wasip1".to_string());
-                info!("✅ Resolved code_source: url={} hash={} target={}", url, hash, build_target);
+                info!("✅ Resolved: url={} hash={} target={}", url, hash, build_target);
                 api_client::CodeSource::WasmUrl { url, hash, build_target }
             }
         };
@@ -585,7 +598,7 @@ async fn worker_iteration(
             let project_id = execution_request.project_id.as_ref()
                 .ok_or_else(|| anyhow::anyhow!("No code_source and no project_id in request"))?;
 
-            match resolve_code_source_from_project(near_client, project_id).await {
+            match resolve_code_source_from_project(near_client, project_id, execution_request.version_key.as_deref()).await {
                 Ok(resolved) => {
                     info!("✅ Resolved project_uuid={} from project_id={}", resolved.project_uuid, project_id);
                     (resolved.code_source.normalize(), Some(resolved.project_uuid))
@@ -602,6 +615,7 @@ async fn worker_iteration(
                                 Some(format!("Failed to resolve project: {}", e)),
                                 0,
                                 0,
+                                None, // No job_id yet - early error
                             ).await {
                                 error!("❌ Failed to report HTTPS call error: {}", report_err);
                             }
@@ -1884,6 +1898,7 @@ async fn handle_execute_job(
                             Some(error_msg.clone()),
                             execution_result.instructions,
                             execution_result.execution_time_ms,
+                            Some(job.job_id),
                         ).await {
                             error!("❌ Failed to report HTTPS call error: {}", https_err);
                         }
@@ -1958,6 +1973,7 @@ async fn handle_execute_job(
                     None,
                     execution_result.instructions,
                     execution_result.execution_time_ms,
+                    Some(job.job_id),
                 ).await {
                     Ok(()) => {
                         info!("✅ HTTPS call result submitted to coordinator successfully");
@@ -2262,6 +2278,7 @@ async fn handle_execute_job(
                         Some(error_msg.clone()),
                         0,
                         0,
+                        Some(job.job_id),
                     ).await {
                         error!("❌ Failed to report HTTPS call error: {}", https_err);
                     }

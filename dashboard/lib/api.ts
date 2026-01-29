@@ -69,6 +69,10 @@ export interface JobHistoryEntry {
   // HTTPS call fields
   is_https_call: boolean;
   call_id: string | null;
+  // Project info
+  project_id: string | null;
+  // HTTPS cost in USD (stablecoin minimal units, 6 decimals)
+  compute_cost_usd: string | null;
 }
 
 export interface ExecutionStats {

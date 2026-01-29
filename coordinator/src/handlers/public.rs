@@ -78,6 +78,10 @@ pub struct JobHistoryEntry {
     // HTTPS call fields
     pub is_https_call: bool,
     pub call_id: Option<String>,
+    // Project info
+    pub project_id: Option<String>,
+    // HTTPS cost in USD (stablecoin minimal units, 6 decimals)
+    pub compute_cost_usd: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -128,9 +132,13 @@ pub async fn list_jobs(
                 CASE WHEN eh.transaction_hash IS NULL AND eh.data_id IS NOT NULL
                      THEN eh.data_id
                      ELSE NULL
-                END as call_id
+                END as call_id,
+                COALESCE(hc.project_id, er.project_id) as project_id,
+                hc.compute_cost::TEXT as compute_cost_usd
             FROM execution_history eh
             LEFT JOIN jobs j ON eh.job_id = j.job_id
+            LEFT JOIN execution_requests er ON eh.request_id = er.request_id
+            LEFT JOIN https_calls hc ON eh.data_id = hc.call_id::text
             WHERE eh.user_account_id = $1
             ORDER BY eh.created_at DESC
             LIMIT $2 OFFSET $3
@@ -170,9 +178,13 @@ pub async fn list_jobs(
                 CASE WHEN eh.transaction_hash IS NULL AND eh.data_id IS NOT NULL
                      THEN eh.data_id
                      ELSE NULL
-                END as call_id
+                END as call_id,
+                COALESCE(hc.project_id, er.project_id) as project_id,
+                hc.compute_cost::TEXT as compute_cost_usd
             FROM execution_history eh
             LEFT JOIN jobs j ON eh.job_id = j.job_id
+            LEFT JOIN execution_requests er ON eh.request_id = er.request_id
+            LEFT JOIN https_calls hc ON eh.data_id = hc.call_id::text
             ORDER BY eh.created_at DESC
             LIMIT $1 OFFSET $2
             "#
