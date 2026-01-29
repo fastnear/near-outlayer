@@ -657,10 +657,9 @@ mod tests {
     async fn test_view_account_params() {
         let proxy = create_test_proxy();
 
-        // Test with finality
-        let result = proxy.view_account("test.near", Some("final"), None).await;
-        // Will fail due to network, but we're testing param construction
-        assert!(result.is_err()); // Expected - no real network
+        // Test with finality - just verify the call doesn't panic
+        // Result depends on network availability (may succeed or fail)
+        let _result = proxy.view_account("test.near", Some("final"), None).await;
 
         // Reset for next test
         proxy.reset_call_count();
@@ -670,9 +669,9 @@ mod tests {
     async fn test_gas_price_params() {
         let proxy = create_test_proxy();
 
-        // Test with null (latest)
-        let result = proxy.gas_price(None).await;
-        assert!(result.is_err()); // Expected - no real network
+        // Test with null (latest) - just verify the call doesn't panic
+        // Result depends on network availability (may succeed or fail)
+        let _result = proxy.gas_price(None).await;
     }
 
     #[test]

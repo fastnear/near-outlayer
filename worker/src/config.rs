@@ -14,7 +14,6 @@ pub struct Config {
     // NEAR configuration
     pub near_rpc_url: String,
     pub neardata_api_url: String,
-    pub fastnear_api_url: String,
     pub start_block_height: u64,
     pub offchainvm_contract_id: AccountId,
     #[allow(dead_code)]
@@ -187,16 +186,6 @@ impl Config {
 
         let neardata_api_url = env::var("NEARDATA_API_URL")
             .unwrap_or_else(|_| "https://testnet.neardata.xyz/v0/block".to_string());
-
-        let fastnear_api_url = env::var("FASTNEAR_API_URL")
-            .unwrap_or_else(|_| {
-                // Auto-detect based on neardata URL
-                if neardata_api_url.contains("mainnet") {
-                    "https://api.fastnear.com/status".to_string()
-                } else {
-                    "https://test.api.fastnear.com/status".to_string()
-                }
-            });
 
         let start_block_height = env::var("START_BLOCK_HEIGHT")
             .unwrap_or_else(|_| "0".to_string())
@@ -464,7 +453,6 @@ impl Config {
             api_auth_token,
             near_rpc_url,
             neardata_api_url,
-            fastnear_api_url,
             start_block_height,
             offchainvm_contract_id,
             operator_account_id,
@@ -603,7 +591,6 @@ mod tests {
             api_auth_token: "test-token".to_string(),
             near_rpc_url: "https://rpc.testnet.near.org".to_string(),
             neardata_api_url: "https://testnet.neardata.xyz/v0/block".to_string(),
-            fastnear_api_url: "https://test.api.fastnear.com/status".to_string(),
             start_block_height: 0,
             offchainvm_contract_id: "outlayer.testnet".parse().unwrap(),
             operator_account_id: "worker.testnet".parse().unwrap(),

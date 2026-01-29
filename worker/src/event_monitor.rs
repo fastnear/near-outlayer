@@ -9,6 +9,21 @@ use tracing::{error, info, warn};
 
 use crate::api_client::{ApiClient, CreateTaskParams, ResourceLimits as ApiResourceLimits};
 
+/// Error indicating block is not yet indexed by neardata
+/// This should be handled differently from other errors - we should wait, not skip
+#[derive(Debug)]
+pub struct BlockNotIndexedError {
+    pub block_id: u64,
+}
+
+impl std::fmt::Display for BlockNotIndexedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Block {} not yet indexed by neardata", self.block_id)
+    }
+}
+
+impl std::error::Error for BlockNotIndexedError {}
+
 /// Enum for different event types from contract
 #[derive(Debug, Clone)]
 pub enum ContractEvent {
@@ -243,18 +258,27 @@ struct Outcome {
     gas_burnt: Option<u64>,
 }
 
-/// FastNEAR status response
+/// NEAR RPC block response (simplified, only what we need)
 #[derive(Debug, Deserialize)]
-struct FastNearStatus {
-    sync_block_height: u64,
+struct NearRpcBlockResponse {
+    result: Option<NearRpcBlockResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NearRpcBlockResult {
+    header: NearRpcBlockHeader,
+}
+
+#[derive(Debug, Deserialize)]
+struct NearRpcBlockHeader {
+    height: u64,
 }
 
 /// NEAR event monitor that watches neardata.xyz for execution_requested and version_requested events
 pub struct EventMonitor {
     api_client: ApiClient,
     neardata_api_url: String,
-    #[allow(dead_code)]
-    fastnear_api_url: String,
+    near_rpc_url: String,
     contract_id: AccountId,
     current_block: u64,
     scan_interval_ms: u64,
@@ -298,7 +322,7 @@ impl EventMonitor {
     pub async fn new(
         api_client: ApiClient,
         neardata_api_url: String,
-        fastnear_api_url: String,
+        near_rpc_url: String,
         contract_id: AccountId,
         start_block: u64,
         scan_interval_ms: u64,
@@ -311,10 +335,10 @@ impl EventMonitor {
             .build()
             .context("Failed to create HTTP client")?;
 
-        // If start_block is 0, fetch latest block from FastNEAR
+        // If start_block is 0, fetch latest block from NEAR RPC
         let current_block = if start_block == 0 {
-            info!("START_BLOCK_HEIGHT=0, fetching latest block from FastNEAR...");
-            Self::fetch_latest_block(&http_client, &fastnear_api_url).await?
+            info!("START_BLOCK_HEIGHT=0, fetching latest block from NEAR RPC...");
+            Self::fetch_latest_block(&http_client, &near_rpc_url).await?
         } else {
             start_block
         };
@@ -332,7 +356,7 @@ impl EventMonitor {
         Ok(Self {
             api_client,
             neardata_api_url,
-            fastnear_api_url,
+            near_rpc_url,
             contract_id,
             current_block,
             scan_interval_ms,
@@ -347,33 +371,43 @@ impl EventMonitor {
         })
     }
 
-    /// Fetch latest block height from FastNEAR API
+    /// Fetch latest finalized block height from NEAR RPC
     async fn fetch_latest_block(
         http_client: &reqwest::Client,
-        fastnear_api_url: &str,
+        near_rpc_url: &str,
     ) -> Result<u64> {
-        info!("Fetching latest block height from {}", fastnear_api_url);
+        let request_body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "dontcare",
+            "method": "block",
+            "params": {
+                "finality": "final"
+            }
+        });
 
         let response = http_client
-            .get(fastnear_api_url)
+            .post(near_rpc_url)
+            .json(&request_body)
             .send()
             .await
-            .context("Failed to fetch FastNEAR status")?;
+            .context("Failed to fetch block from NEAR RPC")?;
 
         if !response.status().is_success() {
-            anyhow::bail!(
-                "FastNEAR API returned status: {}",
-                response.status()
-            );
+            anyhow::bail!("NEAR RPC returned status: {}", response.status());
         }
 
-        let status: FastNearStatus = response
+        let block_response: NearRpcBlockResponse = response
             .json()
             .await
-            .context("Failed to parse FastNEAR status")?;
+            .context("Failed to parse NEAR RPC response")?;
 
-        info!("Latest block height: {}", status.sync_block_height);
-        Ok(status.sync_block_height)
+        let height = block_response
+            .result
+            .ok_or_else(|| anyhow::anyhow!("NEAR RPC returned no result"))?
+            .header
+            .height;
+
+        Ok(height)
     }
 
     /// Start continuous monitoring of new blocks
@@ -385,6 +419,7 @@ impl EventMonitor {
 
         let start_block = self.current_block;
         let mut retry_count = 0;
+        let mut wait_for_block_count = 0u32; // Counter for "waiting for block" logging
         const MAX_RETRIES: u32 = 3;
 
         loop {
@@ -392,6 +427,7 @@ impl EventMonitor {
                 Ok(events) => {
                     self.blocks_scanned += 1;
                     retry_count = 0; // Reset retry counter on success
+                    wait_for_block_count = 0; // Reset wait counter on success
 
                     if !events.is_empty() {
                         self.events_found += events.len() as u64;
@@ -450,6 +486,23 @@ impl EventMonitor {
                     }
                 }
                 Err(e) => {
+                    // Check if this is a "block not indexed" error - should wait, not skip
+                    if e.downcast_ref::<BlockNotIndexedError>().is_some() {
+                        // Block not indexed by neardata yet - wait and retry
+                        // DO NOT increment current_block here - that was the bug!
+                        wait_for_block_count += 1;
+                        if wait_for_block_count == 1 || wait_for_block_count % 50 == 0 {
+                            info!(
+                                "⏳ Waiting for block {} (not indexed by neardata yet)",
+                                self.current_block
+                            );
+                        }
+                        // Wait 200ms before retry
+                        sleep(Duration::from_millis(200)).await;
+                        continue;
+                    }
+
+                    // Regular error - use retry logic
                     retry_count += 1;
                     error!(
                         "❌ Error scanning block {} (attempt {}/{}): {}",
@@ -515,9 +568,11 @@ impl EventMonitor {
                     .await
                     .context("Failed to read response body as text")?;
 
-                // Handle null response (block not yet indexed)
+                // Handle null response - block doesn't exist in NEAR (was skipped)
+                // Per neardata docs: "If the block doesn't exist it returns null"
+                // neardata waits for blocks close to finalized, so null = truly doesn't exist
                 if response_text.trim() == "null" {
-                    info!("⏳ Block {} returned null (not indexed yet)", block_id);
+                    info!("⏭️  Block {} doesn't exist (skipped in NEAR consensus)", block_id);
                     return Ok(BlockData { shards: None });
                 }
 
@@ -537,9 +592,9 @@ impl EventMonitor {
                 Ok(block_data)
             }
             reqwest::StatusCode::NOT_FOUND => {
-                info!("⏳ Block {} not found yet (waiting for neardata indexing)", block_id);
-                // Block not found yet, return empty data
-                Ok(BlockData { shards: None })
+                // Block not indexed yet - return special error so main loop waits
+                // No logging here to avoid spam when waiting for new blocks
+                return Err(BlockNotIndexedError { block_id }.into());
             }
             status => {
                 anyhow::bail!("HTTP {} for block {}", status, block_id);
@@ -968,5 +1023,48 @@ impl EventMonitor {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_fetch_latest_block_mainnet() {
+        let http_client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap();
+
+        let result = EventMonitor::fetch_latest_block(
+            &http_client,
+            "https://rpc.mainnet.near.org",
+        )
+        .await;
+
+        assert!(result.is_ok(), "Failed to fetch block: {:?}", result.err());
+        let height = result.unwrap();
+        assert!(height > 0, "Block height should be > 0, got {}", height);
+        println!("Mainnet block height: {}", height);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_latest_block_testnet() {
+        let http_client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap();
+
+        let result = EventMonitor::fetch_latest_block(
+            &http_client,
+            "https://rpc.testnet.near.org",
+        )
+        .await;
+
+        assert!(result.is_ok(), "Failed to fetch block: {:?}", result.err());
+        let height = result.unwrap();
+        assert!(height > 0, "Block height should be > 0, got {}", height);
+        println!("Testnet block height: {}", height);
     }
 }

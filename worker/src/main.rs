@@ -394,7 +394,7 @@ async fn main() -> Result<()> {
     if config.enable_event_monitor {
         let event_api_client = api_client.clone();
         let neardata_url = config.neardata_api_url.clone();
-        let fastnear_url = config.fastnear_api_url.clone();
+        let near_rpc_url = config.near_rpc_url.clone();
         let contract_id = config.offchainvm_contract_id.clone();
         let start_block = config.start_block_height;
         let scan_interval_ms = config.scan_interval_ms;
@@ -407,7 +407,7 @@ async fn main() -> Result<()> {
             match EventMonitor::new(
                 event_api_client,
                 neardata_url,
-                fastnear_url,
+                near_rpc_url,
                 contract_id,
                 start_block,
                 scan_interval_ms,
@@ -2218,7 +2218,8 @@ async fn handle_execute_job(
                     }
                 }
                 Err(e) => {
-                    let error_msg = format!("Failed to submit to NEAR: {}", e);
+                    // Use {:#} to show full error chain from anyhow
+                    let error_msg = format!("Failed to submit to NEAR: {:#}", e);
                     error!("❌ {}", error_msg);
 
                     // Report failure to coordinator
