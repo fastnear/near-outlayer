@@ -482,9 +482,9 @@ impl Contract {
             per_ms_fee: 100_000_000_000_000_000, // 0.0001 NEAR per second (execution)
             per_compile_ms_fee: 100_000_000_000_000_000, // 0.0001 NEAR per second (compilation)
             // USD pricing (for HTTPS API, using USDT with 6 decimals)
-            base_fee_usd: 10_000,             // $0.01 base fee
+            base_fee_usd: 1_000,             // $0.001 base fee
             per_million_instructions_fee_usd: 1, // $0.000001 per million instructions
-            per_ms_fee_usd: 10,               // $0.00001 per ms execution
+            per_ms_fee_usd: 0,               // $0 per ms execution
             per_compile_ms_fee_usd: 10,       // $0.00001 per ms compilation
             // Payment token (set via admin method)
             payment_token_contract: None,
