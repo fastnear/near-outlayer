@@ -572,6 +572,8 @@ pub struct JobInfo {
     /// Project ID for project-based secrets (e.g., "alice.near/my-app")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
+    /// Job creation timestamp (unix seconds) - used for attestation V1 format
+    pub created_at: i64,
 }
 
 /// Create task request (event monitor)
@@ -715,6 +717,11 @@ pub struct TaskAttestation {
     pub input_hash: Option<String>,  // NULL for Compile, present for Execute
     pub output_hash: String,
 
+    // V1 attestation fields (included in hash for jobs after OUTLAYER_ATTESTATION_V1)
+    pub project_id: Option<String>,
+    pub secrets_ref: Option<String>,  // Format: "{account_id}/{profile}"
+    pub attached_usd: Option<String>,
+
     pub created_at: Option<chrono::NaiveDateTime>,
 }
 
@@ -762,6 +769,14 @@ pub struct AttestationResponse {
     pub input_hash: Option<String>,
     pub output_hash: String,
 
+    // V1 attestation fields
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secrets_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attached_usd: Option<String>,
+
     pub timestamp: i64,  // Unix timestamp
 }
 
@@ -789,6 +804,10 @@ impl From<TaskAttestation> for AttestationResponse {
             wasm_hash: att.wasm_hash,
             input_hash: att.input_hash,
             output_hash: att.output_hash,
+            // V1 fields
+            project_id: att.project_id,
+            secrets_ref: att.secrets_ref,
+            attached_usd: att.attached_usd,
             timestamp: att.created_at.map(|dt| dt.and_utc().timestamp()).unwrap_or(0),
         }
     }
@@ -823,6 +842,14 @@ pub struct StoreAttestationRequest {
     pub wasm_hash: Option<String>,
     pub input_hash: Option<String>,
     pub output_hash: String,
+
+    // V1 attestation fields
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub secrets_ref: Option<String>,
+    #[serde(default)]
+    pub attached_usd: Option<String>,
 }
 
 impl StoreAttestationRequest {

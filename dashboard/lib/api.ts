@@ -292,6 +292,11 @@ export interface AttestationResponse {
   input_hash?: string;
   output_hash: string;
 
+  // V1 attestation fields (for jobs after OUTLAYER_ATTESTATION_V1)
+  project_id?: string;
+  secrets_ref?: string;
+  attached_usd?: string;
+
   timestamp: number; // Unix timestamp
 }
 

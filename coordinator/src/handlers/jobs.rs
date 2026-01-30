@@ -134,7 +134,7 @@ pub async fn claim_job(
             r#"
             INSERT INTO jobs (request_id, data_id, job_type, worker_id, status, wasm_checksum, user_account_id, near_payment_yocto, github_repo, github_commit, transaction_hash, wasm_url, wasm_content_hash, build_target, created_at, updated_at)
             VALUES ($1, $2, 'compile', $3, 'in_progress', $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())
-            RETURNING job_id
+            RETURNING job_id, created_at
             "#,
             payload.request_id as i64,
             payload.data_id,
@@ -164,6 +164,7 @@ pub async fn claim_job(
                     compile_time_ms: None, // Will be set after compilation
                     project_uuid: payload.project_uuid.clone(),
                     project_id: payload.project_id.clone(),
+                    created_at: compile_job.created_at.and_utc().timestamp(),
                 });
             }
             Err(e) => {
@@ -323,7 +324,7 @@ pub async fn claim_job(
             r#"
             INSERT INTO jobs (request_id, data_id, job_type, worker_id, status, wasm_checksum, user_account_id, near_payment_yocto, github_repo, github_commit, transaction_hash, wasm_url, wasm_content_hash, build_target, created_at, updated_at)
             VALUES ($1, $2, 'execute', $3, 'in_progress', $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())
-            RETURNING job_id
+            RETURNING job_id, created_at
             "#,
             payload.request_id as i64,
             payload.data_id,
@@ -353,6 +354,7 @@ pub async fn claim_job(
                     compile_time_ms,
                     project_uuid: payload.project_uuid.clone(),
                     project_id: payload.project_id.clone(),
+                    created_at: execute_job.created_at.and_utc().timestamp(),
                 });
             }
             Err(e) => {

@@ -1255,6 +1255,11 @@ async fn handle_compile_job(
                     None, // No input_hash for compile
                     &checksum, // output_hash is the compiled WASM checksum
                     context.block_height,
+                    user_account_id.as_deref(),
+                    job.project_id.as_deref(),
+                    None, // No secrets_ref for compile
+                    job.created_at,
+                    None, // No attached_usd for compile
                 ).await {
                     Ok(tdx_quote) => {
                         // Send attestation to coordinator
@@ -1276,6 +1281,10 @@ async fn handle_compile_job(
                             wasm_hash: None,
                             input_hash: None,
                             output_hash: checksum.clone(),
+                            // V1 fields
+                            project_id: job.project_id.clone(),
+                            secrets_ref: None, // No secrets for compile
+                            attached_usd: None, // No attached_usd for compile
                         };
 
                         if let Err(e) = api_client.store_attestation(attestation_request).await {
@@ -2018,6 +2027,9 @@ async fn handle_execute_job(
                                 hex::encode(output_hasher.finalize())
                             };
 
+                            // Format secrets_ref for attestation (None if empty fields)
+                            let secrets_ref_str = secrets_ref.and_then(|sr| sr.as_attestation_ref());
+
                             // Generate TDX quote
                             match tdx_client.generate_task_attestation(
                                 "execute",
@@ -2029,6 +2041,11 @@ async fn handle_execute_job(
                                 Some(&input_hash),
                                 &output_hash,
                                 None, // No block_height for HTTPS calls
+                                payment_key_owner.map(|s| s.as_str()), // caller = payment key owner
+                                job.project_id.as_deref(),
+                                secrets_ref_str.as_deref(),
+                                job.created_at,
+                                usd_payment.map(|s| s.as_str()),
                             ).await {
                                 Ok(tdx_quote) => {
                                     // Send attestation to coordinator with HTTPS fields
@@ -2038,7 +2055,7 @@ async fn handle_execute_job(
                                         tdx_quote,
                                         // NEAR context - None for HTTPS calls
                                         request_id: None,
-                                        caller_account_id: None,
+                                        caller_account_id: payment_key_owner.cloned(), // Store caller for verification
                                         transaction_hash: None,
                                         block_height: None,
                                         // HTTPS call context
@@ -2051,6 +2068,10 @@ async fn handle_execute_job(
                                         wasm_hash: Some(wasm_checksum.clone()),
                                         input_hash: Some(input_hash),
                                         output_hash,
+                                        // V1 fields
+                                        project_id: job.project_id.clone(),
+                                        secrets_ref: secrets_ref_str.clone(),
+                                        attached_usd: usd_payment.cloned(),
                                     };
 
                                     if let Err(e) = api_client.store_attestation(attestation_request).await {
@@ -2183,6 +2204,9 @@ async fn handle_execute_job(
                             input_hasher.update(input_data.as_bytes());
                             let input_hash = hex::encode(input_hasher.finalize());
 
+                            // Format secrets_ref for attestation (None if empty fields)
+                            let secrets_ref_str = secrets_ref.and_then(|sr| sr.as_attestation_ref());
+
                             match tdx_client.generate_task_attestation(
                                 "execute",
                                 job.job_id,
@@ -2193,6 +2217,11 @@ async fn handle_execute_job(
                                 Some(&input_hash),
                                 &output_hash,
                                 context.block_height,
+                                user_account_id.map(|s| s.as_str()), // caller = NEAR account
+                                job.project_id.as_deref(),
+                                secrets_ref_str.as_deref(),
+                                job.created_at,
+                                attached_usd.map(|s| s.as_str()),
                             ).await {
                                 Ok(tdx_quote) => {
                                     // Send attestation to coordinator
@@ -2214,6 +2243,10 @@ async fn handle_execute_job(
                                         wasm_hash: Some(wasm_checksum.clone()),
                                         input_hash: Some(input_hash),
                                         output_hash,
+                                        // V1 fields
+                                        project_id: job.project_id.clone(),
+                                        secrets_ref: secrets_ref_str.clone(),
+                                        attached_usd: attached_usd.cloned(),
                                     };
 
                                     if let Err(e) = api_client.store_attestation(attestation_request).await {
@@ -2401,6 +2434,10 @@ async fn send_startup_attestation_with_quote(
         wasm_hash: None,
         input_hash: None, // Not required for startup attestation (task_id = -1)
         output_hash: "worker_startup".to_string(),
+        // V1 fields - None for startup
+        project_id: None,
+        secrets_ref: None,
+        attached_usd: None,
     };
 
     // Send to coordinator (fail fast - no retries)

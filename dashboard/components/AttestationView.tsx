@@ -54,10 +54,20 @@ export default function AttestationView({
     return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   };
 
+  // Get V1 attestation cutoff timestamp from env (0 = V1 not deployed yet)
+  const ATTESTATION_V1_TIMESTAMP = parseInt(process.env.NEXT_PUBLIC_OUTLAYER_ATTESTATION_V1 || '0', 10);
+
+  // Determine if this attestation uses V1 format (for display purposes)
+  const isV1Format = ATTESTATION_V1_TIMESTAMP > 0 && attestation.timestamp >= ATTESTATION_V1_TIMESTAMP;
+
   const calculateTaskHash = async (att: AttestationResponse): Promise<string> => {
     const parts: Uint8Array[] = [];
     const encoder = new TextEncoder();
 
+    // Determine if this is V1 format based on timestamp
+    const isV1 = ATTESTATION_V1_TIMESTAMP > 0 && att.timestamp >= ATTESTATION_V1_TIMESTAMP;
+
+    // Original V0 fields
     parts.push(encoder.encode(att.task_type));
 
     const task_id_buffer = new ArrayBuffer(8);
@@ -78,6 +88,23 @@ export default function AttestationView({
       const bh_view = new DataView(bh_buffer);
       bh_view.setBigUint64(0, BigInt(att.block_height), true);
       parts.push(new Uint8Array(bh_buffer));
+    }
+
+    // V1 additional fields (only for attestations after ATTESTATION_V1_TIMESTAMP)
+    if (isV1) {
+      // caller_account_id
+      if (att.caller_account_id) parts.push(encoder.encode(att.caller_account_id));
+      // project_id
+      if (att.project_id) parts.push(encoder.encode(att.project_id));
+      // secrets_ref
+      if (att.secrets_ref) parts.push(encoder.encode(att.secrets_ref));
+      // timestamp (i64 little-endian)
+      const ts_buffer = new ArrayBuffer(8);
+      const ts_view = new DataView(ts_buffer);
+      ts_view.setBigInt64(0, BigInt(att.timestamp), true);
+      parts.push(new Uint8Array(ts_buffer));
+      // attached_usd
+      if (att.attached_usd) parts.push(encoder.encode(att.attached_usd));
     }
 
     const totalLength = parts.reduce((sum, part) => sum + part.length, 0);
@@ -772,6 +799,66 @@ export default function AttestationView({
                         )}
                       </div>
                     </div>
+                    {/* V1 fields - only shown for attestations after ATTESTATION_V1_TIMESTAMP */}
+                    {isV1Format && (
+                      <>
+                        <div className="flex items-start gap-2 border-t border-purple-200 pt-2 mt-2">
+                          <span className="text-orange-600 font-bold min-w-[20px] text-xs">V1</span>
+                          <div className="text-orange-600 text-xs font-semibold">Additional V1 fields (attestations after {new Date(ATTESTATION_V1_TIMESTAMP * 1000).toISOString()}):</div>
+                        </div>
+                        <div className="flex items-start gap-2">
+                          <span className={`font-bold min-w-[20px] ${attestation.caller_account_id ? 'text-orange-600' : 'text-gray-400'}`}>10.</span>
+                          <div className="flex-1">
+                            <span className="text-gray-600">caller_account_id (string, optional):</span>
+                            {attestation.caller_account_id ? (
+                              <div className="text-orange-700 break-all">&quot;{attestation.caller_account_id}&quot;</div>
+                            ) : (
+                              <div className="text-gray-400 italic">not included (null)</div>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-start gap-2">
+                          <span className={`font-bold min-w-[20px] ${attestation.project_id ? 'text-orange-600' : 'text-gray-400'}`}>11.</span>
+                          <div className="flex-1">
+                            <span className="text-gray-600">project_id (string, optional):</span>
+                            {attestation.project_id ? (
+                              <div className="text-orange-700 break-all">&quot;{attestation.project_id}&quot;</div>
+                            ) : (
+                              <div className="text-gray-400 italic">not included (null)</div>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-start gap-2">
+                          <span className={`font-bold min-w-[20px] ${attestation.secrets_ref ? 'text-orange-600' : 'text-gray-400'}`}>12.</span>
+                          <div className="flex-1">
+                            <span className="text-gray-600">secrets_ref (string, optional):</span>
+                            {attestation.secrets_ref ? (
+                              <div className="text-orange-700 break-all">&quot;{attestation.secrets_ref}&quot;</div>
+                            ) : (
+                              <div className="text-gray-400 italic">not included (null)</div>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-start gap-2">
+                          <span className="text-orange-600 font-bold min-w-[20px]">13.</span>
+                          <div className="flex-1">
+                            <span className="text-gray-600">timestamp (i64, little-endian):</span>
+                            <div className="text-orange-700">{attestation.timestamp}</div>
+                          </div>
+                        </div>
+                        <div className="flex items-start gap-2">
+                          <span className={`font-bold min-w-[20px] ${attestation.attached_usd ? 'text-orange-600' : 'text-gray-400'}`}>14.</span>
+                          <div className="flex-1">
+                            <span className="text-gray-600">attached_usd (string, optional):</span>
+                            {attestation.attached_usd ? (
+                              <div className="text-orange-700">&quot;{attestation.attached_usd}&quot;</div>
+                            ) : (
+                              <div className="text-gray-400 italic">not included (null)</div>
+                            )}
+                          </div>
+                        </div>
+                      </>
+                    )}
                   </div>
                   <div className="mt-2 p-2 bg-purple-50 border border-purple-200 rounded">
                     <div className="text-purple-900 font-semibold">Final Hash (SHA256 of concatenated bytes):</div>
@@ -835,6 +922,31 @@ ${attestation.block_height ? `
 data += struct.pack("<Q", ${attestation.block_height})
 ` : `
 # 9. block_height - not included (null)`}
+${isV1Format ? `
+# === V1 FIELDS (attestations after ${new Date(ATTESTATION_V1_TIMESTAMP * 1000).toISOString()}) ===
+${attestation.caller_account_id ? `
+# 10. caller_account_id (string)
+data += b"${escapePyStr(attestation.caller_account_id)}"
+` : `
+# 10. caller_account_id - not included (null)`}
+${attestation.project_id ? `
+# 11. project_id (string)
+data += b"${escapePyStr(attestation.project_id)}"
+` : `
+# 11. project_id - not included (null)`}
+${attestation.secrets_ref ? `
+# 12. secrets_ref (string)
+data += b"${escapePyStr(attestation.secrets_ref)}"
+` : `
+# 12. secrets_ref - not included (null)`}
+
+# 13. timestamp (i64, little-endian) - always included in V1
+data += struct.pack("<q", ${attestation.timestamp})
+${attestation.attached_usd ? `
+# 14. attached_usd (string)
+data += b"${escapePyStr(attestation.attached_usd)}"
+` : `
+# 14. attached_usd - not included (null)`}` : ''}
 
 # Calculate SHA256
 final_hash = hashlib.sha256(data).hexdigest()
@@ -886,6 +998,31 @@ ${attestation.block_height ? `
 data += struct.pack("<Q", ${attestation.block_height})
 ` : `
 # 9. block_height - not included (null)`}
+${isV1Format ? `
+# === V1 FIELDS (attestations after ${new Date(ATTESTATION_V1_TIMESTAMP * 1000).toISOString()}) ===
+${attestation.caller_account_id ? `
+# 10. caller_account_id (string)
+data += b"${escapePyStr(attestation.caller_account_id)}"
+` : `
+# 10. caller_account_id - not included (null)`}
+${attestation.project_id ? `
+# 11. project_id (string)
+data += b"${escapePyStr(attestation.project_id)}"
+` : `
+# 11. project_id - not included (null)`}
+${attestation.secrets_ref ? `
+# 12. secrets_ref (string)
+data += b"${escapePyStr(attestation.secrets_ref)}"
+` : `
+# 12. secrets_ref - not included (null)`}
+
+# 13. timestamp (i64, little-endian) - always included in V1
+data += struct.pack("<q", ${attestation.timestamp})
+${attestation.attached_usd ? `
+# 14. attached_usd (string)
+data += b"${escapePyStr(attestation.attached_usd)}"
+` : `
+# 14. attached_usd - not included (null)`}` : ''}
 
 # Calculate SHA256
 final_hash = hashlib.sha256(data).hexdigest()

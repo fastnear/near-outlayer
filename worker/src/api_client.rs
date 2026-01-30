@@ -145,6 +145,18 @@ pub struct SecretsReference {
     pub account_id: String,
 }
 
+impl SecretsReference {
+    /// Format as "{account_id}/{profile}" for attestation hash.
+    /// Returns None if either field is empty.
+    pub fn as_attestation_ref(&self) -> Option<String> {
+        if self.account_id.is_empty() || self.profile.is_empty() {
+            None
+        } else {
+            Some(format!("{}/{}", self.account_id, self.profile))
+        }
+    }
+}
+
 impl CodeSource {
     pub fn repo(&self) -> Option<&str> {
         match self {
@@ -343,6 +355,9 @@ pub struct JobInfo {
     /// Project ID for project-based secrets (e.g., "alice.near/my-app")
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
+    /// Job creation timestamp (unix seconds) - used for attestation V1 format
+    #[serde(default)]
+    pub created_at: i64,
 }
 
 /// Pricing configuration from coordinator (fetched from NEAR contract)
@@ -1949,6 +1964,14 @@ pub struct StoreAttestationRequest {
     pub wasm_hash: Option<String>,
     pub input_hash: Option<String>,
     pub output_hash: String,
+
+    // V1 attestation fields
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secrets_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attached_usd: Option<String>,
 }
 
 #[cfg(test)]

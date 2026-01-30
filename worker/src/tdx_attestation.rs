@@ -104,10 +104,10 @@ impl TdxClient {
         }
     }
 
-    /// Generate TDX quote for task attestation
+    /// Generate TDX quote for task attestation (V1 format)
     ///
     /// This is used to create attestations for compilation and execution tasks.
-    /// The report_data contains a hash of task parameters.
+    /// The report_data contains a hash of all task parameters including caller identity.
     ///
     /// # Arguments
     /// * `task_type` - Type of task (compile, execute, startup)
@@ -119,9 +119,21 @@ impl TdxClient {
     /// * `input_hash` - SHA256 hash of execution input
     /// * `output_hash` - SHA256 hash of execution output
     /// * `block_height` - NEAR block height
+    /// * `caller_account_id` - Caller's account ID (NEAR account or payment key owner)
+    /// * `project_id` - Project ID (e.g., "alice.near/my-app")
+    /// * `secrets_ref` - Secrets reference in format "{account_id}/{profile}"
+    /// * `timestamp` - Job creation timestamp (unix seconds)
+    /// * `attached_usd` - Payment amount in minimal token units
     ///
     /// # Returns
     /// * Base64-encoded TDX quote
+    ///
+    /// # Report Data Layout (V1)
+    /// - Bytes 0-31: SHA256(task_type || task_id || repo || commit || build_target ||
+    ///                      wasm_hash || input_hash || output_hash || block_height ||
+    ///                      caller_account_id || project_id || secrets_ref || timestamp || attached_usd)
+    /// - Bytes 32-63: zeros (reserved)
+    #[allow(clippy::too_many_arguments)]
     pub async fn generate_task_attestation(
         &self,
         task_type: &str,
@@ -133,9 +145,16 @@ impl TdxClient {
         input_hash: Option<&str>,
         output_hash: &str,
         block_height: Option<u64>,
+        caller_account_id: Option<&str>,
+        project_id: Option<&str>,
+        secrets_ref: Option<&str>,
+        timestamp: i64,
+        attached_usd: Option<&str>,
     ) -> Result<String> {
-        // Build report_data from task parameters
+        // Build report_data from all task parameters (V1 format)
         let mut hasher = Sha256::new();
+
+        // Original fields
         hasher.update(task_type.as_bytes());
         hasher.update(&task_id.to_le_bytes());
         if let Some(r) = repo {
@@ -156,6 +175,21 @@ impl TdxClient {
         hasher.update(output_hash.as_bytes());
         if let Some(bh) = block_height {
             hasher.update(&bh.to_le_bytes());
+        }
+
+        // V1 fields: caller, project, secrets, timestamp, payment
+        if let Some(caller) = caller_account_id {
+            hasher.update(caller.as_bytes());
+        }
+        if let Some(pid) = project_id {
+            hasher.update(pid.as_bytes());
+        }
+        if let Some(sref) = secrets_ref {
+            hasher.update(sref.as_bytes());
+        }
+        hasher.update(&timestamp.to_le_bytes());
+        if let Some(usd) = attached_usd {
+            hasher.update(usd.as_bytes());
         }
 
         let task_hash = hasher.finalize();

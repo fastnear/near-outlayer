@@ -20,7 +20,9 @@ pub async fn get_attestation(
                   request_id, caller_account_id, transaction_hash, block_height,
                   call_id, payment_key_owner, payment_key_nonce,
                   repo_url, commit_hash, build_target,
-                  wasm_hash, input_hash, output_hash, created_at
+                  wasm_hash, input_hash, output_hash,
+                  project_id, secrets_ref, attached_usd,
+                  created_at
            FROM task_attestations WHERE task_id = $1"#
     )
     .bind(job_id)
@@ -60,6 +62,10 @@ fn row_to_attestation(row: &sqlx::postgres::PgRow) -> TaskAttestation {
         wasm_hash: row.get("wasm_hash"),
         input_hash: row.get("input_hash"),
         output_hash: row.get("output_hash"),
+        // V1 fields
+        project_id: row.get("project_id"),
+        secrets_ref: row.get("secrets_ref"),
+        attached_usd: row.get("attached_usd"),
         created_at: row.get("created_at"),
     }
 }
@@ -113,8 +119,9 @@ pub async fn store_attestation(
           request_id, caller_account_id, transaction_hash, block_height,
           call_id, payment_key_owner, payment_key_nonce,
           repo_url, commit_hash, build_target,
-          wasm_hash, input_hash, output_hash)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)"
+          wasm_hash, input_hash, output_hash,
+          project_id, secrets_ref, attached_usd)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)"
     )
     .bind(req.task_id)
     .bind(req.task_type.as_str())
@@ -133,6 +140,9 @@ pub async fn store_attestation(
     .bind(&req.wasm_hash)
     .bind(&req.input_hash)
     .bind(&req.output_hash)
+    .bind(&req.project_id)
+    .bind(&req.secrets_ref)
+    .bind(&req.attached_usd)
     .execute(&state.db)
     .await
     .map_err(|e| {
