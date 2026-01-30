@@ -340,6 +340,12 @@ near contract deploy outlayer.testnet use-file res/local/outlayer_contract.wasm 
 # Mainnet
 ```
 near contract deploy outlayer.near use-file res/local/outlayer_contract.wasm without-init-call network-config mainnet sign-with-keychain send
+
+near contract call-function as-transaction outlayer.near new json-args '{"owner_id":"owner.outlayer.near","operator_id":"worker.outlayer.near"}' prepaid-gas '100.0 Tgas' attached-deposit '0 NEAR' sign-as outlayer.near network-config mainnet sign-with-keychain send
+
+near contract call-function as-transaction outlayer.near set_payment_token_contract json-args '{"token_contract":"17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1"}' prepaid-gas '100.0 Tgas' attached-deposit '0 NEAR' sign-as owner.outlayer.near network-config mainnet sign-with-keychain send
+
+near contract call-function as-transaction 17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1 storage_deposit json-args '{"account_id": "outlayer.near"}' prepaid-gas '100.0 Tgas' attached-deposit '0.1 NEAR' sign-as outlayer.near network-config mainnet sign-with-keychain send
 ```
 
 ### Test

@@ -168,7 +168,7 @@ echo -e "${YELLOW}[6/7] Checking if RTMR3 is already approved...${NC}"
 
 RTMR3_APPROVED=$(near contract call-function as-read-only "$DAO_CONTRACT" is_rtmr3_approved \
     json-args "{\"rtmr3\": \"$RTMR3\"}" \
-    network-config "$NETWORK" 2>/dev/null | grep -o 'true\|false' | head -1 || echo "false")
+    network-config "$NETWORK" now 2>/dev/null | grep -o 'true\|false' | head -1 || echo "false")
 
 if [ "$RTMR3_APPROVED" = "true" ]; then
     echo -e "${GREEN}✓ RTMR3 already approved, skipping add_approved_rtmr3${NC}"

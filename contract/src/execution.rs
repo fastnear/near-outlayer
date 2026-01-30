@@ -160,6 +160,20 @@ impl Contract {
             _ => None,
         };
 
+        // Check if input_data is too large for event log (NEAR has 16KB limit per log)
+        // Large payloads are stored in state only, worker fetches via get_request()
+        let input_data_in_state = input_data
+            .as_ref()
+            .map(|d| d.len() >= INPUT_DATA_EVENT_THRESHOLD)
+            .unwrap_or(false);
+
+        // For large payloads, don't include in event - worker will fetch from state
+        let input_data_for_event = if input_data_in_state {
+            String::new()
+        } else {
+            input_data.as_ref().cloned().unwrap_or_default()
+        };
+
         // Create execution request data for yield (send resolved_source to worker)
         let request_data = json!({
             "request_id": request_id,
@@ -167,7 +181,8 @@ impl Contract {
             "predecessor_id": predecessor_id,
             "code_source": resolved_source,
             "resource_limits": limits,
-            "input_data": input_data.as_ref().cloned().unwrap_or_default(),
+            "input_data": input_data_for_event,
+            "input_data_in_state": input_data_in_state,
             "secrets_ref": secrets_ref.as_ref(),
             "response_format": format,
             "payment": U128::from(payment),
@@ -411,16 +426,25 @@ impl Contract {
                                 }
                             };
 
-                            // Log for debugging (with type info)
+                            // Log for debugging (with type info, truncated to avoid log limit)
                             let log_preview = match &output {
                                 ExecutionOutput::Bytes(bytes) => format!("Bytes({} bytes)", bytes.len()),
                                 ExecutionOutput::Text(text) => {
                                     let preview: String = text.chars().take(100).collect();
-                                    format!("Text: {}", preview)
+                                    if text.len() > 100 {
+                                        format!("Text({} bytes): {}...", text.len(), preview)
+                                    } else {
+                                        format!("Text: {}", text)
+                                    }
                                 }
                                 ExecutionOutput::Json(value) => {
                                     let json_str = serde_json::to_string(value).unwrap_or_default();
-                                    format!("Json: {}", json_str)
+                                    let preview: String = json_str.chars().take(100).collect();
+                                    if json_str.len() > 100 {
+                                        format!("Json({} bytes): {}...", json_str.len(), preview)
+                                    } else {
+                                        format!("Json: {}", json_str)
+                                    }
                                 }
                             };
 

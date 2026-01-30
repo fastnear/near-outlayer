@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
-use near_primitives::types::AccountId;
+use near_jsonrpc_client::{methods, JsonRpcClient};
+use near_primitives::types::{AccountId, BlockReference, Finality};
+use near_primitives::views::QueryRequest;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -87,6 +89,10 @@ pub struct RequestData {
     pub code_source: CodeSource,
     pub resource_limits: ResourceLimits,
     pub input_data: String,
+    /// If true, input_data is stored in contract state (too large for event log)
+    /// Worker should fetch via get_request() view call
+    #[serde(default)]
+    pub input_data_in_state: bool,
     #[serde(default)]
     pub secrets_ref: Option<crate::api_client::SecretsReference>,
     pub payment: String,
@@ -278,11 +284,11 @@ struct NearRpcBlockHeader {
 pub struct EventMonitor {
     api_client: ApiClient,
     neardata_api_url: String,
-    near_rpc_url: String,
     contract_id: AccountId,
     current_block: u64,
     scan_interval_ms: u64,
     http_client: reqwest::Client,
+    rpc_client: JsonRpcClient,
     event_json_regex: Regex,
     blocks_scanned: u64,
     events_found: u64,
@@ -335,6 +341,9 @@ impl EventMonitor {
             .build()
             .context("Failed to create HTTP client")?;
 
+        // Create RPC client for view calls (e.g., fetching large input_data)
+        let rpc_client = JsonRpcClient::connect(&near_rpc_url);
+
         // If start_block is 0, fetch latest block from NEAR RPC
         let current_block = if start_block == 0 {
             info!("START_BLOCK_HEIGHT=0, fetching latest block from NEAR RPC...");
@@ -356,11 +365,11 @@ impl EventMonitor {
         Ok(Self {
             api_client,
             neardata_api_url,
-            near_rpc_url,
             contract_id,
             current_block,
             scan_interval_ms,
             http_client,
+            rpc_client,
             event_json_regex: Regex::new(r"EVENT_JSON:(.*?)$")
                 .context("Failed to compile regex")?,
             blocks_scanned: 0,
@@ -844,6 +853,15 @@ impl EventMonitor {
         // Convert code_source to api_client format
         let api_code_source = request_data.code_source.to_api_code_source();
 
+        // Fetch input_data from contract if it was too large for event log
+        let input_data = if request_data.input_data_in_state {
+            self.fetch_input_data_from_contract(request_data.request_id)
+                .await
+                .context("Failed to fetch large input_data from contract")?
+        } else {
+            request_data.input_data.clone()
+        };
+
         // Create task in coordinator API
         let params = CreateTaskParams {
             request_id: request_data.request_id,
@@ -854,7 +872,7 @@ impl EventMonitor {
                 max_memory_mb: request_data.resource_limits.max_memory_mb,
                 max_execution_seconds: request_data.resource_limits.max_execution_seconds,
             },
-            input_data: request_data.input_data.clone(),
+            input_data,
             secrets_ref: request_data.secrets_ref.clone(),
             response_format: request_data.response_format.clone(),
             context,
@@ -1023,6 +1041,81 @@ impl EventMonitor {
         }
 
         Ok(())
+    }
+
+    /// Fetch input_data from contract state via RPC view call
+    ///
+    /// Used when input_data is too large for event log (>10KB).
+    /// Contract stores it in pending_requests, we fetch via get_request() view.
+    async fn fetch_input_data_from_contract(&self, request_id: u64) -> Result<String> {
+        info!(
+            "📥 Fetching large input_data from contract for request_id={}",
+            request_id
+        );
+
+        // Build RPC query request
+        let request = methods::query::RpcQueryRequest {
+            block_reference: BlockReference::Finality(Finality::Final),
+            request: QueryRequest::CallFunction {
+                account_id: self.contract_id.clone(),
+                method_name: "get_request".to_string(),
+                args: serde_json::json!({ "request_id": request_id })
+                    .to_string()
+                    .into_bytes()
+                    .into(),
+            },
+        };
+
+        let response = self
+            .rpc_client
+            .call(request)
+            .await
+            .with_context(|| format!("RPC call failed for request_id={}", request_id))?;
+
+        // Extract result bytes from CallResult
+        let result_bytes = match response.kind {
+            near_jsonrpc_primitives::types::query::QueryResponseKind::CallResult(call_result) => {
+                call_result.result
+            }
+            _ => anyhow::bail!("Unexpected response kind for get_request call"),
+        };
+
+        // get_request returns Option<ExecutionRequest> - handle None case
+        let execution_request: Option<serde_json::Value> =
+            serde_json::from_slice(&result_bytes).with_context(|| {
+                format!(
+                    "Failed to parse get_request response for request_id={}",
+                    request_id
+                )
+            })?;
+
+        // If None, the request doesn't exist (already completed, cancelled, or timed out)
+        let execution_request = execution_request.ok_or_else(|| {
+            anyhow::anyhow!(
+                "Request {} not found in contract state (may have completed or timed out)",
+                request_id
+            )
+        })?;
+
+        // Extract input_data from ExecutionRequest
+        let input_data = execution_request
+            .get("input_data")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "input_data field missing in ExecutionRequest for request_id={}",
+                    request_id
+                )
+            })?;
+
+        info!(
+            "✅ Fetched input_data from contract: request_id={} size={} bytes",
+            request_id,
+            input_data.len()
+        );
+
+        Ok(input_data)
     }
 }
 

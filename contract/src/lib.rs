@@ -34,6 +34,11 @@ pub const MAX_INSTRUCTIONS: u64 = 500_000_000_000; // 500 billion instructions
 pub const MAX_EXECUTION_SECONDS: u64 = 180; // 180 seconds
 pub const MAX_COMPILATION_SECONDS: u64 = 300; // 5 minutes max compilation time
 
+// Large payload handling: threshold for including input_data in event log
+// Payloads >= this size are stored in state only, worker fetches via get_request()
+// NEAR has 16KB limit per log message, so we use 10KB to leave room for other fields
+pub const INPUT_DATA_EVENT_THRESHOLD: usize = 10_000; // 10KB
+
 #[derive(BorshSerialize, BorshStorageKey)]
 #[borsh(crate = "near_sdk::borsh")]
 enum StorageKey {
