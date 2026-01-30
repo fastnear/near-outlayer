@@ -54,7 +54,7 @@ impl Contract {
         // USD pricing (for HTTPS API)
         base_fee_usd: Option<U128>,
         per_million_instructions_fee_usd: Option<U128>,
-        per_ms_fee_usd: Option<U128>,
+        per_sec_fee_usd: Option<U128>,
         per_compile_ms_fee_usd: Option<U128>,
     ) {
         self.assert_owner();
@@ -86,9 +86,9 @@ impl Contract {
             self.per_million_instructions_fee_usd = fee.0;
             log!("Per million instructions fee (USD) updated to {}", fee.0);
         }
-        if let Some(fee) = per_ms_fee_usd {
-            self.per_ms_fee_usd = fee.0;
-            log!("Per millisecond fee (USD, execution) updated to {}", fee.0);
+        if let Some(fee) = per_sec_fee_usd {
+            self.per_sec_fee_usd = fee.0;
+            log!("Per second fee (USD, execution) updated to {}", fee.0);
         }
         if let Some(fee) = per_compile_ms_fee_usd {
             self.per_compile_ms_fee_usd = fee.0;

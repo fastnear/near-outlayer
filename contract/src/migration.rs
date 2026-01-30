@@ -2,20 +2,19 @@
 //!
 //! This module handles migration of contract state when storage structures change.
 //!
-//! Migration v3 -> v4: Added Stablecoin Developer Payments
-//! New fields:
-//! - developer_earnings: LookupMap<AccountId, u128> - stablecoin earnings for project owners
-//! - user_stablecoin_balances: LookupMap<AccountId, u128> - user deposits for attached_usd
+//! Migration v4 -> v5: Changed per_ms_fee_usd to per_sec_fee_usd
+//! - Renamed field: per_ms_fee_usd -> per_sec_fee_usd
+//! - USDC has 6 decimals, per_ms pricing was too expensive
 
 use crate::*;
 use near_sdk::borsh::BorshDeserialize;
 use near_sdk::collections::{LookupMap, UnorderedMap, UnorderedSet};
 
-/// Contract state version 3 (before Developer Earnings)
+/// Contract state version 4 (before per_sec_fee_usd change)
 #[derive(BorshDeserialize)]
 #[borsh(crate = "near_sdk::borsh")]
 #[allow(dead_code)] // Fields needed for Borsh deserialization during migration
-pub struct ContractV3 {
+pub struct ContractV4 {
     // Contract configuration
     owner_id: AccountId,
     operator_id: AccountId,
@@ -31,7 +30,7 @@ pub struct ContractV3 {
     per_ms_fee: Balance,
     per_compile_ms_fee: Balance,
 
-    // Pricing (USD)
+    // Pricing (USD) - old field name: per_ms_fee_usd
     base_fee_usd: u128,
     per_million_instructions_fee_usd: u128,
     per_ms_fee_usd: u128,
@@ -42,7 +41,7 @@ pub struct ContractV3 {
 
     // Request tracking
     next_request_id: u64,
-    pending_requests: LookupMap<u64, ExecutionRequestV3>,
+    pending_requests: LookupMap<u64, ExecutionRequest>,
 
     // Statistics
     total_executions: u64,
@@ -57,41 +56,22 @@ pub struct ContractV3 {
     project_versions: LookupMap<String, UnorderedMap<String, VersionInfo>>,
     user_projects_index: LookupMap<AccountId, UnorderedSet<String>>,
     next_project_id: u64,
-}
 
-/// ExecutionRequest v3 (before attached_deposit field)
-#[derive(Clone, Debug)]
-#[near(serializers = [borsh])]
-#[allow(dead_code)]
-pub struct ExecutionRequestV3 {
-    pub request_id: u64,
-    pub data_id: CryptoHash,
-    pub sender_id: AccountId,
-    pub execution_source: ExecutionSource,
-    pub resolved_source: CodeSource,
-    pub resource_limits: ResourceLimits,
-    pub payment: Balance,
-    pub timestamp: u64,
-    pub secrets_ref: Option<SecretsReference>,
-    pub response_format: ResponseFormat,
-    pub input_data: Option<String>,
-    pub payer_account_id: AccountId,
-    pub pending_output: Option<StoredOutput>,
-    pub output_submitted: bool,
+    // Developer earnings (stablecoin)
+    developer_earnings: LookupMap<AccountId, u128>,
+
+    // User stablecoin balances
+    user_stablecoin_balances: LookupMap<AccountId, u128>,
 }
 
 #[near_bindgen]
 impl Contract {
-    /// Migrate contract from version 3 to version 4 (add Stablecoin Developer Payments)
+    /// Migrate contract from version 4 to version 5 (per_ms_fee_usd -> per_sec_fee_usd)
     ///
     /// This migration:
-    /// 1. Reads old contract state (v3)
+    /// 1. Reads old contract state (v4)
     /// 2. Preserves all existing data
-    /// 3. Adds new developer_earnings storage (stablecoin-based)
-    /// 4. Adds new user_stablecoin_balances storage
-    ///
-    /// Note: pending_requests with old ExecutionRequest format will be
-    /// incompatible - ensure no pending requests exist before migration
+    /// 3. Changes per_ms_fee_usd to per_sec_fee_usd with value 1
     ///
     /// # Safety
     /// - Only owner can call this
@@ -99,11 +79,11 @@ impl Contract {
     #[private]
     #[init(ignore_state)]
     pub fn migrate() -> Self {
-        let old_state: ContractV3 = env::state_read().expect("Failed to read old state");
+        let old_state: ContractV4 = env::state_read().expect("Failed to read old state");
 
         // Log migration
         log!(
-            "Migrating contract v3 -> v4 (Stablecoin Developer Payments): owner={}, total_executions={}",
+            "Migrating contract v4 -> v5 (per_ms_fee_usd -> per_sec_fee_usd): owner={}, total_executions={}",
             old_state.owner_id,
             old_state.total_executions
         );
@@ -114,21 +94,19 @@ impl Contract {
             paused: old_state.paused,
             event_standard: old_state.event_standard,
             event_version: old_state.event_version,
-            // NEAR pricing
+            // NEAR pricing (unchanged)
             base_fee: old_state.base_fee,
             per_million_instructions_fee: old_state.per_million_instructions_fee,
             per_ms_fee: old_state.per_ms_fee,
             per_compile_ms_fee: old_state.per_compile_ms_fee,
-            // USD pricing
+            // USD pricing (per_ms_fee_usd -> per_sec_fee_usd)
             base_fee_usd: old_state.base_fee_usd,
             per_million_instructions_fee_usd: old_state.per_million_instructions_fee_usd,
-            per_ms_fee_usd: old_state.per_ms_fee_usd,
+            per_sec_fee_usd: 1, // Set to 1 ($0.000001 per second)
             per_compile_ms_fee_usd: old_state.per_compile_ms_fee_usd,
             payment_token_contract: old_state.payment_token_contract,
             next_request_id: old_state.next_request_id,
-            // Note: pending_requests storage key is reused, but format changed
-            // Old requests without attached_deposit field will fail to deserialize
-            pending_requests: LookupMap::new(StorageKey::PendingRequests),
+            pending_requests: old_state.pending_requests,
             total_executions: old_state.total_executions,
             total_fees_collected: old_state.total_fees_collected,
             secrets_storage: old_state.secrets_storage,
@@ -138,16 +116,16 @@ impl Contract {
             project_versions: old_state.project_versions,
             user_projects_index: old_state.user_projects_index,
             next_project_id: old_state.next_project_id,
-            // NEW: Stablecoin developer payments
-            developer_earnings: LookupMap::new(StorageKey::DeveloperEarnings),
-            user_stablecoin_balances: LookupMap::new(StorageKey::UserStablecoinBalances),
+            // Developer earnings
+            developer_earnings: old_state.developer_earnings,
+            user_stablecoin_balances: old_state.user_stablecoin_balances,
         }
     }
 
     /// Check if contract needs migration
     /// Returns the current storage version
     pub fn get_storage_version(&self) -> String {
-        // Version 4: Stablecoin developer payments (developer_earnings, user_stablecoin_balances)
-        "4".to_string()
+        // Version 5: per_ms_fee_usd -> per_sec_fee_usd
+        "5".to_string()
     }
 }

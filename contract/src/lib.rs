@@ -404,7 +404,7 @@ pub struct PricingView {
     // USD pricing (for HTTPS API, in minimal token units)
     pub base_fee_usd: U128,
     pub per_million_instructions_fee_usd: U128,
-    pub per_ms_fee_usd: U128,
+    pub per_sec_fee_usd: U128,
     pub per_compile_ms_fee_usd: U128,
 }
 
@@ -430,7 +430,7 @@ pub struct Contract {
     // Pricing (USD) - for HTTPS API (in minimal token units, e.g., 1 = 0.000001 USDT)
     base_fee_usd: u128,                      // e.g., 10000 = $0.01
     per_million_instructions_fee_usd: u128,  // e.g., 1 = $0.000001 per 1M instructions
-    per_ms_fee_usd: u128,                    // e.g., 10 = $0.00001 per ms execution
+    per_sec_fee_usd: u128,                    // e.g., 1 = $0.000001 per sec execution
     per_compile_ms_fee_usd: u128,            // e.g., 10 = $0.00001 per ms compilation
 
     // Payment token for HTTPS API (e.g., "usdt.tether-token.near")
@@ -489,7 +489,7 @@ impl Contract {
             // USD pricing (for HTTPS API, using USDT with 6 decimals)
             base_fee_usd: 1_000,             // $0.001 base fee
             per_million_instructions_fee_usd: 1, // $0.000001 per million instructions
-            per_ms_fee_usd: 0,               // $0 per ms execution
+            per_sec_fee_usd: 1,               // $0.000001 per sec execution
             per_compile_ms_fee_usd: 10,       // $0.00001 per ms compilation
             // Payment token (set via admin method)
             payment_token_contract: None,

@@ -35,7 +35,7 @@ impl Contract {
             // USD pricing
             base_fee_usd: U128(self.base_fee_usd),
             per_million_instructions_fee_usd: U128(self.per_million_instructions_fee_usd),
-            per_ms_fee_usd: U128(self.per_ms_fee_usd),
+            per_sec_fee_usd: U128(self.per_sec_fee_usd),
             per_compile_ms_fee_usd: U128(self.per_compile_ms_fee_usd),
         }
     }
