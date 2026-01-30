@@ -1046,11 +1046,12 @@ pub async fn complete_https_call(
     let pricing = state.pricing.read().await;
     let base_fee_usd: u128 = pricing.base_fee_usd.parse().unwrap_or(1000);
     let per_instruction_usd: u128 = pricing.per_instruction_fee_usd.parse().unwrap_or(1);
-    let per_ms_usd: u128 = pricing.per_ms_fee_usd.parse().unwrap_or(10);
+    let per_sec_usd: u128 = pricing.per_sec_fee_usd.parse().unwrap_or(1);
     drop(pricing);
 
     let instruction_cost = (req.instructions / 1_000_000) as u128 * per_instruction_usd;
-    let time_cost = req.time_ms as u128 * per_ms_usd;
+    let time_secs = req.time_ms / 1000; // Round down to seconds
+    let time_cost = time_secs as u128 * per_sec_usd;
     let actual_cost = base_fee_usd + instruction_cost + time_cost;
 
     // Get reserved amount (compute_limit + attached_deposit)

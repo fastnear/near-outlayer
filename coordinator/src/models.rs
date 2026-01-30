@@ -11,7 +11,7 @@ pub struct PricingConfig {
     // USD pricing (for HTTPS API, in minimal token units e.g. 1 = 0.000001 USDT)
     pub base_fee_usd: String,
     pub per_instruction_fee_usd: String, // per million instructions
-    pub per_ms_fee_usd: String,          // per millisecond (execution)
+    pub per_sec_fee_usd: String,          // per second (execution)
     pub per_compile_ms_fee_usd: String,  // per millisecond (compilation)
     // Limits
     pub max_compilation_seconds: u64,    // Maximum compilation time (from pricing)

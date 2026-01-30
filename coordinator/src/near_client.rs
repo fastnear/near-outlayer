@@ -73,7 +73,7 @@ struct PricingFullResponse {
     // USD pricing
     pub base_fee_usd: String,
     pub per_million_instructions_fee_usd: String,
-    pub per_ms_fee_usd: String,
+    pub per_sec_fee_usd: String,
     pub per_compile_ms_fee_usd: String,
 }
 
@@ -101,7 +101,7 @@ pub async fn fetch_pricing_from_contract(
         // USD pricing
         base_fee_usd: pricing.base_fee_usd,
         per_instruction_fee_usd: pricing.per_million_instructions_fee_usd,
-        per_ms_fee_usd: pricing.per_ms_fee_usd,
+        per_sec_fee_usd: pricing.per_sec_fee_usd,
         per_compile_ms_fee_usd: pricing.per_compile_ms_fee_usd,
         // Limits
         max_compilation_seconds: limits.2,
@@ -110,14 +110,14 @@ pub async fn fetch_pricing_from_contract(
     };
 
     info!(
-        "✅ Fetched pricing: base={} per_inst={} per_ms={} per_compile_ms={} base_usd={} per_inst_usd={} per_ms_usd={} per_compile_ms_usd={} max_compile_sec={} max_inst={} max_exec_sec={}",
+        "✅ Fetched pricing: base={} per_inst={} per_ms={} per_compile_ms={} base_usd={} per_inst_usd={} per_sec_usd={} per_compile_ms_usd={} max_compile_sec={} max_inst={} max_exec_sec={}",
         config.base_fee,
         config.per_instruction_fee,
         config.per_ms_fee,
         config.per_compile_ms_fee,
         config.base_fee_usd,
         config.per_instruction_fee_usd,
-        config.per_ms_fee_usd,
+        config.per_sec_fee_usd,
         config.per_compile_ms_fee_usd,
         config.max_compilation_seconds,
         config.max_instructions,
@@ -139,7 +139,7 @@ pub fn get_default_pricing() -> PricingConfig {
         // USD pricing (in minimal token units, e.g. 1 = 0.000001 USDT)
         base_fee_usd: "1000".to_string(),                      // $0.001
         per_instruction_fee_usd: "1".to_string(),              // $0.000001 per million instructions
-        per_ms_fee_usd: "10".to_string(),                      // $0.00001 per ms (execution)
+        per_sec_fee_usd: "1".to_string(),                       // $0.000001 per sec (execution)
         per_compile_ms_fee_usd: "10".to_string(),              // $0.00001 per ms (compilation)
         // Limits
         max_compilation_seconds: 300,                           // 5 minutes
