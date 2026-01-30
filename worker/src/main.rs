@@ -1285,6 +1285,7 @@ async fn handle_compile_job(
                             project_id: job.project_id.clone(),
                             secrets_ref: None, // No secrets for compile
                             attached_usd: None, // No attached_usd for compile
+                            timestamp: Some(job.created_at),
                         };
 
                         if let Err(e) = api_client.store_attestation(attestation_request).await {
@@ -2072,6 +2073,7 @@ async fn handle_execute_job(
                                         project_id: job.project_id.clone(),
                                         secrets_ref: secrets_ref_str.clone(),
                                         attached_usd: usd_payment.cloned(),
+                                        timestamp: Some(job.created_at),
                                     };
 
                                     if let Err(e) = api_client.store_attestation(attestation_request).await {
@@ -2247,6 +2249,7 @@ async fn handle_execute_job(
                                         project_id: job.project_id.clone(),
                                         secrets_ref: secrets_ref_str.clone(),
                                         attached_usd: attached_usd.cloned(),
+                                        timestamp: Some(job.created_at),
                                     };
 
                                     if let Err(e) = api_client.store_attestation(attestation_request).await {
@@ -2438,6 +2441,7 @@ async fn send_startup_attestation_with_quote(
         project_id: None,
         secrets_ref: None,
         attached_usd: None,
+        timestamp: None, // Startup uses current time
     };
 
     // Send to coordinator (fail fast - no retries)

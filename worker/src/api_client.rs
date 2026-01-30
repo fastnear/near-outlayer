@@ -1972,6 +1972,9 @@ pub struct StoreAttestationRequest {
     pub secrets_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attached_usd: Option<String>,
+    /// Job creation timestamp (unix seconds) - must match what was hashed in TDX quote
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<i64>,
 }
 
 #[cfg(test)]

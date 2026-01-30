@@ -113,6 +113,7 @@ pub async fn store_attestation(
     // Store in database
     // Note: ON CONFLICT removed because task_attestations doesn't have UNIQUE(task_id)
     // Multiple attestations can exist for the same task (e.g., retries, different workers)
+    // If timestamp is provided, use it; otherwise use NOW() as default
     sqlx::query(
         "INSERT INTO task_attestations
          (task_id, task_type, tdx_quote, worker_measurement,
@@ -120,8 +121,9 @@ pub async fn store_attestation(
           call_id, payment_key_owner, payment_key_nonce,
           repo_url, commit_hash, build_target,
           wasm_hash, input_hash, output_hash,
-          project_id, secrets_ref, attached_usd)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)"
+          project_id, secrets_ref, attached_usd, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+                 COALESCE(to_timestamp($21), NOW()))"
     )
     .bind(req.task_id)
     .bind(req.task_type.as_str())
@@ -143,6 +145,7 @@ pub async fn store_attestation(
     .bind(&req.project_id)
     .bind(&req.secrets_ref)
     .bind(&req.attached_usd)
+    .bind(req.timestamp.map(|t| t as f64))
     .execute(&state.db)
     .await
     .map_err(|e| {

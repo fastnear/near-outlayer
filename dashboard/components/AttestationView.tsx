@@ -950,9 +950,9 @@ data += b"${escapePyStr(attestation.attached_usd)}"
 
 # Calculate SHA256
 final_hash = hashlib.sha256(data).hexdigest()
-print(f"Task Hash: {final_hash}")
-print(f"Expected:  ${quoteValidation.expectedTaskHash}")
-print(f"Match: {final_hash == '${quoteValidation.expectedTaskHash}'}")`}</pre>
+print(f"Calculated: {final_hash}")
+print(f"Extracted:  ${quoteValidation.extractedTaskHash}")
+print(f"Match: {final_hash == '${quoteValidation.extractedTaskHash}'}")`}</pre>
                     <button
                       onClick={() => {
                         const code = `import hashlib
@@ -1026,9 +1026,9 @@ data += b"${escapePyStr(attestation.attached_usd)}"
 
 # Calculate SHA256
 final_hash = hashlib.sha256(data).hexdigest()
-print(f"Task Hash: {final_hash}")
-print(f"Expected:  ${quoteValidation.expectedTaskHash}")
-print(f"Match: {final_hash == '${quoteValidation.expectedTaskHash}'}")`;
+print(f"Calculated: {final_hash}")
+print(f"Extracted:  ${quoteValidation.extractedTaskHash}")
+print(f"Match: {final_hash == '${quoteValidation.extractedTaskHash}'}")`;
                         navigator.clipboard.writeText(code);
                       }}
                       className="absolute top-2 right-2 px-2 py-1 bg-green-600 hover:bg-green-700 text-white text-xs rounded"

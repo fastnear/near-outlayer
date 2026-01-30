@@ -850,6 +850,9 @@ pub struct StoreAttestationRequest {
     pub secrets_ref: Option<String>,
     #[serde(default)]
     pub attached_usd: Option<String>,
+    /// Job creation timestamp (unix seconds) - used for V1 hash calculation
+    #[serde(default)]
+    pub timestamp: Option<i64>,
 }
 
 impl StoreAttestationRequest {
