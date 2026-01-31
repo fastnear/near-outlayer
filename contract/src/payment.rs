@@ -468,7 +468,8 @@ impl Contract {
     }
 
     /// Emit system event for workers
-    fn emit_system_event(&self, event: SystemEvent) {
+    /// pub(crate) to allow calling from secrets.rs for PaymentKey creation
+    pub(crate) fn emit_system_event(&self, event: SystemEvent) {
         let event_json = json!({
             "standard": self.event_standard,
             "version": self.event_version,

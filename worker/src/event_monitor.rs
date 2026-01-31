@@ -956,14 +956,24 @@ impl EventMonitor {
     /// 2. Update balance (add topup amount)
     /// 3. Re-encrypt via keystore
     /// 4. Call promise_yield_resume on contract
+    ///
+    /// Special case: amount=0 means PaymentKey was just created (store_secrets).
+    /// Worker will detect this and only initialize key in coordinator (no resume).
     async fn handle_topup_payment_key(&self, event: TopUpPaymentKeyEvent) -> Result<()> {
         info!(
             "💰 Processing TopUp event: owner={} nonce={} amount={}",
             event.owner, event.nonce, event.amount
         );
 
-        // Convert data_id to hex string
-        let data_id_hex = hex::encode(&event.data_id);
+        // For amount=0 (PaymentKey creation), contract sends dummy data_id=[0;32]
+        // Generate unique data_id from owner+nonce to avoid duplicate detection
+        let data_id_hex = if event.amount == "0" {
+            use sha2::{Sha256, Digest};
+            let unique_key = format!("init:{}:{}", event.owner, event.nonce);
+            hex::encode(Sha256::digest(unique_key.as_bytes()))
+        } else {
+            hex::encode(&event.data_id)
+        };
 
         let params = crate::api_client::TopUpTaskData {
             data_id: data_id_hex.clone(),

@@ -142,6 +142,38 @@ impl Contract {
         }
     }
 
+    /// Cancel multiple pending executions by IDs and refund payers (only owner can call)
+    ///
+    /// # Arguments
+    /// * `request_ids` - Array of request IDs to cancel
+    ///
+    /// # Returns
+    /// Number of requests successfully cancelled
+    pub fn cancel_pending_requests(&mut self, request_ids: Vec<u64>) -> u64 {
+        self.assert_owner();
+
+        let mut cancelled = 0;
+
+        for request_id in request_ids {
+            if let Some(request) = self.pending_requests.remove(&request_id) {
+                near_sdk::Promise::new(request.payer_account_id.clone())
+                    .transfer(NearToken::from_yoctonear(request.payment));
+
+                log!(
+                    "Cancelled request {} and refunded {} yoctoNEAR to {}",
+                    request_id,
+                    request.payment,
+                    request.payer_account_id
+                );
+
+                cancelled += 1;
+            }
+        }
+
+        log!("Cancelled {} pending requests", cancelled);
+        cancelled
+    }
+
     /// Admin method to clear all pending requests (only owner can call)
     /// Used for emergency cleanup or testing
     ///

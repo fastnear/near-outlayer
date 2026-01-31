@@ -1,10 +1,13 @@
-//! Grant Keys API - Admin endpoints for managing non-withdrawable grant keys
+//! Grant Keys API - Admin endpoints for managing grant payment keys
 //!
 //! Grant keys are payment keys that:
 //! - Cannot use X-Attached-Deposit (no earnings transfer to developers)
-//! - Compute usage is charged normally
-//! - Created by admin only, not synced from contract
-//! - Cannot be withdrawn (future feature)
+//! - Compute usage is charged normally (only for gas/compute)
+//! - Cannot be withdrawn
+//!
+//! SECURITY: Admin cannot create new keys - only grant balance to EXISTING keys.
+//! User must first create the key via store_secrets (they control the secret).
+//! Admin can only fund keys that have zero balance (not yet topped up by user).
 
 use axum::{
     extract::{Path, State},
@@ -12,42 +15,33 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use rand::Rng;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use sqlx::Row;
 use tracing::info;
 
 use crate::AppState;
 
-/// Request to create a new grant key
+/// Request to grant balance to an existing payment key
 #[derive(Debug, Deserialize)]
-pub struct CreateGrantKeyRequest {
-    /// Owner account ID (NEAR account that will use this key)
+pub struct GrantPaymentKeyRequest {
+    /// Owner account ID (NEAR account that owns the key)
     pub owner: String,
-    /// Initial balance in minimal token units (e.g., 1000000 = $1.00 for 6 decimals)
-    pub initial_balance: String,
-    /// Allowed project IDs (empty = all projects allowed)
-    #[serde(default)]
-    pub project_ids: Vec<String>,
-    /// Max amount per API call in minimal token units (None = no limit)
-    #[serde(default)]
-    pub max_per_call: Option<String>,
+    /// Payment key nonce
+    pub nonce: u32,
+    /// Amount to grant in minimal token units (e.g., 1000000 = $1.00 for 6 decimals)
+    pub amount: String,
     /// Optional note for admin reference
     #[serde(default)]
     pub note: Option<String>,
 }
 
-/// Response after creating a grant key
+/// Response after granting to a payment key
 #[derive(Debug, Serialize)]
-pub struct CreateGrantKeyResponse {
+pub struct GrantPaymentKeyResponse {
     pub owner: String,
     pub nonce: i32,
-    /// The generated key (hex, 64 chars) - only returned once!
-    pub key: String,
     pub initial_balance: String,
-    pub project_ids: Vec<String>,
-    pub max_per_call: Option<String>,
+    pub is_grant: bool,
 }
 
 /// Grant key info for listing
@@ -67,75 +61,106 @@ pub struct GrantKeyInfo {
     pub created_at: String,
 }
 
-/// POST /admin/grant-keys
+/// POST /admin/grant-payment-key
 ///
-/// Create a new grant key for the specified owner.
-/// Returns the generated key - this is the only time the key is visible!
-pub async fn create_grant_key(
+/// Grant balance to an EXISTING payment key with ZERO balance.
+/// Sets is_grant=true - key cannot withdraw or use X-Attached-Deposit.
+///
+/// SECURITY: Admin cannot create keys - only fund existing ones.
+/// User controls the secret (created via store_secrets), admin only adds balance.
+///
+/// is_grant=true means:
+/// - Balance cannot be withdrawn
+/// - X-Attached-Deposit is forbidden (cannot pay developers)
+/// - Can only be used for compute (gas)
+pub async fn grant_payment_key(
     State(state): State<AppState>,
-    Json(req): Json<CreateGrantKeyRequest>,
+    Json(req): Json<GrantPaymentKeyRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    // Validate initial_balance is a valid number
-    let _balance: u128 = req.initial_balance.parse().map_err(|_| {
-        (StatusCode::BAD_REQUEST, "Invalid initial_balance format".to_string())
+    // Validate amount is a valid number
+    let amount: u128 = req.amount.parse().map_err(|_| {
+        (StatusCode::BAD_REQUEST, "Invalid amount format".to_string())
     })?;
 
-    // Find next available nonce for this owner (across ALL keys, not just grants)
-    // Nonce must be unique per owner regardless of key type
-    let next_nonce: i32 = sqlx::query_scalar(
+    if amount == 0 {
+        return Err((StatusCode::BAD_REQUEST, "Amount must be greater than 0".to_string()));
+    }
+
+    // Check that key exists and has zero balance (not yet funded)
+    let row = sqlx::query(
         r#"
-        SELECT COALESCE(MAX(nonce) + 1, 0)
+        SELECT initial_balance, is_grant
         FROM payment_keys
-        WHERE owner = $1
+        WHERE owner = $1 AND nonce = $2 AND deleted_at IS NULL
         "#,
     )
     .bind(&req.owner)
-    .fetch_one(&state.db)
+    .bind(req.nonce as i32)
+    .fetch_optional(&state.db)
     .await
     .map_err(|e| {
         (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e))
     })?;
 
-    // Generate random 32-byte key and encode as hex (64 chars)
-    let key_bytes: [u8; 32] = rand::thread_rng().gen();
-    let key_hex = hex::encode(key_bytes);
+    let row = row.ok_or_else(|| {
+        (StatusCode::NOT_FOUND, format!(
+            "Payment key not found: owner={} nonce={}. User must create it first via store_secrets.",
+            req.owner, req.nonce
+        ))
+    })?;
 
-    // Calculate SHA256 hash of the key for storage
-    let key_hash = hex::encode(Sha256::digest(key_hex.as_bytes()));
+    let current_balance: String = row.get("initial_balance");
+    let is_already_grant: bool = row.get("is_grant");
+    let current_balance_u128: u128 = current_balance.parse().unwrap_or(0);
 
-    // Insert grant key into database
+    // If key has balance but is NOT a grant - it was funded by user, cannot grant
+    if current_balance_u128 > 0 && !is_already_grant {
+        return Err((StatusCode::CONFLICT, format!(
+            "Cannot grant to user-funded key. Current balance: {}. \
+             Grants can only be applied to unfunded keys or existing grant keys.",
+            current_balance
+        )));
+    }
+
+    // Calculate new balance (add to existing for grant top-up)
+    let new_balance = current_balance_u128 + amount;
+
+    // Update key: set/add balance and mark as grant
     sqlx::query(
         r#"
-        INSERT INTO payment_keys (owner, nonce, key_hash, initial_balance, project_ids, max_per_call, is_grant)
-        VALUES ($1, $2, $3, $4, $5, $6, TRUE)
+        UPDATE payment_keys
+        SET initial_balance = $3, is_grant = TRUE, updated_at = NOW()
+        WHERE owner = $1 AND nonce = $2 AND deleted_at IS NULL
         "#,
     )
     .bind(&req.owner)
-    .bind(next_nonce)
-    .bind(&key_hash)
-    .bind(&req.initial_balance)
-    .bind(&req.project_ids)
-    .bind(&req.max_per_call)
+    .bind(req.nonce as i32)
+    .bind(new_balance.to_string())
     .execute(&state.db)
     .await
     .map_err(|e| {
         (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e))
     })?;
 
-    info!(
-        "Created grant key: owner={}, nonce={}, balance={}, note={:?}",
-        req.owner, next_nonce, req.initial_balance, req.note
-    );
+    if is_already_grant {
+        info!(
+            "Grant key topped up: owner={}, nonce={}, added={}, new_balance={}, note={:?}",
+            req.owner, req.nonce, req.amount, new_balance, req.note
+        );
+    } else {
+        info!(
+            "Granted to payment key: owner={}, nonce={}, amount={}, note={:?}",
+            req.owner, req.nonce, req.amount, req.note
+        );
+    }
 
     Ok((
-        StatusCode::CREATED,
-        Json(CreateGrantKeyResponse {
+        StatusCode::OK,
+        Json(GrantPaymentKeyResponse {
             owner: req.owner,
-            nonce: next_nonce,
-            key: key_hex,
-            initial_balance: req.initial_balance,
-            project_ids: req.project_ids,
-            max_per_call: req.max_per_call,
+            nonce: req.nonce as i32,
+            initial_balance: new_balance.to_string(),
+            is_grant: true,
         }),
     ))
 }
@@ -201,6 +226,7 @@ pub async fn list_grant_keys(
 /// DELETE /admin/grant-keys/{owner}/{nonce}
 ///
 /// Delete a grant key (soft delete). Only works for grant keys (is_grant=true).
+/// Use this when a grant is finished and the key is no longer needed.
 pub async fn delete_grant_key(
     State(state): State<AppState>,
     Path((owner, nonce)): Path<(String, i32)>,
@@ -231,44 +257,4 @@ pub async fn delete_grant_key(
     info!("Deleted grant key: owner={}, nonce={}", owner, nonce);
 
     Ok(StatusCode::NO_CONTENT)
-}
-
-// =============================================================================
-// Future: Payment Key Withdrawal
-// =============================================================================
-
-/// Withdraw remaining balance from a payment key (FUTURE - not implemented yet)
-///
-/// This function is a placeholder for future withdrawal functionality.
-/// When implemented, it MUST:
-/// 1. Exclude grant keys (is_grant = TRUE) - they cannot be withdrawn
-/// 2. Only allow withdrawal of regular payment keys synced from contract
-/// 3. Verify ownership via NEAR signature or contract call
-/// 4. Transfer stablecoins back to the owner
-///
-/// Grant keys are excluded because:
-/// - They don't have real tokens deposited on the contract
-/// - They are virtual balances created by admin for testing/grants
-/// - Allowing withdrawal would create tokens out of thin air
-#[allow(dead_code)]
-pub async fn withdraw_payment_key_balance(
-    _state: &AppState,
-    _owner: &str,
-    _nonce: i32,
-) -> Result<(), String> {
-    // TODO: Implement when contract has withdrawal event support
-    //
-    // Pseudocode:
-    // 1. Check key exists: SELECT * FROM payment_keys WHERE owner = $1 AND nonce = $2
-    // 2. CRITICAL: Verify is_grant = FALSE, otherwise reject:
-    //    if key.is_grant {
-    //        return Err("Grant keys cannot be withdrawn".to_string());
-    //    }
-    // 3. Calculate available balance: initial_balance - spent - reserved
-    // 4. Verify no in-flight calls (reserved = 0)
-    // 5. Call contract method to initiate withdrawal
-    // 6. Wait for contract event confirming withdrawal
-    // 7. Mark key as deleted or update balance
-
-    Err("Withdrawal not implemented yet - waiting for contract event support".to_string())
 }

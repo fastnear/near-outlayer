@@ -36,6 +36,7 @@ mod tests {
             payer_account_id: sender,
             pending_output: None,
             output_submitted: false,
+            attached_usd: 0,
         }
     }
 
@@ -354,6 +355,7 @@ mod tests {
             payer_account_id: sender.clone(),
             pending_output: Some(StoredOutput::Text("old".as_bytes().to_vec())),
             output_submitted: true,
+            attached_usd: 0,
         };
         contract.pending_requests.insert(&0, &execution_request);
 
@@ -396,6 +398,7 @@ mod tests {
             payer_account_id: sender.clone(),
             pending_output: Some(StoredOutput::Text(large_text.as_bytes().to_vec())),
             output_submitted: true,
+            attached_usd: 0,
         };
         contract.pending_requests.insert(&0, &execution_request);
 
@@ -413,6 +416,7 @@ mod tests {
                 compile_time_ms: None,
             },
             compilation_note: None,
+            refund_usd: None,
         };
 
         // This would normally call promise_yield_resume, which we can't test directly

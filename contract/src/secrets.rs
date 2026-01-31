@@ -1,5 +1,7 @@
 use crate::*;
+use crate::payment::SystemEvent;
 use near_sdk::env;
+use near_sdk::json_types::U128;
 
 /// Storage cost per byte in NEAR
 pub const STORAGE_PRICE_PER_BYTE: Balance = 10_000_000_000_000_000_000; // 0.00001 NEAR per byte
@@ -162,6 +164,26 @@ impl Contract {
             caller,
             required_deposit
         );
+
+        // Emit TopUp event with amount=0 for PaymentKey creation
+        // Worker will create payment_keys record with initial_balance=0
+        // Key cannot be used until real TopUp or admin grant
+        if let SecretAccessor::System(SystemSecretType::PaymentKey) = &accessor {
+            let nonce: u32 = profile.parse()
+                .expect("PaymentKey profile must be a valid u32 nonce");
+            self.emit_system_event(SystemEvent::TopUpPaymentKey {
+                data_id: [0u8; 32], // No yield promise - dummy data_id
+                owner: caller.clone(),
+                nonce,
+                amount: U128(0),
+                encrypted_data: profile_data.encrypted_secrets.clone(),
+            });
+            log!(
+                "PaymentKey created event emitted: owner={}, nonce={}",
+                caller,
+                nonce
+            );
+        }
     }
 
     /// Delete secrets and refund storage deposit

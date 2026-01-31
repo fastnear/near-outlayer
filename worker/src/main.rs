@@ -2505,7 +2505,7 @@ async fn run_contract_system_callbacks_handler(
                                 encrypted_data: payload.encrypted_data.clone(),
                             };
 
-                            match process_topup_task(ks_client, &near_client, &task_data).await {
+                            match process_topup_task(ks_client, &near_client, &api_client, &task_data).await {
                                 Ok(result) => {
                                     info!(
                                         "✅ TopUp completed: owner={} nonce={} tx={} new_balance={}",
@@ -2518,6 +2518,7 @@ async fn run_contract_system_callbacks_handler(
                                             &payload.owner,
                                             payload.nonce,
                                             &result.new_balance,
+                                            &payload.amount,
                                             &result.key_hash,
                                             &result.project_ids,
                                             result.max_per_call.as_deref(),
@@ -2674,9 +2675,14 @@ struct TopUpResult {
 /// 4. Call resume_topup on contract
 ///
 /// Returns: tx_hash and new_balance for coordinator notification
+///
+/// Special case: amount=0 means PaymentKey was just created (store_secrets).
+/// In this case we only decrypt to get key_hash and init the key in coordinator.
+/// No re-encrypt or resume_topup (there's no yield promise to resume).
 async fn process_topup_task(
     keystore_client: &KeystoreClient,
     near_client: &NearClient,
+    api_client: &ApiClient,
     task: &api_client::TopUpTaskData,
 ) -> Result<TopUpResult> {
     // 1. Decrypt current Payment Key data
@@ -2736,6 +2742,34 @@ async fn process_topup_task(
     let topup_amount: u128 = task.amount.parse()
         .context("Failed to parse topup amount as u128")?;
 
+    // Special case: amount=0 means PaymentKey creation (store_secrets emitted this)
+    // Only initialize key in coordinator, no re-encrypt or resume
+    if topup_amount == 0 {
+        info!(
+            "🔑 PaymentKey creation (amount=0): owner={} nonce={}, initializing with key_hash={}...",
+            task.owner, task.nonce, &key_hash[..8]
+        );
+
+        // Call POST /payment-keys/init with key_hash
+        api_client.init_payment_key(
+            &task.owner,
+            task.nonce,
+            &key_hash,
+            &project_ids,
+            max_per_call.as_deref(),
+        ).await.context("Failed to init payment key in coordinator")?;
+
+        // Return dummy result (no tx_hash since no resume)
+        return Ok(TopUpResult {
+            tx_hash: "init_only".to_string(),
+            new_balance: "0".to_string(),
+            key_hash,
+            project_ids,
+            max_per_call,
+        });
+    }
+
+    // Normal TopUp flow
     let new_balance = current_balance_u128 + topup_amount;
 
     info!(

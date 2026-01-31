@@ -116,4 +116,35 @@ impl Contract {
     pub fn get_user_stablecoin_balance(&self, account_id: AccountId) -> U128 {
         U128(self.user_stablecoin_balances.get(&account_id).unwrap_or(0))
     }
+
+    /// Get IDs of all pending execution requests with pagination
+    ///
+    /// # Arguments
+    /// * `from_index` - Starting index (default: 0)
+    /// * `limit` - Maximum number of IDs to return (default: 100)
+    ///
+    /// # Returns
+    /// Vector of pending request IDs
+    pub fn get_pending_request_ids(&self, from_index: Option<u64>, limit: Option<u64>) -> Vec<u64> {
+        let from = from_index.unwrap_or(0);
+        let max_limit = limit.unwrap_or(100);
+
+        let mut result = Vec::new();
+        let mut skipped = 0u64;
+
+        for request_id in 0..self.next_request_id {
+            if self.pending_requests.contains_key(&request_id) {
+                if skipped < from {
+                    skipped += 1;
+                    continue;
+                }
+                result.push(request_id);
+                if result.len() as u64 >= max_limit {
+                    break;
+                }
+            }
+        }
+
+        result
+    }
 }

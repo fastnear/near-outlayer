@@ -183,6 +183,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/https-calls/complete", post(handlers::call::complete_https_call))
         // Payment key deletion (worker-protected, called after Delete events)
         .route("/payment-keys/delete", post(handlers::topup::delete_payment_key))
+        // Payment key initialization (worker-protected, called on store_secrets with amount=0)
+        .route("/payment-keys/init", post(handlers::topup::init_payment_key))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::auth_middleware,
@@ -249,7 +251,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let admin = Router::new()
         .route("/admin/compile-logs/:job_id", get(handlers::internal::get_compile_logs))
         // Grant keys management
-        .route("/admin/grant-keys", post(handlers::grant_keys::create_grant_key))
+        .route("/admin/grant-payment-key", post(handlers::grant_keys::grant_payment_key))
         .route("/admin/grant-keys", get(handlers::grant_keys::list_grant_keys))
         .route("/admin/grant-keys/:owner/:nonce", delete(handlers::grant_keys::delete_grant_key))
         .layer(axum::middleware::from_fn_with_state(
@@ -276,6 +278,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/call/:project_owner/:project_name", post(handlers::call::https_call))
         // Poll for async call result: GET /calls/{call_id}
         .route("/calls/:call_id", get(handlers::call::get_call_result))
+        // Payment key balance (authenticated via X-Payment-Key header)
+        .route("/payment-keys/balance", get(handlers::call::get_payment_key_balance_auth))
         .layer(axum::middleware::from_fn_with_state(
             https_ip_rate_limiter.clone(),
             middleware::ip_rate_limit::ip_rate_limit_middleware,

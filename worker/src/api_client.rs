@@ -1208,6 +1208,72 @@ impl ApiClient {
         }
     }
 
+    /// Initialize a Payment Key in coordinator (amount=0 creation event)
+    ///
+    /// Called when store_secrets creates a PaymentKey (TopUp event with amount=0).
+    /// Creates a record in payment_keys with initial_balance=0.
+    /// Key cannot be used until real TopUp or admin grant.
+    ///
+    /// # Arguments
+    /// * `owner` - Payment Key owner (NEAR account)
+    /// * `nonce` - Payment Key nonce
+    /// * `key_hash` - SHA256 hash of the key (hex encoded) for validation
+    /// * `project_ids` - List of allowed project IDs (empty = all projects)
+    /// * `max_per_call` - Max amount per API call (optional)
+    pub async fn init_payment_key(
+        &self,
+        owner: &str,
+        nonce: u32,
+        key_hash: &str,
+        project_ids: &[String],
+        max_per_call: Option<&str>,
+    ) -> Result<()> {
+        let url = format!("{}/payment-keys/init", self.base_url);
+
+        #[derive(Serialize)]
+        struct InitPaymentKeyRequest {
+            owner: String,
+            nonce: u32,
+            key_hash: String,
+            project_ids: Vec<String>,
+            max_per_call: Option<String>,
+        }
+
+        let request = InitPaymentKeyRequest {
+            owner: owner.to_string(),
+            nonce,
+            key_hash: key_hash.to_string(),
+            project_ids: project_ids.to_vec(),
+            max_per_call: max_per_call.map(String::from),
+        };
+
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.auth_token)
+            .json(&request)
+            .send()
+            .await
+            .context("Failed to init payment key")?;
+
+        if !response.status().is_success() {
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            anyhow::bail!("Init payment key failed: {}", error_text)
+        }
+
+        tracing::info!(
+            owner = owner,
+            nonce = nonce,
+            key_hash_prefix = &key_hash[..8.min(key_hash.len())],
+            "Payment key initialized in coordinator"
+        );
+
+        Ok(())
+    }
+
     /// Create a TopUp task for Payment Key balance update
     ///
     /// This is used when ft_on_transfer emits SystemEvent::TopUpPaymentKey
@@ -1283,6 +1349,7 @@ impl ApiClient {
     /// * `owner` - Payment Key owner (NEAR account)
     /// * `nonce` - Payment Key nonce
     /// * `new_initial_balance` - The new total balance after top-up
+    /// * `amount` - The topup amount (delta) - used for atomic additive update
     /// * `key_hash` - SHA256 hash of the key (hex encoded) for validation
     /// * `project_ids` - List of allowed project IDs (empty = all projects)
     /// * `max_per_call` - Max amount per API call (optional)
@@ -1291,6 +1358,7 @@ impl ApiClient {
         owner: &str,
         nonce: u32,
         new_initial_balance: &str,
+        amount: &str,
         key_hash: &str,
         project_ids: &[String],
         max_per_call: Option<&str>,
@@ -1302,6 +1370,7 @@ impl ApiClient {
             owner: String,
             nonce: u32,
             new_initial_balance: String,
+            amount: String,
             key_hash: String,
             project_ids: Vec<String>,
             max_per_call: Option<String>,
@@ -1311,14 +1380,15 @@ impl ApiClient {
             owner: owner.to_string(),
             nonce,
             new_initial_balance: new_initial_balance.to_string(),
+            amount: amount.to_string(),
             key_hash: key_hash.to_string(),
             project_ids: project_ids.to_vec(),
             max_per_call: max_per_call.map(String::from),
         };
 
         tracing::info!(
-            "📊 Notifying coordinator of TopUp completion: owner={} nonce={} balance={} key_hash={}...",
-            owner, nonce, new_initial_balance, &key_hash[..8.min(key_hash.len())]
+            "📊 Notifying coordinator of TopUp completion: owner={} nonce={} amount={} balance={} key_hash={}...",
+            owner, nonce, amount, new_initial_balance, &key_hash[..8.min(key_hash.len())]
         );
 
         let response = self

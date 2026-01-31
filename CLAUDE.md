@@ -63,6 +63,10 @@ cd coordinator && cargo run              # Run coordinator
 cd worker && cargo run                   # Run worker
 cd dashboard && npm run dev              # Run dashboard
 cd keystore-worker && cargo run          # Run keystore
+
+# Coordinator uses sqlx compile-time query validation.
+# Without DB connection, use offline mode:
+cd coordinator && SQLX_OFFLINE=true cargo check
 ```
 
 ## Docs

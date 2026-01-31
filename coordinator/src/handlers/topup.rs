@@ -207,8 +207,11 @@ pub struct CompleteTopUpRequest {
     pub owner: String,
     /// Payment Key nonce
     pub nonce: u32,
-    /// New initial_balance after top-up (full amount, not delta)
+    /// New initial_balance after top-up (full amount, not delta) - DEPRECATED, use `amount` instead
     pub new_initial_balance: String,
+    /// TopUp amount (delta to add to current balance) - prevents race condition when multiple topups happen concurrently
+    #[serde(default)]
+    pub amount: Option<String>,
     /// SHA256 hash of the actual key (hex encoded) - used for validation without decryption
     pub key_hash: String,
     /// Project IDs this key can access (empty = all projects)
@@ -237,27 +240,59 @@ pub async fn complete_topup(
     );
 
     // Insert or update payment_keys table (PostgreSQL - source of truth)
-    let result = sqlx::query(
-        r#"
-        INSERT INTO payment_keys (owner, nonce, key_hash, initial_balance, project_ids, max_per_call, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
-        ON CONFLICT (owner, nonce) DO UPDATE
-        SET key_hash = EXCLUDED.key_hash,
-            initial_balance = EXCLUDED.initial_balance,
-            project_ids = EXCLUDED.project_ids,
-            max_per_call = EXCLUDED.max_per_call,
-            updated_at = NOW(),
-            deleted_at = NULL
-        "#
-    )
-    .bind(&req.owner)
-    .bind(req.nonce as i32)
-    .bind(&req.key_hash)
-    .bind(&req.new_initial_balance)
-    .bind(&req.project_ids)
-    .bind(&req.max_per_call)
-    .execute(&state.db)
-    .await;
+    // If `amount` is provided, use additive update to prevent race condition with concurrent topups
+    // Otherwise fallback to overwrite (for backwards compatibility)
+    let result = if let Some(ref amount) = req.amount {
+        sqlx::query(
+            r#"
+            INSERT INTO payment_keys (owner, nonce, key_hash, initial_balance, project_ids, max_per_call, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+            ON CONFLICT (owner, nonce) DO UPDATE
+            SET key_hash = EXCLUDED.key_hash,
+                initial_balance = (COALESCE(payment_keys.initial_balance::numeric, 0) + $7::numeric)::text,
+                project_ids = EXCLUDED.project_ids,
+                max_per_call = EXCLUDED.max_per_call,
+                updated_at = NOW(),
+                deleted_at = NULL
+            "#
+        )
+        .bind(&req.owner)
+        .bind(req.nonce as i32)
+        .bind(&req.key_hash)
+        .bind(&req.new_initial_balance) // Used for INSERT (new key)
+        .bind(&req.project_ids)
+        .bind(&req.max_per_call)
+        .bind(amount) // $7 - additive amount for UPDATE
+        .execute(&state.db)
+        .await
+    } else {
+        // Backwards compatible: overwrite (DEPRECATED - has race condition)
+        warn!(
+            "TopUp without amount field (deprecated): owner={} nonce={} - using overwrite mode",
+            req.owner, req.nonce
+        );
+        sqlx::query(
+            r#"
+            INSERT INTO payment_keys (owner, nonce, key_hash, initial_balance, project_ids, max_per_call, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+            ON CONFLICT (owner, nonce) DO UPDATE
+            SET key_hash = EXCLUDED.key_hash,
+                initial_balance = EXCLUDED.initial_balance,
+                project_ids = EXCLUDED.project_ids,
+                max_per_call = EXCLUDED.max_per_call,
+                updated_at = NOW(),
+                deleted_at = NULL
+            "#
+        )
+        .bind(&req.owner)
+        .bind(req.nonce as i32)
+        .bind(&req.key_hash)
+        .bind(&req.new_initial_balance)
+        .bind(&req.project_ids)
+        .bind(&req.max_per_call)
+        .execute(&state.db)
+        .await
+    };
 
     if let Err(e) = result {
         error!("Failed to update payment_keys: {}", e);
@@ -270,6 +305,88 @@ pub async fn complete_topup(
     );
 
     Ok(Json(serde_json::json!({ "success": true })))
+}
+
+// =============================================================================
+// Init Payment Key (for amount=0 creation)
+// =============================================================================
+
+/// Request to initialize a Payment Key (amount=0 creation event)
+#[derive(Debug, Deserialize)]
+pub struct InitPaymentKeyRequest {
+    /// Payment Key owner
+    pub owner: String,
+    /// Payment Key nonce
+    pub nonce: u32,
+    /// SHA256 hash of the key (hex encoded) for validation
+    pub key_hash: String,
+    /// Project IDs this key can access (empty = all projects)
+    #[serde(default)]
+    pub project_ids: Vec<String>,
+    /// Max amount per API call (optional)
+    #[serde(default)]
+    pub max_per_call: Option<String>,
+}
+
+/// Initialize a Payment Key - create record with initial_balance=0
+///
+/// Called by worker when store_secrets creates a PaymentKey (TopUp event with amount=0).
+/// Creates a record in payment_keys that can later be funded via:
+/// - Real TopUp (user deposits stablecoins via ft_transfer_call)
+/// - Admin grant (POST /admin/grant-payment-key)
+///
+/// Key cannot be used for API calls until it has balance > 0.
+///
+/// NOTE: This endpoint requires worker auth (in authenticated routes).
+pub async fn init_payment_key(
+    State(state): State<AppState>,
+    Json(req): Json<InitPaymentKeyRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    info!(
+        "Init payment key: owner={} nonce={} key_hash={}...",
+        req.owner, req.nonce,
+        &req.key_hash[..8.min(req.key_hash.len())]
+    );
+
+    // Insert with initial_balance=0, ON CONFLICT DO NOTHING (TopUp may have already created it)
+    let result = sqlx::query(
+        r#"
+        INSERT INTO payment_keys (owner, nonce, key_hash, initial_balance, project_ids, max_per_call, created_at, updated_at)
+        VALUES ($1, $2, $3, '0', $4, $5, NOW(), NOW())
+        ON CONFLICT (owner, nonce) DO NOTHING
+        "#
+    )
+    .bind(&req.owner)
+    .bind(req.nonce as i32)
+    .bind(&req.key_hash)
+    .bind(&req.project_ids)
+    .bind(&req.max_per_call)
+    .execute(&state.db)
+    .await;
+
+    match result {
+        Ok(result) => {
+            if result.rows_affected() > 0 {
+                info!(
+                    "Payment key initialized: owner={} nonce={}",
+                    req.owner, req.nonce
+                );
+            } else {
+                info!(
+                    "Payment key already exists (TopUp arrived first): owner={} nonce={}",
+                    req.owner, req.nonce
+                );
+            }
+            Ok(Json(serde_json::json!({
+                "success": true,
+                "created": result.rows_affected() > 0
+            })))
+        }
+        Err(e) => {
+            error!("Failed to init payment key: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }
 
 /// Request to delete a Payment Key (soft delete)

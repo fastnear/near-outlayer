@@ -244,25 +244,14 @@ pub async fn https_call(
         }
     }
 
-    // 8. Check and reserve balance
+    // 8. Check and reserve balance (atomic - prevents double-spend race condition)
     let initial_balance: u128 = metadata.initial_balance.parse().unwrap_or(0);
-    let (spent, reserved) = fetch_payment_key_balance(&state, &payment_key.owner, payment_key.nonce).await?;
-    let available = initial_balance.saturating_sub(spent).saturating_sub(reserved);
+    try_reserve_balance(&state, &payment_key.owner, payment_key.nonce, initial_balance, total_amount).await?;
 
-    if available < total_amount {
-        return Err(CallError::InsufficientBalance {
-            available,
-            required: total_amount,
-        });
-    }
-
-    // 9. Reserve balance
-    reserve_balance(&state, &payment_key.owner, payment_key.nonce, total_amount).await?;
-
-    // 10. Generate call_id
+    // 9. Generate call_id
     let call_id = Uuid::new_v4();
 
-    // 11. Create resource limits
+    // 10. Create resource limits
     let resource_limits = ResourceLimits {
         max_instructions: body.resource_limits.as_ref()
             .and_then(|r| r.max_instructions)
@@ -275,7 +264,7 @@ pub async fn https_call(
             .unwrap_or(60),
     };
 
-    // 13. Store call in database
+    // 11. Store call in database
     let input_json = serde_json::to_string(&body.input).unwrap_or_default();
     create_https_call(
         &state,
@@ -287,7 +276,7 @@ pub async fn https_call(
         attached_deposit,
     ).await?;
 
-    // 13. Create execution task (worker will resolve project_id -> code_source)
+    // 12. Create execution task (worker will resolve project_id -> code_source)
     let task_created = create_execution_task(
         &state,
         call_id,
@@ -308,7 +297,7 @@ pub async fn https_call(
         return Err(CallError::InternalError("Failed to create execution task".to_string()));
     }
 
-    // 15. Return response based on mode
+    // 13. Return response based on mode
     if body.r#async {
         // Async mode - return call_id immediately
         Ok(Json(HttpsCallResponse {
@@ -535,56 +524,74 @@ async fn validate_payment_key(
     })
 }
 
-/// Fetch payment key balance (spent + reserved) - internal helper
-async fn fetch_payment_key_balance(
+/// Atomically check balance and reserve amount (prevents double-spend race condition)
+async fn try_reserve_balance(
     state: &AppState,
     owner: &str,
     nonce: u32,
-) -> Result<(u128, u128), CallError> {
-    let row = sqlx::query(
-        "SELECT spent, reserved FROM payment_key_balances WHERE owner = $1 AND nonce = $2"
+    initial_balance: u128,
+    amount: u128,
+) -> Result<(), CallError> {
+    let mut tx = state.db.begin().await
+        .map_err(|e| CallError::InternalError(format!("Database error: {}", e)))?;
+
+    // 1. Ensure row exists (atomic, no-op if already exists)
+    sqlx::query(
+        r#"
+        INSERT INTO payment_key_balances (owner, nonce, spent, reserved)
+        VALUES ($1, $2, 0, 0)
+        ON CONFLICT (owner, nonce) DO NOTHING
+        "#
     )
     .bind(owner)
     .bind(nonce as i32)
-    .fetch_optional(&state.db)
+    .execute(&mut *tx)
     .await
     .map_err(|e| CallError::InternalError(format!("Database error: {}", e)))?;
 
-    match row {
-        Some(row) => {
-            let spent: BigDecimal = row.get("spent");
-            let reserved: BigDecimal = row.get("reserved");
-            Ok((
-                spent.to_string().parse().unwrap_or(0),
-                reserved.to_string().parse().unwrap_or(0),
-            ))
-        }
-        None => Ok((0, 0)), // No record = no spending yet
-    }
-}
+    // 2. Lock row and get current balance (FOR UPDATE prevents concurrent reads)
+    let row = sqlx::query(
+        "SELECT spent, reserved FROM payment_key_balances WHERE owner = $1 AND nonce = $2 FOR UPDATE"
+    )
+    .bind(owner)
+    .bind(nonce as i32)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| CallError::InternalError(format!("Database error: {}", e)))?;
 
-/// Reserve balance for a call
-async fn reserve_balance(
-    state: &AppState,
-    owner: &str,
-    nonce: u32,
-    amount: u128,
-) -> Result<(), CallError> {
+    let spent: BigDecimal = row.get("spent");
+    let reserved: BigDecimal = row.get("reserved");
+    let spent_u128: u128 = spent.to_string().parse().unwrap_or(0);
+    let reserved_u128: u128 = reserved.to_string().parse().unwrap_or(0);
+
+    // 3. Check balance
+    let available = initial_balance.saturating_sub(spent_u128).saturating_sub(reserved_u128);
+    if available < amount {
+        // Transaction automatically rolls back on drop
+        return Err(CallError::InsufficientBalance {
+            available,
+            required: amount,
+        });
+    }
+
+    // 4. Reserve the amount
     sqlx::query(
         r#"
-        INSERT INTO payment_key_balances (owner, nonce, reserved, last_reserved_at)
-        VALUES ($1, $2, $3, NOW())
-        ON CONFLICT (owner, nonce) DO UPDATE
-        SET reserved = payment_key_balances.reserved + $3,
+        UPDATE payment_key_balances
+        SET reserved = reserved + $3,
             last_reserved_at = NOW()
+        WHERE owner = $1 AND nonce = $2
         "#
     )
     .bind(owner)
     .bind(nonce as i32)
     .bind(BigDecimal::from_str(&amount.to_string()).unwrap_or_default())
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await
     .map_err(|e| CallError::InternalError(format!("Database error: {}", e)))?;
+
+    tx.commit().await
+        .map_err(|e| CallError::InternalError(format!("Database error: {}", e)))?;
 
     Ok(())
 }
@@ -1027,15 +1034,6 @@ pub async fn complete_https_call(
     .map_err(|e| CallError::InternalError(format!("Database error: {}", e)))?
     .ok_or(CallError::InternalError("Call not found".to_string()))?;
 
-    let status: String = call.get("status");
-    if status == "completed" || status == "failed" {
-        // Already finalized
-        return Ok(Json(CompleteHttpsCallResponse {
-            call_id: call_id.to_string(),
-            finalized: false,
-        }));
-    }
-
     let owner: String = call.get("owner");
     let nonce: i32 = call.get("nonce");
     let project_id: String = call.get("project_id");
@@ -1058,11 +1056,12 @@ pub async fn complete_https_call(
     // For simplicity, estimate based on actual cost + attached_deposit
     let reserved_amount = actual_cost + attached_deposit_u128 + 10000; // Add buffer for estimation error
 
-    // Update call in database
+    // Atomic update with status check - prevents double finalize race condition
+    // Only updates if status is still 'pending', returns the row if successful
     let output_json = req.output.as_ref().map(|o| o.to_string());
     let new_status = if req.success { "completed" } else { "failed" };
 
-    sqlx::query(
+    let updated = sqlx::query(
         r#"
         UPDATE https_calls
         SET status = $2,
@@ -1072,7 +1071,8 @@ pub async fn complete_https_call(
             time_ms = $6,
             compute_cost = $7,
             completed_at = NOW()
-        WHERE call_id = $1
+        WHERE call_id = $1 AND status NOT IN ('completed', 'failed')
+        RETURNING call_id
         "#
     )
     .bind(call_id)
@@ -1082,9 +1082,17 @@ pub async fn complete_https_call(
     .bind(req.instructions as i64)
     .bind(req.time_ms as i64)
     .bind(BigDecimal::from_str(&actual_cost.to_string()).unwrap_or_default())
-    .execute(&state.db)
+    .fetch_optional(&state.db)
     .await
     .map_err(|e| CallError::InternalError(format!("Database error: {}", e)))?;
+
+    // If no row was updated, the call was already finalized by another worker
+    if updated.is_none() {
+        return Ok(Json(CompleteHttpsCallResponse {
+            call_id: call_id.to_string(),
+            finalized: false,
+        }));
+    }
 
     // Extract project owner from project_id (format: "owner.near/project-name")
     let project_owner = project_id.split('/').next().unwrap_or(&project_id).to_string();
@@ -1127,7 +1135,7 @@ pub async fn complete_https_call(
 // Public endpoints for Payment Key balance and usage
 // ============================================================================
 
-/// Payment key balance response
+/// Payment key balance response (public - no auth)
 #[derive(Debug, Serialize)]
 pub struct PaymentKeyBalanceResponse {
     pub owner: String,
@@ -1137,6 +1145,20 @@ pub struct PaymentKeyBalanceResponse {
     pub reserved: String,
     pub available: String,
     pub last_used_at: Option<String>,
+}
+
+/// Payment key balance response (authenticated - includes grant info)
+#[derive(Debug, Serialize)]
+pub struct PaymentKeyBalanceAuthResponse {
+    pub owner: String,
+    pub nonce: u32,
+    pub initial_balance: String,
+    pub spent: String,
+    pub reserved: String,
+    pub available: String,
+    pub last_used_at: Option<String>,
+    /// True if this is a grant key (funded by Outlayer, cannot withdraw, no X-Attached-Deposit)
+    pub is_grant: bool,
 }
 
 /// Payment key usage response
@@ -1243,6 +1265,69 @@ pub async fn get_payment_key_balance(
         reserved,
         available: available.to_string(),
         last_used_at,
+    }))
+}
+
+/// Endpoint: GET /payment-keys/balance (authenticated)
+///
+/// Returns the current balance for a payment key, authenticated via X-Payment-Key header.
+/// Includes is_grant field to indicate if this is an admin-funded key.
+///
+/// Header: X-Payment-Key: owner:nonce:key
+pub async fn get_payment_key_balance_auth(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<PaymentKeyBalanceAuthResponse>, (StatusCode, String)> {
+    // Parse X-Payment-Key header
+    let payment_key = parse_payment_key_header(&headers)
+        .map_err(|e| match e {
+            CallError::MissingPaymentKey => (StatusCode::UNAUTHORIZED, "Missing X-Payment-Key header".to_string()),
+            _ => (StatusCode::BAD_REQUEST, "Invalid X-Payment-Key format. Expected: owner:nonce:key".to_string()),
+        })?;
+
+    // Validate key (this also checks key_hash)
+    let metadata = validate_payment_key(&state, &payment_key).await
+        .map_err(|e| (StatusCode::UNAUTHORIZED, format!("Invalid payment key: {:?}", e)))?;
+
+    // Get spent and reserved from payment_key_balances table
+    let row = sqlx::query(
+        r#"
+        SELECT spent, reserved, last_used_at
+        FROM payment_key_balances
+        WHERE owner = $1 AND nonce = $2
+        "#
+    )
+    .bind(&payment_key.owner)
+    .bind(payment_key.nonce as i32)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
+
+    let (spent, reserved, last_used_at): (String, String, Option<String>) = match row {
+        Some(r) => {
+            let spent: BigDecimal = r.get("spent");
+            let reserved: BigDecimal = r.get("reserved");
+            let last_used: Option<chrono::DateTime<chrono::Utc>> = r.get("last_used_at");
+            (spent.to_string(), reserved.to_string(), last_used.map(|d| d.to_rfc3339()))
+        }
+        None => ("0".to_string(), "0".to_string(), None),
+    };
+
+    // Calculate available
+    let initial = BigDecimal::from_str(&metadata.initial_balance).unwrap_or_default();
+    let spent_dec = BigDecimal::from_str(&spent).unwrap_or_default();
+    let reserved_dec = BigDecimal::from_str(&reserved).unwrap_or_default();
+    let available = &initial - &spent_dec - &reserved_dec;
+
+    Ok(Json(PaymentKeyBalanceAuthResponse {
+        owner: payment_key.owner,
+        nonce: payment_key.nonce,
+        initial_balance: metadata.initial_balance,
+        spent,
+        reserved,
+        available: available.to_string(),
+        last_used_at,
+        is_grant: metadata.is_grant,
     }))
 }
 
