@@ -121,10 +121,17 @@ export interface PopularRepo {
 }
 
 export interface PricingConfig {
+  // NEAR pricing (for blockchain transactions)
   base_fee: string;
   per_instruction_fee: string;
   per_ms_fee: string;
   per_compile_ms_fee: string;
+  // USD pricing (for Payment Keys / HTTPS API)
+  base_fee_usd: string;
+  per_instruction_fee_usd: string;
+  per_sec_fee_usd: string;
+  per_compile_ms_fee_usd: string;
+  // Limits
   max_compilation_seconds: number;
   max_instructions: number;
   max_execution_seconds: number;

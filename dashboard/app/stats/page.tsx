@@ -44,6 +44,15 @@ export default function StatsPage() {
     return near.toFixed(6) + ' NEAR';
   };
 
+  // Format USD from minimal units (6 decimals for USDC/USDT)
+  const formatUsdMinimal = (units: string) => {
+    const usd = parseFloat(units) / 1e6;
+    if (usd === 0) return '$0';
+    if (usd < 0.000001) return '$' + usd.toFixed(9);
+    if (usd < 0.001) return '$' + usd.toFixed(6);
+    return '$' + usd.toFixed(4);
+  };
+
   const formatInstructions = (instructions: number) => {
     if (instructions > 1e12) return (instructions / 1e12).toFixed(2) + 'T';
     if (instructions > 1e9) return (instructions / 1e9).toFixed(2) + 'B';
@@ -431,7 +440,7 @@ export default function StatsPage() {
           <h2 className="text-2xl font-bold text-gray-900 mb-4">Pricing & Limits</h2>
           <div className="bg-white shadow overflow-hidden sm:rounded-lg">
             <div className="px-4 py-5 sm:p-6">
-              <h3 className="text-lg font-medium text-gray-900 mb-4">Pricing Rates</h3>
+              <h3 className="text-lg font-medium text-gray-900 mb-4">NEAR Pricing (Blockchain Transactions)</h3>
               <dl className="grid grid-cols-1 gap-x-4 gap-y-6 sm:grid-cols-2">
                 <div className="sm:col-span-1">
                   <dt className="text-sm font-medium text-gray-500">Base Fee</dt>
@@ -448,6 +457,37 @@ export default function StatsPage() {
                 <div className="sm:col-span-1">
                   <dt className="text-sm font-medium text-gray-500">Per Millisecond (Compilation)</dt>
                   <dd className="mt-1 text-sm text-gray-900">{formatYoctoNEAR(pricing.per_compile_ms_fee)}</dd>
+                </div>
+              </dl>
+
+              <h3 className="text-lg font-medium text-gray-900 mt-6 mb-2">USD Pricing (Payment Keys)</h3>
+              <p className="text-sm text-gray-500 mb-4">
+                For HTTPS API calls using Payment Keys.{' '}
+                <a
+                  href="https://outlayer.fastnear.com/docs/payment-keys"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-600 hover:text-blue-800 hover:underline"
+                >
+                  Learn more
+                </a>
+              </p>
+              <dl className="grid grid-cols-1 gap-x-4 gap-y-6 sm:grid-cols-2">
+                <div className="sm:col-span-1">
+                  <dt className="text-sm font-medium text-gray-500">Base Fee</dt>
+                  <dd className="mt-1 text-sm text-gray-900">{formatUsdMinimal(pricing.base_fee_usd)}</dd>
+                </div>
+                <div className="sm:col-span-1">
+                  <dt className="text-sm font-medium text-gray-500">Per Million Instructions</dt>
+                  <dd className="mt-1 text-sm text-gray-900">{formatUsdMinimal(pricing.per_instruction_fee_usd)}</dd>
+                </div>
+                <div className="sm:col-span-1">
+                  <dt className="text-sm font-medium text-gray-500">Per Second (Execution)</dt>
+                  <dd className="mt-1 text-sm text-gray-900">{formatUsdMinimal(pricing.per_sec_fee_usd)}</dd>
+                </div>
+                <div className="sm:col-span-1">
+                  <dt className="text-sm font-medium text-gray-500">Per Millisecond (Compilation)</dt>
+                  <dd className="mt-1 text-sm text-gray-900">{formatUsdMinimal(pricing.per_compile_ms_fee_usd)}</dd>
                 </div>
               </dl>
 
