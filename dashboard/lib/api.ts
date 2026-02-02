@@ -147,15 +147,20 @@ export async function fetchWorkers(): Promise<WorkerInfo[]> {
 
 /**
  * Fetch job history
+ * @param source - Filter by source: "near", "https", or undefined for all
  */
 export async function fetchJobs(
   limit: number = 50,
   offset: number = 0,
-  userAccountId?: string
+  userAccountId?: string,
+  source?: 'near' | 'https'
 ): Promise<JobHistoryEntry[]> {
   const params: Record<string, string | number> = { limit, offset };
   if (userAccountId) {
     params.user_account_id = userAccountId;
+  }
+  if (source) {
+    params.source = source;
   }
   const response = await axios.get(`${API_BASE_URL}/public/jobs`, { params });
   return response.data;

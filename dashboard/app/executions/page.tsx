@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { fetchJobs, JobHistoryEntry, AttestationResponse, fetchAttestation } from '@/lib/api';
 import { getTransactionUrl } from '@/lib/explorer';
 import { useNearWallet } from '@/contexts/NearWalletContext';
@@ -108,13 +108,19 @@ export default function JobsPage() {
     }
   }, [settings]);
 
-  useEffect(() => {
-    loadJobs();
-  }, []);
+  // Compute source filter for API
+  const getSourceFilter = useCallback((): 'near' | 'https' | undefined => {
+    if (settings.showNear && settings.showHttps) return undefined; // Both = no filter
+    if (settings.showNear) return 'near';
+    if (settings.showHttps) return 'https';
+    return 'near'; // Fallback - should not happen
+  }, [settings.showNear, settings.showHttps]);
 
-  const loadJobs = async () => {
+  const loadJobs = useCallback(async () => {
+    setLoading(true);
     try {
-      const data = await fetchJobs(50, 0);
+      const source = getSourceFilter();
+      const data = await fetchJobs(50, 0, undefined, source);
       setJobs(data);
       setError(null);
     } catch (err) {
@@ -123,13 +129,29 @@ export default function JobsPage() {
     } finally {
       setLoading(false);
     }
+  }, [getSourceFilter]);
+
+  // Load jobs when filter changes
+  useEffect(() => {
+    loadJobs();
+  }, [loadJobs]);
+
+  // Toggle handlers that prevent both from being unchecked
+  const toggleNear = () => {
+    setSettings((prev) => {
+      // If trying to uncheck NEAR and HTTPS is already unchecked, don't allow
+      if (prev.showNear && !prev.showHttps) return prev;
+      return { ...prev, showNear: !prev.showNear };
+    });
   };
 
-  // Filter jobs based on source toggles
-  const filteredJobs = jobs.filter((job) => {
-    if (job.is_https_call) return settings.showHttps;
-    return settings.showNear;
-  });
+  const toggleHttps = () => {
+    setSettings((prev) => {
+      // If trying to uncheck HTTPS and NEAR is already unchecked, don't allow
+      if (prev.showHttps && !prev.showNear) return prev;
+      return { ...prev, showHttps: !prev.showHttps };
+    });
+  };
 
   const loadAttestation = async (job: JobHistoryEntry) => {
     if (!job.job_id) {
@@ -281,15 +303,7 @@ export default function JobsPage() {
   // Count visible columns for colspan
   const visibleColumnCount = Object.values(settings.visibleColumns).filter(Boolean).length;
 
-  if (loading) {
-    return (
-      <div className="flex justify-center items-center min-h-[400px]">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-      </div>
-    );
-  }
-
-  if (error) {
+  if (error && !loading) {
     return (
       <div className="bg-red-50 border border-red-200 rounded-md p-4">
         <p className="text-red-800">{error}</p>
@@ -309,28 +323,32 @@ export default function JobsPage() {
 
         {/* Controls */}
         <div className="mt-4 sm:mt-0 flex items-center gap-4">
-          {/* Source filter toggles */}
-          <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1">
-            <button
-              onClick={() => setSettings((prev) => ({ ...prev, showNear: !prev.showNear }))}
-              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-                settings.showNear
-                  ? 'bg-green-600 text-white'
-                  : 'text-gray-600 hover:bg-gray-200'
-              }`}
-            >
-              NEAR
-            </button>
-            <button
-              onClick={() => setSettings((prev) => ({ ...prev, showHttps: !prev.showHttps }))}
-              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-                settings.showHttps
-                  ? 'bg-orange-500 text-white'
-                  : 'text-gray-600 hover:bg-gray-200'
-              }`}
-            >
-              HTTPS
-            </button>
+          {/* Source filter checkboxes */}
+          <div className="flex items-center gap-4">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings.showNear}
+                onChange={toggleNear}
+                disabled={settings.showNear && !settings.showHttps}
+                className="w-4 h-4 text-green-600 rounded border-gray-300 focus:ring-green-500 disabled:opacity-50"
+              />
+              <span className={`text-sm font-medium ${settings.showNear ? 'text-green-700' : 'text-gray-500'}`}>
+                NEAR
+              </span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings.showHttps}
+                onChange={toggleHttps}
+                disabled={settings.showHttps && !settings.showNear}
+                className="w-4 h-4 text-orange-500 rounded border-gray-300 focus:ring-orange-500 disabled:opacity-50"
+              />
+              <span className={`text-sm font-medium ${settings.showHttps ? 'text-orange-600' : 'text-gray-500'}`}>
+                HTTPS
+              </span>
+            </label>
           </div>
 
           {/* Column settings dropdown */}
@@ -420,14 +438,22 @@ export default function JobsPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200 bg-white">
-                  {filteredJobs.length === 0 ? (
+                  {loading ? (
+                    <tr>
+                      <td colSpan={visibleColumnCount} className="px-3 py-8 text-center">
+                        <div className="flex justify-center">
+                          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : jobs.length === 0 ? (
                     <tr>
                       <td colSpan={visibleColumnCount} className="px-3 py-8 text-center text-sm text-gray-500">
-                        {jobs.length === 0 ? 'No jobs found' : 'No jobs match the current filter'}
+                        No jobs found
                       </td>
                     </tr>
                   ) : (
-                    filteredJobs.map((job) => {
+                    jobs.map((job) => {
                       const isExpanded = expandedJobId === job.id;
                       const hasErrorDetails = job.error_details && job.error_details.trim().length > 0;
 
@@ -441,20 +467,20 @@ export default function JobsPage() {
                             )}
                             {settings.visibleColumns.tee && (
                               <td className="whitespace-nowrap px-3 py-4 text-sm">
-                                <button
-                                  onClick={() => loadAttestation(job)}
-                                  disabled={!job.job_id}
-                                  className={`p-1.5 rounded ${
-                                    job.job_id
-                                      ? 'text-blue-600 hover:bg-blue-50 hover:text-blue-800'
-                                      : 'text-gray-300 cursor-not-allowed'
-                                  }`}
-                                  title={job.job_id ? 'View TEE attestation' : 'No attestation available'}
-                                >
-                                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-                                  </svg>
-                                </button>
+                                {job.job_id ? (
+                                  <button
+                                    onClick={() => loadAttestation(job)}
+                                    className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded border border-blue-200 transition-colors"
+                                    title="View TEE attestation"
+                                  >
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                                    </svg>
+                                    TEE
+                                  </button>
+                                ) : (
+                                  <span className="text-gray-300">-</span>
+                                )}
                               </td>
                             )}
                             {settings.visibleColumns.type && (

@@ -91,6 +91,8 @@ pub struct JobHistoryQuery {
     #[serde(default)]
     pub offset: i64,
     pub user_account_id: Option<String>,
+    /// Filter by source: "near", "https", or omit for all
+    pub source: Option<String>,
 }
 
 fn default_limit() -> i64 {
@@ -103,8 +105,15 @@ pub async fn list_jobs(
 ) -> Result<Json<Vec<JobHistoryEntry>>, StatusCode> {
     let limit = params.limit.min(100); // Max 100 per page
 
-    let jobs: Vec<JobHistoryEntry> = if let Some(user_id) = params.user_account_id {
-        sqlx::query_as(
+    // Build source filter clause
+    let source_filter = match params.source.as_deref() {
+        Some("near") => "AND eh.transaction_hash IS NOT NULL",
+        Some("https") => "AND eh.transaction_hash IS NULL AND eh.data_id IS NOT NULL",
+        _ => "", // No filter for "all" or unspecified
+    };
+
+    let jobs: Vec<JobHistoryEntry> = if let Some(user_id) = &params.user_account_id {
+        let query = format!(
             r#"
             SELECT
                 eh.id,
@@ -139,18 +148,19 @@ pub async fn list_jobs(
             LEFT JOIN jobs j ON eh.job_id = j.job_id
             LEFT JOIN execution_requests er ON eh.request_id = er.request_id
             LEFT JOIN https_calls hc ON eh.data_id = hc.call_id::text
-            WHERE eh.user_account_id = $1
+            WHERE eh.user_account_id = $1 {source_filter}
             ORDER BY eh.created_at DESC
             LIMIT $2 OFFSET $3
             "#
-        )
-        .bind(user_id)
-        .bind(limit)
-        .bind(params.offset)
-        .fetch_all(&state.db)
-        .await
+        );
+        sqlx::query_as(&query)
+            .bind(user_id)
+            .bind(limit)
+            .bind(params.offset)
+            .fetch_all(&state.db)
+            .await
     } else {
-        sqlx::query_as(
+        let query = format!(
             r#"
             SELECT
                 eh.id,
@@ -185,14 +195,16 @@ pub async fn list_jobs(
             LEFT JOIN jobs j ON eh.job_id = j.job_id
             LEFT JOIN execution_requests er ON eh.request_id = er.request_id
             LEFT JOIN https_calls hc ON eh.data_id = hc.call_id::text
+            WHERE 1=1 {source_filter}
             ORDER BY eh.created_at DESC
             LIMIT $1 OFFSET $2
             "#
-        )
-        .bind(limit)
-        .bind(params.offset)
-        .fetch_all(&state.db)
-        .await
+        );
+        sqlx::query_as(&query)
+            .bind(limit)
+            .bind(params.offset)
+            .fetch_all(&state.db)
+            .await
     }
     .map_err(|e| {
         error!("Failed to fetch job history: {}", e);
