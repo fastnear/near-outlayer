@@ -7,6 +7,61 @@ import { useNearWallet } from '@/contexts/NearWalletContext';
 import AttestationView from '@/components/AttestationView';
 import Link from 'next/link';
 
+const STORAGE_KEY = 'executions-table-settings';
+
+interface TableSettings {
+  showNear: boolean;
+  showHttps: boolean;
+  visibleColumns: {
+    id: boolean;
+    type: boolean;
+    status: boolean;
+    worker: boolean;
+    source: boolean;
+    user: boolean;
+    time: boolean;
+    fuel: boolean;
+    payment: boolean;
+    tx: boolean;
+    created: boolean;
+    tee: boolean;
+  };
+}
+
+const DEFAULT_SETTINGS: TableSettings = {
+  showNear: true,
+  showHttps: false,
+  visibleColumns: {
+    id: true,
+    type: true,
+    status: true,
+    worker: false,
+    source: true,
+    user: true,
+    time: true,
+    fuel: false,
+    payment: true,
+    tx: false,
+    created: true,
+    tee: true,
+  },
+};
+
+const COLUMN_LABELS: Record<keyof TableSettings['visibleColumns'], string> = {
+  id: 'ID',
+  type: 'Type',
+  status: 'Status',
+  worker: 'Worker',
+  source: 'Source',
+  user: 'User',
+  time: 'Time',
+  fuel: 'Fuel',
+  payment: 'Payment',
+  tx: 'TX',
+  created: 'Created',
+  tee: 'TEE',
+};
+
 export default function JobsPage() {
   const { network } = useNearWallet();
   const [jobs, setJobs] = useState<JobHistoryEntry[]>([]);
@@ -21,6 +76,37 @@ export default function JobsPage() {
     error: string | null
   } | null>(null);
   const [showAttestationHelp, setShowAttestationHelp] = useState(false);
+  const [showColumnSettings, setShowColumnSettings] = useState(false);
+
+  // Load settings from localStorage
+  const [settings, setSettings] = useState<TableSettings>(() => {
+    if (typeof window === 'undefined') return DEFAULT_SETTINGS;
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        // Merge with defaults to handle new columns
+        return {
+          ...DEFAULT_SETTINGS,
+          ...parsed,
+          visibleColumns: {
+            ...DEFAULT_SETTINGS.visibleColumns,
+            ...parsed.visibleColumns,
+          },
+        };
+      }
+    } catch {
+      // Ignore parse errors
+    }
+    return DEFAULT_SETTINGS;
+  });
+
+  // Save settings to localStorage
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+    }
+  }, [settings]);
 
   useEffect(() => {
     loadJobs();
@@ -38,6 +124,12 @@ export default function JobsPage() {
       setLoading(false);
     }
   };
+
+  // Filter jobs based on source toggles
+  const filteredJobs = jobs.filter((job) => {
+    if (job.is_https_call) return settings.showHttps;
+    return settings.showNear;
+  });
 
   const loadAttestation = async (job: JobHistoryEntry) => {
     if (!job.job_id) {
@@ -176,6 +268,19 @@ export default function JobsPage() {
     }
   };
 
+  const toggleColumn = (column: keyof TableSettings['visibleColumns']) => {
+    setSettings((prev) => ({
+      ...prev,
+      visibleColumns: {
+        ...prev.visibleColumns,
+        [column]: !prev.visibleColumns[column],
+      },
+    }));
+  };
+
+  // Count visible columns for colspan
+  const visibleColumnCount = Object.values(settings.visibleColumns).filter(Boolean).length;
+
   if (loading) {
     return (
       <div className="flex justify-center items-center min-h-[400px]">
@@ -194,12 +299,78 @@ export default function JobsPage() {
 
   return (
     <div>
-      <div className="sm:flex sm:items-center">
+      <div className="sm:flex sm:items-center sm:justify-between">
         <div className="sm:flex-auto">
           <h1 className="text-3xl font-bold text-gray-900">Job History</h1>
           <p className="mt-2 text-sm text-gray-700">
             Browse all compilation and execution jobs
           </p>
+        </div>
+
+        {/* Controls */}
+        <div className="mt-4 sm:mt-0 flex items-center gap-4">
+          {/* Source filter toggles */}
+          <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1">
+            <button
+              onClick={() => setSettings((prev) => ({ ...prev, showNear: !prev.showNear }))}
+              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                settings.showNear
+                  ? 'bg-green-600 text-white'
+                  : 'text-gray-600 hover:bg-gray-200'
+              }`}
+            >
+              NEAR
+            </button>
+            <button
+              onClick={() => setSettings((prev) => ({ ...prev, showHttps: !prev.showHttps }))}
+              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                settings.showHttps
+                  ? 'bg-orange-500 text-white'
+                  : 'text-gray-600 hover:bg-gray-200'
+              }`}
+            >
+              HTTPS
+            </button>
+          </div>
+
+          {/* Column settings dropdown */}
+          <div className="relative">
+            <button
+              onClick={() => setShowColumnSettings(!showColumnSettings)}
+              className="px-3 py-1.5 text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg flex items-center gap-1"
+              title="Column settings"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+              </svg>
+              Columns
+            </button>
+
+            {showColumnSettings && (
+              <>
+                <div
+                  className="fixed inset-0 z-10"
+                  onClick={() => setShowColumnSettings(false)}
+                />
+                <div className="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg border border-gray-200 z-20 py-2">
+                  {(Object.keys(COLUMN_LABELS) as Array<keyof TableSettings['visibleColumns']>).map((col) => (
+                    <label
+                      key={col}
+                      className="flex items-center px-4 py-2 hover:bg-gray-50 cursor-pointer"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={settings.visibleColumns[col]}
+                        onChange={() => toggleColumn(col)}
+                        className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
+                      />
+                      <span className="ml-2 text-sm text-gray-700">{COLUMN_LABELS[col]}</span>
+                    </label>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
@@ -210,162 +381,216 @@ export default function JobsPage() {
               <table className="min-w-full divide-y divide-gray-300">
                 <thead className="bg-gray-50">
                   <tr>
-                    <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">ID</th>
-                    <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Type</th>
-                    <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Status</th>
-                    <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Worker</th>
-                    <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Source</th>
-                    <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">User</th>
-                    <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Time (ms)</th>
-                    <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900" title="Instructions">Fuel</th>
-                    <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900" title="In NEAR tokens">Payment</th>
-                    <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">TX</th>
-                    <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Created</th>
+                    {settings.visibleColumns.id && (
+                      <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">ID</th>
+                    )}
+                    {settings.visibleColumns.tee && (
+                      <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">TEE</th>
+                    )}
+                    {settings.visibleColumns.type && (
+                      <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Type</th>
+                    )}
+                    {settings.visibleColumns.status && (
+                      <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Status</th>
+                    )}
+                    {settings.visibleColumns.worker && (
+                      <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Worker</th>
+                    )}
+                    {settings.visibleColumns.source && (
+                      <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Source</th>
+                    )}
+                    {settings.visibleColumns.user && (
+                      <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">User</th>
+                    )}
+                    {settings.visibleColumns.time && (
+                      <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Time (ms)</th>
+                    )}
+                    {settings.visibleColumns.fuel && (
+                      <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900" title="Instructions">Fuel</th>
+                    )}
+                    {settings.visibleColumns.payment && (
+                      <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900" title="In NEAR tokens">Payment</th>
+                    )}
+                    {settings.visibleColumns.tx && (
+                      <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">TX</th>
+                    )}
+                    {settings.visibleColumns.created && (
+                      <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Created</th>
+                    )}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200 bg-white">
-                  {jobs.length === 0 ? (
+                  {filteredJobs.length === 0 ? (
                     <tr>
-                      <td colSpan={11} className="px-3 py-8 text-center text-sm text-gray-500">
-                        No jobs found
+                      <td colSpan={visibleColumnCount} className="px-3 py-8 text-center text-sm text-gray-500">
+                        {jobs.length === 0 ? 'No jobs found' : 'No jobs match the current filter'}
                       </td>
                     </tr>
                   ) : (
-                    jobs.map((job) => {
+                    filteredJobs.map((job) => {
                       const isExpanded = expandedJobId === job.id;
                       const hasErrorDetails = job.error_details && job.error_details.trim().length > 0;
 
                       return (
                         <>
                           <tr key={job.id}>
-                            <td
-                              className="whitespace-nowrap px-3 py-4 text-sm font-mono"
-                              title={job.is_https_call
-                                ? `HTTPS Call ID: ${job.call_id} - Click to view TEE attestation`
-                                : `Job ID: ${job.job_id} - Click to view TEE attestation`}
-                            >
-                              <button
-                                onClick={() => loadAttestation(job)}
-                                className="text-blue-600 hover:text-blue-800 hover:underline"
-                                disabled={!job.job_id}
-                              >
+                            {settings.visibleColumns.id && (
+                              <td className="whitespace-nowrap px-3 py-4 text-sm font-mono text-gray-900">
                                 #{job.id}
-                              </button>
-                            </td>
-                            <td className="whitespace-nowrap px-3 py-4 text-sm">
-                              <div className="flex items-center gap-1">
+                              </td>
+                            )}
+                            {settings.visibleColumns.tee && (
+                              <td className="whitespace-nowrap px-3 py-4 text-sm">
+                                <button
+                                  onClick={() => loadAttestation(job)}
+                                  disabled={!job.job_id}
+                                  className={`p-1.5 rounded ${
+                                    job.job_id
+                                      ? 'text-blue-600 hover:bg-blue-50 hover:text-blue-800'
+                                      : 'text-gray-300 cursor-not-allowed'
+                                  }`}
+                                  title={job.job_id ? 'View TEE attestation' : 'No attestation available'}
+                                >
+                                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                                  </svg>
+                                </button>
+                              </td>
+                            )}
+                            {settings.visibleColumns.type && (
+                              <td className="whitespace-nowrap px-3 py-4 text-sm">
+                                <div className="flex items-center gap-1">
+                                  <span
+                                    className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${
+                                      job.job_type === 'compile'
+                                        ? 'bg-blue-100 text-blue-800'
+                                        : 'bg-purple-100 text-purple-800'
+                                    }`}
+                                  >
+                                    {job.job_type || 'N/A'}
+                                  </span>
+                                  <span
+                                    className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${
+                                      job.is_https_call
+                                        ? 'bg-orange-100 text-orange-800'
+                                        : 'bg-green-100 text-green-800'
+                                    }`}
+                                    title={job.is_https_call
+                                      ? `HTTPS API call (call_id: ${job.call_id})`
+                                      : `NEAR blockchain call (tx: ${job.transaction_hash || 'N/A'})`}
+                                  >
+                                    {job.is_https_call ? 'HTTPS' : 'NEAR'}
+                                  </span>
+                                </div>
+                              </td>
+                            )}
+                            {settings.visibleColumns.status && (
+                              <td className="whitespace-nowrap px-3 py-4 text-sm">
                                 <span
                                   className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${
-                                    job.job_type === 'compile'
-                                      ? 'bg-blue-100 text-blue-800'
-                                      : 'bg-purple-100 text-purple-800'
-                                  }`}
+                                    getStatusDisplay(job.status, job.success).color
+                                  } ${hasErrorDetails ? 'cursor-pointer hover:opacity-80' : ''}`}
+                                  onClick={() => hasErrorDetails && setExpandedJobId(isExpanded ? null : job.id)}
+                                  title={hasErrorDetails ? 'Click to show error details' : undefined}
                                 >
-                                  {job.job_type || 'N/A'}
+                                  {getStatusDisplay(job.status, job.success).text}
+                                  {hasErrorDetails && (
+                                    <span className="ml-1">{isExpanded ? '▼' : '▶'}</span>
+                                  )}
                                 </span>
-                                <span
-                                  className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${
-                                    job.is_https_call
-                                      ? 'bg-orange-100 text-orange-800'
-                                      : 'bg-green-100 text-green-800'
-                                  }`}
-                                  title={job.is_https_call
-                                    ? `HTTPS API call (call_id: ${job.call_id})`
-                                    : `NEAR blockchain call (tx: ${job.transaction_hash || 'N/A'})`}
-                                >
-                                  {job.is_https_call ? 'HTTPS' : 'NEAR'}
-                                </span>
-                              </div>
-                            </td>
-                            <td className="whitespace-nowrap px-3 py-4 text-sm">
-                              <span
-                                className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${
-                                  getStatusDisplay(job.status, job.success).color
-                                } ${hasErrorDetails ? 'cursor-pointer hover:opacity-80' : ''}`}
-                                onClick={() => hasErrorDetails && setExpandedJobId(isExpanded ? null : job.id)}
-                                title={hasErrorDetails ? 'Click to show error details' : undefined}
-                              >
-                                {getStatusDisplay(job.status, job.success).text}
-                                {hasErrorDetails && (
-                                  <span className="ml-1">{isExpanded ? '▼' : '▶'}</span>
+                              </td>
+                            )}
+                            {settings.visibleColumns.worker && (
+                              <td className="px-3 py-4 text-sm text-gray-500 font-mono">
+                                <div className="max-w-[100px] truncate" title={job.worker_id || 'N/A'}>
+                                  {job.worker_id || 'N/A'}
+                                </div>
+                              </td>
+                            )}
+                            {settings.visibleColumns.source && (
+                              <td className="px-3 py-4 text-sm text-gray-500">
+                                {job.project_id ? (
+                                  <span
+                                    className="max-w-[120px] truncate block"
+                                    title={job.project_id}
+                                  >
+                                    {job.project_id.split('/').pop() || job.project_id}
+                                  </span>
+                                ) : job.github_repo ? (
+                                  <a
+                                    href={`${job.github_repo}/tree/${job.github_commit}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-blue-600 hover:text-blue-800 hover:underline max-w-[120px] truncate block"
+                                    title={`${job.github_repo} @ ${job.github_commit}`}
+                                  >
+                                    {job.github_repo.replace(/^https?:\/\/(www\.)?github\.com\//, '')}
+                                  </a>
+                                ) : (
+                                  '-'
                                 )}
-                              </span>
-                            </td>
-                        <td className="px-3 py-4 text-sm text-gray-500 font-mono">
-                          <div className="max-w-[100px] truncate" title={job.worker_id || 'N/A'}>
-                            {job.worker_id || 'N/A'}
-                          </div>
-                        </td>
-                        <td className="px-3 py-4 text-sm text-gray-500">
-                          {job.project_id ? (
-                            <span
-                              className="max-w-[120px] truncate block"
-                              title={job.project_id}
-                            >
-                              {job.project_id.split('/').pop() || job.project_id}
-                            </span>
-                          ) : job.github_repo ? (
-                            <a
-                              href={`${job.github_repo}/tree/${job.github_commit}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-blue-600 hover:text-blue-800 hover:underline max-w-[120px] truncate block"
-                              title={`${job.github_repo} @ ${job.github_commit}`}
-                            >
-                              {job.github_repo.replace(/^https?:\/\/(www\.)?github\.com\//, '')}
-                            </a>
-                          ) : (
-                            '-'
-                          )}
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500 font-mono">
-                          {job.user_account_id
-                            ? job.user_account_id.substring(0, 12) + '...'
-                            : 'N/A'}
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-900">
-                          {job.compile_time_ms && job.execution_time_ms
-                            ? `${job.compile_time_ms}ms + ${job.execution_time_ms}ms`
-                            : job.compile_time_ms
-                            ? `${job.compile_time_ms}ms`
-                            : job.execution_time_ms
-                            ? `${job.execution_time_ms}ms`
-                            : 'N/A'}
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-900">
-                          {job.job_type === 'compile' ? '-' : formatInstructions(job.instructions_used)}
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-900">
-                          {job.is_https_call
-                            ? formatUsd(job.compute_cost_usd)
-                            : formatYoctoNEAR(getDisplayPayment(job))}
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-4 text-sm">
-                          {job.transaction_hash ? (
-                            <a
-                              href={getTransactionUrl(job.transaction_hash, network)}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-blue-600 hover:text-blue-800 hover:underline"
-                              title={job.transaction_hash}
-                            >
-                              {job.transaction_hash.substring(0, 8)}...
-                            </a>
-                          ) : (
-                            '-'
-                          )}
-                        </td>
-                            <td
-                              className="whitespace-nowrap px-3 py-4 text-sm text-gray-500"
-                              title={new Date(job.created_at).toLocaleString()}
-                            >
-                              {formatTimestamp(job.created_at)}
-                            </td>
+                              </td>
+                            )}
+                            {settings.visibleColumns.user && (
+                              <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500 font-mono">
+                                {job.user_account_id
+                                  ? job.user_account_id.substring(0, 12) + '...'
+                                  : 'N/A'}
+                              </td>
+                            )}
+                            {settings.visibleColumns.time && (
+                              <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-900">
+                                {job.compile_time_ms && job.execution_time_ms
+                                  ? `${job.compile_time_ms}ms + ${job.execution_time_ms}ms`
+                                  : job.compile_time_ms
+                                  ? `${job.compile_time_ms}ms`
+                                  : job.execution_time_ms
+                                  ? `${job.execution_time_ms}ms`
+                                  : 'N/A'}
+                              </td>
+                            )}
+                            {settings.visibleColumns.fuel && (
+                              <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-900">
+                                {job.job_type === 'compile' ? '-' : formatInstructions(job.instructions_used)}
+                              </td>
+                            )}
+                            {settings.visibleColumns.payment && (
+                              <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-900">
+                                {job.is_https_call
+                                  ? formatUsd(job.compute_cost_usd)
+                                  : formatYoctoNEAR(getDisplayPayment(job))}
+                              </td>
+                            )}
+                            {settings.visibleColumns.tx && (
+                              <td className="whitespace-nowrap px-3 py-4 text-sm">
+                                {job.transaction_hash ? (
+                                  <a
+                                    href={getTransactionUrl(job.transaction_hash, network)}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-blue-600 hover:text-blue-800 hover:underline"
+                                    title={job.transaction_hash}
+                                  >
+                                    {job.transaction_hash.substring(0, 8)}...
+                                  </a>
+                                ) : (
+                                  '-'
+                                )}
+                              </td>
+                            )}
+                            {settings.visibleColumns.created && (
+                              <td
+                                className="whitespace-nowrap px-3 py-4 text-sm text-gray-500"
+                                title={new Date(job.created_at).toLocaleString()}
+                              >
+                                {formatTimestamp(job.created_at)}
+                              </td>
+                            )}
                           </tr>
                           {/* Error details row - only shown when expanded */}
                           {isExpanded && hasErrorDetails && (
                             <tr key={`${job.id}-details`}>
-                              <td colSpan={11} className="px-3 py-4 bg-gray-50">
+                              <td colSpan={visibleColumnCount} className="px-3 py-4 bg-gray-50">
                                 <div className="text-sm">
                                   <span className="font-semibold text-gray-700">Error Details:</span>
                                   <pre className="mt-2 p-3 bg-white border border-gray-200 rounded text-xs overflow-x-auto text-red-600">
@@ -421,7 +646,7 @@ export default function JobsPage() {
                       className="px-3 py-1 bg-green-100 hover:bg-green-200 text-green-700 text-sm font-medium rounded"
                       title="Open in new tab"
                     >
-                      🔗 Direct Link
+                      Direct Link
                     </Link>
                   )}
                 </div>
