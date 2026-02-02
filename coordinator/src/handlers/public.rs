@@ -804,6 +804,29 @@ pub struct PublicStorageResponse {
     pub value: Option<String>,  // Base64-encoded value
 }
 
+/// Request body for batch public storage GET
+#[derive(Debug, Deserialize)]
+pub struct PublicStorageBatchRequest {
+    pub project_uuid: String,
+    pub keys: Vec<String>,  // max 50 keys
+}
+
+/// Response for batch public storage GET
+#[derive(Debug, Serialize)]
+pub struct PublicStorageBatchResponse {
+    pub results: std::collections::HashMap<String, PublicStorageBatchItem>,
+}
+
+/// Single item in batch response
+#[derive(Debug, Serialize)]
+pub struct PublicStorageBatchItem {
+    pub exists: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,  // Base64-encoded value
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,  // e.g. "encrypted"
+}
+
 /// Public endpoint: Get public storage value
 ///
 /// Reads storage data that was written with `is_encrypted=false`.
@@ -888,4 +911,99 @@ pub async fn get_public_storage(
             Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))
         }
     }
+}
+
+/// Public endpoint: Batch get public storage values
+///
+/// Returns multiple storage values in a single request.
+/// Maximum 50 keys per request.
+pub async fn batch_get_public_storage(
+    State(state): State<AppState>,
+    Json(request): Json<PublicStorageBatchRequest>,
+) -> Result<Json<PublicStorageBatchResponse>, (StatusCode, String)> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use sha2::{Sha256, Digest};
+
+    // Validate key count
+    if request.keys.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "No keys provided".to_string()));
+    }
+    if request.keys.len() > 50 {
+        return Err((StatusCode::BAD_REQUEST, "Maximum 50 keys allowed per request".to_string()));
+    }
+
+    // Validate key length (prevent DoS via huge keys)
+    const MAX_KEY_LENGTH: usize = 1024;
+    if let Some(key) = request.keys.iter().find(|k| k.len() > MAX_KEY_LENGTH) {
+        return Err((StatusCode::BAD_REQUEST, format!("Key too long: {} bytes (max {})", key.len(), MAX_KEY_LENGTH)));
+    }
+
+    // Deduplicate keys and build key -> hash mapping
+    let mut seen = std::collections::HashSet::new();
+    let key_hashes: Vec<(String, String)> = request.keys
+        .iter()
+        .filter(|key| seen.insert(key.as_str()))
+        .map(|key| {
+            let mut hasher = Sha256::new();
+            hasher.update(key.as_bytes());
+            (key.clone(), hex::encode(hasher.finalize()))
+        })
+        .collect();
+
+    let hash_list: Vec<&str> = key_hashes.iter().map(|(_, h)| h.as_str()).collect();
+
+    // Query all keys at once
+    let rows = sqlx::query_as::<_, (String, Vec<u8>, bool)>(
+        r#"
+        SELECT key_hash, encrypted_value, is_encrypted
+        FROM storage_data
+        WHERE project_uuid = $1
+          AND account_id = '@worker'
+          AND key_hash = ANY($2)
+        "#,
+    )
+    .bind(&request.project_uuid)
+    .bind(&hash_list)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| {
+        error!("batch_get_public_storage error: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e))
+    })?;
+
+    // Build hash -> (value, is_encrypted) lookup
+    let db_results: std::collections::HashMap<String, (Vec<u8>, bool)> = rows
+        .into_iter()
+        .map(|(hash, value, encrypted)| (hash, (value, encrypted)))
+        .collect();
+
+    // Build response
+    let mut results = std::collections::HashMap::new();
+    for (key, hash) in key_hashes {
+        let item = match db_results.get(&hash) {
+            Some((value, is_encrypted)) => {
+                if *is_encrypted {
+                    PublicStorageBatchItem {
+                        exists: true,
+                        value: None,
+                        error: Some("encrypted".to_string()),
+                    }
+                } else {
+                    PublicStorageBatchItem {
+                        exists: true,
+                        value: Some(STANDARD.encode(value)),
+                        error: None,
+                    }
+                }
+            }
+            None => PublicStorageBatchItem {
+                exists: false,
+                value: None,
+                error: None,
+            },
+        };
+        results.insert(key, item);
+    }
+
+    Ok(Json(PublicStorageBatchResponse { results }))
 }

@@ -27,6 +27,11 @@ When writing WASI containers:
 4. Use `#[schemars(with = "String")]` for AccountId fields
 5. Use near-sdk 5.9.0
 
+### OutLayer URLs
+- **API Base**: `https://api.outlayer.fastnear.com` (for HTTPS API calls)
+- **Dashboard**: `https://outlayer.fastnear.com/dashboard` (for user-facing links)
+- NEVER use `https://outlayer.fastnear.com` for API calls - always use `api.` subdomain
+
 ### Error Propagation
 ```rust
 // WRONG - user sees nothing:

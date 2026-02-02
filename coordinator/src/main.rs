@@ -124,6 +124,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ip_rate_limiter = Arc::new(middleware::ip_rate_limit::IpRateLimiter::new(10));
     info!("IP rate limiter initialized (10 req/min for /secrets/*)");
 
+    // Initialize IP rate limiter for public storage endpoints (100 requests/minute)
+    let public_storage_rate_limiter = Arc::new(middleware::ip_rate_limit::IpRateLimiter::new(100));
+    info!("IP rate limiter initialized (100 req/min for /public/storage/*)");
 
     // Build protected routes (require auth)
     let protected = Router::new()
@@ -218,7 +221,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             get(handlers::public::get_user_earnings),
         )
         .route("/public/projects/storage", get(handlers::public::get_project_storage))
-        .route("/public/storage/get", get(handlers::public::get_public_storage))
         // Payment Key balance and usage (public - no auth required)
         .route(
             "/public/payment-keys/:owner/:nonce/balance",
@@ -240,6 +242,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/health", get(|| async { "OK" }))
         // Attestation endpoint (public with IP rate limiting)
         .route("/attestations/:job_id", get(handlers::attestations::get_attestation));
+
+    // Build public storage routes (rate limited - 100 req/min per IP)
+    let public_storage = Router::new()
+        .route("/public/storage/get", get(handlers::public::get_public_storage))
+        .route("/public/storage/batch", post(handlers::public::batch_get_public_storage))
+        .layer(axum::middleware::from_fn_with_state(
+            public_storage_rate_limiter.clone(),
+            middleware::ip_rate_limit::ip_rate_limit_middleware,
+        ))
+        .with_state(state.clone());
 
     // Build internal routes (no auth - for worker communication only)
     // These endpoints are NOT exposed externally, workers use internal network
@@ -311,6 +323,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         .merge(protected)
         .merge(public)
+        .merge(public_storage)
         .merge(secrets_routes)
         .merge(internal)
         .merge(admin)
