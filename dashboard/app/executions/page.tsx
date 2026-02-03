@@ -41,7 +41,7 @@ const DEFAULT_SETTINGS: TableSettings = {
     time: true,
     fuel: false,
     payment: true,
-    tx: false,
+    tx: true,
     created: true,
     tee: true,
   },
@@ -300,8 +300,15 @@ export default function JobsPage() {
     }));
   };
 
+  // Effective column visibility: hide TX when only HTTPS is shown (no transactions)
+  const httpsOnly = settings.showHttps && !settings.showNear;
+  const effectiveColumns = {
+    ...settings.visibleColumns,
+    tx: settings.visibleColumns.tx && !httpsOnly,
+  };
+
   // Count visible columns for colspan
-  const visibleColumnCount = Object.values(settings.visibleColumns).filter(Boolean).length;
+  const visibleColumnCount = Object.values(effectiveColumns).filter(Boolean).length;
 
   if (error && !loading) {
     return (
@@ -399,40 +406,40 @@ export default function JobsPage() {
               <table className="min-w-full divide-y divide-gray-300">
                 <thead className="bg-gray-50">
                   <tr>
-                    {settings.visibleColumns.id && (
+                    {effectiveColumns.id && (
                       <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">ID</th>
                     )}
-                    {settings.visibleColumns.tee && (
+                    {effectiveColumns.tee && (
                       <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">TEE</th>
                     )}
-                    {settings.visibleColumns.type && (
+                    {effectiveColumns.type && (
                       <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Type</th>
                     )}
-                    {settings.visibleColumns.status && (
+                    {effectiveColumns.status && (
                       <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Status</th>
                     )}
-                    {settings.visibleColumns.worker && (
+                    {effectiveColumns.worker && (
                       <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Worker</th>
                     )}
-                    {settings.visibleColumns.source && (
+                    {effectiveColumns.source && (
                       <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Source</th>
                     )}
-                    {settings.visibleColumns.user && (
+                    {effectiveColumns.user && (
                       <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">User</th>
                     )}
-                    {settings.visibleColumns.time && (
+                    {effectiveColumns.time && (
                       <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Time (ms)</th>
                     )}
-                    {settings.visibleColumns.fuel && (
+                    {effectiveColumns.fuel && (
                       <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900" title="Instructions">Fuel</th>
                     )}
-                    {settings.visibleColumns.payment && (
+                    {effectiveColumns.payment && (
                       <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900" title="In NEAR tokens">Payment</th>
                     )}
-                    {settings.visibleColumns.tx && (
+                    {effectiveColumns.tx && (
                       <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">TX</th>
                     )}
-                    {settings.visibleColumns.created && (
+                    {effectiveColumns.created && (
                       <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Created</th>
                     )}
                   </tr>
@@ -460,30 +467,33 @@ export default function JobsPage() {
                       return (
                         <>
                           <tr key={job.id}>
-                            {settings.visibleColumns.id && (
+                            {effectiveColumns.id && (
                               <td className="whitespace-nowrap px-3 py-4 text-sm font-mono text-gray-900">
                                 #{job.id}
                               </td>
                             )}
-                            {settings.visibleColumns.tee && (
+                            {effectiveColumns.tee && (
                               <td className="whitespace-nowrap px-3 py-4 text-sm">
                                 {job.job_id ? (
                                   <button
                                     onClick={() => loadAttestation(job)}
-                                    className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded border border-blue-200 transition-colors"
-                                    title="View TEE attestation"
+                                    className="text-gray-400 hover:text-blue-600 cursor-pointer transition-colors"
+                                    title="View attestation report"
                                   >
-                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
                                     </svg>
-                                    TEE
                                   </button>
                                 ) : (
-                                  <span className="text-gray-300">-</span>
+                                  <span className="text-gray-200">
+                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                                    </svg>
+                                  </span>
                                 )}
                               </td>
                             )}
-                            {settings.visibleColumns.type && (
+                            {effectiveColumns.type && (
                               <td className="whitespace-nowrap px-3 py-4 text-sm">
                                 <div className="flex items-center gap-1">
                                   <span
@@ -510,7 +520,7 @@ export default function JobsPage() {
                                 </div>
                               </td>
                             )}
-                            {settings.visibleColumns.status && (
+                            {effectiveColumns.status && (
                               <td className="whitespace-nowrap px-3 py-4 text-sm">
                                 <span
                                   className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${
@@ -526,14 +536,14 @@ export default function JobsPage() {
                                 </span>
                               </td>
                             )}
-                            {settings.visibleColumns.worker && (
+                            {effectiveColumns.worker && (
                               <td className="px-3 py-4 text-sm text-gray-500 font-mono">
                                 <div className="max-w-[100px] truncate" title={job.worker_id || 'N/A'}>
                                   {job.worker_id || 'N/A'}
                                 </div>
                               </td>
                             )}
-                            {settings.visibleColumns.source && (
+                            {effectiveColumns.source && (
                               <td className="px-3 py-4 text-sm text-gray-500">
                                 {job.project_id ? (
                                   <span
@@ -557,14 +567,14 @@ export default function JobsPage() {
                                 )}
                               </td>
                             )}
-                            {settings.visibleColumns.user && (
+                            {effectiveColumns.user && (
                               <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500 font-mono">
                                 {job.user_account_id
                                   ? job.user_account_id.substring(0, 12) + '...'
                                   : 'N/A'}
                               </td>
                             )}
-                            {settings.visibleColumns.time && (
+                            {effectiveColumns.time && (
                               <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-900">
                                 {job.compile_time_ms && job.execution_time_ms
                                   ? `${job.compile_time_ms}ms + ${job.execution_time_ms}ms`
@@ -575,19 +585,19 @@ export default function JobsPage() {
                                   : 'N/A'}
                               </td>
                             )}
-                            {settings.visibleColumns.fuel && (
+                            {effectiveColumns.fuel && (
                               <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-900">
                                 {job.job_type === 'compile' ? '-' : formatInstructions(job.instructions_used)}
                               </td>
                             )}
-                            {settings.visibleColumns.payment && (
+                            {effectiveColumns.payment && (
                               <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-900">
                                 {job.is_https_call
                                   ? formatUsd(job.compute_cost_usd)
                                   : formatYoctoNEAR(getDisplayPayment(job))}
                               </td>
                             )}
-                            {settings.visibleColumns.tx && (
+                            {effectiveColumns.tx && (
                               <td className="whitespace-nowrap px-3 py-4 text-sm">
                                 {job.transaction_hash ? (
                                   <a
@@ -604,7 +614,7 @@ export default function JobsPage() {
                                 )}
                               </td>
                             )}
-                            {settings.visibleColumns.created && (
+                            {effectiveColumns.created && (
                               <td
                                 className="whitespace-nowrap px-3 py-4 text-sm text-gray-500"
                                 title={new Date(job.created_at).toLocaleString()}
