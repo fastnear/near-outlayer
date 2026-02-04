@@ -535,6 +535,12 @@ async fn worker_iteration(
     let payment_key_nonce = execution_request.payment_key_nonce;
     let usd_payment = execution_request.usd_payment.clone();
 
+    // Invariant: HTTPS calls must have call_id to route responses back to the user.
+    // Without it, complete_https_call cannot update https_calls table → user gets 524 timeout.
+    if is_https_call && call_id.is_none() {
+        anyhow::bail!("HTTPS call missing call_id for request_id={}", request_id);
+    }
+
     /// Result of resolving project: code_source + project_uuid
     struct ResolvedProject {
         code_source: api_client::CodeSource,
@@ -1481,76 +1487,113 @@ async fn handle_execute_job(
         return Ok(());
     }
 
-    // Check if compilation failed - if so, just report the error to contract
+    // Check if compilation failed - if so, report the error
     if let Some(compile_error) = &job.compile_error {
-        info!("❌ Compilation failed, reporting error to contract: {}", compile_error);
-
         // Calculate compile cost (from job info)
         let compile_cost: u128 = job.compile_cost_yocto
             .as_ref()
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
 
-        // Create execution result with compilation error
-        let error_result = api_client::ExecutionResult {
-            success: false,
-            output: None,
-            error: Some(compile_error.clone()),
-            execution_time_ms: 0,
-            instructions: 0,
-            compile_time_ms: None,
-            compilation_note: Some("Compilation failed".to_string()),
-            refund_usd: None,
-        };
+        if is_https_call {
+            // HTTPS calls: report compile error to coordinator (not NEAR contract)
+            info!("❌ Compilation failed for HTTPS call, reporting to coordinator: {}", compile_error);
 
-        let near_result = near_client
-            .submit_execution_result(request_id, &error_result)
-            .await;
-
-        match near_result {
-            Ok((tx_hash, _outcome)) => {
-                info!("✅ Compilation error submitted to NEAR successfully: tx_hash={}", tx_hash);
-
-                // Report to coordinator
-                if let Err(e) = api_client
-                    .complete_job(
-                        job.job_id,
-                        false,
-                        None,
-                        Some(compile_error.clone()),
-                        0,
-                        0,
-                        None,
-                        Some(compile_cost.to_string()),
-                        None, // compile_cost already included in actual_cost
-                        Some(api_client::JobStatus::CompilationFailed),
-                        None, // No compile_result
-                    )
-                    .await
-                {
-                    warn!("⚠️ Failed to report job completion: {}", e);
+            if let Some(ref call_id_str) = call_id {
+                if let Err(https_err) = api_client.complete_https_call(
+                    call_id_str,
+                    false,
+                    None,
+                    Some(compile_error.clone()),
+                    0,
+                    0,
+                    Some(job.job_id),
+                ).await {
+                    error!("❌ Failed to report HTTPS call compile error: {}", https_err);
                 }
             }
-            Err(e) => {
-                error!("❌ Failed to submit compilation error to contract: {}", e);
-                // Report failure to coordinator
-                if let Err(report_err) = api_client
-                    .complete_job(
-                        job.job_id,
-                        false,
-                        None,
-                        Some(format!("Failed to submit to contract: {}", e)),
-                        0,
-                        0,
-                        None,
-                        None,
-                        None,
-                        Some(api_client::JobStatus::Failed),
-                        None, // No compile_result
-                    )
-                    .await
-                {
-                    warn!("⚠️ Failed to report job failure: {}", report_err);
+
+            // Report failure to coordinator job tracking
+            if let Err(e) = api_client
+                .complete_job(
+                    job.job_id,
+                    false,
+                    None,
+                    Some(compile_error.clone()),
+                    0,
+                    0,
+                    None,
+                    Some(compile_cost.to_string()),
+                    None,
+                    Some(api_client::JobStatus::CompilationFailed),
+                    None,
+                )
+                .await
+            {
+                warn!("⚠️ Failed to report job completion: {}", e);
+            }
+        } else {
+            // Blockchain calls: report compile error to NEAR contract
+            info!("❌ Compilation failed, reporting error to contract: {}", compile_error);
+
+            let error_result = api_client::ExecutionResult {
+                success: false,
+                output: None,
+                error: Some(compile_error.clone()),
+                execution_time_ms: 0,
+                instructions: 0,
+                compile_time_ms: None,
+                compilation_note: Some("Compilation failed".to_string()),
+                refund_usd: None,
+            };
+
+            let near_result = near_client
+                .submit_execution_result(request_id, &error_result)
+                .await;
+
+            match near_result {
+                Ok((tx_hash, _outcome)) => {
+                    info!("✅ Compilation error submitted to NEAR successfully: tx_hash={}", tx_hash);
+
+                    if let Err(e) = api_client
+                        .complete_job(
+                            job.job_id,
+                            false,
+                            None,
+                            Some(compile_error.clone()),
+                            0,
+                            0,
+                            None,
+                            Some(compile_cost.to_string()),
+                            None,
+                            Some(api_client::JobStatus::CompilationFailed),
+                            None,
+                        )
+                        .await
+                    {
+                        warn!("⚠️ Failed to report job completion: {}", e);
+                    }
+                }
+                Err(e) => {
+                    error!("❌ Failed to submit compilation error to contract: {}", e);
+                    if let Err(report_err) = api_client
+                        .complete_job(
+                            job.job_id,
+                            false,
+                            None,
+                            Some(format!("Failed to submit to contract: {}", e)),
+                            0,
+                            0,
+                            None,
+                            None,
+                            None,
+                            Some(api_client::JobStatus::Failed),
+                            None,
+                        )
+                        .await
+                    {
+                        warn!("⚠️ Failed to report job failure: {}", report_err);
+                    }
                 }
             }
         }
