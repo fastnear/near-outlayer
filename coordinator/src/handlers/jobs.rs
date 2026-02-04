@@ -1049,22 +1049,10 @@ async fn reconstruct_execution_request_json(
     .map_err(|e| format!("DB error: {}", e))?
     .ok_or_else(|| format!("No execution_requests record for request_id={}", request_id))?;
 
-    let code_source_json = match code_source {
-        CodeSource::GitHub { repo, commit, build_target } => serde_json::json!({
-            "GitHub": {
-                "repo": repo,
-                "commit": commit,
-                "build_target": build_target
-            }
-        }),
-        CodeSource::WasmUrl { url, hash, build_target } => serde_json::json!({
-            "WasmUrl": {
-                "url": url,
-                "hash": hash,
-                "build_target": build_target
-            }
-        }),
-    };
+    // Serialize code_source using serde to respect #[serde(tag = "type")] on CodeSource enum.
+    // This produces {"type": "WasmUrl", "url": ..., ...} (internally-tagged format).
+    let code_source_json = serde_json::to_value(code_source)
+        .map_err(|e| format!("Failed to serialize code_source: {}", e))?;
 
     let input_data: Option<String> = row.get("input_data");
     let max_instructions: Option<i64> = row.get("max_instructions");
