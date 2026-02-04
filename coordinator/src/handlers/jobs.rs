@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use axum::{extract::State, http::StatusCode, Json};
 use redis::AsyncCommands;
 use tracing::{debug, error, info, warn};
@@ -745,153 +746,207 @@ pub async fn complete_job(
             job.request_id, state.config.redis_queue_execute
         );
     } else if job.job_type == "compile" && !payload.success {
-        // Compilation failed - still need to create execute task so executor can send error to contract
+        // Compilation failed — handle differently for HTTPS vs blockchain calls.
+        // HTTPS: coordinator finalizes the call directly (no TEE execute worker needed).
+        // Blockchain: create execute task so executor can send error to NEAR contract.
         info!(
-            "❌ Compile job {} failed, creating execute task to report error for request_id={}",
+            "❌ Compile job {} failed for request_id={}",
             payload.job_id, job.request_id
         );
 
-        // Build minimal code source for the execute task
-        let build_target = job.build_target.clone().unwrap_or_else(|| "wasm32-wasip1".to_string());
-        let code_source = if let (Some(repo), Some(commit)) = (&job.github_repo, &job.github_commit) {
-            CodeSource::GitHub {
-                repo: repo.clone(),
-                commit: commit.clone(),
-                build_target,
-            }
-        } else if let (Some(url), Some(hash)) = (&job.wasm_url, &job.wasm_content_hash) {
-            CodeSource::WasmUrl {
-                url: url.clone(),
-                hash: hash.clone(),
-                build_target,
-            }
-        } else {
-            error!("Missing code source fields for failed compile job {}", payload.job_id);
-            return StatusCode::INTERNAL_SERVER_ERROR;
-        };
-
-        // Fetch execution request data from execution_requests table.
-        // Both HTTPS and blockchain calls are stored here — HTTPS fields are populated
-        // for HTTPS calls, ensuring the worker routes the error response correctly.
+        // Fetch execution request to determine call type
         use sqlx::Row as _;
-        let execution_request = match sqlx::query(
+        let exec_row = sqlx::query(
             r#"
-            SELECT project_uuid, project_id, is_https_call, call_id,
-                   payment_key_owner, payment_key_nonce, usd_payment,
-                   compute_limit_usd, attached_deposit_usd, user_account_id
+            SELECT is_https_call, call_id, payment_key_owner, payment_key_nonce,
+                   compute_limit_usd, attached_deposit_usd, project_uuid, project_id,
+                   user_account_id
             FROM execution_requests WHERE request_id = $1
             "#
         )
         .bind(job.request_id)
         .fetch_optional(&state.db)
-        .await
-        {
-            Ok(Some(row)) => {
-                let is_https_call: bool = row.get("is_https_call");
-                let call_id: Option<String> = row.get::<Option<uuid::Uuid>, _>("call_id").map(|u| u.to_string());
+        .await;
+
+        let is_https_call = match &exec_row {
+            Ok(Some(row)) => row.get::<bool, _>("is_https_call"),
+            _ => false,
+        };
+
+        if is_https_call {
+            // HTTPS call: finalize directly in coordinator — no execute worker needed.
+            // Update https_calls status to "failed" and release reserved balance.
+            let row = exec_row.unwrap().unwrap(); // safe: is_https_call=true means Ok(Some)
+            let call_id: Option<uuid::Uuid> = row.get("call_id");
+            let payment_key_owner: Option<String> = row.get("payment_key_owner");
+            let payment_key_nonce: Option<i32> = row.get("payment_key_nonce");
+            let compute_limit_usd: Option<String> = row.get("compute_limit_usd");
+            let attached_deposit_usd: Option<String> = row.get("attached_deposit_usd");
+
+            let compile_error = payload.error.clone().unwrap_or_else(|| "Compilation failed".to_string());
+
+            if let Some(cid) = call_id {
+                // Update https_calls status to "failed"
+                if let Err(e) = sqlx::query(
+                    "UPDATE https_calls SET status = 'failed', error_message = $2, completed_at = NOW() WHERE call_id = $1 AND status NOT IN ('completed', 'failed')"
+                )
+                .bind(cid)
+                .bind(&compile_error)
+                .execute(&state.db)
+                .await
+                {
+                    error!("Failed to update https_calls for call_id={}: {}", cid, e);
+                }
+
+                // Release reserved balance (compute_limit + attached_deposit)
+                if let (Some(owner), Some(nonce)) = (&payment_key_owner, payment_key_nonce) {
+                    let compute: u128 = compute_limit_usd.as_deref().and_then(|s| s.parse().ok()).unwrap_or(0);
+                    let deposit: u128 = attached_deposit_usd.as_deref().and_then(|s| s.parse().ok()).unwrap_or(0);
+                    let reserved_amount = compute + deposit;
+
+                    if reserved_amount > 0 {
+                        if let Err(e) = sqlx::query(
+                            "UPDATE payment_key_balances SET reserved = GREATEST(0, reserved - $3) WHERE owner = $1 AND nonce = $2"
+                        )
+                        .bind(owner)
+                        .bind(nonce)
+                        .bind(sqlx::types::BigDecimal::from_str(&reserved_amount.to_string()).unwrap_or_default())
+                        .execute(&state.db)
+                        .await
+                        {
+                            error!("Failed to release balance for {}:{}: {}", owner, nonce, e);
+                        }
+                    }
+                }
+
                 info!(
-                    "📋 Fetched execution_requests for failed compile: request_id={} is_https_call={} call_id={:?}",
-                    job.request_id, is_https_call, call_id
+                    "✅ HTTPS compile failure finalized: call_id={} error={}",
+                    cid, compile_error
                 );
-                ExecutionRequest {
-                    request_id: job.request_id as u64,
-                    data_id: job.data_id.clone(),
-                    code_source: Some(code_source),
-                    resource_limits: ResourceLimits {
-                        max_instructions: 0,
-                        max_memory_mb: 0,
-                        max_execution_seconds: 0,
-                    },
-                    input_data: String::new(),
-                    secrets_ref: None,
-                    response_format: ResponseFormat::Text,
-                    context: ExecutionContext::default(),
-                    user_account_id: Some(row.get::<Option<String>, _>("user_account_id")
-                        .unwrap_or_else(|| job.user_account_id.clone().unwrap_or_default())),
-                    near_payment_yocto: job.near_payment_yocto.clone(),
-                    attached_usd: None,
-                    transaction_hash: job.transaction_hash.clone(),
-                    compile_only: false,
-                    force_rebuild: false,
-                    store_on_fastfs: false,
-                    compile_result: None,
-                    project_uuid: row.get("project_uuid"),
-                    project_id: row.get("project_id"),
-                    is_https_call,
-                    call_id,
-                    payment_key_owner: row.get("payment_key_owner"),
-                    payment_key_nonce: row.get::<Option<i32>, _>("payment_key_nonce"),
-                    usd_payment: row.get("usd_payment"),
-                    compute_limit_usd: row.get("compute_limit_usd"),
-                    attached_deposit_usd: row.get("attached_deposit_usd"),
+            } else {
+                error!("❌ HTTPS call missing call_id for request_id={}", job.request_id);
+            }
+        } else {
+            // Blockchain call: create execute task so executor can send error to NEAR contract.
+            info!(
+                "📤 Creating execute task to report blockchain compile error for request_id={}",
+                job.request_id
+            );
+
+            let build_target = job.build_target.clone().unwrap_or_else(|| "wasm32-wasip1".to_string());
+            let code_source = if let (Some(repo), Some(commit)) = (&job.github_repo, &job.github_commit) {
+                CodeSource::GitHub {
+                    repo: repo.clone(),
+                    commit: commit.clone(),
+                    build_target,
                 }
-            }
-            Ok(None) => {
-                // Fallback: no execution_requests record (legacy calls before migration)
-                warn!("⚠️ No execution_requests record for failed compile request_id={}, using defaults", job.request_id);
-                ExecutionRequest {
-                    request_id: job.request_id as u64,
-                    data_id: job.data_id.clone(),
-                    code_source: Some(code_source),
-                    resource_limits: ResourceLimits {
-                        max_instructions: 0,
-                        max_memory_mb: 0,
-                        max_execution_seconds: 0,
-                    },
-                    input_data: String::new(),
-                    secrets_ref: None,
-                    response_format: ResponseFormat::Text,
-                    context: ExecutionContext::default(),
-                    user_account_id: job.user_account_id.clone(),
-                    near_payment_yocto: job.near_payment_yocto.clone(),
-                    attached_usd: None,
-                    transaction_hash: job.transaction_hash.clone(),
-                    compile_only: false,
-                    force_rebuild: false,
-                    store_on_fastfs: false,
-                    compile_result: None,
-                    project_uuid: None,
-                    project_id: None,
-                    is_https_call: false,
-                    call_id: None,
-                    payment_key_owner: None,
-                    payment_key_nonce: None,
-                    usd_payment: None,
-                    compute_limit_usd: None,
-                    attached_deposit_usd: None,
+            } else if let (Some(url), Some(hash)) = (&job.wasm_url, &job.wasm_content_hash) {
+                CodeSource::WasmUrl {
+                    url: url.clone(),
+                    hash: hash.clone(),
+                    build_target,
                 }
-            }
-            Err(e) => {
-                error!("❌ DB error fetching execution_requests for failed compile request_id={}: {}", job.request_id, e);
+            } else {
+                error!("Missing code source fields for failed compile job {}", payload.job_id);
+                return StatusCode::INTERNAL_SERVER_ERROR;
+            };
+
+            let execution_request = match exec_row {
+                Ok(Some(row)) => {
+                    ExecutionRequest {
+                        request_id: job.request_id as u64,
+                        data_id: job.data_id.clone(),
+                        code_source: Some(code_source),
+                        resource_limits: ResourceLimits {
+                            max_instructions: 0,
+                            max_memory_mb: 0,
+                            max_execution_seconds: 0,
+                        },
+                        input_data: String::new(),
+                        secrets_ref: None,
+                        response_format: ResponseFormat::Text,
+                        context: ExecutionContext::default(),
+                        user_account_id: job.user_account_id.clone(),
+                        near_payment_yocto: job.near_payment_yocto.clone(),
+                        attached_usd: None,
+                        transaction_hash: job.transaction_hash.clone(),
+                        compile_only: false,
+                        force_rebuild: false,
+                        store_on_fastfs: false,
+                        compile_result: None,
+                        project_uuid: row.get("project_uuid"),
+                        project_id: row.get("project_id"),
+                        is_https_call: false,
+                        call_id: None,
+                        payment_key_owner: None,
+                        payment_key_nonce: None,
+                        usd_payment: None,
+                        compute_limit_usd: None,
+                        attached_deposit_usd: None,
+                    }
+                }
+                _ => {
+                    warn!("⚠️ No execution_requests record for failed compile request_id={}, using defaults", job.request_id);
+                    ExecutionRequest {
+                        request_id: job.request_id as u64,
+                        data_id: job.data_id.clone(),
+                        code_source: Some(code_source),
+                        resource_limits: ResourceLimits {
+                            max_instructions: 0,
+                            max_memory_mb: 0,
+                            max_execution_seconds: 0,
+                        },
+                        input_data: String::new(),
+                        secrets_ref: None,
+                        response_format: ResponseFormat::Text,
+                        context: ExecutionContext::default(),
+                        user_account_id: job.user_account_id.clone(),
+                        near_payment_yocto: job.near_payment_yocto.clone(),
+                        attached_usd: None,
+                        transaction_hash: job.transaction_hash.clone(),
+                        compile_only: false,
+                        force_rebuild: false,
+                        store_on_fastfs: false,
+                        compile_result: None,
+                        project_uuid: None,
+                        project_id: None,
+                        is_https_call: false,
+                        call_id: None,
+                        payment_key_owner: None,
+                        payment_key_nonce: None,
+                        usd_payment: None,
+                        compute_limit_usd: None,
+                        attached_deposit_usd: None,
+                    }
+                }
+            };
+
+            let request_json = match serde_json::to_string(&execution_request) {
+                Ok(json) => json,
+                Err(e) => {
+                    error!("Failed to serialize execution request: {}", e);
+                    return StatusCode::INTERNAL_SERVER_ERROR;
+                }
+            };
+
+            let mut conn = match state.redis.get_multiplexed_async_connection().await {
+                Ok(c) => c,
+                Err(e) => {
+                    error!("Failed to get Redis connection: {}", e);
+                    return StatusCode::INTERNAL_SERVER_ERROR;
+                }
+            };
+
+            if let Err(e) = conn.lpush::<_, _, ()>(&state.config.redis_queue_execute, request_json).await {
+                error!("Failed to push execute task to Redis: {}", e);
                 return StatusCode::INTERNAL_SERVER_ERROR;
             }
-        };
 
-        let request_json = match serde_json::to_string(&execution_request) {
-            Ok(json) => json,
-            Err(e) => {
-                error!("Failed to serialize execution request: {}", e);
-                return StatusCode::INTERNAL_SERVER_ERROR;
-            }
-        };
-
-        let mut conn = match state.redis.get_multiplexed_async_connection().await {
-            Ok(c) => c,
-            Err(e) => {
-                error!("Failed to get Redis connection: {}", e);
-                return StatusCode::INTERNAL_SERVER_ERROR;
-            }
-        };
-
-        if let Err(e) = conn.lpush::<_, _, ()>(&state.config.redis_queue_execute, request_json).await {
-            error!("Failed to push execute task to Redis: {}", e);
-            return StatusCode::INTERNAL_SERVER_ERROR;
+            info!(
+                "✅ Execute task (with compile error) created for request_id={} in queue '{}'",
+                job.request_id, state.config.redis_queue_execute
+            );
         }
-
-        info!(
-            "✅ Execute task (with compile error) created for request_id={} in queue '{}'",
-            job.request_id, state.config.redis_queue_execute
-        );
     }
 
     // Save to execution history
