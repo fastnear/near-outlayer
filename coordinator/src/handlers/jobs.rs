@@ -226,25 +226,14 @@ pub async fn claim_job(
                         payload.request_id, payload.data_id
                     );
 
-                    // Get execution request and push to compile queue
-                    // For HTTPS calls (request_id=0): use Redis cache
-                    // For blockchain calls: use execution_requests table
-                    let is_https_call = payload.request_id == 0;
-
+                    // Reconstruct execution request from execution_requests table
+                    // (both HTTPS and blockchain calls are stored there)
                     if let Ok(mut conn) = state.redis.get_multiplexed_async_connection().await {
-                        let request_json: Option<String> = if is_https_call {
-                            // HTTPS call - get from Redis cache
-                            let request_key = format!("https_request:{}", payload.data_id);
-                            conn.get(&request_key).await.ok().flatten()
-                        } else {
-                            // Blockchain call - reconstruct from execution_requests table
-                            // This is same logic as complete_job uses
-                            match reconstruct_execution_request_json(&state.db, payload.request_id, &payload.data_id, &payload.code_source).await {
-                                Ok(json) => Some(json),
-                                Err(e) => {
-                                    warn!("⚠️ Failed to reconstruct execution request: {}", e);
-                                    None
-                                }
+                        let request_json: Option<String> = match reconstruct_execution_request_json(&state.db, payload.request_id, &payload.data_id, &payload.code_source).await {
+                            Ok(json) => Some(json),
+                            Err(e) => {
+                                warn!("⚠️ Failed to reconstruct execution request: {}", e);
+                                None
                             }
                         };
 
@@ -524,7 +513,8 @@ pub async fn complete_job(
         // These should be stored when the original task is created
         // For now, fetch from a pending execute task or store in a separate table
 
-        // Try to get the original execution request from pending execute jobs or a task table
+        // Fetch original execution request from execution_requests table.
+        // Both blockchain and HTTPS calls are stored here (HTTPS since the request_id sequence change).
         use sqlx::Row;
         let original_request = sqlx::query(
             r#"
@@ -534,7 +524,10 @@ pub async fn complete_job(
                    context_contract_id, context_transaction_hash, context_receipt_id,
                    context_predecessor_id, context_signer_public_key, context_gas_burnt,
                    compile_only, force_rebuild, store_on_fastfs, project_uuid, project_id,
-                   attached_usd
+                   attached_usd,
+                   is_https_call, call_id, payment_key_owner, payment_key_nonce,
+                   usd_payment, compute_limit_usd, attached_deposit_usd,
+                   version_key, user_account_id
             FROM execution_requests
             WHERE request_id = $1
             "#
@@ -543,71 +536,9 @@ pub async fn complete_job(
         .fetch_optional(&state.db)
         .await;
 
-        // For HTTPS calls (request_id=0), skip execution_requests lookup and go directly to Redis
-        // because execution_requests table doesn't store HTTPS call data
-        let execution_request = if job.request_id == 0 {
-            // HTTPS call - get from Redis cache
-            let request_key = format!("https_request:{}", job.data_id);
-            let mut found_request: Option<ExecutionRequest> = None;
-
-            if let Ok(mut conn) = state.redis.get_multiplexed_async_connection().await {
-                let cached: Result<Option<String>, _> = conn.get(&request_key).await;
-                if let Ok(Some(json)) = cached {
-                    if let Ok(req) = serde_json::from_str::<ExecutionRequest>(&json) {
-                        info!("📋 Fetched HTTPS execution request from Redis for compile job: data_id={} project_uuid={:?} project_id={:?}",
-                            job.data_id, req.project_uuid, req.project_id);
-                        found_request = Some(ExecutionRequest {
-                            code_source: Some(code_source.clone()),
-                            compile_result: payload.compile_result.clone(),
-                            ..req
-                        });
-                    } else {
-                        warn!("⚠️ Failed to parse HTTPS execution request from Redis for compile job data_id={}", job.data_id);
-                    }
-                } else {
-                    warn!("⚠️ No HTTPS execution request in Redis for compile job data_id={}", job.data_id);
-                }
-            } else {
-                warn!("⚠️ Failed to connect to Redis for HTTPS execution request (compile job)");
-            }
-
-            found_request.unwrap_or_else(|| {
-                warn!("⚠️ Using defaults for HTTPS compile job (project_uuid=None)");
-                ExecutionRequest {
-                    request_id: job.request_id as u64,
-                    data_id: job.data_id.clone(),
-                    code_source: Some(code_source.clone()),
-                    resource_limits: ResourceLimits {
-                        max_instructions: 1_000_000_000,
-                        max_memory_mb: 128,
-                        max_execution_seconds: 60,
-                    },
-                    input_data: String::new(),
-                    secrets_ref: None,
-                    response_format: ResponseFormat::Text,
-                    context: ExecutionContext::default(),
-                    user_account_id: job.user_account_id.clone(),
-                    near_payment_yocto: job.near_payment_yocto.clone(),
-                    attached_usd: None,
-                    transaction_hash: job.transaction_hash.clone(),
-                    compile_only: false,
-                    force_rebuild: false,
-                    store_on_fastfs: false,
-                    compile_result: payload.compile_result.clone(),
-                    project_uuid: None,
-                    project_id: None,
-                    is_https_call: true,
-                    call_id: None,
-                    payment_key_owner: None,
-                    payment_key_nonce: None,
-                    usd_payment: None,
-                    compute_limit_usd: None,
-                    attached_deposit_usd: None,
-                }
-            })
-        } else {
-            // Blockchain call - use execution_requests table
-            match original_request {
+        // Reconstruct ExecutionRequest from execution_requests table.
+        // Both HTTPS and blockchain calls are stored there — no special-casing needed.
+        let execution_request = match original_request {
             Ok(Some(row)) => {
                 let project_uuid: Option<String> = row.get("project_uuid");
                 let project_id: Option<String> = row.get("project_id");
@@ -704,18 +635,18 @@ pub async fn complete_job(
                     compile_result: payload.compile_result.clone(),
                     project_uuid,
                     project_id,
-                    // HTTPS API fields - not used for NEAR contract calls
-                    is_https_call: false,
-                    call_id: None,
-                    payment_key_owner: None,
-                    payment_key_nonce: None,
-                    usd_payment: None,
-                    compute_limit_usd: None,
-                    attached_deposit_usd: None,
+                    // HTTPS API fields (populated for HTTPS calls, None for blockchain)
+                    is_https_call: row.get("is_https_call"),
+                    call_id: row.get::<Option<uuid::Uuid>, _>("call_id").map(|u| u.to_string()),
+                    payment_key_owner: row.get("payment_key_owner"),
+                    payment_key_nonce: row.get::<Option<i32>, _>("payment_key_nonce"),
+                    usd_payment: row.get("usd_payment"),
+                    compute_limit_usd: row.get("compute_limit_usd"),
+                    attached_deposit_usd: row.get("attached_deposit_usd"),
                 }
             }
             Ok(None) => {
-                // No execution_requests record for this blockchain call
+                // No execution_requests record (should not happen for new calls)
                 warn!("⚠️ No execution_requests record for request_id={}, using defaults (project_uuid=None, project_id=None)", job.request_id);
                 ExecutionRequest {
                     request_id: job.request_id as u64,
@@ -784,8 +715,7 @@ pub async fn complete_job(
                     attached_deposit_usd: None,
                 }
             }
-        }  // end match original_request
-        };  // end else block (blockchain calls)
+        };  // end match original_request
 
         // Serialize and push to execute queue
         let request_json = match serde_json::to_string(&execution_request) {
@@ -840,49 +770,101 @@ pub async fn complete_job(
             return StatusCode::INTERNAL_SERVER_ERROR;
         };
 
-        // Fetch project_uuid from execution_requests for storage support
-        let project_uuid = sqlx::query_scalar!(
-            "SELECT project_uuid FROM execution_requests WHERE request_id = $1",
-            job.request_id
+        // Fetch execution request data from execution_requests table.
+        // Both HTTPS and blockchain calls are stored here — HTTPS fields are populated
+        // for HTTPS calls, ensuring the worker routes the error response correctly.
+        use sqlx::Row as _;
+        let execution_request = match sqlx::query(
+            r#"
+            SELECT project_uuid, project_id, is_https_call, call_id,
+                   payment_key_owner, payment_key_nonce, usd_payment,
+                   compute_limit_usd, attached_deposit_usd, user_account_id
+            FROM execution_requests WHERE request_id = $1
+            "#
         )
+        .bind(job.request_id)
         .fetch_optional(&state.db)
         .await
-        .ok()
-        .flatten()
-        .flatten();
-
-        // Create minimal execution request - executor will see compile_error and just report it
-        let execution_request = ExecutionRequest {
-            request_id: job.request_id as u64,
-            data_id: job.data_id.clone(),
-            code_source: Some(code_source),
-            resource_limits: ResourceLimits {
-                max_instructions: 0, // Not used
-                max_memory_mb: 0,
-                max_execution_seconds: 0,
-            },
-            input_data: String::new(),
-            secrets_ref: None,
-            response_format: ResponseFormat::Text,
-            context: ExecutionContext::default(),
-            user_account_id: job.user_account_id.clone(),
-            near_payment_yocto: job.near_payment_yocto.clone(),
-            attached_usd: None,
-            transaction_hash: job.transaction_hash.clone(),
-            compile_only: false,
-            force_rebuild: false,
-            store_on_fastfs: false,
-            compile_result: None,
-            project_uuid,
-            project_id: None, // Not needed for failed compile reporting
-            // HTTPS API fields - not used for NEAR contract calls
-            is_https_call: false,
-            call_id: None,
-            payment_key_owner: None,
-            payment_key_nonce: None,
-            usd_payment: None,
-            compute_limit_usd: None,
-            attached_deposit_usd: None,
+        {
+            Ok(Some(row)) => {
+                let is_https_call: bool = row.get("is_https_call");
+                let call_id: Option<String> = row.get::<Option<uuid::Uuid>, _>("call_id").map(|u| u.to_string());
+                info!(
+                    "📋 Fetched execution_requests for failed compile: request_id={} is_https_call={} call_id={:?}",
+                    job.request_id, is_https_call, call_id
+                );
+                ExecutionRequest {
+                    request_id: job.request_id as u64,
+                    data_id: job.data_id.clone(),
+                    code_source: Some(code_source),
+                    resource_limits: ResourceLimits {
+                        max_instructions: 0,
+                        max_memory_mb: 0,
+                        max_execution_seconds: 0,
+                    },
+                    input_data: String::new(),
+                    secrets_ref: None,
+                    response_format: ResponseFormat::Text,
+                    context: ExecutionContext::default(),
+                    user_account_id: Some(row.get::<Option<String>, _>("user_account_id")
+                        .unwrap_or_else(|| job.user_account_id.clone().unwrap_or_default())),
+                    near_payment_yocto: job.near_payment_yocto.clone(),
+                    attached_usd: None,
+                    transaction_hash: job.transaction_hash.clone(),
+                    compile_only: false,
+                    force_rebuild: false,
+                    store_on_fastfs: false,
+                    compile_result: None,
+                    project_uuid: row.get("project_uuid"),
+                    project_id: row.get("project_id"),
+                    is_https_call,
+                    call_id,
+                    payment_key_owner: row.get("payment_key_owner"),
+                    payment_key_nonce: row.get::<Option<i32>, _>("payment_key_nonce"),
+                    usd_payment: row.get("usd_payment"),
+                    compute_limit_usd: row.get("compute_limit_usd"),
+                    attached_deposit_usd: row.get("attached_deposit_usd"),
+                }
+            }
+            Ok(None) => {
+                // Fallback: no execution_requests record (legacy calls before migration)
+                warn!("⚠️ No execution_requests record for failed compile request_id={}, using defaults", job.request_id);
+                ExecutionRequest {
+                    request_id: job.request_id as u64,
+                    data_id: job.data_id.clone(),
+                    code_source: Some(code_source),
+                    resource_limits: ResourceLimits {
+                        max_instructions: 0,
+                        max_memory_mb: 0,
+                        max_execution_seconds: 0,
+                    },
+                    input_data: String::new(),
+                    secrets_ref: None,
+                    response_format: ResponseFormat::Text,
+                    context: ExecutionContext::default(),
+                    user_account_id: job.user_account_id.clone(),
+                    near_payment_yocto: job.near_payment_yocto.clone(),
+                    attached_usd: None,
+                    transaction_hash: job.transaction_hash.clone(),
+                    compile_only: false,
+                    force_rebuild: false,
+                    store_on_fastfs: false,
+                    compile_result: None,
+                    project_uuid: None,
+                    project_id: None,
+                    is_https_call: false,
+                    call_id: None,
+                    payment_key_owner: None,
+                    payment_key_nonce: None,
+                    usd_payment: None,
+                    compute_limit_usd: None,
+                    attached_deposit_usd: None,
+                }
+            }
+            Err(e) => {
+                error!("❌ DB error fetching execution_requests for failed compile request_id={}: {}", job.request_id, e);
+                return StatusCode::INTERNAL_SERVER_ERROR;
+            }
         };
 
         let request_json = match serde_json::to_string(&execution_request) {
@@ -963,61 +945,69 @@ pub async fn complete_job(
         // Don't fail the request, just log the error
     }
 
-    // Log developer earnings to earnings_history for blockchain calls
-    // (only for successful execute jobs with attached_usd > 0)
+    // Log developer earnings to earnings_history for blockchain calls only.
+    // HTTPS earnings are handled separately in call.rs finalize_call().
     if job.job_type == "execute" && payload.success {
-        // Fetch attached_usd and project_id from execution_requests
-        if let Ok(Some(req_data)) = sqlx::query!(
-            "SELECT attached_usd, project_id, context_sender_id FROM execution_requests WHERE request_id = $1",
-            job.request_id
+        use sqlx::Row as _;
+        let earnings_row = sqlx::query(
+            "SELECT attached_usd, project_id, context_sender_id, is_https_call FROM execution_requests WHERE request_id = $1"
         )
+        .bind(job.request_id)
         .fetch_optional(&state.db)
-        .await
-        {
-            let attached_usd_str = req_data.attached_usd.unwrap_or_default();
-            let attached_usd: i64 = attached_usd_str.parse().unwrap_or(0);
+        .await;
 
-            if attached_usd > 0 {
-                if let Some(ref project_id) = req_data.project_id {
-                    // Extract project owner from project_id (format: "owner.near/project-name")
-                    let project_owner = project_id.split('/').next().unwrap_or(project_id.as_str());
+        if let Ok(Some(req_data)) = earnings_row {
+            let is_https: bool = req_data.get("is_https_call");
+            // Skip HTTPS calls — their earnings are handled in call.rs finalize_call()
+            if is_https {
+                debug!("Skipping blockchain earnings logging for HTTPS call request_id={}", job.request_id);
+            } else {
+                let attached_usd_str: String = req_data.get::<Option<String>, _>("attached_usd").unwrap_or_default();
+                let attached_usd: i64 = attached_usd_str.parse().unwrap_or(0);
 
-                    // Parse refund_usd from payload
-                    let refund_usd: i64 = payload.refund_usd
-                        .as_ref()
-                        .and_then(|s| s.parse().ok())
-                        .unwrap_or(0);
-                    let developer_amount = attached_usd - refund_usd;
+                if attached_usd > 0 {
+                    if let Some(project_id) = req_data.get::<Option<String>, _>("project_id") {
+                        // Extract project owner from project_id (format: "owner.near/project-name")
+                        let project_owner = project_id.split('/').next().unwrap_or(project_id.as_str());
 
-                    // Insert into earnings_history (blockchain calls only log history, balance is in contract)
-                    let attached_usd_bd = sqlx::types::BigDecimal::from(attached_usd);
-                    let refund_usd_bd = sqlx::types::BigDecimal::from(refund_usd);
-                    let developer_amount_bd = sqlx::types::BigDecimal::from(developer_amount);
+                        // Parse refund_usd from payload
+                        let refund_usd: i64 = payload.refund_usd
+                            .as_ref()
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(0);
+                        let developer_amount = attached_usd - refund_usd;
 
-                    if let Err(e) = sqlx::query!(
-                        r#"
-                        INSERT INTO earnings_history
-                        (project_owner, project_id, attached_usd, refund_usd, amount, source, tx_hash, caller, request_id)
-                        VALUES ($1, $2, $3, $4, $5, 'blockchain', $6, $7, $8)
-                        "#,
-                        project_owner,
-                        project_id,
-                        attached_usd_bd,
-                        refund_usd_bd,
-                        developer_amount_bd,
-                        job.transaction_hash.as_deref(),
-                        req_data.context_sender_id.as_deref(),
-                        job.request_id
-                    )
-                    .execute(&state.db)
-                    .await
-                    {
-                        error!("Failed to log earnings_history for request_id={}: {}", job.request_id, e);
-                    } else {
-                        info!(
-                            "💰 Logged blockchain earnings: project_owner={}, amount={} (attached={}, refund={})",
-                            project_owner, developer_amount, attached_usd, refund_usd
-                        );
+                        // Insert into earnings_history (blockchain calls only log history, balance is in contract)
+                        let attached_usd_bd = sqlx::types::BigDecimal::from(attached_usd);
+                        let refund_usd_bd = sqlx::types::BigDecimal::from(refund_usd);
+                        let developer_amount_bd = sqlx::types::BigDecimal::from(developer_amount);
+
+                        let context_sender_id: Option<String> = req_data.get("context_sender_id");
+                        if let Err(e) = sqlx::query(
+                            r#"
+                            INSERT INTO earnings_history
+                            (project_owner, project_id, attached_usd, refund_usd, amount, source, tx_hash, caller, request_id)
+                            VALUES ($1, $2, $3, $4, $5, 'blockchain', $6, $7, $8)
+                            "#
+                        )
+                        .bind(project_owner)
+                        .bind(&project_id)
+                        .bind(&attached_usd_bd)
+                        .bind(&refund_usd_bd)
+                        .bind(&developer_amount_bd)
+                        .bind(job.transaction_hash.as_deref())
+                        .bind(context_sender_id.as_deref())
+                        .bind(job.request_id)
+                        .execute(&state.db)
+                        .await
+                        {
+                            error!("Failed to log earnings_history for request_id={}: {}", job.request_id, e);
+                        } else {
+                            info!(
+                                "💰 Logged blockchain earnings: project_owner={}, amount={} (attached={}, refund={})",
+                                project_owner, developer_amount, attached_usd, refund_usd
+                            );
+                        }
                     }
                 }
             }
@@ -1028,8 +1018,8 @@ pub async fn complete_job(
     StatusCode::OK
 }
 
-/// Reconstruct ExecutionRequest JSON from execution_requests table
-/// Used for blockchain calls with WasmUrl that need to be pushed to compile queue
+/// Reconstruct ExecutionRequest JSON from execution_requests table.
+/// Works for both blockchain and HTTPS calls — HTTPS fields are included when present.
 async fn reconstruct_execution_request_json(
     db: &sqlx::PgPool,
     request_id: u64,
@@ -1046,7 +1036,10 @@ async fn reconstruct_execution_request_json(
                context_contract_id, context_transaction_hash, context_receipt_id,
                context_predecessor_id, context_signer_public_key, context_gas_burnt,
                compile_only, force_rebuild, store_on_fastfs, project_uuid, project_id,
-               attached_usd
+               attached_usd,
+               is_https_call, call_id, payment_key_owner, payment_key_nonce,
+               usd_payment, compute_limit_usd, attached_deposit_usd,
+               version_key, user_account_id
         FROM execution_requests WHERE request_id = $1
         "#
     )
@@ -1096,6 +1089,17 @@ async fn reconstruct_execution_request_json(
     let project_id: Option<String> = row.get("project_id");
     let attached_usd: Option<String> = row.get("attached_usd");
 
+    // HTTPS-specific fields (NULL for blockchain calls)
+    let is_https_call: bool = row.get("is_https_call");
+    let call_id: Option<String> = row.get::<Option<uuid::Uuid>, _>("call_id").map(|u| u.to_string());
+    let payment_key_owner: Option<String> = row.get("payment_key_owner");
+    let payment_key_nonce: Option<i32> = row.get("payment_key_nonce");
+    let usd_payment: Option<String> = row.get("usd_payment");
+    let compute_limit_usd: Option<String> = row.get("compute_limit_usd");
+    let attached_deposit_usd: Option<String> = row.get("attached_deposit_usd");
+    let version_key: Option<String> = row.get("version_key");
+    let user_account_id: Option<String> = row.get("user_account_id");
+
     let execution_request = serde_json::json!({
         "request_id": request_id,
         "data_id": data_id,
@@ -1131,7 +1135,17 @@ async fn reconstruct_execution_request_json(
         "store_on_fastfs": store_on_fastfs,
         "project_uuid": project_uuid,
         "project_id": project_id,
-        "attached_usd": attached_usd
+        "attached_usd": attached_usd,
+        // HTTPS fields (null for blockchain calls, populated for HTTPS)
+        "is_https_call": is_https_call,
+        "call_id": call_id,
+        "payment_key_owner": payment_key_owner,
+        "payment_key_nonce": payment_key_nonce,
+        "usd_payment": usd_payment,
+        "compute_limit_usd": compute_limit_usd,
+        "attached_deposit_usd": attached_deposit_usd,
+        "version_key": version_key,
+        "user_account_id": user_account_id
     });
 
     serde_json::to_string(&execution_request)

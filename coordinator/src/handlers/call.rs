@@ -706,7 +706,7 @@ async fn resolve_project_uuid_cached(
     }
 }
 
-/// Create execution task in Redis queue
+/// Create execution task: persist in execution_requests table and push to Redis queue
 async fn create_execution_task(
     state: &AppState,
     call_id: Uuid,
@@ -723,14 +723,69 @@ async fn create_execution_task(
     // Resolve project_uuid from cache (uses Redis cache, falls back to contract)
     let project_uuid = resolve_project_uuid_cached(state, project_id).await?;
 
-    // Create execution request for HTTPS call
-    // Worker will resolve project_id -> code_source from contract
+    // Generate a unique request_id for this HTTPS call from the sequence.
+    // HTTPS IDs start at 100B+, blockchain IDs start at 0 — no collision possible.
+    let request_id: i64 = sqlx::query_scalar("SELECT nextval('https_request_id_seq')")
+        .fetch_one(&state.db)
+        .await
+        .map_err(|e| CallError::InternalError(format!("Failed to generate request_id: {}", e)))?;
+
+    let secrets_profile = secrets_ref.map(|sr| sr.profile.clone());
+    let secrets_account_id = secrets_ref.map(|sr| sr.account_id.clone());
+
+    // Persist HTTPS call data in execution_requests (same table as blockchain calls).
+    // This ensures all code paths (compile success, compile failure, claim_job)
+    // can reconstruct the full ExecutionRequest from a single DB query.
+    sqlx::query(
+        r#"
+        INSERT INTO execution_requests (
+            request_id, data_id, input_data,
+            max_instructions, max_memory_mb, max_execution_seconds,
+            secrets_profile, secrets_account_id, response_format,
+            context_sender_id,
+            project_uuid, project_id, attached_usd,
+            is_https_call, call_id, payment_key_owner, payment_key_nonce,
+            usd_payment, compute_limit_usd, attached_deposit_usd,
+            version_key, user_account_id
+        ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+            TRUE, $14, $15, $16, $17, $18, $19, $20, $21
+        )
+        "#
+    )
+    .bind(request_id)
+    .bind(call_id.to_string())
+    .bind(input_data)
+    .bind(resource_limits.max_instructions as i64)
+    .bind(resource_limits.max_memory_mb as i32)
+    .bind(resource_limits.max_execution_seconds as i64)
+    .bind(&secrets_profile)
+    .bind(&secrets_account_id)
+    .bind("Json")
+    .bind(sender_id) // context_sender_id
+    .bind(&project_uuid) // project_uuid
+    .bind(project_id) // project_id
+    .bind(attached_deposit.to_string()) // attached_usd
+    .bind(call_id) // call_id (UUID)
+    .bind(sender_id) // payment_key_owner
+    .bind(payment_key_nonce as i32) // payment_key_nonce
+    .bind(attached_deposit.to_string()) // usd_payment
+    .bind(compute_limit.to_string()) // compute_limit_usd
+    .bind(attached_deposit.to_string()) // attached_deposit_usd
+    .bind(version_key) // version_key
+    .bind(sender_id) // user_account_id
+    .execute(&state.db)
+    .await
+    .map_err(|e| CallError::InternalError(format!("Failed to insert execution_request: {}", e)))?;
+
+    // Build execution request JSON for the Redis queue.
+    // Worker will resolve project_id -> code_source from contract.
     let mut execution_request = serde_json::json!({
-        "request_id": 0, // HTTPS calls don't have request_id
+        "request_id": request_id,
         "data_id": call_id.to_string(),
-        "project_id": project_id, // Worker resolves this to code_source
-        "version_key": version_key, // Specific version (null = use active_version)
-        "project_uuid": project_uuid, // Pre-resolved for storage access
+        "project_id": project_id,
+        "version_key": version_key,
+        "project_uuid": project_uuid,
         "resource_limits": resource_limits,
         "input_data": input_data,
         "response_format": "Json",
@@ -742,10 +797,9 @@ async fn create_execution_task(
         "call_id": call_id.to_string(),
         "compute_limit_usd": compute_limit.to_string(),
         "attached_deposit_usd": attached_deposit.to_string(),
-        // HTTPS-specific: env vars for WASM execution
-        "payment_key_owner": sender_id, // Payment Key owner (NEAR account)
-        "payment_key_nonce": payment_key_nonce, // Payment Key nonce (for attestation)
-        "usd_payment": attached_deposit.to_string() // USD payment to project owner (X-Attached-Deposit)
+        "payment_key_owner": sender_id,
+        "payment_key_nonce": payment_key_nonce,
+        "usd_payment": attached_deposit.to_string()
     });
 
     // Add secrets_ref if provided (for WASI modules that need secrets)
@@ -762,19 +816,12 @@ async fn create_execution_task(
     let mut conn = state.redis.get_multiplexed_async_connection().await
         .map_err(|e| CallError::InternalError(format!("Redis error: {}", e)))?;
 
-    // Store execution request in Redis for potential compile queue redirect
-    // This is needed when executor's claim_job discovers WASM is not cached
-    // and needs to push task to compile queue for downloading
-    let request_key = format!("https_request:{}", call_id);
-    let _: () = conn.set_ex(&request_key, &request_json, 3600).await // 1 hour TTL
-        .map_err(|e| CallError::InternalError(format!("Redis error: {}", e)))?;
-
-    // Push to execute queue (assuming WASM is compiled via projects)
+    // Push to execute queue (worker polls this queue)
     let queue_name = &state.config.redis_queue_execute;
     let _: () = conn.lpush(queue_name, &request_json).await
         .map_err(|e| CallError::InternalError(format!("Redis error: {}", e)))?;
 
-    info!("📤 HTTPS call task created: call_id={} project_id={}", call_id, project_id);
+    info!("📤 HTTPS call task created: call_id={} request_id={} project_id={}", call_id, request_id, project_id);
 
     Ok(true)
 }
