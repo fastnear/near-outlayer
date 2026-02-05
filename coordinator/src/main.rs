@@ -93,6 +93,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     info!("Payment key cleanup task started (every 5 min, stale threshold 10 min)");
 
+    // Start TEE challenge cleanup background task (removes expired challenges)
+    let db_for_tee_cleanup = db.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            let _ = sqlx::query("DELETE FROM tee_challenges WHERE created_at < NOW() - INTERVAL '60 seconds'")
+                .execute(&db_for_tee_cleanup)
+                .await;
+        }
+    });
+    info!("TEE challenge cleanup task started (every 60s)");
+
     // Fetch pricing from contract
     info!("📡 Fetching initial pricing from NEAR contract...");
     let initial_pricing = match near_client::fetch_pricing_from_contract(
@@ -152,6 +164,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/workers/task-completion",
             post(handlers::workers::notify_task_completion),
         )
+        // TEE session management
+        .route("/workers/tee-challenge", post(handlers::workers::tee_challenge))
+        .route("/workers/register-tee", post(handlers::workers::register_tee))
         // Attestation storage endpoint (worker-protected)
         .route("/attestations", post(handlers::attestations::store_attestation))
         // GitHub API endpoint (protected - only workers need it)
@@ -188,6 +203,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/payment-keys/delete", post(handlers::topup::delete_payment_key))
         // Payment key initialization (worker-protected, called on store_secrets with amount=0)
         .route("/payment-keys/init", post(handlers::topup::init_payment_key))
+        // Keystore TEE session proxy (worker-protected → coordinator → keystore)
+        .route("/keystore/tee-challenge", post(handlers::keystore_proxy::tee_challenge))
+        .route("/keystore/register-tee", post(handlers::keystore_proxy::register_tee))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::auth_middleware,
@@ -240,6 +258,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             get(handlers::public::get_project_owner_earnings_history),
         )
         .route("/health", get(|| async { "OK" }))
+        .route("/health/detailed", get(handlers::health::health_detailed))
         // Attestation endpoint (public with IP rate limiting)
         .route("/attestations/:job_id", get(handlers::attestations::get_attestation));
 
@@ -266,6 +285,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/admin/grant-payment-key", post(handlers::grant_keys::grant_payment_key))
         .route("/admin/grant-keys", get(handlers::grant_keys::list_grant_keys))
         .route("/admin/grant-keys/:owner/:nonce", delete(handlers::grant_keys::delete_grant_key))
+        // Worker management
+        .route("/admin/workers/:worker_id", delete(handlers::workers::delete_worker))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::admin_auth::admin_auth,

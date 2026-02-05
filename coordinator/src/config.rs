@@ -63,6 +63,12 @@ pub struct Config {
     pub max_concurrent_calls_per_key: u32,
     /// Rate limit for payment key (requests per minute)
     pub payment_key_rate_limit_per_minute: u32,
+
+    // TEE session verification
+    /// Register-contract account ID for TEE key verification (e.g., "register.outlayer.near")
+    pub register_contract_id: Option<String>,
+    /// Require valid TEE session for HTTPS call completion and keystore access
+    pub require_tee_session: bool,
 }
 
 impl Config {
@@ -154,6 +160,12 @@ impl Config {
                 .parse()?,
             payment_key_rate_limit_per_minute: std::env::var("PAYMENT_KEY_RATE_LIMIT_PER_MINUTE")
                 .unwrap_or_else(|_| "1000".to_string())
+                .parse()?,
+
+            // TEE session verification
+            register_contract_id: std::env::var("REGISTER_CONTRACT_ID").ok(),
+            require_tee_session: std::env::var("REQUIRE_TEE_SESSION")
+                .unwrap_or_else(|_| "false".to_string())
                 .parse()?,
         })
     }

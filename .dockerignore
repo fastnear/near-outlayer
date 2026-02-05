@@ -32,8 +32,9 @@ logs/
 tmp/
 /tmp/
 
-# SQLx offline data
+# SQLx offline data (except coordinator's - needed for SQLX_OFFLINE build)
 .sqlx/
+!coordinator/.sqlx/
 
 # Docs (not needed in image)
 *.md

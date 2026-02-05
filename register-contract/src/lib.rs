@@ -281,6 +281,30 @@ impl RegisterContract {
         env::log_str(&format!("Approved RTMR3 removed: {}", rtmr3));
     }
 
+    /// Remove old worker access keys (cleanup + security revocation)
+    ///
+    /// Call after worker restart when old keys are no longer needed.
+    /// Also used to immediately revoke compromised keys.
+    ///
+    /// Each key is removed via an independent promise so that one
+    /// missing key does not cause the entire batch to fail.
+    ///
+    /// # Security
+    /// - Removing a key invalidates any TEE sessions that rely on
+    ///   `view_access_key` checks against this contract
+    /// - Frees ~0.042 NEAR storage per key
+    pub fn remove_worker_keys(&mut self, public_keys: Vec<PublicKey>) {
+        self.assert_owner();
+        let account = env::current_account_id();
+        for key in &public_keys {
+            env::log_str(&format!("Removing worker key: {:?}", key));
+            // Each delete_key is an independent promise — if one key
+            // doesn't exist, the others still get removed.
+            Promise::new(account.clone()).delete_key(key.clone());
+        }
+        env::log_str(&format!("Scheduled removal of {} worker key(s)", public_keys.len()));
+    }
+
     /// Transfer ownership
     pub fn transfer_ownership(&mut self, new_owner: AccountId) {
         self.assert_owner();

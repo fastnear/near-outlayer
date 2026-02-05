@@ -43,10 +43,10 @@ pub struct Attestation {
 }
 
 impl Attestation {
-    /// Create a simulated attestation (for dev mode)
-    pub fn simulated() -> Self {
+    /// Create a dev-mode attestation stub
+    fn dev_stub() -> Self {
         Self {
-            tee_type: "simulated".to_string(),
+            tee_type: "none".to_string(),
             quote: "".to_string(),
             measurements: serde_json::json!({}),
             timestamp: std::time::SystemTime::now()
@@ -59,9 +59,9 @@ impl Attestation {
     /// Create attestation based on TEE mode
     pub fn for_mode(tee_mode: &str) -> Self {
         match tee_mode {
-            "none" | "simulated" => Self::simulated(),
-            // TODO: Add real TDX/SGX attestation
-            _ => Self::simulated(),
+            "outlayer_tee" => Self::dev_stub(), // Attestation is a no-op; TEE sessions handle auth
+            "none" => Self::dev_stub(),
+            _ => Self::dev_stub(),
         }
     }
 }

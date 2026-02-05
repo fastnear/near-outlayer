@@ -314,9 +314,9 @@ impl Config {
             .to_lowercase();
 
         // Validate TEE mode (case-insensitive, trimmed)
-        if !["tdx", "sgx", "sev", "simulated", "none"].contains(&tee_mode.as_str()) {
+        if !["outlayer_tee", "none"].contains(&tee_mode.as_str()) {
             anyhow::bail!(
-                "Invalid TEE_MODE: received '{}' (raw: '{:?}'), must be one of: tdx, sgx, sev, simulated, none (case-insensitive)",
+                "Invalid TEE_MODE: received '{}' (raw: '{:?}'), must be 'outlayer_tee' or 'none' (case-insensitive)",
                 tee_mode,
                 tee_mode_raw
             );

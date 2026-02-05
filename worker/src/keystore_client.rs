@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 /// TEE attestation for keystore verification
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Attestation {
-    /// Type of TEE (sgx, sev, simulated, none)
+    /// Type of TEE (outlayer_tee, none)
     pub tee_type: String,
     /// Raw attestation quote/report (base64 encoded)
     pub quote: String,
@@ -58,6 +58,8 @@ pub struct KeystoreClient {
     auth_token: String,
     http_client: reqwest::Client,
     tee_mode: String,
+    /// TEE session ID (set after successful challenge-response registration)
+    tee_session_id: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl KeystoreClient {
@@ -68,16 +70,30 @@ impl KeystoreClient {
             auth_token,
             http_client: reqwest::Client::new(),
             tee_mode,
+            tee_session_id: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+
+    /// Set TEE session ID (called after successful challenge-response registration)
+    pub fn set_tee_session_id(&self, session_id: String) {
+        *self.tee_session_id.lock().unwrap() = Some(session_id);
+    }
+
+    /// Add auth headers: Bearer token + optional X-TEE-Session
+    fn add_auth_headers(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let builder = builder.header("Authorization", format!("Bearer {}", self.auth_token));
+        if let Some(session_id) = self.tee_session_id.lock().unwrap().as_ref() {
+            builder.header("X-TEE-Session", session_id.as_str())
+        } else {
+            builder
         }
     }
 
     /// Generate TEE attestation for this worker
     ///
     /// TEE modes:
-    /// - TDX: Uses simulated attestation (TDX quote only used for worker registration)
-    /// - SGX: Use sgx_create_report() + sgx_get_quote()
-    /// - SEV: Use SNP guest tools to generate attestation
-    /// - simulated/none: Generate test attestation for development
+    /// - outlayer_tee: Uses binary hash attestation (real TDX quote only used for worker registration)
+    /// - none: Generate stub attestation for development
     pub fn generate_attestation(&self) -> Result<Attestation> {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -85,10 +101,10 @@ impl KeystoreClient {
             .as_secs();
 
         match self.tee_mode.as_str() {
-            "tdx" => {
-                // TDX mode: Use simulated attestation for keystore (TDX quote only used for registration)
-                // Keystore doesn't need real TDX quote verification - registration contract handles that
-                tracing::info!("Using simulated attestation for keystore (TDX mode)");
+            "outlayer_tee" => {
+                // OutLayer TEE mode: binary hash attestation for keystore
+                // Real TDX quote is only used for worker registration on register-contract
+                tracing::info!("Generating attestation for keystore (outlayer_tee mode)");
 
                 let binary_path = std::env::current_exe()
                     .context("Failed to get current executable path")?;
@@ -101,56 +117,7 @@ impl KeystoreClient {
                 let measurement = hasher.finalize();
 
                 Ok(Attestation {
-                    tee_type: "tdx".to_string(),
-                    quote: base64::encode(measurement),
-                    worker_pubkey: None,
-                    timestamp,
-                })
-            }
-            "sgx" => {
-                // TODO: Implement real SGX attestation
-                // Steps:
-                // 1. Get target info from keystore (or IAS)
-                // 2. Create report with sgx_create_report()
-                // 3. Get quote with sgx_get_quote()
-                // 4. Return quote as base64
-                tracing::warn!("SGX attestation not implemented, using placeholder");
-                Ok(Attestation {
-                    tee_type: "sgx".to_string(),
-                    quote: base64::encode(b"placeholder-sgx-quote"),
-                    worker_pubkey: None,
-                    timestamp,
-                })
-            }
-            "sev" => {
-                // TODO: Implement real SEV-SNP attestation
-                tracing::warn!("SEV attestation not implemented, using placeholder");
-                Ok(Attestation {
-                    tee_type: "sev".to_string(),
-                    quote: base64::encode(b"placeholder-sev-report"),
-                    worker_pubkey: None,
-                    timestamp,
-                })
-            }
-            "simulated" => {
-                // Simulated mode: Use hash of worker binary as measurement
-                let binary_path = std::env::current_exe()
-                    .context("Failed to get current executable path")?;
-
-                let binary = std::fs::read(&binary_path)
-                    .context("Failed to read worker binary")?;
-
-                let mut hasher = Sha256::new();
-                hasher.update(&binary);
-                let measurement = hasher.finalize();
-
-                tracing::debug!(
-                    measurement = %hex::encode(&measurement),
-                    "Generated simulated attestation"
-                );
-
-                Ok(Attestation {
-                    tee_type: "simulated".to_string(),
+                    tee_type: "outlayer_tee".to_string(),
                     quote: base64::encode(measurement),
                     worker_pubkey: None,
                     timestamp,
@@ -267,10 +234,7 @@ impl KeystoreClient {
             "Requesting secret decryption via keystore"
         );
 
-        let response = self
-            .http_client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.auth_token))
+        let response = self.add_auth_headers(self.http_client.post(&url))
             .json(&request)
             .send()
             .await
@@ -445,10 +409,7 @@ impl KeystoreClient {
         // Send request to keystore
         let url = format!("{}/encrypt", self.base_url);
 
-        let response = self
-            .http_client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.auth_token))
+        let response = self.add_auth_headers(self.http_client.post(&url))
             .json(&request)
             .send()
             .await
@@ -522,10 +483,7 @@ impl KeystoreClient {
         // Send request to keystore (using /decrypt-raw endpoint for direct decryption)
         let url = format!("{}/decrypt-raw", self.base_url);
 
-        let response = self
-            .http_client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.auth_token))
+        let response = self.add_auth_headers(self.http_client.post(&url))
             .json(&request)
             .send()
             .await
@@ -574,15 +532,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_generate_attestation_simulated() {
+    fn test_generate_attestation_outlayer_tee() {
         let client = KeystoreClient::new(
             "http://localhost:8081".to_string(),
             "test-token".to_string(),
-            "simulated".to_string(),
+            "outlayer_tee".to_string(),
         );
 
         let attestation = client.generate_attestation().unwrap();
-        assert_eq!(attestation.tee_type, "simulated");
+        assert_eq!(attestation.tee_type, "outlayer_tee");
         assert!(!attestation.quote.is_empty());
     }
 

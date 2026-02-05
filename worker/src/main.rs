@@ -201,7 +201,7 @@ async fn main() -> Result<()> {
             };
 
             // Attempt registration (only once - fail fast if it fails)
-            let (_public_key, secret_key, tdx_quote_hex) = match registration::register_worker_on_startup(
+            let (public_key, secret_key, tdx_quote_hex) = match registration::register_worker_on_startup(
                 config.near_rpc_url.clone(),
                 register_contract_id.clone(),
                 config.operator_account_id.clone(),
@@ -267,7 +267,22 @@ async fn main() -> Result<()> {
                 }
             };
 
-            // Set operator signer with generated keypair
+            // Extract ed25519 signing key BEFORE secret_key is moved into operator_signer.
+            // Needed for TEE session registration challenge-response.
+            let tee_signing_info: Option<([u8; 32], ed25519_dalek::SigningKey)> = match (&public_key, &secret_key) {
+                (near_crypto::PublicKey::ED25519(ed_pub), near_crypto::SecretKey::ED25519(ed_sk)) => {
+                    let pub_key_bytes: [u8; 32] = ed_pub.0;
+                    let mut seed_bytes = [0u8; 32];
+                    seed_bytes.copy_from_slice(&ed_sk.0[..32]);
+                    Some((pub_key_bytes, ed25519_dalek::SigningKey::from_bytes(&seed_bytes)))
+                }
+                _ => {
+                    warn!("⚠️ Non-ED25519 key - TEE session registration will be skipped");
+                    None
+                }
+            };
+
+            // Set operator signer with generated keypair (moves secret_key)
             let operator_signer = near_crypto::InMemorySigner::from_secret_key(
                 config.operator_account_id.clone(),
                 secret_key,
@@ -289,6 +304,40 @@ async fn main() -> Result<()> {
                 return Err(anyhow::anyhow!("Startup attestation failed: {:?}", e));
             }
             info!("✅ Startup attestation sent successfully - worker registered with coordinator");
+
+            // Register TEE session with coordinator (challenge-response)
+            // This proves to the coordinator that we hold the TEE private key
+            // registered on the register-contract
+            if let Some((pub_key_bytes, signing_key)) = &tee_signing_info {
+                info!("🔐 Registering TEE session with coordinator...");
+                match api_client.register_tee_session(pub_key_bytes, signing_key).await {
+                    Ok(session_id) => {
+                        info!("✅ TEE session registered with coordinator: {}", session_id);
+                    }
+                    Err(e) => {
+                        warn!("⚠️ Failed to register TEE session with coordinator: {}", e);
+                        warn!("   Worker will continue without coordinator TEE session.");
+                        warn!("   HTTPS calls may be rejected if REQUIRE_TEE_SESSION=true on coordinator.");
+                    }
+                }
+
+                // Register TEE session with keystore (independent verification)
+                info!("🔐 Registering TEE session with keystore...");
+                match api_client.register_keystore_tee_session(pub_key_bytes, signing_key).await {
+                    Ok(session_id) => {
+                        info!("✅ TEE session registered with keystore: {}", session_id);
+                        // Pass session ID to KeystoreClient so it sends X-TEE-Session on all calls
+                        if let Some(ref kc) = keystore_client {
+                            kc.set_tee_session_id(session_id);
+                        }
+                    }
+                    Err(e) => {
+                        warn!("⚠️ Failed to register TEE session with keystore: {}", e);
+                        warn!("   Worker will continue without keystore TEE session.");
+                        warn!("   Secret decryption may be rejected if TEE_MODE=outlayer_tee on keystore.");
+                    }
+                }
+            }
         } else {
             error!("❌ Worker registration disabled - REGISTER_CONTRACT_ID not set");
             error!("   Worker MUST use registration flow to generate ephemeral keys in TEE");
@@ -367,20 +416,27 @@ async fn main() -> Result<()> {
     .context("Failed to create NEAR client")?;
     info!("NEAR client initialized");
 
+    // Shared event monitor block height for heartbeat reporting
+    let shared_block_height = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+
     // Start heartbeat task
     let heartbeat_api_client = api_client.clone();
     let heartbeat_worker_id = config.worker_id.clone();
     let heartbeat_worker_name = format!("worker-{}", config.worker_id);
+    let heartbeat_block_height = shared_block_height.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
         loop {
             interval.tick().await;
+            let block = heartbeat_block_height.load(std::sync::atomic::Ordering::Relaxed);
+            let event_monitor_block_height = if block > 0 { Some(block) } else { None };
             if let Err(e) = heartbeat_api_client
                 .send_heartbeat(
                     heartbeat_worker_id.clone(),
                     heartbeat_worker_name.clone(),
                     "online",
                     None,
+                    event_monitor_block_height,
                 )
                 .await
             {
@@ -401,6 +457,7 @@ async fn main() -> Result<()> {
         let event_filter_standard_name = config.event_filter_standard_name.clone();
         let event_filter_function_name = config.event_filter_function_name.clone();
         let event_filter_min_version = config.event_filter_min_version.clone();
+        let monitor_block_height = shared_block_height.clone();
 
         tokio::spawn(async move {
             info!("Starting event monitor...");
@@ -414,6 +471,7 @@ async fn main() -> Result<()> {
                 event_filter_standard_name,
                 event_filter_function_name,
                 event_filter_min_version,
+                monitor_block_height,
             )
             .await
             {

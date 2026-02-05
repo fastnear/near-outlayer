@@ -3,13 +3,14 @@
 # Automated deployment to Phala Cloud with RTMR3 whitelisting and DAO voting
 #
 # Usage:
-#   ./scripts/deploy_phala.sh keystore [testnet|mainnet]
+#   ./scripts/deploy_phala.sh keystore [testnet|mainnet] [instance-name]
 #   ./scripts/deploy_phala.sh worker [testnet|mainnet] [instance-name]
 #
 # Examples:
-#   ./scripts/deploy_phala.sh keystore testnet
-#   ./scripts/deploy_phala.sh worker testnet           # creates outlayer-testnet-worker
-#   ./scripts/deploy_phala.sh worker testnet worker2   # creates outlayer-testnet-worker2
+#   ./scripts/deploy_phala.sh keystore testnet            # creates outlayer-testnet-keystore
+#   ./scripts/deploy_phala.sh keystore testnet keystore2  # creates outlayer-testnet-keystore2
+#   ./scripts/deploy_phala.sh worker testnet              # creates outlayer-testnet-worker
+#   ./scripts/deploy_phala.sh worker testnet worker2      # creates outlayer-testnet-worker2
 #
 
 set -euo pipefail
@@ -48,7 +49,8 @@ fi
 # Configuration based on component and network
 case "$COMPONENT" in
     keystore)
-        CVM_NAME="outlayer-${NETWORK}-keystore"
+        KEYSTORE_SUFFIX="${INSTANCE_NAME:-keystore}"
+        CVM_NAME="outlayer-${NETWORK}-${KEYSTORE_SUFFIX}"
         COMPOSE_FILE="docker-compose.keystore-phala.yml"
         ENV_FILE=".env.${NETWORK}-keystore-phala"
         DAO_CONTRACT="dao.outlayer.${ACCOUNT_SUFFIX}"
@@ -70,11 +72,6 @@ case "$COMPONENT" in
         ;;
 esac
 
-# Validate: instance name only for worker
-if [ -n "$INSTANCE_NAME" ] && [ "$COMPONENT" != "worker" ]; then
-    echo -e "${RED}Error: Instance name is only supported for worker component${NC}"
-    exit 1
-fi
 
 cd "$(dirname "$0")/.."
 

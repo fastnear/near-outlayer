@@ -35,8 +35,8 @@ impl TdxClient {
         tracing::info!("   Public key (hex): {}", hex::encode(public_key_bytes));
 
         match self.tee_mode.as_str() {
-            "tdx" => {
-                // TDX mode: Generate real TDX quote with custom report_data
+            "outlayer_tee" => {
+                // OutLayer TEE mode: Generate real TDX quote with custom report_data
                 tracing::info!("Using TDX attestation (Phala dstack socket)");
 
                 // Create report_data: first 32 bytes = public key, rest = zeros
@@ -53,35 +53,6 @@ impl TdxClient {
                 // Return hex-encoded quote (register contract expects hex string)
                 Ok(hex::encode(&tdx_quote))
             }
-            "simulated" => {
-                // Simulated mode: Create fake quote with public key embedded
-                tracing::warn!("⚠️  Using SIMULATED attestation (dev only!)");
-
-                // Format: "SIMULATED:pubkey_hex:measurement_hex"
-                let binary_path = std::env::current_exe()
-                    .context("Failed to get current executable path")?;
-
-                let binary = std::fs::read(&binary_path)
-                    .context("Failed to read worker binary")?;
-
-                let mut hasher = Sha256::new();
-                hasher.update(&binary);
-                let measurement = hasher.finalize();
-
-                // Create fake quote structure (this won't verify with real dcap-qvl!)
-                // For simulated mode, we create a minimal fake TDX quote structure
-                // that includes the public key in report_data
-                let fake_quote = format!(
-                    "SIMULATED_TDX_QUOTE:pubkey={}:measurement={}",
-                    hex::encode(public_key_bytes),
-                    hex::encode(measurement)
-                );
-
-                tracing::info!("✅ Generated SIMULATED quote (hex-encoded, size: {} bytes)", fake_quote.len());
-
-                // Return hex-encoded fake quote
-                Ok(hex::encode(fake_quote.as_bytes()))
-            }
             "none" => {
                 // No attestation mode: Create minimal fake quote
                 tracing::warn!("⚠️  Using NO-ATTESTATION mode (dev only!)");
@@ -97,7 +68,7 @@ impl TdxClient {
             }
             other => {
                 anyhow::bail!(
-                    "Unsupported TEE mode for registration: {}. Use 'tdx', 'simulated', or 'none'",
+                    "Unsupported TEE mode for registration: {}. Use 'outlayer_tee' or 'none'",
                     other
                 );
             }
@@ -199,30 +170,12 @@ impl TdxClient {
         report_data[..32].copy_from_slice(&task_hash);
 
         match self.tee_mode.as_str() {
-            "tdx" => {
+            "outlayer_tee" => {
                 // Real TDX attestation
                 let tdx_quote = self.call_phala_dstack_socket(&report_data)
                     .await
                     .context("Failed to generate TDX quote for task")?;
                 Ok(base64::encode(&tdx_quote))
-            }
-            "simulated" => {
-                // Simulated mode
-                tracing::debug!("Generating simulated attestation for task {}", task_id);
-                let binary_path = std::env::current_exe()
-                    .context("Failed to get current executable path")?;
-                let binary = std::fs::read(&binary_path)
-                    .context("Failed to read worker binary")?;
-                let mut measurement_hasher = Sha256::new();
-                measurement_hasher.update(&binary);
-                let measurement = measurement_hasher.finalize();
-
-                let fake_quote = format!(
-                    "SIMULATED:measurement={}:task_hash={}",
-                    hex::encode(measurement),
-                    hex::encode(task_hash)
-                );
-                Ok(base64::encode(fake_quote.as_bytes()))
             }
             "none" => {
                 // Dev mode: Minimal fake quote

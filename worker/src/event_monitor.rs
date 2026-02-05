@@ -5,6 +5,8 @@ use near_primitives::views::QueryRequest;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{error, info, warn};
@@ -297,6 +299,8 @@ pub struct EventMonitor {
     #[allow(dead_code)]
     event_filter_function_name: String, // Kept for compatibility but we now handle multiple events
     event_filter_min_version: Option<(u64, u64, u64)>, // Parsed semver (major, minor, patch)
+    /// Shared block height for heartbeat reporting to coordinator
+    shared_block_height: Arc<AtomicU64>,
 }
 
 impl EventMonitor {
@@ -335,6 +339,7 @@ impl EventMonitor {
         event_filter_standard_name: String,
         event_filter_function_name: String,
         event_filter_min_version: Option<String>,
+        shared_block_height: Arc<AtomicU64>,
     ) -> Result<Self> {
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
@@ -362,6 +367,9 @@ impl EventMonitor {
             event_filter_standard_name, event_filter_function_name, event_filter_min_version
         );
 
+        // Set initial shared block height
+        shared_block_height.store(current_block, Ordering::Relaxed);
+
         Ok(Self {
             api_client,
             neardata_api_url,
@@ -377,6 +385,7 @@ impl EventMonitor {
             event_filter_standard_name,
             event_filter_function_name,
             event_filter_min_version: parsed_min_version,
+            shared_block_height,
         })
     }
 
@@ -477,6 +486,7 @@ impl EventMonitor {
 
                     // Move to next block
                     self.current_block += 1;
+                    self.shared_block_height.store(self.current_block, Ordering::Relaxed);
 
                     // Log progress every 100 blocks
                     if self.blocks_scanned % 100 == 0 {

@@ -149,7 +149,12 @@ curl -X POST https://api.outlayer.fastnear.com/call/alice.near/my-assistant \\
     "max_memory_mb": 128,
     "max_execution_seconds": 60
   },
-  "async": false                // Optional - sync (default) or async mode
+  "secrets_ref": {              // Optional - keystore secrets
+    "profile": "default",
+    "account_id": "alice.near"
+  },
+  "async": false,               // Optional - sync (default) or async mode
+  "version_key": "user/repo@a1b2c3" // Optional - pin to specific version
 }`}
         </SyntaxHighlighter>
 
@@ -176,11 +181,31 @@ curl -X POST https://api.outlayer.fastnear.com/call/alice.near/my-assistant \\
                 <td className="px-4 py-3 text-sm text-gray-500">No</td>
                 <td className="px-4 py-3 text-sm text-gray-600">Override project&apos;s default limits</td>
               </tr>
+              <tr className="bg-purple-50">
+                <td className="px-4 py-3 text-sm font-mono">secrets_ref</td>
+                <td className="px-4 py-3 text-sm">object</td>
+                <td className="px-4 py-3 text-sm text-gray-500">No</td>
+                <td className="px-4 py-3 text-sm text-gray-600">
+                  Reference to{' '}
+                  <Link href="/docs/secrets" className="text-[var(--primary-orange)] hover:underline">keystore secrets</Link>.
+                  Contains <code>profile</code> (string) and <code>account_id</code> (string).
+                  Decrypted secrets are injected as environment variables into WASM.
+                </td>
+              </tr>
               <tr>
                 <td className="px-4 py-3 text-sm font-mono">async</td>
                 <td className="px-4 py-3 text-sm">boolean</td>
                 <td className="px-4 py-3 text-sm text-gray-500">No</td>
                 <td className="px-4 py-3 text-sm text-gray-600">false = wait for result, true = return call_id immediately</td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 text-sm font-mono">version_key</td>
+                <td className="px-4 py-3 text-sm">string</td>
+                <td className="px-4 py-3 text-sm text-gray-500">No</td>
+                <td className="px-4 py-3 text-sm text-gray-600">
+                  Pin to a specific project version. Format: WASM hash or <code>repo@commit</code>.
+                  If omitted, uses the project&apos;s active version.
+                </td>
               </tr>
             </tbody>
           </table>
@@ -469,6 +494,87 @@ if usd_payment >= MIN_PREMIUM_USD {
         </SyntaxHighlighter>
       </section>
 
+      {/* Secrets */}
+      <section className="mb-12">
+        <AnchorHeading id="secrets">Using Secrets</AnchorHeading>
+
+        <p className="text-gray-700 mb-4">
+          If your WASM code needs API keys or other sensitive data, use{' '}
+          <Link href="/docs/secrets" className="text-[var(--primary-orange)] hover:underline">Keystore Secrets</Link>.
+          Secrets are encrypted and stored on-chain, then decrypted inside TEE at execution time
+          and injected as environment variables.
+        </p>
+
+        <p className="text-gray-700 mb-4">
+          Pass <code>secrets_ref</code> in the request body to specify which secret profile to use:
+        </p>
+
+        <SyntaxHighlighter language="bash" style={vscDarkPlus} className="rounded-lg mb-4">
+          {`curl -X POST https://api.outlayer.fastnear.com/call/alice.near/weather-api \\
+  -H "X-Payment-Key: bob.near:0:K7xR2mN9pQs5vW3yZ8bF..." \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "input": {"city": "Tokyo"},
+    "secrets_ref": {
+      "profile": "default",
+      "account_id": "alice.near"
+    }
+  }'`}
+        </SyntaxHighlighter>
+
+        <div className="overflow-x-auto mb-6">
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Field</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Description</th>
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              <tr>
+                <td className="px-4 py-3 text-sm font-mono">profile</td>
+                <td className="px-4 py-3 text-sm">string</td>
+                <td className="px-4 py-3 text-sm text-gray-600">
+                  Secret profile name (e.g., &quot;default&quot;, &quot;production&quot;).
+                  Configured in the{' '}
+                  <Link href="/docs/secrets" className="text-[var(--primary-orange)] hover:underline">Secrets</Link> page.
+                </td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 text-sm font-mono">account_id</td>
+                <td className="px-4 py-3 text-sm">string</td>
+                <td className="px-4 py-3 text-sm text-gray-600">NEAR account that owns the secrets (the one who encrypted them)</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <AnchorHeading id="secrets-access" level={3}>Accessing Secrets in WASM</AnchorHeading>
+
+        <p className="text-gray-700 mb-4">
+          Decrypted secrets are available as regular environment variables:
+        </p>
+
+        <SyntaxHighlighter language="rust" style={vscDarkPlus} className="rounded-lg mb-4">
+          {`// Secrets are injected as env vars by the TEE worker
+let api_key = std::env::var("OPENAI_API_KEY")
+    .expect("OPENAI_API_KEY secret not set");
+
+let db_url = std::env::var("DATABASE_URL")
+    .expect("DATABASE_URL secret not set");`}
+        </SyntaxHighlighter>
+
+        <div className="bg-blue-50 border-l-4 border-blue-400 p-4 mb-6">
+          <p className="text-sm text-blue-800">
+            <strong>Works the same as NEAR transactions.</strong>{' '}
+            The <code>secrets_ref</code> field uses the same keystore system as the{' '}
+            <code>secrets_ref</code> parameter in <code>request_execution</code> contract calls.
+            If your WASM already uses secrets via NEAR transactions, just pass the same profile in HTTPS calls.
+          </p>
+        </div>
+      </section>
+
       {/* Error Codes */}
       <section className="mb-12">
         <AnchorHeading id="errors">Error Codes</AnchorHeading>
@@ -663,6 +769,10 @@ weather = call_outlayer("alice.near/weather-api", {"city": "Tokyo"})`}
           <li>
             <Link href="/docs/earnings" className="text-[var(--primary-orange)] hover:underline">Earnings</Link>
             {' '}- How project authors earn from X-Attached-Deposit
+          </li>
+          <li>
+            <Link href="/docs/secrets" className="text-[var(--primary-orange)] hover:underline">Secrets (Keystore)</Link>
+            {' '}- Encrypting and managing secrets for WASM execution
           </li>
           <li>
             <Link href="/docs/web2-integration" className="text-[var(--primary-orange)] hover:underline">Web2 Integration</Link>
