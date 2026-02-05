@@ -262,7 +262,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Attestation endpoint (public with IP rate limiting)
         .route("/attestations/:job_id", get(handlers::attestations::get_attestation));
 
-    // Build public storage routes (rate limited - 100 req/min per IP)
+    // Build public storage routes (rate limited - 100 req/min per IP, permissive CORS)
+    let cors_public_storage = CorsLayer::new()
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers([axum::http::header::CONTENT_TYPE])
+        .allow_origin(tower_http::cors::Any);
     let public_storage = Router::new()
         .route("/public/storage/get", get(handlers::public::get_public_storage))
         .route("/public/storage/batch", post(handlers::public::batch_get_public_storage))
@@ -270,6 +274,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             public_storage_rate_limiter.clone(),
             middleware::ip_rate_limit::ip_rate_limit_middleware,
         ))
+        .layer(cors_public_storage)
         .with_state(state.clone());
 
     // Build internal routes (no auth - for worker communication only)
