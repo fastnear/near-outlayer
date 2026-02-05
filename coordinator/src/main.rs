@@ -345,16 +345,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
 
     // Combine routers
-    // Note: https_api has its own permissive CORS layer applied above
+    // Note: https_api and public_storage have their own permissive CORS layers
+    // They must be merged AFTER cors_restricted to avoid being overridden
     let app = Router::new()
         .merge(protected)
         .merge(public)
-        .merge(public_storage)
         .merge(secrets_routes)
         .merge(internal)
         .merge(admin)
         .layer(cors_restricted)
         .merge(https_api)
+        .merge(public_storage)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
