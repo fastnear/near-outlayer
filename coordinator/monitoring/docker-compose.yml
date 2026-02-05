@@ -20,8 +20,7 @@ services:
       - collector-db
     environment:
       COLLECTOR_DATABASE_URL: "postgres://collector:collector@collector-db:5432/health"
-      COLLECTOR_TARGETS1: "mainnet=https://api.outlayer.fastnear.com,testnet=https://testnet-api.outlayer.fastnear.com,local=http://host.docker.internal:8080"
-      COLLECTOR_TARGETS: "mainnet=http://host.docker.internal:8080"
+      COLLECTOR_TARGETS: "mainnet=https://api.outlayer.fastnear.com,testnet=https://testnet-api.outlayer.fastnear.com"      
       COLLECTOR_POLL_INTERVAL: "30"
       COLLECTOR_RETENTION_DAYS: "90"
       TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
