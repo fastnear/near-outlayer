@@ -117,8 +117,19 @@ def main():
     print(f"  File: {wasm_file}")
     print(f"  Size: {len(wasm_content)} bytes")
     print(f"  SHA256: {wasm_hash}")
+    # Determine network from receiver
+    if receiver.endswith('.near'):
+        network = 'mainnet'
+    elif receiver.endswith('.testnet'):
+        network = 'testnet'
+    else:
+        print(f"Error: Cannot determine network from receiver '{receiver}'")
+        print("Receiver should end with '.near' (mainnet) or '.testnet' (testnet)")
+        sys.exit(1)
+
     print(f"  Sender: {sender_account}")
     print(f"  Receiver: {receiver}")
+    print(f"  Network: {network}")
     print()
 
     # Create Borsh payloads (chunked)
@@ -145,7 +156,7 @@ def main():
                 'prepaid-gas', '300 Tgas',
                 'attached-deposit', '0 NEAR',
                 'sign-as', sender_account,
-                'network-config', 'testnet',
+                'network-config', network,
                 'sign-with-plaintext-private-key', sender_key,
                 'send'
             ]

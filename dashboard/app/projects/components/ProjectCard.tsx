@@ -64,6 +64,7 @@ export function ProjectCard({
             <div>
               <h3 className="text-lg font-medium text-gray-900">{project.name}</h3>
               <p className="text-sm text-gray-500">{project.project_id}</p>
+              <p className="text-xs text-gray-400 font-mono">{project.uuid}</p>
             </div>
           </div>
           <div className="flex items-center space-x-4">
