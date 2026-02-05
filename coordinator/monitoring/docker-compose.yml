@@ -36,7 +36,7 @@ services:
     depends_on:
       - collector-db
     environment:
-      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_USER: "${GRAFANA_ADMIN_NAME:-admin}"
       GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-change-me}"
       GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:

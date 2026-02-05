@@ -106,7 +106,7 @@ To expose Grafana publicly:
 
 ```nginx
 server {
-    server_name grafana.outlayer.fastnear.com;
+    server_name status.outlayer.ai;
 
     location / {
         proxy_pass http://127.0.0.1:9848;
