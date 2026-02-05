@@ -1954,9 +1954,9 @@ async fn register_tee_handler(
     tee_auth::verify_signature(&req.public_key, &req.challenge, &req.signature)
         .map_err(|e| ApiError::BadRequest(format!("Signature verification failed: {}", e)))?;
 
-    // 3. Check key on register-contract via NEAR RPC
-    let register_contract_id = state.config.register_contract_id.as_ref().ok_or_else(|| {
-        ApiError::InternalError("REGISTER_CONTRACT_ID not configured on keystore".to_string())
+    // 3. Check key on operator account via NEAR RPC
+    let operator_account_id = state.config.operator_account_id.as_ref().ok_or_else(|| {
+        ApiError::InternalError("OPERATOR_ACCOUNT_ID not configured on keystore".to_string())
     })?;
 
     let http_client = reqwest::Client::builder()
@@ -1967,7 +1967,7 @@ async fn register_tee_handler(
     let key_exists = tee_auth::check_access_key_on_contract(
         &http_client,
         &state.config.near_rpc_url,
-        register_contract_id,
+        operator_account_id,
         &req.public_key,
     )
     .await
@@ -1975,8 +1975,8 @@ async fn register_tee_handler(
 
     if !key_exists {
         return Err(ApiError::Unauthorized(format!(
-            "Public key {} not found on register-contract {}",
-            req.public_key, register_contract_id
+            "Public key {} not found on operator account {}",
+            req.public_key, operator_account_id
         )));
     }
 

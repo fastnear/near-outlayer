@@ -147,7 +147,7 @@ echo -e "   Status: ${GREEN}REGISTERED${NC}"
 echo ""
 
 echo -e "${YELLOW}Next steps:${NC}"
-echo -e "   1. Deploy worker with REGISTER_CONTRACT_ID=$REGISTER_CONTRACT"
+echo -e "   1. Deploy worker with OPERATOR_ACCOUNT_ID=$REGISTER_CONTRACT"
 echo -e "   2. Worker will auto-generate and register its own key on startup"
 echo -e "   3. Check worker logs for registration status"
 echo ""

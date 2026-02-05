@@ -273,15 +273,15 @@ pub async fn register_tee(
             (StatusCode::FORBIDDEN, format!("Signature verification failed: {}", e))
         })?;
 
-    // 3. Check key exists on register-contract
-    let register_contract_id = state.config.register_contract_id.as_ref().ok_or_else(|| {
-        error!("REGISTER_CONTRACT_ID not configured");
+    // 3. Check key exists on operator account (where register-contract adds keys)
+    let operator_account_id = state.config.operator_account_id.as_ref().ok_or_else(|| {
+        error!("OPERATOR_ACCOUNT_ID not configured on coordinator");
         (StatusCode::INTERNAL_SERVER_ERROR, "TEE verification not configured".to_string())
     })?;
 
     let key_exists = crate::near_client::check_access_key_exists(
         &state.config.near_rpc_url,
-        register_contract_id,
+        operator_account_id,
         &payload.public_key,
     )
     .await
@@ -291,7 +291,7 @@ pub async fn register_tee(
     })?;
 
     if !key_exists {
-        warn!("Public key {} not found on register-contract {}", payload.public_key, register_contract_id);
+        warn!("Public key {} not found on operator account {}", payload.public_key, operator_account_id);
         return Err((StatusCode::FORBIDDEN, "Public key not registered on contract".to_string()));
     }
 

@@ -32,8 +32,8 @@ pub struct Config {
     /// TEE mode (outlayer_tee, none)
     pub tee_mode: TeeMode,
 
-    /// Register-contract account ID (for TEE session verification via NEAR RPC)
-    pub register_contract_id: Option<String>,
+    /// Operator account where TEE worker keys are registered as access keys (e.g., "worker.outlayer.testnet")
+    pub operator_account_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,7 +95,7 @@ impl Config {
             other => anyhow::bail!("Invalid TEE_MODE: '{}' (raw: '{}'). Must be 'outlayer_tee' or 'none'", other, tee_mode_raw),
         };
 
-        let register_contract_id = std::env::var("REGISTER_CONTRACT_ID").ok();
+        let operator_account_id = std::env::var("OPERATOR_ACCOUNT_ID").ok();
 
         Ok(Config {
             server_addr,
@@ -105,7 +105,7 @@ impl Config {
             allowed_worker_token_hashes,
             allowed_coordinator_token_hashes,
             tee_mode,
-            register_contract_id,
+            operator_account_id,
         })
     }
 
@@ -117,6 +117,10 @@ impl Config {
 
         if self.allowed_coordinator_token_hashes.is_empty() {
             tracing::warn!("No coordinator token hashes configured - coordinator endpoints will reject all requests");
+        }
+
+        if self.tee_mode == TeeMode::OutlayerTee && self.operator_account_id.is_none() {
+            anyhow::bail!("TEE_MODE=outlayer_tee requires OPERATOR_ACCOUNT_ID to be set");
         }
 
         Ok(())

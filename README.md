@@ -256,9 +256,8 @@ cp .env.testnet-worker-phala.example .env.testnet-worker-phala
 # - API_AUTH_TOKEN=<your-worker-token>
 # - NEAR_RPC_URL=https://rpc.testnet.near.org
 # - OFFCHAINVM_CONTRACT_ID=outlayer.testnet
-# - REGISTER_CONTRACT_ID=register.outlayer.testnet
 # - USE_TEE_REGISTRATION=true
-# - TEE_MODE=tdx
+# - TEE_MODE=outlayer_tee
 # - INIT_ACCOUNT_ID=<init-account>.testnet
 # - INIT_ACCOUNT_PRIVATE_KEY=ed25519:...
 # - COMPILATION_MODE=native

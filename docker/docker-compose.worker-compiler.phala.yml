@@ -59,9 +59,7 @@ services:
       COMPILE_MEMORY_LIMIT_MB: ${COMPILE_MEMORY_LIMIT_MB:-2048}
       COMPILE_CPU_LIMIT: ${COMPILE_CPU_LIMIT:-2.0}
 
-      # === Worker Registration ===
-      REGISTER_CONTRACT_ID: ${REGISTER_CONTRACT_ID:-}
-
+      # === Worker Registration (register-contract is deployed at OPERATOR_ACCOUNT_ID) ===
       # Init Account (pays gas for worker registration when USE_TEE_REGISTRATION=true)
       INIT_ACCOUNT_ID: ${INIT_ACCOUNT_ID:-}
       INIT_ACCOUNT_PRIVATE_KEY: ${INIT_ACCOUNT_PRIVATE_KEY:-}

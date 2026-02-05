@@ -55,13 +55,11 @@ pub struct Config {
     pub tee_mode: String,
 
     // Worker registration mode
-    // If true - use TEE registration flow (requires REGISTER_CONTRACT_ID and INIT_ACCOUNT_*)
+    // If true - use TEE registration flow (INIT_ACCOUNT_*)
+    // Register-contract is deployed at OPERATOR_ACCOUNT_ID (same account)
     // If false - use legacy mode with OPERATOR_PRIVATE_KEY (for testnet without TEE)
     // CRITICAL: OPERATOR_PRIVATE_KEY is ONLY for resolve_execution(), NEVER for user transactions!
     pub use_tee_registration: bool,
-
-    // Worker registration (optional - for TEE key registration)
-    pub register_contract_id: Option<AccountId>,
 
     // Init account (optional - for paying gas on worker registration)
     // If not set, operator_signer will be used for registration
@@ -377,13 +375,6 @@ impl Config {
             None
         };
 
-        // Worker registration configuration (optional)
-        let register_contract_id = env::var("REGISTER_CONTRACT_ID")
-            .ok()
-            .map(|id| AccountId::from_str(&id))
-            .transpose()
-            .context("Invalid REGISTER_CONTRACT_ID format")?;
-
         // Init account (optional - for paying gas on worker registration)
         let (init_account_id, init_account_signer) = if let Ok(init_account_str) = env::var("INIT_ACCOUNT_ID") {
             let init_account_id = AccountId::from_str(&init_account_str)
@@ -476,7 +467,6 @@ impl Config {
             keystore_auth_token,
             tee_mode,
             use_tee_registration,
-            register_contract_id,
             init_account_id,
             init_account_signer,
             save_system_hidden_logs_to_debug,
@@ -617,7 +607,6 @@ mod tests {
             keystore_auth_token: None,
             tee_mode: "none".to_string(),
             use_tee_registration: false, // Test mode: use legacy with OPERATOR_PRIVATE_KEY
-            register_contract_id: None,
             init_account_id: None,
             init_account_signer: None,
             save_system_hidden_logs_to_debug: true, // Default: enabled for debugging

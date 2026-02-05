@@ -209,12 +209,17 @@ if [ "$COMPONENT" = "keystore" ]; then
         LOG_ATTEMPT=$((LOG_ATTEMPT + 1))
         echo -n "."
 
-        # Get logs and decode base64, search for proposal ID
-        PROPOSAL_ID=$(phala cvms logs "$CVM_NAME" --tail 200 2>/dev/null | \
-            jq -r '.message // empty' 2>/dev/null | \
-            base64 -d 2>/dev/null | \
-            grep -oP 'Proposal ID: \K\d+' 2>/dev/null | \
-            tail -1 || echo "")
+        RAW_LOGS=$(phala cvms logs "$CVM_NAME" --tail 200 2>/dev/null || echo "")
+
+        # Try plain text first (logs may come as plain text with timestamps)
+        PROPOSAL_ID=$(echo "$RAW_LOGS" | grep -o 'Proposal ID: [0-9]*' | sed 's/Proposal ID: //' | tail -1 || echo "")
+
+        # Fallback: try JSON with base64-encoded messages
+        if [ -z "$PROPOSAL_ID" ]; then
+            PROPOSAL_ID=$(echo "$RAW_LOGS" | jq -r '.message // empty' 2>/dev/null | \
+                base64 -d 2>/dev/null | \
+                grep -o 'Proposal ID: [0-9]*' | sed 's/Proposal ID: //' | tail -1 || echo "")
+        fi
 
         if [ -n "$PROPOSAL_ID" ]; then
             echo ""
@@ -232,18 +237,29 @@ if [ "$COMPONENT" = "keystore" ]; then
         exit 1
     fi
 
-    # Vote on proposal
-    echo -e "${YELLOW}Voting on proposal #${PROPOSAL_ID}...${NC}"
+    # Auto-vote on testnet, manual vote on mainnet
+    if [ "$NETWORK" = "mainnet" ]; then
+        echo -e "${YELLOW}Mainnet deployment - manual vote required${NC}"
+        echo -e "Run this to approve proposal #${PROPOSAL_ID}:"
+        echo ""
+        echo "  near contract call-function as-transaction $DAO_CONTRACT vote \\"
+        echo "    json-args '{\"proposal_id\": $PROPOSAL_ID, \"approve\": true}' \\"
+        echo "    prepaid-gas '100.0 Tgas' attached-deposit '0 NEAR' \\"
+        echo "    sign-as $VOTER_ACCOUNT network-config $NETWORK sign-with-keychain send"
+        echo ""
+    else
+        echo -e "${YELLOW}Voting on proposal #${PROPOSAL_ID}...${NC}"
 
-    near contract call-function as-transaction "$DAO_CONTRACT" vote \
-        json-args "{\"proposal_id\": $PROPOSAL_ID, \"approve\": true}" \
-        prepaid-gas '100.0 Tgas' \
-        attached-deposit '0 NEAR' \
-        sign-as "$VOTER_ACCOUNT" \
-        network-config "$NETWORK" \
-        sign-with-keychain send
+        near contract call-function as-transaction "$DAO_CONTRACT" vote \
+            json-args "{\"proposal_id\": $PROPOSAL_ID, \"approve\": true}" \
+            prepaid-gas '100.0 Tgas' \
+            attached-deposit '0 NEAR' \
+            sign-as "$VOTER_ACCOUNT" \
+            network-config "$NETWORK" \
+            sign-with-keychain send
 
-    echo -e "${GREEN}✓ Voted on proposal #${PROPOSAL_ID}${NC}"
+        echo -e "${GREEN}✓ Voted on proposal #${PROPOSAL_ID}${NC}"
+    fi
 else
     echo -e "${GREEN}✓ CVM restarted (no proposal needed for worker)${NC}"
 fi

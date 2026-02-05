@@ -79,6 +79,11 @@ impl KeystoreClient {
         *self.tee_session_id.lock().unwrap() = Some(session_id);
     }
 
+    /// Get TEE session ID (for passing to StorageClient)
+    pub fn get_tee_session_id(&self) -> Option<String> {
+        self.tee_session_id.lock().unwrap().clone()
+    }
+
     /// Add auth headers: Bearer token + optional X-TEE-Session
     fn add_auth_headers(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         let builder = builder.header("Authorization", format!("Bearer {}", self.auth_token));

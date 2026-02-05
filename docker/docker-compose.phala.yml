@@ -40,9 +40,6 @@ services:
       COMPILATION_ENABLED: ${COMPILATION_ENABLED}
       EXECUTION_ENABLED: ${EXECUTION_ENABLED}
 
-      # Worker Registration (optional)
-      REGISTER_CONTRACT_ID: ${REGISTER_CONTRACT_ID:-}  
-
       # Init Account (pays gas for worker registration when USE_TEE_REGISTRATION=true)
       INIT_ACCOUNT_ID: ${INIT_ACCOUNT_ID:-}
       INIT_ACCOUNT_PRIVATE_KEY: ${INIT_ACCOUNT_PRIVATE_KEY:-}

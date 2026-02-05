@@ -317,8 +317,7 @@ NEAR_RPC_URL=https://rpc.mainnet.near.org
 OFFCHAINVM_CONTRACT_ID=outlayer.near
 OPERATOR_ACCOUNT_ID=operator.outlayer.near
 
-# Registration configuration
-REGISTER_CONTRACT_ID=register.outlayer.near
+# Registration (register-contract is deployed at OPERATOR_ACCOUNT_ID)
 GAS_ACCOUNT_ID=worker1.outlayer.near
 GAS_ACCOUNT_PRIVATE_KEY=ed25519:5J... # From ~/.near-credentials
 

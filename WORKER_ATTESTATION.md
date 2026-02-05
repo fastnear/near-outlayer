@@ -170,31 +170,30 @@ Worker                          Server (coordinator or keystore)
 
 | Env var | Default | Description |
 |---------|---------|-------------|
-| `REGISTER_CONTRACT_ID` | (none) | Account ID of register-contract. Required for TEE session endpoints. |
+| `OPERATOR_ACCOUNT_ID` | (none) | Account where TEE worker keys are registered as access keys (e.g., `worker.outlayer.testnet`). Required for TEE session endpoints. |
 | `REQUIRE_TEE_SESSION` | `false` | When `true`, HTTPS call completions require a valid `X-TEE-Session`. |
 
 ### Keystore
 
 | Env var | Default | Description |
 |---------|---------|-------------|
-| `REGISTER_CONTRACT_ID` | (none) | Account ID for independent NEAR RPC verification. |
-| `REQUIRE_TEE_SESSION` | `false` | When `true`, `/decrypt` and `/encrypt` require a valid `X-TEE-Session`. |
+| `OPERATOR_ACCOUNT_ID` | (none) | Account where TEE worker keys are registered. Used for NEAR RPC verification. |
 
 ### Worker
 
 | Env var | Default | Description |
 |---------|---------|-------------|
 | `USE_TEE_REGISTRATION` | `true` | Enable TDX-based key registration flow. |
-| `REGISTER_CONTRACT_ID` | (none) | Account to register keys on. |
-| `TEE_MODE` | `tdx` | `tdx` for production, `simulated` or `none` for dev. |
+| `OPERATOR_ACCOUNT_ID` | (required) | Operator account where register-contract is deployed and keys are stored. |
+| `TEE_MODE` | `outlayer_tee` | `outlayer_tee` for production, `none` for dev. |
 
 ## Zero-Downtime Rollout
 
 Deploy in this order:
 
-1. Coordinator + keystore with `REQUIRE_TEE_SESSION=false` — new endpoints exist but are not enforced.
-2. Workers — they register TEE sessions on startup. Existing workers without sessions continue to work.
-3. Set `REQUIRE_TEE_SESSION=true` on coordinator and keystore — only attested workers can submit results and decrypt secrets.
+1. Coordinator with `REQUIRE_TEE_SESSION=false` + keystore with `TEE_MODE=none` — new endpoints exist but are not enforced.
+2. Workers with `TEE_MODE=outlayer_tee` — they register TEE sessions on startup. Existing workers without sessions continue to work.
+3. Set `REQUIRE_TEE_SESSION=true` on coordinator and `TEE_MODE=outlayer_tee` on keystore — only attested workers can submit results and decrypt secrets.
 
 ## Key Cleanup
 

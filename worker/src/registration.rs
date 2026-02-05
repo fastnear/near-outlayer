@@ -14,22 +14,22 @@ use crate::tdx_attestation::TdxClient;
 
 /// Worker registration client
 ///
-/// Handles worker keypair generation and registration with the register contract
+/// Handles worker keypair generation and registration via the register-contract
+/// deployed at the operator account (OPERATOR_ACCOUNT_ID).
 pub struct RegistrationClient {
     near_client: NearClient,
-    register_contract_id: AccountId,
-    rpc_client: JsonRpcClient,
+    /// Operator account where register-contract is deployed and keys are stored
     operator_account_id: AccountId,
+    rpc_client: JsonRpcClient,
 }
 
 impl RegistrationClient {
     /// Create a new registration client
     ///
-    /// This creates a temporary NearClient configured to call the register contract
-    /// using the init account for gas payment.
+    /// Register-contract is deployed at `operator_account_id`.
+    /// Uses the init account for gas payment.
     pub fn new(
         near_rpc_url: String,
-        register_contract_id: AccountId,
         operator_account_id: AccountId,
         init_account_id: AccountId,
         init_secret_key: SecretKey,
@@ -40,11 +40,11 @@ impl RegistrationClient {
             init_secret_key,
         );
 
-        // Create NearClient pointing to register contract
+        // Create NearClient pointing to operator account (register-contract deployed there)
         let near_client = NearClient::new(
             near_rpc_url.clone(),
             signer,
-            register_contract_id.clone(),
+            operator_account_id.clone(),
         )?;
 
         // Create RPC client for queries (view access keys)
@@ -52,9 +52,8 @@ impl RegistrationClient {
 
         Ok(Self {
             near_client,
-            register_contract_id,
-            rpc_client,
             operator_account_id,
+            rpc_client,
         })
     }
 
@@ -221,7 +220,7 @@ impl RegistrationClient {
     ) -> Result<(String, String)> {
         info!("🔐 Registering worker key with register contract...");
         info!("   Public key: {}", public_key);
-        info!("   Register contract: {}", self.register_contract_id);
+        info!("   Register contract: {}", self.operator_account_id);
 
         // Extract raw ed25519 public key bytes (32 bytes, without the 0x00 prefix)
         let public_key_bytes = match public_key {
@@ -253,14 +252,14 @@ impl RegistrationClient {
         let args_json = serde_json::to_string(&args)
             .context("Failed to serialize register_worker_key args")?;
 
-        info!("📤 Calling register_worker_key on {}...", self.register_contract_id);
+        info!("📤 Calling register_worker_key on {}...", self.operator_account_id);
         info!("   Args size: {} bytes", args_json.len());
 
         // Call contract method using NearClient (reuses working transaction logic)
         let outcome = self
             .near_client
             .call_contract(
-                &self.register_contract_id,
+                &self.operator_account_id,
                 "register_worker_key",
                 args_json.into_bytes(),
                 300_000_000_000_000, // 300 TGas
@@ -314,7 +313,6 @@ impl RegistrationClient {
 /// Returns the worker's public key and secret key
 pub async fn register_worker_on_startup(
     near_rpc_url: String,
-    register_contract_id: AccountId,
     operator_account_id: AccountId,
     init_account_id: AccountId,
     init_secret_key: SecretKey,
@@ -324,7 +322,6 @@ pub async fn register_worker_on_startup(
 
     let registration_client = RegistrationClient::new(
         near_rpc_url,
-        register_contract_id,
         operator_account_id,
         init_account_id,
         init_secret_key,
