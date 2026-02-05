@@ -1,0 +1,19 @@
+[package]
+name = "outlayer-health-collector"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "outlayer-health-collector"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.11", features = ["json"] }
+sqlx = { version = "0.7", features = ["postgres", "runtime-tokio-native-tls", "chrono"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1.0"

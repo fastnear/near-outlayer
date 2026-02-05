@@ -199,7 +199,7 @@ async fn perform_tee_registration(config: &Config) -> Result<Keystore> {
 
     // Load or generate keypair
     // In TEE mode, generate ephemeral keypair in memory only
-    let is_tee_mode = config.tee_mode != TeeMode::None;
+    let is_tee_mode = config.tee_mode == TeeMode::OutlayerTee;
     let (public_key, secret_key) = registration.load_or_generate_keypair(is_tee_mode)?;
     tracing::info!("📂 Using keystore public key: {}", public_key);
 

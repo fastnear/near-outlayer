@@ -383,6 +383,8 @@ pub struct ApiClient {
     client: Client,
     base_url: String,
     auth_token: String,
+    /// TEE session ID (set after successful TEE registration)
+    tee_session_id: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl ApiClient {
@@ -397,7 +399,111 @@ impl ApiClient {
             client,
             base_url: base_url.trim_end_matches('/').to_string(),
             auth_token,
+            tee_session_id: std::sync::Arc::new(std::sync::Mutex::new(None)),
         })
+    }
+
+    /// Add standard auth headers (bearer token + optional TEE session)
+    fn add_auth_headers(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let builder = builder.bearer_auth(&self.auth_token);
+        if let Some(session_id) = self.tee_session_id.lock().unwrap().as_ref() {
+            builder.header("X-TEE-Session", session_id)
+        } else {
+            builder
+        }
+    }
+
+    /// Perform a challenge-response TEE registration against the given endpoint path prefix.
+    ///
+    /// 1. POST {base_url}/{path_prefix}/tee-challenge → get challenge
+    /// 2. Sign challenge with ed25519 key
+    /// 3. POST {base_url}/{path_prefix}/register-tee → get session_id
+    async fn do_tee_challenge_response(
+        &self,
+        path_prefix: &str,
+        public_key_bytes: &[u8; 32],
+        signing_key: &ed25519_dalek::SigningKey,
+    ) -> Result<String> {
+        let near_public_key = format!("ed25519:{}", bs58::encode(public_key_bytes).into_string());
+
+        // 1. Request challenge
+        let url = format!("{}/{}/tee-challenge", self.base_url, path_prefix);
+        let response = self.add_auth_headers(self.client.post(&url))
+            .send()
+            .await
+            .with_context(|| format!("Failed to request TEE challenge from {}", path_prefix))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            anyhow::bail!("{} TEE challenge failed ({}): {}", path_prefix, status, text);
+        }
+
+        #[derive(Deserialize)]
+        struct ChallengeResponse {
+            challenge: String,
+        }
+        let challenge_resp: ChallengeResponse = response.json().await
+            .with_context(|| format!("Failed to parse {} TEE challenge", path_prefix))?;
+
+        // 2. Sign challenge with TEE key
+        let challenge_bytes = hex::decode(&challenge_resp.challenge)
+            .context("Invalid challenge hex")?;
+        use ed25519_dalek::Signer;
+        let signature = signing_key.sign(&challenge_bytes);
+        let signature_hex = hex::encode(signature.to_bytes());
+
+        // 3. Submit registration
+        let url = format!("{}/{}/register-tee", self.base_url, path_prefix);
+        let response = self.add_auth_headers(self.client.post(&url))
+            .json(&serde_json::json!({
+                "public_key": near_public_key,
+                "challenge": challenge_resp.challenge,
+                "signature": signature_hex,
+            }))
+            .send()
+            .await
+            .with_context(|| format!("Failed to submit {} TEE registration", path_prefix))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            anyhow::bail!("{} TEE registration failed ({}): {}", path_prefix, status, text);
+        }
+
+        #[derive(Deserialize)]
+        struct RegisterResponse {
+            session_id: String,
+        }
+        let register_resp: RegisterResponse = response.json().await
+            .with_context(|| format!("Failed to parse {} TEE registration response", path_prefix))?;
+
+        Ok(register_resp.session_id)
+    }
+
+    /// Register a TEE session with the coordinator via challenge-response.
+    /// Stores the session ID so all subsequent requests include X-TEE-Session.
+    pub async fn register_tee_session(
+        &self,
+        public_key_bytes: &[u8; 32],
+        signing_key: &ed25519_dalek::SigningKey,
+    ) -> Result<String> {
+        let session_id = self.do_tee_challenge_response("workers", public_key_bytes, signing_key).await?;
+        *self.tee_session_id.lock().unwrap() = Some(session_id.clone());
+        tracing::info!("TEE session registered with coordinator: {}", session_id);
+        Ok(session_id)
+    }
+
+    /// Register a TEE session with the keystore-worker (via coordinator proxy).
+    /// Returns the session ID (caller must pass it to KeystoreClient).
+    pub async fn register_keystore_tee_session(
+        &self,
+        public_key_bytes: &[u8; 32],
+        signing_key: &ed25519_dalek::SigningKey,
+    ) -> Result<String> {
+        let session_id = self.do_tee_challenge_response("keystore", public_key_bytes, signing_key).await?;
+        tracing::info!("TEE session registered with keystore: {}", session_id);
+        Ok(session_id)
     }
 
     /// Poll for a new execution request (long-polling)
@@ -420,11 +526,11 @@ impl ApiClient {
 
         tracing::debug!("🔍 Polling for execution request: {}", url);
 
-        let response = self
-            .client
-            .get(&url)
-            .bearer_auth(&self.auth_token)
-            .timeout(Duration::from_secs(timeout + 10)) // Add buffer to timeout
+        let response = self.add_auth_headers(
+            self.client
+                .get(&url)
+                .timeout(Duration::from_secs(timeout + 10)),
+            )
             .send()
             .await
             .context("Failed to send poll request")?;
@@ -509,10 +615,7 @@ impl ApiClient {
             github_commit,
         };
 
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.auth_token)
+        let response = self.add_auth_headers(self.client.post(&url))
             .json(&request)
             .send()
             .await
@@ -546,10 +649,7 @@ impl ApiClient {
 
         let request = FailRequest { request_id, error };
 
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.auth_token)
+        let response = self.add_auth_headers(self.client.post(&url))
             .json(&request)
             .send()
             .await
@@ -642,10 +742,7 @@ impl ApiClient {
 
         tracing::debug!("🎯 Claiming job for request_id={}", request_id);
 
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.auth_token)
+        let response = self.add_auth_headers(self.client.post(&url))
             .json(&request)
             .send()
             .await
@@ -746,10 +843,7 @@ impl ApiClient {
             time_ms
         );
 
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.auth_token)
+        let response = self.add_auth_headers(self.client.post(&url))
             .json(&request)
             .send()
             .await
@@ -822,10 +916,7 @@ impl ApiClient {
             call_id, success, instructions, time_ms
         );
 
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.auth_token)
+        let response = self.add_auth_headers(self.client.post(&url))
             .json(&request)
             .send()
             .await
@@ -910,10 +1001,7 @@ impl ApiClient {
     pub async fn download_wasm(&self, checksum: &str) -> Result<Vec<u8>> {
         let url = format!("{}/wasm/{}", self.base_url, checksum);
 
-        let response = self
-            .client
-            .get(&url)
-            .bearer_auth(&self.auth_token)
+        let response = self.add_auth_headers(self.client.get(&url))
             .send()
             .await
             .context("Failed to download WASM")?;
@@ -971,10 +1059,7 @@ impl ApiClient {
             checksum, bytes.len(), repo, commit, build_target
         );
 
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.auth_token)
+        let response = self.add_auth_headers(self.client.post(&url))
             .multipart(form)
             .send()
             .await
@@ -1001,10 +1086,7 @@ impl ApiClient {
     pub async fn wasm_exists(&self, checksum: &str) -> Result<(bool, Option<String>)> {
         let url = format!("{}/wasm/exists/{}", self.base_url, checksum);
 
-        let response = self
-            .client
-            .get(&url)
-            .bearer_auth(&self.auth_token)
+        let response = self.add_auth_headers(self.client.get(&url))
             .send()
             .await
             .context("Failed to check WASM existence")?;
@@ -1053,10 +1135,7 @@ impl ApiClient {
             ttl_seconds: ttl,
         };
 
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.auth_token)
+        let response = self.add_auth_headers(self.client.post(&url))
             .json(&request)
             .send()
             .await
@@ -1092,10 +1171,7 @@ impl ApiClient {
         let encoded_key = urlencoding::encode(lock_key);
         let url = format!("{}/locks/release/{}", self.base_url, encoded_key);
 
-        let response = self
-            .client
-            .delete(&url)
-            .bearer_auth(&self.auth_token)
+        let response = self.add_auth_headers(self.client.delete(&url))
             .send()
             .await
             .context("Failed to release lock")?;
@@ -1182,10 +1258,7 @@ impl ApiClient {
             project_id: params.project_id,
         };
 
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.auth_token)
+        let response = self.add_auth_headers(self.client.post(&url))
             .json(&request)
             .send()
             .await
@@ -1247,10 +1320,7 @@ impl ApiClient {
             max_per_call: max_per_call.map(String::from),
         };
 
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.auth_token)
+        let response = self.add_auth_headers(self.client.post(&url))
             .json(&request)
             .send()
             .await
@@ -1304,10 +1374,7 @@ impl ApiClient {
             encrypted_data: params.encrypted_data,
         };
 
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.auth_token)
+        let response = self.add_auth_headers(self.client.post(&url))
             .json(&request)
             .send()
             .await
@@ -1391,10 +1458,7 @@ impl ApiClient {
             owner, nonce, amount, new_initial_balance, &key_hash[..8.min(key_hash.len())]
         );
 
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.auth_token)
+        let response = self.add_auth_headers(self.client.post(&url))
             .json(&request)
             .send()
             .await
@@ -1441,10 +1505,7 @@ impl ApiClient {
             owner, nonce
         );
 
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.auth_token)
+        let response = self.add_auth_headers(self.client.post(&url))
             .json(&request)
             .send()
             .await
@@ -1501,10 +1562,7 @@ impl ApiClient {
             request.nonce
         );
 
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.auth_token)
+        let response = self.add_auth_headers(self.client.post(&url))
             .json(&request)
             .send()
             .await
@@ -1559,10 +1617,7 @@ impl ApiClient {
             project_id, project_uuid
         );
 
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.auth_token)
+        let response = self.add_auth_headers(self.client.post(&url))
             .json(&request)
             .send()
             .await
@@ -1605,10 +1660,7 @@ impl ApiClient {
         let capabilities_param = capabilities.join(",");
         let url = format!("{}/system-callbacks/poll?timeout={}&capabilities={}", self.base_url, timeout, capabilities_param);
 
-        let response = self
-            .client
-            .get(&url)
-            .bearer_auth(&self.auth_token)
+        let response = self.add_auth_headers(self.client.get(&url))
             .send()
             .await
             .context("Failed to poll system callback task")?;
@@ -1663,6 +1715,7 @@ impl ApiClient {
         worker_name: String,
         status: &str,
         current_task_id: Option<i64>,
+        event_monitor_block_height: Option<u64>,
     ) -> Result<()> {
         let url = format!("{}/workers/heartbeat", self.base_url);
 
@@ -1672,6 +1725,8 @@ impl ApiClient {
             worker_name: String,
             status: String,
             current_task_id: Option<i64>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            event_monitor_block_height: Option<u64>,
         }
 
         let request = HeartbeatRequest {
@@ -1679,12 +1734,10 @@ impl ApiClient {
             worker_name,
             status: status.to_string(),
             current_task_id,
+            event_monitor_block_height,
         };
 
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.auth_token)
+        let response = self.add_auth_headers(self.client.post(&url))
             .json(&request)
             .send()
             .await
@@ -1771,10 +1824,7 @@ impl ApiClient {
     pub async fn resolve_project_uuid(&self, project_id: &str) -> Result<Option<ProjectUuidInfo>> {
         let url = format!("{}/projects/uuid", self.base_url);
 
-        let response = self
-            .client
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", self.auth_token))
+        let response = self.add_auth_headers(self.client.get(&url))
             .query(&[("project_id", project_id)])
             .send()
             .await
@@ -1823,10 +1873,7 @@ impl ApiClient {
             "Storing attestation in coordinator"
         );
 
-        let response = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.auth_token))
+        let response = self.add_auth_headers(self.client.post(&url))
             .json(&request)
             .send()
             .await
@@ -1874,10 +1921,7 @@ impl ApiClient {
             "Clearing project storage in coordinator"
         );
 
-        let response = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.auth_token))
+        let response = self.add_auth_headers(self.client.post(&url))
             .json(&serde_json::json!({ "project_uuid": project_uuid }))
             .send()
             .await

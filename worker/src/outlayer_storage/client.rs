@@ -31,6 +31,8 @@ pub struct StorageConfig {
     pub account_id: String,
     /// TEE mode for attestation
     pub tee_mode: String,
+    /// Keystore TEE session ID (set after challenge-response registration)
+    pub keystore_tee_session_id: Option<String>,
 }
 
 /// Attestation for keystore requests
@@ -43,10 +45,10 @@ pub struct Attestation {
 }
 
 impl Attestation {
-    /// Create a simulated attestation (for dev mode)
-    pub fn simulated() -> Self {
+    /// Create a dev-mode attestation stub
+    fn dev_stub() -> Self {
         Self {
-            tee_type: "simulated".to_string(),
+            tee_type: "none".to_string(),
             quote: "".to_string(),
             measurements: serde_json::json!({}),
             timestamp: std::time::SystemTime::now()
@@ -59,9 +61,9 @@ impl Attestation {
     /// Create attestation based on TEE mode
     pub fn for_mode(tee_mode: &str) -> Self {
         match tee_mode {
-            "none" | "simulated" => Self::simulated(),
-            // TODO: Add real TDX/SGX attestation
-            _ => Self::simulated(),
+            "outlayer_tee" => Self::dev_stub(), // Attestation is a no-op; TEE sessions handle auth
+            "none" => Self::dev_stub(),
+            _ => Self::dev_stub(),
         }
     }
 }
@@ -84,6 +86,19 @@ impl StorageClient {
         Ok(Self { client, config })
     }
 
+    /// Build a keystore request with auth headers (Bearer token + optional X-TEE-Session)
+    fn keystore_request(&self, method: reqwest::Method, path: &str) -> reqwest::blocking::RequestBuilder {
+        let mut req = self
+            .client
+            .request(method, format!("{}{}", self.config.keystore_url, path))
+            .header("Authorization", format!("Bearer {}", self.config.keystore_token))
+            .header("Content-Type", "application/json");
+        if let Some(ref session_id) = self.config.keystore_tee_session_id {
+            req = req.header("X-TEE-Session", session_id.as_str());
+        }
+        req
+    }
+
     /// Hash a key for storage lookup
     fn hash_key(&self, key: &str) -> String {
         let mut hasher = Sha256::new();
@@ -103,10 +118,7 @@ impl StorageClient {
         });
 
         let response = self
-            .client
-            .post(format!("{}/storage/encrypt", self.config.keystore_url))
-            .header("Authorization", format!("Bearer {}", self.config.keystore_token))
-            .header("Content-Type", "application/json")
+            .keystore_request(reqwest::Method::POST, "/storage/encrypt")
             .json(&body)
             .send()
             .context("Failed to send keystore encrypt request")?;
@@ -146,10 +158,7 @@ impl StorageClient {
         });
 
         let response = self
-            .client
-            .post(format!("{}/storage/decrypt", self.config.keystore_url))
-            .header("Authorization", format!("Bearer {}", self.config.keystore_token))
-            .header("Content-Type", "application/json")
+            .keystore_request(reqwest::Method::POST, "/storage/decrypt")
             .json(&body)
             .send()
             .context("Failed to send keystore decrypt request")?;
@@ -437,10 +446,7 @@ impl StorageClient {
                 });
 
                 let response = self
-                    .client
-                    .post(format!("{}/storage/decrypt", self.config.keystore_url))
-                    .header("Authorization", format!("Bearer {}", self.config.keystore_token))
-                    .header("Content-Type", "application/json")
+                    .keystore_request(reqwest::Method::POST, "/storage/decrypt")
                     .json(&body)
                     .send()
                     .context("Failed to send keystore decrypt request")?;

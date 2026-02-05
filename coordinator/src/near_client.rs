@@ -62,6 +62,50 @@ async fn call_view<T: DeserializeOwned>(
         .with_context(|| format!("Failed to parse {} JSON: {}", method, result_str))
 }
 
+/// Cached HTTP client with timeout for health-check RPC calls.
+pub fn health_check_client() -> &'static Client {
+    static CLIENT: std::sync::OnceLock<Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .expect("Failed to create HTTP client")
+    })
+}
+
+/// Fetch the latest finalized block height from NEAR RPC.
+/// Used by /health/detailed to compare with event monitor's current block.
+pub async fn fetch_latest_block_height(rpc_url: &str) -> Result<u64> {
+    let client = health_check_client();
+
+    let response = client
+        .post(rpc_url)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": "dontcare",
+            "method": "block",
+            "params": {
+                "finality": "final"
+            }
+        }))
+        .send()
+        .await
+        .context("Failed to fetch block from NEAR RPC")?;
+
+    let json: serde_json::Value = response
+        .json()
+        .await
+        .context("Failed to parse NEAR RPC block response")?;
+
+    if let Some(error) = json.get("error") {
+        anyhow::bail!("NEAR RPC error: {:?}", error);
+    }
+
+    json["result"]["header"]["height"]
+        .as_u64()
+        .context("Missing height in NEAR RPC block response")
+}
+
 /// Response from get_pricing_full contract view method
 #[derive(Debug, Clone, serde::Deserialize)]
 struct PricingFullResponse {
@@ -223,6 +267,20 @@ pub async fn fetch_project_full_from_contract(
         }
         None => Ok(None),
     }
+}
+
+/// Check if a public key exists as an access key on a NEAR account.
+/// Used for TEE session verification: checks the register-contract account
+/// to confirm the key was registered via TDX attestation.
+pub async fn check_access_key_exists(
+    rpc_url: &str,
+    account_id: &str,
+    public_key: &str,
+) -> Result<bool> {
+    let client = health_check_client();
+    tee_auth::check_access_key_on_contract(client, rpc_url, account_id, public_key)
+        .await
+        .map_err(|e| anyhow::anyhow!("TEE key check failed: {}", e))
 }
 
 /// Code source info from project version

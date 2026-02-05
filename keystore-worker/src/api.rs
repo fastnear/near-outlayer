@@ -36,6 +36,20 @@ use tower_http::trace::TraceLayer;
 
 use crate::attestation::Attestation;
 
+/// In-memory TEE challenge entry (for challenge-response protocol)
+struct TeeChallenge {
+    created_at: std::time::Instant,
+}
+
+/// In-memory TEE session entry
+#[derive(Clone)]
+struct TeeSession {
+    #[allow(dead_code)]
+    worker_public_key: String,
+    #[allow(dead_code)]
+    created_at: std::time::Instant,
+}
+
 /// Application state shared across all handlers
 #[derive(Clone)]
 pub struct AppState {
@@ -44,6 +58,10 @@ pub struct AppState {
     pub expected_measurements: crate::attestation::ExpectedMeasurements,
     pub near_client: Option<std::sync::Arc<crate::near::NearClient>>,
     pub is_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// In-memory TEE challenge store: challenge_hex -> TeeChallenge
+    tee_challenges: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, TeeChallenge>>>,
+    /// In-memory TEE session store: session_id -> TeeSession
+    tee_sessions: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<uuid::Uuid, TeeSession>>>,
 }
 
 impl AppState {
@@ -68,6 +86,8 @@ impl AppState {
             expected_measurements: crate::attestation::ExpectedMeasurements::default(),
             near_client: near_client.map(std::sync::Arc::new),
             is_ready: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(is_ready)),
+            tee_challenges: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            tee_sessions: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -90,6 +110,7 @@ impl AppState {
 pub enum ApiError {
     BadRequest(String),
     Unauthorized(String),
+    Forbidden(String),
     InternalError(String),
 }
 
@@ -98,6 +119,7 @@ impl IntoResponse for ApiError {
         let (status, message) = match self {
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
             ApiError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg),
+            ApiError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg),
             ApiError::InternalError(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
         };
 
@@ -396,12 +418,17 @@ pub struct EncryptResponse {
 pub fn create_router(state: AppState) -> Router {
     // Worker-only routes (for TEE workers)
     // These endpoints require valid worker token - coordinator CANNOT access them
+    // TEE session middleware runs AFTER auth (inner layer runs first in axum)
     let worker_routes = Router::new()
         .route("/decrypt", post(decrypt_handler))
         .route("/encrypt", post(encrypt_handler)) // For TopUp flow - re-encrypt with new balance
         .route("/decrypt-raw", post(decrypt_raw_handler)) // For TopUp flow - decrypt raw data with seed
         .route("/storage/encrypt", post(storage_encrypt_handler))
         .route("/storage/decrypt", post(storage_decrypt_handler))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            tee_session_middleware,
+        ))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             worker_auth_middleware,
@@ -417,12 +444,25 @@ pub fn create_router(state: AppState) -> Router {
             coordinator_auth_middleware,
         ));
 
+    // TEE session routes (coordinator auth - proxied from coordinator)
+    // Workers call coordinator's /keystore/tee-challenge and /keystore/register-tee
+    // Coordinator forwards with KEYSTORE_AUTH_TOKEN (coordinator auth)
+    // Security: challenge-response + NEAR RPC key check provide the actual verification
+    let tee_routes = Router::new()
+        .route("/tee-challenge", post(tee_challenge_handler))
+        .route("/register-tee", post(register_tee_handler))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            coordinator_auth_middleware,
+        ));
+
     // Public routes (no auth required)
     Router::new()
         .route("/health", get(health_handler))
         .route("/pubkey", post(pubkey_handler)) // Public for dashboard encryption
         .merge(worker_routes)
         .merge(coordinator_routes)
+        .merge(tee_routes)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -431,7 +471,7 @@ pub fn create_router(state: AppState) -> Router {
 async fn health_handler(State(state): State<AppState>) -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok".to_string(),
-        tee_mode: format!("{:?}", state.config.tee_mode),
+        tee_mode: format!("{}", state.config.tee_mode),
     })
 }
 
@@ -1850,6 +1890,155 @@ fn verify_near_signature(
     Ok(())
 }
 
+// =========================================================================
+// TEE Challenge-Response Endpoints
+// =========================================================================
+
+/// Generate a TEE challenge for worker registration
+///
+/// Worker calls this to get a random nonce, then signs it with their TEE private key.
+async fn tee_challenge_handler(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let challenge = tee_auth::generate_challenge();
+
+    // Store challenge in memory with timestamp
+    {
+        let mut challenges = state.tee_challenges.lock().unwrap();
+
+        // Clean up expired challenges (>60 seconds old)
+        challenges.retain(|_, c| c.created_at.elapsed().as_secs() < 60);
+
+        challenges.insert(challenge.clone(), TeeChallenge {
+            created_at: std::time::Instant::now(),
+        });
+    }
+
+    tracing::debug!("TEE challenge generated: {}...", &challenge[..16]);
+
+    Ok(Json(serde_json::json!({ "challenge": challenge })))
+}
+
+/// Request body for TEE registration
+#[derive(Debug, Deserialize)]
+struct RegisterTeeRequest {
+    public_key: String,
+    challenge: String,
+    signature: String,
+}
+
+/// Register a TEE session after challenge-response verification
+///
+/// 1. Verify challenge exists and is not expired
+/// 2. Verify ed25519 signature
+/// 3. Check public key exists on register-contract via NEAR RPC
+/// 4. Create session and return session_id
+async fn register_tee_handler(
+    State(state): State<AppState>,
+    Json(req): Json<RegisterTeeRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    // 1. Find and remove challenge (one-time use)
+    {
+        let mut challenges = state.tee_challenges.lock().unwrap();
+        let challenge = challenges.remove(&req.challenge).ok_or_else(|| {
+            ApiError::BadRequest("Invalid or expired challenge".to_string())
+        })?;
+
+        // Check expiration (60 seconds)
+        if challenge.created_at.elapsed().as_secs() > 60 {
+            return Err(ApiError::BadRequest("Challenge expired".to_string()));
+        }
+    }
+
+    // 2. Verify signature
+    tee_auth::verify_signature(&req.public_key, &req.challenge, &req.signature)
+        .map_err(|e| ApiError::BadRequest(format!("Signature verification failed: {}", e)))?;
+
+    // 3. Check key on operator account via NEAR RPC
+    let operator_account_id = state.config.operator_account_id.as_ref().ok_or_else(|| {
+        ApiError::InternalError("OPERATOR_ACCOUNT_ID not configured on keystore".to_string())
+    })?;
+
+    let http_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| ApiError::InternalError(format!("HTTP client error: {}", e)))?;
+
+    let key_exists = tee_auth::check_access_key_on_contract(
+        &http_client,
+        &state.config.near_rpc_url,
+        operator_account_id,
+        &req.public_key,
+    )
+    .await
+    .map_err(|e| ApiError::InternalError(format!("NEAR RPC check failed: {}", e)))?;
+
+    if !key_exists {
+        return Err(ApiError::Unauthorized(format!(
+            "Public key {} not found on operator account {}",
+            req.public_key, operator_account_id
+        )));
+    }
+
+    // 4. Create session
+    let session_id = uuid::Uuid::new_v4();
+    {
+        let mut sessions = state.tee_sessions.lock().unwrap();
+        sessions.insert(session_id, TeeSession {
+            worker_public_key: req.public_key.clone(),
+            created_at: std::time::Instant::now(),
+        });
+    }
+
+    tracing::info!(
+        session_id = %session_id,
+        public_key = %req.public_key,
+        "TEE session registered on keystore"
+    );
+
+    Ok(Json(serde_json::json!({ "session_id": session_id.to_string() })))
+}
+
+/// Validate X-TEE-Session header against in-memory sessions.
+/// Returns Ok(()) if session is valid or TEE sessions not required.
+/// Returns Err(ApiError::Forbidden) if required but missing/invalid.
+fn validate_tee_session(state: &AppState, headers: &axum::http::HeaderMap) -> Result<(), ApiError> {
+    if state.config.tee_mode == crate::config::TeeMode::None {
+        return Ok(());
+    }
+
+    let session_header = headers
+        .get("X-TEE-Session")
+        .and_then(|h| h.to_str().ok())
+        .ok_or_else(|| {
+            ApiError::Forbidden("TEE session required. Register via /tee-challenge + /register-tee".to_string())
+        })?;
+
+    let session_id = uuid::Uuid::parse_str(session_header)
+        .map_err(|_| ApiError::Forbidden("Invalid TEE session ID format".to_string()))?;
+
+    let sessions = state.tee_sessions.lock().unwrap();
+    if !sessions.contains_key(&session_id) {
+        return Err(ApiError::Forbidden("TEE session not found or expired".to_string()));
+    }
+
+    Ok(())
+}
+
+/// TEE session middleware
+///
+/// Checks X-TEE-Session header against in-memory sessions.
+/// Only enforced when TEE_MODE=outlayer_tee (skipped in none mode).
+/// Runs after worker_auth_middleware (inner layer) on worker-only routes.
+async fn tee_session_middleware(
+    State(state): State<AppState>,
+    req: axum::http::Request<axum::body::Body>,
+    next: middleware::Next,
+) -> Result<Response, ApiError> {
+    validate_tee_session(&state, req.headers())?;
+    Ok(next.run(req).await)
+}
+
 /// Worker authentication middleware
 ///
 /// For TEE worker-only endpoints: /decrypt, /encrypt, /decrypt-raw, /storage/*
@@ -1989,7 +2178,7 @@ mod tests {
             "owner": "owner.testnet",
             "user_account_id": "caller.testnet",
             "attestation": {
-                "tee_type": "simulated",
+                "tee_type": "outlayer_tee",
                 "quote": "",
                 "measurements": {},
                 "timestamp": 1704067200
@@ -2196,7 +2385,7 @@ mod tests {
             "owner": "owner.testnet",
             "user_account_id": "caller.testnet",
             "attestation": {
-                "tee_type": "simulated",
+                "tee_type": "outlayer_tee",
                 "quote": "",
                 "measurements": {},
                 "timestamp": 1704067200

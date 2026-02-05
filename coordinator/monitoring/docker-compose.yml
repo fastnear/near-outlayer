@@ -1,0 +1,48 @@
+services:
+  collector-db:
+    image: postgres:16-alpine
+    container_name: outlayer-collector-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: collector
+      POSTGRES_PASSWORD: collector
+      POSTGRES_DB: health
+    volumes:
+      - collector_db_data:/var/lib/postgresql/data
+
+  collector:
+    build:
+      context: ./collector
+      dockerfile: Dockerfile
+    container_name: outlayer-health-collector
+    restart: unless-stopped
+    depends_on:
+      - collector-db
+    environment:
+      COLLECTOR_DATABASE_URL: "postgres://collector:collector@collector-db:5432/health"
+      COLLECTOR_TARGETS: "mainnet=https://api.outlayer.fastnear.com,testnet=https://testnet-api.outlayer.fastnear.com"      
+      COLLECTOR_POLL_INTERVAL: "30"
+      COLLECTOR_RETENTION_DAYS: "90"
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
+      TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:-}"
+      RUST_LOG: "outlayer_health_collector=info"
+
+  grafana:
+    image: grafana/grafana-oss:11.5.2
+    container_name: outlayer-grafana
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9848:3000"
+    depends_on:
+      - collector-db
+    environment:
+      GF_SECURITY_ADMIN_USER: "${GRAFANA_ADMIN_NAME:-admin}"
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-change-me}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+
+volumes:
+  collector_db_data:
+  grafana_data:

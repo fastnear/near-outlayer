@@ -86,9 +86,43 @@ pub async fn auth_middleware(
 
     debug!("Auth successful");
 
-    // Store token_hash in request extensions for use in handlers
+    // Extract and validate TEE session only when the feature is enabled.
+    // This avoids a DB query on every request when TEE sessions aren't required.
+    let tee_session = if state.config.require_tee_session {
+        let tee_session_id = req
+            .headers()
+            .get("X-TEE-Session")
+            .and_then(|h| h.to_str().ok())
+            .and_then(|s| uuid::Uuid::parse_str(s).ok());
+
+        if let Some(session_id) = tee_session_id {
+            let row = sqlx::query_scalar::<_, bool>(
+                "SELECT is_active FROM worker_tee_sessions WHERE session_id = $1"
+            )
+            .bind(session_id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten();
+
+            match row {
+                Some(true) => Some(session_id),
+                _ => {
+                    debug!("Invalid or inactive TEE session: {}", session_id);
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Store token_hash and TEE session info in request extensions
     let mut req = req;
     req.extensions_mut().insert(WorkerTokenHash(token_hash));
+    req.extensions_mut().insert(TeeSessionInfo(tee_session));
 
     Ok(next.run(req).await)
 }
@@ -96,3 +130,7 @@ pub async fn auth_middleware(
 /// Worker token hash stored in request extensions
 #[derive(Clone)]
 pub struct WorkerTokenHash(pub String);
+
+/// TEE session info stored in request extensions (None if not provided or invalid)
+#[derive(Clone)]
+pub struct TeeSessionInfo(pub Option<uuid::Uuid>);

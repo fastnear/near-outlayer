@@ -34,8 +34,8 @@ impl TdxClient {
         info!("   Public key (hex): {}", hex::encode(public_key_bytes));
 
         match self.tee_mode.as_str() {
-            "tdx" => {
-                // TDX mode: Generate real TDX quote with custom report_data
+            "outlayer_tee" => {
+                // OutLayer TEE mode: Generate real TDX quote with custom report_data
                 info!("Using TDX attestation (Phala dstack socket)");
 
                 // Create report_data: first 32 bytes = public key, rest = zeros
@@ -52,21 +52,6 @@ impl TdxClient {
                 // Return hex-encoded quote (DAO contract expects hex string)
                 Ok(hex::encode(&tdx_quote))
             }
-            "simulated" => {
-                // Simulated mode: Create fake quote with public key embedded
-                warn!("⚠️ Using SIMULATED attestation (dev only!)");
-
-                // Format compatible with worker's simulated mode
-                let fake_quote = format!(
-                    "SIMULATED_TDX_QUOTE:pubkey={}",
-                    hex::encode(public_key_bytes)
-                );
-
-                info!("✅ Generated SIMULATED quote (hex-encoded, size: {} bytes)", fake_quote.len());
-
-                // Return hex-encoded fake quote
-                Ok(hex::encode(fake_quote.as_bytes()))
-            }
             "none" => {
                 // No attestation mode: Create minimal fake quote
                 warn!("⚠️ Using NO-ATTESTATION mode (dev only!)");
@@ -82,7 +67,7 @@ impl TdxClient {
             }
             other => {
                 anyhow::bail!(
-                    "Unsupported TEE mode for registration: {}. Use 'tdx', 'simulated', or 'none'",
+                    "Unsupported TEE mode for registration: {}. Use 'outlayer_tee' or 'none'",
                     other
                 );
             }

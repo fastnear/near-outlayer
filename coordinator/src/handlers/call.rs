@@ -116,6 +116,8 @@ pub enum CallError {
     InternalError(String),
     /// Grant keys cannot use X-Attached-Deposit
     GrantKeyNoDeposit,
+    /// TEE session required but not provided
+    TeeSessionRequired(String),
 }
 
 impl axum::response::IntoResponse for CallError {
@@ -165,6 +167,9 @@ impl axum::response::IntoResponse for CallError {
             }
             CallError::GrantKeyNoDeposit => {
                 (StatusCode::FORBIDDEN, "Grant keys cannot use X-Attached-Deposit".to_string())
+            }
+            CallError::TeeSessionRequired(msg) => {
+                (StatusCode::FORBIDDEN, msg)
             }
         };
 
@@ -1062,8 +1067,16 @@ pub struct CompleteHttpsCallResponse {
 /// 3. Finalizes balances (release reserved, add to spent)
 pub async fn complete_https_call(
     State(state): State<AppState>,
+    axum::Extension(tee_session): axum::Extension<crate::auth::TeeSessionInfo>,
     Json(req): Json<CompleteHttpsCallRequest>,
 ) -> Result<Json<CompleteHttpsCallResponse>, CallError> {
+    // Check TEE session if required
+    if state.config.require_tee_session && tee_session.0.is_none() {
+        return Err(CallError::TeeSessionRequired(
+            "TEE session required. Register via POST /workers/register-tee".to_string(),
+        ));
+    }
+
     let call_id = req.call_id;
     info!("📤 HTTPS call completion: call_id={} success={}", call_id, req.success);
 

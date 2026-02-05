@@ -32,8 +32,8 @@ services:
 
   coordinator:
     build:
-      context: ./coordinator
-      dockerfile: ../docker/Dockerfile.coordinator
+      context: .
+      dockerfile: docker/Dockerfile.coordinator
     container_name: offchainvm-coordinator
     depends_on:
       postgres:

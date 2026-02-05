@@ -1,4 +1,5 @@
 # Multi-stage build for OffchainVM Coordinator
+# Build context: project root (for tee-auth access)
 
 # Stage 1: Builder
 FROM rust:alpine AS builder
@@ -15,8 +16,12 @@ RUN apk add --no-cache \
 
 WORKDIR /build
 
-# Copy manifests
-COPY Cargo.toml Cargo.lock ./
+# Copy tee-auth dependency manifest (for dep caching)
+COPY tee-auth/Cargo.toml /tee-auth/Cargo.toml
+RUN mkdir -p /tee-auth/src && echo "" > /tee-auth/src/lib.rs
+
+# Copy coordinator manifests
+COPY coordinator/Cargo.toml coordinator/Cargo.lock ./
 
 # Create dummy src to cache dependencies
 RUN mkdir src && \
@@ -25,13 +30,14 @@ RUN mkdir src && \
     rm -rf src
 
 # Copy actual source code
-COPY src ./src
-COPY migrations ./migrations
-COPY .sqlx ./.sqlx
+COPY tee-auth/src /tee-auth/src
+COPY coordinator/src ./src
+COPY coordinator/migrations ./migrations
+COPY coordinator/.sqlx ./.sqlx
 
 # Build the application with SQLx offline mode
 ENV SQLX_OFFLINE=true
-RUN touch src/main.rs && \
+RUN touch /tee-auth/src/lib.rs src/main.rs && \
     cargo build --release --bin offchainvm-coordinator
 
 # Stage 2: Runtime
@@ -55,7 +61,7 @@ WORKDIR /app
 COPY --from=builder /build/target/release/offchainvm-coordinator /app/coordinator
 
 # Copy migrations
-COPY migrations ./migrations
+COPY coordinator/migrations ./migrations
 
 # Change ownership
 RUN chown -R appuser:appgroup /app

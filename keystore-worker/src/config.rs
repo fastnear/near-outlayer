@@ -29,20 +29,17 @@ pub struct Config {
     /// Grants access to: /add_generated_secret, /update_user_secrets
     pub allowed_coordinator_token_hashes: Vec<String>,
 
-    /// TEE mode (sgx, sev, simulated, none)
+    /// TEE mode (outlayer_tee, none)
     pub tee_mode: TeeMode,
+
+    /// Operator account where TEE worker keys are registered as access keys (e.g., "worker.outlayer.testnet")
+    pub operator_account_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TeeMode {
-    /// Intel SGX
-    Sgx,
-    /// AMD SEV-SNP
-    Sev,
-    /// Intel TDX (Trust Domain Extensions)
-    Tdx,
-    /// Simulated TEE for testing
-    Simulated,
+    /// OutLayer TEE: TDX hardware + challenge-response sessions
+    OutlayerTee,
     /// No TEE (dev mode)
     None,
 }
@@ -50,10 +47,7 @@ pub enum TeeMode {
 impl std::fmt::Display for TeeMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TeeMode::Sgx => write!(f, "sgx"),
-            TeeMode::Sev => write!(f, "sev"),
-            TeeMode::Tdx => write!(f, "tdx"),
-            TeeMode::Simulated => write!(f, "simulated"),
+            TeeMode::OutlayerTee => write!(f, "outlayer_tee"),
             TeeMode::None => write!(f, "none"),
         }
     }
@@ -94,14 +88,14 @@ impl Config {
             .filter(|s| !s.is_empty())
             .collect();
 
-        let tee_mode = match std::env::var("TEE_MODE").unwrap_or_else(|_| "none".to_string()).as_str() {
-            "sgx" => TeeMode::Sgx,
-            "sev" => TeeMode::Sev,
-            "tdx" => TeeMode::Tdx,
-            "simulated" => TeeMode::Simulated,
+        let tee_mode_raw = std::env::var("TEE_MODE").unwrap_or_else(|_| "none".to_string());
+        let tee_mode = match tee_mode_raw.trim().trim_matches('"').trim_matches('\'').to_lowercase().as_str() {
+            "outlayer_tee" => TeeMode::OutlayerTee,
             "none" => TeeMode::None,
-            other => anyhow::bail!("Invalid TEE_MODE: {}", other),
+            other => anyhow::bail!("Invalid TEE_MODE: '{}' (raw: '{}'). Must be 'outlayer_tee' or 'none'", other, tee_mode_raw),
         };
+
+        let operator_account_id = std::env::var("OPERATOR_ACCOUNT_ID").ok();
 
         Ok(Config {
             server_addr,
@@ -111,6 +105,7 @@ impl Config {
             allowed_worker_token_hashes,
             allowed_coordinator_token_hashes,
             tee_mode,
+            operator_account_id,
         })
     }
 
@@ -122,6 +117,10 @@ impl Config {
 
         if self.allowed_coordinator_token_hashes.is_empty() {
             tracing::warn!("No coordinator token hashes configured - coordinator endpoints will reject all requests");
+        }
+
+        if self.tee_mode == TeeMode::OutlayerTee && self.operator_account_id.is_none() {
+            anyhow::bail!("TEE_MODE=outlayer_tee requires OPERATOR_ACCOUNT_ID to be set");
         }
 
         Ok(())

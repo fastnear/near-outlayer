@@ -1,0 +1,20 @@
+apiVersion: 1
+datasources:
+  - name: OutLayer Health
+    uid: outlayer-health-db
+    type: postgres
+    access: proxy
+    url: collector-db:5432
+    database: health
+    user: collector
+    secureJsonData:
+      password: collector
+    jsonData:
+      sslmode: disable
+      maxOpenConns: 5
+      maxIdleConns: 2
+      connMaxLifetime: 14400
+      postgresVersion: 1600
+      timescaledb: false
+    isDefault: true
+    editable: false

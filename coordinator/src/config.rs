@@ -63,13 +63,19 @@ pub struct Config {
     pub max_concurrent_calls_per_key: u32,
     /// Rate limit for payment key (requests per minute)
     pub payment_key_rate_limit_per_minute: u32,
+
+    // TEE session verification
+    /// Operator account where TEE worker keys are registered as access keys (e.g., "worker.outlayer.testnet")
+    pub operator_account_id: Option<String>,
+    /// Require valid TEE session for HTTPS call completion and keystore access
+    pub require_tee_session: bool,
 }
 
 impl Config {
     pub fn from_env() -> Result<Self, Box<dyn std::error::Error>> {
         dotenv::dotenv().ok();
 
-        Ok(Self {
+        let config = Self {
             host: std::env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
             port: std::env::var("PORT")
                 .unwrap_or_else(|_| "8080".to_string())
@@ -155,6 +161,18 @@ impl Config {
             payment_key_rate_limit_per_minute: std::env::var("PAYMENT_KEY_RATE_LIMIT_PER_MINUTE")
                 .unwrap_or_else(|_| "1000".to_string())
                 .parse()?,
-        })
+
+            // TEE session verification
+            operator_account_id: std::env::var("OPERATOR_ACCOUNT_ID").ok(),
+            require_tee_session: std::env::var("REQUIRE_TEE_SESSION")
+                .unwrap_or_else(|_| "false".to_string())
+                .parse()?,
+        };
+
+        if config.require_tee_session && config.operator_account_id.is_none() {
+            return Err("REQUIRE_TEE_SESSION=true requires OPERATOR_ACCOUNT_ID to be set".into());
+        }
+
+        Ok(config)
     }
 }
