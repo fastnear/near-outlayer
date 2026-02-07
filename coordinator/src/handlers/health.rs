@@ -318,18 +318,9 @@ async fn check_workers(state: &AppState) -> WorkersCheck {
         })
         .count() as i64;
 
-    let has_stale = workers.iter().any(|w| {
-        (w.status == "online" || w.status == "busy")
-            && w.heartbeat_secs_ago.unwrap_or(i64::MAX) >= WORKER_HEARTBEAT_WARNING_SECS
-    });
-
-    let status = if active == 0 {
-        "critical"
-    } else if has_stale {
-        "warning"
-    } else {
-        "ok"
-    };
+    // Only "critical" if no active workers at all.
+    // Inactive/stale workers don't cause degraded - it's normal during worker rotation.
+    let status = if active == 0 { "critical" } else { "ok" };
 
     let details = workers
         .into_iter()
@@ -443,6 +434,8 @@ struct TeeRow {
 }
 
 async fn check_tee_attestation(state: &AppState) -> TeeAttestationCheck {
+    // Show TEE attestation for workers seen in the last 24 hours (matching workers check)
+    // Don't require online/busy status - a worker might be temporarily idle
     let workers: Vec<TeeRow> = match sqlx::query_as(
         r#"
         SELECT
@@ -450,9 +443,9 @@ async fn check_tee_attestation(state: &AppState) -> TeeAttestationCheck {
             EXTRACT(EPOCH FROM (NOW() - wat.last_attestation_at))::BIGINT as attestation_secs_ago
         FROM worker_auth_tokens wat
         INNER JOIN worker_status ws ON wat.worker_name = ws.worker_name
-        WHERE ws.status IN ('online', 'busy')
-          AND ws.last_heartbeat_at > NOW() - INTERVAL '5 minutes'
+        WHERE ws.last_heartbeat_at > NOW() - INTERVAL '24 hours'
           AND wat.is_active = true
+          AND wat.last_attestation_at IS NOT NULL
         "#,
     )
     .fetch_all(&state.db)
