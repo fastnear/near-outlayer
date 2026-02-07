@@ -295,11 +295,14 @@ pub async fn register_tee(
         return Err((StatusCode::FORBIDDEN, "Public key not registered on contract".to_string()));
     }
 
-    // 4. Deactivate old sessions for this token
+    // 4. Deactivate old sessions for THIS specific public_key only
+    // This allows multiple workers with different public_keys to have concurrent sessions
+    // while ensuring the same TEE instance re-registering replaces its old session
     let _ = sqlx::query(
-        "UPDATE worker_tee_sessions SET is_active = FALSE WHERE token_hash = $1 AND is_active = TRUE"
+        "UPDATE worker_tee_sessions SET is_active = FALSE WHERE token_hash = $1 AND worker_public_key = $2 AND is_active = TRUE"
     )
     .bind(&token_hash.0)
+    .bind(&payload.public_key)
     .execute(&state.db)
     .await;
 

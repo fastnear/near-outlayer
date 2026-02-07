@@ -14,8 +14,15 @@ use crate::AppState;
 /// - Full workers poll compile queue first → claim compile OR execute job
 pub async fn claim_job(
     State(state): State<AppState>,
+    axum::Extension(tee_session): axum::Extension<crate::auth::TeeSessionInfo>,
     Json(payload): Json<ClaimJobRequest>,
 ) -> Result<Json<ClaimJobResponse>, StatusCode> {
+    // Don't give jobs to workers without valid TEE session
+    if state.config.require_tee_session && tee_session.0.is_none() {
+        warn!("Worker {} attempted to claim job without valid TEE session", payload.worker_id);
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
     debug!(
         "Worker {} claiming task: request_id={} data_id={} capabilities={:?}",
         payload.worker_id, payload.request_id, payload.data_id, payload.capabilities
