@@ -7,6 +7,35 @@
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 
+/// Information from Phala dstack about the running app
+#[derive(Debug, Clone)]
+pub struct PhalaAppInfo {
+    pub app_id: String,
+    pub instance_id: String,
+}
+
+/// Get Phala app info (app_id, instance_id) from dstack socket
+///
+/// Returns None if not running in Phala TEE environment or if dstack is unavailable
+pub async fn get_phala_app_info() -> Option<PhalaAppInfo> {
+    use dstack_sdk::dstack_client::DstackClient;
+
+    let client = DstackClient::new(None);
+    match client.info().await {
+        Ok(info) => {
+            tracing::info!("📱 Phala app info: app_id={}, instance_id={}", info.app_id, info.instance_id);
+            Some(PhalaAppInfo {
+                app_id: info.app_id,
+                instance_id: info.instance_id,
+            })
+        }
+        Err(e) => {
+            tracing::debug!("Could not get Phala app info (not in TEE?): {}", e);
+            None
+        }
+    }
+}
+
 /// TDX attestation client
 pub struct TdxClient {
     tee_mode: String,

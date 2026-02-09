@@ -30,7 +30,7 @@ use executor::{Executor, ExecutionContext};
 use keystore_client::KeystoreClient;
 use near_client::NearClient;
 use outlayer_storage::StorageConfig;
-use tdx_attestation::TdxClient;
+use tdx_attestation::{TdxClient, get_phala_app_info};
 
 /// Generate a dummy TDX quote and fetch collateral from Phala Cloud API
 ///
@@ -69,8 +69,42 @@ async fn main() -> Result<()> {
     info!("OffchainVM Worker starting...");
 
     // Load configuration
-    let config = Config::from_env().context("Failed to load configuration")?;
+    let mut config = Config::from_env().context("Failed to load configuration")?;
     config.validate().context("Invalid configuration")?;
+
+    // Auto-generate worker_id if not explicitly set via WORKER_ID env var
+    if !Config::is_worker_id_from_env() {
+        info!("🔍 WORKER_ID not set, auto-generating from network + type + Phala app_id...");
+
+        // Try to get Phala app info (only works in TEE environment)
+        // Use timeout to avoid hanging if dstack socket exists but is unresponsive
+        let phala_app_id = if config.tee_mode == "outlayer_tee" {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                get_phala_app_info()
+            ).await {
+                Ok(Some(info)) => {
+                    info!("📱 Detected Phala TEE: app_id={}", info.app_id);
+                    Some(info.app_id)
+                }
+                Ok(None) => {
+                    warn!("⚠️  Could not get Phala app info, using random UUID");
+                    None
+                }
+                Err(_) => {
+                    warn!("⚠️  Timeout getting Phala app info (5s), using random UUID");
+                    None
+                }
+            }
+        } else {
+            debug!("Not in TEE mode, using random UUID for worker_id");
+            None
+        };
+
+        let generated_id = config.generate_worker_id(phala_app_id.as_deref());
+        info!("🏷️  Generated worker_id: {}", generated_id);
+        config.set_worker_id(generated_id);
+    }
 
     info!("Worker ID: {}", config.worker_id);
     info!("Coordinator API: {}", config.api_base_url);
@@ -414,7 +448,8 @@ async fn main() -> Result<()> {
     // Start heartbeat task
     let heartbeat_api_client = api_client.clone();
     let heartbeat_worker_id = config.worker_id.clone();
-    let heartbeat_worker_name = format!("worker-{}", config.worker_id);
+    // Worker name = worker_id (already descriptive: mainnet-executor-75ab6ac2)
+    let heartbeat_worker_name = config.worker_id.clone();
     let heartbeat_block_height = shared_block_height.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));

@@ -485,6 +485,65 @@ impl Config {
         self.operator_signer = Some(signer);
     }
 
+    /// Set worker_id (used for auto-generation based on Phala app info)
+    pub fn set_worker_id(&mut self, worker_id: String) {
+        self.worker_id = worker_id;
+    }
+
+    /// Check if WORKER_ID was explicitly set via environment variable
+    pub fn is_worker_id_from_env() -> bool {
+        std::env::var("WORKER_ID").is_ok()
+    }
+
+    /// Detect network from OFFCHAINVM_CONTRACT_ID
+    /// Returns "testnet" or "mainnet"
+    pub fn detect_network(&self) -> &'static str {
+        let contract_str = self.offchainvm_contract_id.to_string();
+        if contract_str.ends_with(".testnet") {
+            "testnet"
+        } else {
+            "mainnet"
+        }
+    }
+
+    /// Get worker type string based on capabilities
+    /// Returns "executor", "compiler", or "executor-compiler"
+    pub fn worker_type_string(&self) -> &'static str {
+        match (self.capabilities.execution, self.capabilities.compilation) {
+            (true, true) => "executor-compiler",
+            (true, false) => "executor",
+            (false, true) => "compiler",
+            (false, false) => "unknown", // Should never happen due to validation
+        }
+    }
+
+    /// Generate worker_id from network, type, and optional Phala app_id
+    /// Format: {network}-{type}-{app_id_short} or {network}-{type}-{uuid}
+    pub fn generate_worker_id(&self, phala_app_id: Option<&str>) -> String {
+        let network = self.detect_network();
+        let worker_type = self.worker_type_string();
+
+        let suffix = match phala_app_id {
+            Some(app_id) => {
+                // Use first 16 chars of Phala app_id (hex) for better uniqueness
+                // Full app_id is 40 hex chars, 16 gives ~18 quintillion combinations
+                if app_id.len() >= 16 {
+                    app_id[..16].to_string()
+                } else {
+                    app_id.to_string()
+                }
+            }
+            None => {
+                // Fallback: use 16 hex chars from UUID (remove hyphens first)
+                // UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (32 hex + 4 hyphens)
+                let uuid_hex = uuid::Uuid::new_v4().to_string().replace('-', "");
+                uuid_hex[..16].to_string()
+            }
+        };
+
+        format!("{}-{}-{}", network, worker_type, suffix)
+    }
+
     /// Get operator signer (panics if not set)
     pub fn get_operator_signer(&self) -> &InMemorySigner {
         self.operator_signer.as_ref().expect("Operator signer not set - registration must have failed")

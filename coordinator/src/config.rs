@@ -175,4 +175,20 @@ impl Config {
 
         Ok(config)
     }
+
+    /// Detect network from contract_id
+    /// Returns "testnet" or "mainnet"
+    pub fn detect_network(&self) -> &'static str {
+        if self.contract_id.ends_with(".testnet") {
+            "testnet"
+        } else {
+            "mainnet"
+        }
+    }
+
+    /// Generate keystore worker_id based on network
+    /// Format: {network}-keystore
+    pub fn keystore_worker_id(&self) -> String {
+        format!("{}-keystore", self.detect_network())
+    }
 }

@@ -124,6 +124,14 @@ pub async fn health_detailed(
         is_degraded = true;
     }
 
+    // Update keystore heartbeat in worker_status (so it appears in workers list)
+    if keystore_check.status == "ok" {
+        let keystore_worker_id = state.config.keystore_worker_id();
+        if let Err(e) = upsert_keystore_heartbeat(&state.db, &keystore_worker_id).await {
+            warn!("Failed to update keystore heartbeat: {}", e);
+        }
+    }
+
     match workers_check.status.as_str() {
         "critical" | "error" => is_unhealthy = true,
         "warning" => is_degraded = true,
@@ -271,6 +279,26 @@ async fn check_keystore(state: &AppState) -> ServiceCheck {
             }
         }
     }
+}
+
+/// Update keystore heartbeat in worker_status table
+/// This makes keystore appear in the workers list alongside executor/compiler workers
+async fn upsert_keystore_heartbeat(db: &sqlx::PgPool, worker_id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        INSERT INTO worker_status (worker_id, worker_name, status, last_heartbeat_at, updated_at)
+        VALUES ($1, $1, 'online', NOW(), NOW())
+        ON CONFLICT (worker_id)
+        DO UPDATE SET
+            status = 'online',
+            last_heartbeat_at = NOW(),
+            updated_at = NOW()
+        "#,
+    )
+    .bind(worker_id)
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
 #[derive(sqlx::FromRow)]
