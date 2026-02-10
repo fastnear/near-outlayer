@@ -239,6 +239,14 @@ impl KeystoreClient {
             "Requesting secret decryption via keystore"
         );
 
+        // Log TEE session info for debugging
+        let tee_session = self.tee_session_id.lock().unwrap().clone();
+        tracing::info!(
+            tee_session_id = ?tee_session,
+            url = %url,
+            "🔑 Sending decrypt request to keystore"
+        );
+
         let response = self.add_auth_headers(self.http_client.post(&url))
             .json(&request)
             .send()
@@ -248,6 +256,14 @@ impl KeystoreClient {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
+
+            let truncated_body: String = error_text.chars().take(500).collect();
+            tracing::error!(
+                status = %status,
+                error_body = %truncated_body,
+                tee_session_id = ?tee_session,
+                "🔒 Keystore /decrypt failed"
+            );
 
             // Parse user-friendly error message based on accessor type
             let context = match &accessor {

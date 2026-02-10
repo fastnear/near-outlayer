@@ -272,13 +272,13 @@ pub async fn fetch_project_full_from_contract(
 /// Check if a public key exists as an access key on a NEAR account.
 /// Used for TEE session verification: checks the register-contract account
 /// to confirm the key was registered via TDX attestation.
+/// Retries automatically for finality lag (key may not be visible immediately after registration).
 pub async fn check_access_key_exists(
     rpc_url: &str,
     account_id: &str,
     public_key: &str,
 ) -> Result<bool> {
-    let client = health_check_client();
-    tee_auth::check_access_key_on_contract(client, rpc_url, account_id, public_key)
+    tee_auth::check_access_key_with_retry(rpc_url, account_id, public_key)
         .await
         .map_err(|e| anyhow::anyhow!("TEE key check failed: {}", e))
 }

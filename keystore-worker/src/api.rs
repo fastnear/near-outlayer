@@ -1954,18 +1954,12 @@ async fn register_tee_handler(
     tee_auth::verify_signature(&req.public_key, &req.challenge, &req.signature)
         .map_err(|e| ApiError::BadRequest(format!("Signature verification failed: {}", e)))?;
 
-    // 3. Check key on operator account via NEAR RPC
+    // 3. Check key on operator account via NEAR RPC (with retry for finality lag)
     let operator_account_id = state.config.operator_account_id.as_ref().ok_or_else(|| {
         ApiError::InternalError("OPERATOR_ACCOUNT_ID not configured on keystore".to_string())
     })?;
 
-    let http_client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .map_err(|e| ApiError::InternalError(format!("HTTP client error: {}", e)))?;
-
-    let key_exists = tee_auth::check_access_key_on_contract(
-        &http_client,
+    let key_exists = tee_auth::check_access_key_with_retry(
         &state.config.near_rpc_url,
         operator_account_id,
         &req.public_key,

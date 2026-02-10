@@ -337,36 +337,61 @@ async fn main() -> Result<()> {
         }
         info!("✅ Startup attestation sent successfully - worker registered with coordinator");
 
-        // Register TEE session with coordinator (challenge-response)
-        // This proves to the coordinator that we hold the TEE private key
+        // Register TEE sessions with coordinator and keystore (challenge-response)
+        // This proves to the coordinator/keystore that we hold the TEE private key
         // registered on the operator account
         if let Some((pub_key_bytes, signing_key)) = &tee_signing_info {
-            info!("🔐 Registering TEE session with coordinator...");
-            match api_client.register_tee_session(pub_key_bytes, signing_key).await {
-                Ok(session_id) => {
-                    info!("✅ TEE session registered with coordinator: {}", session_id);
-                }
-                Err(e) => {
-                    warn!("⚠️ Failed to register TEE session with coordinator: {}", e);
-                    warn!("   Worker will continue without coordinator TEE session.");
-                    warn!("   HTTPS calls may be rejected if REQUIRE_TEE_SESSION=true on coordinator.");
-                }
-            }
+            const MAX_TEE_RETRIES: u32 = 5;
+            const TEE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
 
-            // Register TEE session with keystore (independent verification)
-            info!("🔐 Registering TEE session with keystore...");
-            match api_client.register_keystore_tee_session(pub_key_bytes, signing_key).await {
-                Ok(session_id) => {
-                    info!("✅ TEE session registered with keystore: {}", session_id);
-                    // Pass session ID to KeystoreClient so it sends X-TEE-Session on all calls
-                    if let Some(ref kc) = keystore_client {
-                        kc.set_tee_session_id(session_id);
+            // Register TEE session with coordinator
+            let mut coordinator_session_ok = false;
+            for attempt in 1..=MAX_TEE_RETRIES {
+                info!("🔐 Registering TEE session with coordinator (attempt {}/{})", attempt, MAX_TEE_RETRIES);
+                match api_client.register_tee_session(pub_key_bytes, signing_key).await {
+                    Ok(session_id) => {
+                        info!("✅ TEE session registered with coordinator: {}", session_id);
+                        coordinator_session_ok = true;
+                        break;
+                    }
+                    Err(e) => {
+                        warn!("⚠️ Attempt {}/{} failed: {}", attempt, MAX_TEE_RETRIES, e);
+                        if attempt < MAX_TEE_RETRIES {
+                            tokio::time::sleep(TEE_RETRY_DELAY).await;
+                        }
                     }
                 }
-                Err(e) => {
-                    warn!("⚠️ Failed to register TEE session with keystore: {}", e);
-                    warn!("   Worker will continue without keystore TEE session.");
-                    warn!("   Secret decryption may be rejected if TEE_MODE=outlayer_tee on keystore.");
+            }
+            if !coordinator_session_ok {
+                error!("❌ Failed to register TEE session with coordinator after {} attempts", MAX_TEE_RETRIES);
+                return Err(anyhow::anyhow!("TEE session registration with coordinator failed after {} attempts", MAX_TEE_RETRIES));
+            }
+
+            // Register TEE session with keystore
+            if keystore_client.is_some() {
+                let mut keystore_session_ok = false;
+                for attempt in 1..=MAX_TEE_RETRIES {
+                    info!("🔐 Registering TEE session with keystore (attempt {}/{})", attempt, MAX_TEE_RETRIES);
+                    match api_client.register_keystore_tee_session(pub_key_bytes, signing_key).await {
+                        Ok(session_id) => {
+                            info!("✅ TEE session registered with keystore: {}", session_id);
+                            if let Some(ref kc) = keystore_client {
+                                kc.set_tee_session_id(session_id);
+                            }
+                            keystore_session_ok = true;
+                            break;
+                        }
+                        Err(e) => {
+                            warn!("⚠️ Attempt {}/{} failed: {}", attempt, MAX_TEE_RETRIES, e);
+                            if attempt < MAX_TEE_RETRIES {
+                                tokio::time::sleep(TEE_RETRY_DELAY).await;
+                            }
+                        }
+                    }
+                }
+                if !keystore_session_ok {
+                    error!("❌ Failed to register TEE session with keystore after {} attempts", MAX_TEE_RETRIES);
+                    return Err(anyhow::anyhow!("TEE session registration with keystore failed after {} attempts", MAX_TEE_RETRIES));
                 }
             }
         }
