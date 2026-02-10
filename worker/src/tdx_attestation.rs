@@ -11,10 +11,9 @@ use sha2::{Digest, Sha256};
 #[derive(Debug, Clone)]
 pub struct PhalaAppInfo {
     pub app_id: String,
-    pub instance_id: String,
 }
 
-/// Get Phala app info (app_id, instance_id) from dstack socket
+/// Get Phala app info (app_id) from dstack socket
 ///
 /// Returns None if not running in Phala TEE environment or if dstack is unavailable
 pub async fn get_phala_app_info() -> Option<PhalaAppInfo> {
@@ -23,10 +22,9 @@ pub async fn get_phala_app_info() -> Option<PhalaAppInfo> {
     let client = DstackClient::new(None);
     match client.info().await {
         Ok(info) => {
-            tracing::info!("📱 Phala app info: app_id={}, instance_id={}", info.app_id, info.instance_id);
+            tracing::info!("📱 Phala app_id: {}", info.app_id);
             Some(PhalaAppInfo {
                 app_id: info.app_id,
-                instance_id: info.instance_id,
             })
         }
         Err(e) => {

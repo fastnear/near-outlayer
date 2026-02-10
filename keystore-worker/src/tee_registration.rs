@@ -166,6 +166,7 @@ impl RegistrationClient {
         &self,
         public_key: PublicKey,
         tdx_quote_hex: String,
+        app_id: Option<String>,
     ) -> Result<u64> {
         info!("📤 Submitting keystore registration to DAO contract");
 
@@ -173,6 +174,7 @@ impl RegistrationClient {
         let args = json!({
             "public_key": public_key.to_string(),
             "tdx_quote_hex": tdx_quote_hex,
+            "app_id": app_id,
         });
 
         // Convert to JSON string first, then to bytes (NEAR expects JSON text, not MessagePack)

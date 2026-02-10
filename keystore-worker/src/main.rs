@@ -60,6 +60,24 @@ async fn main() -> Result<()> {
         "Configuration loaded"
     );
 
+    // Try to get Phala app info (for TEE verification URL)
+    if config.tee_mode == TeeMode::OutlayerTee {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            tdx_attestation::get_phala_app_info()
+        ).await {
+            Ok(Some(info)) => {
+                tracing::info!("🔐 Phala TEE verification: https://trust.phala.com/app/{}", info.app_id);
+            }
+            Ok(None) => {
+                tracing::warn!("⚠️ Could not get Phala app info");
+            }
+            Err(_) => {
+                tracing::warn!("⚠️ Timeout getting Phala app info");
+            }
+        }
+    }
+
     // Initialize NEAR RPC client for reading secrets from contract
     // Only NEAR_RPC_URL and NEAR_CONTRACT_ID are required (read-only)
     let near_client = if let (Ok(rpc_url), Ok(contract_id)) = (
@@ -249,8 +267,13 @@ async fn perform_tee_registration(config: &Config) -> Result<Keystore> {
         tracing::info!("📡 Generated TEE attestation (mode: {:?})", config.tee_mode);
         tracing::info!("   Quote will be verified by DAO contract against approved RTMR3 list");
 
+        // Get Phala app_id for TEE verification (will be logged in blockchain tx)
+        let app_id = crate::tdx_attestation::get_phala_app_info()
+            .await
+            .map(|info| info.app_id);
+
         // Submit to DAO (contract will verify the quote)
-        let proposal_id = match registration.submit_registration(public_key.clone(), tdx_quote).await {
+        let proposal_id = match registration.submit_registration(public_key.clone(), tdx_quote, app_id).await {
             Ok(id) => id,
             Err(e) => {
                 let error_str = e.to_string();

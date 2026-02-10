@@ -3,16 +3,19 @@
 # Automated deployment to Phala Cloud with RTMR3 whitelisting and DAO voting
 #
 # Usage:
-#   ./scripts/deploy_phala.sh keystore [testnet|mainnet] [instance-name] [--no-build]
-#   ./scripts/deploy_phala.sh worker [testnet|mainnet] [instance-name] [--no-build]
+#   ./scripts/deploy_phala.sh keystore [testnet|mainnet] [instance-name] [--version vX.Y.Z]
+#   ./scripts/deploy_phala.sh worker [testnet|mainnet] [instance-name] [--version vX.Y.Z]
 #
 # Options:
-#   --no-build    Skip local Docker build (use pre-built image from env file)
+#   --version     Use specific version from Docker Hub (fetches digest automatically)
+#   --no-build    Skip local Docker build (use image from docker-compose)
+#   --dry-run     Only show digest and verification command, don't deploy
 #
 # Examples:
-#   ./scripts/deploy_phala.sh keystore testnet            # build + deploy
-#   ./scripts/deploy_phala.sh worker testnet --no-build   # deploy only (use GitHub Actions image)
-#   ./scripts/deploy_phala.sh worker mainnet worker3 --no-build
+#   ./scripts/deploy_phala.sh worker testnet --version v0.1.1              # deploy specific version
+#   ./scripts/deploy_phala.sh worker testnet --version v0.1.1 --dry-run    # show digest only
+#   ./scripts/deploy_phala.sh worker mainnet worker3 --version v1.0.0
+#   ./scripts/deploy_phala.sh keystore testnet                             # build + deploy
 #
 
 set -euo pipefail
@@ -25,24 +28,40 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
+# Docker Hub org
+DOCKERHUB_ORG="outlayer"
+
 # Parse arguments
 SKIP_BUILD=false
+DEPLOY_VERSION=""
+DRY_RUN=false
 POSITIONAL_ARGS=()
 
-for arg in "$@"; do
-    case $arg in
+while [[ $# -gt 0 ]]; do
+    case $1 in
         --no-build)
             SKIP_BUILD=true
+            shift
+            ;;
+        --version)
+            DEPLOY_VERSION="$2"
+            SKIP_BUILD=true
+            shift 2
+            ;;
+        --dry-run|--info)
+            DRY_RUN=true
+            shift
             ;;
         *)
-            POSITIONAL_ARGS+=("$arg")
+            POSITIONAL_ARGS+=("$1")
+            shift
             ;;
     esac
 done
 
 # Check positional arguments
 if [ "${#POSITIONAL_ARGS[@]}" -lt 1 ] || [ "${#POSITIONAL_ARGS[@]}" -gt 3 ]; then
-    echo -e "${RED}Usage: $0 <keystore|worker> [testnet|mainnet] [instance-name] [--no-build]${NC}"
+    echo -e "${RED}Usage: $0 <keystore|worker> [testnet|mainnet] [instance-name] [--version vX.Y.Z]${NC}"
     exit 1
 fi
 
@@ -60,6 +79,12 @@ fi
 # Validate component
 if [[ "$COMPONENT" != "keystore" && "$COMPONENT" != "worker" ]]; then
     echo -e "${RED}Error: Component must be 'keystore' or 'worker'${NC}"
+    exit 1
+fi
+
+# Dry-run requires --version
+if [ "$DRY_RUN" = true ] && [ -z "$DEPLOY_VERSION" ]; then
+    echo -e "${RED}Error: --dry-run requires --version${NC}"
     exit 1
 fi
 
@@ -97,15 +122,85 @@ echo -e "${CYAN}🚀 Phala Deployment: ${COMPONENT} (${NETWORK})${NC}"
 echo -e "${CYAN}========================================${NC}"
 echo ""
 
-# Step 1: Build and push Docker image (unless --no-build or using @sha256: digest)
-# Auto-skip build if image uses verified digest from GitHub Actions
-if [ "$SKIP_BUILD" = false ] && grep -q "@sha256:" "docker/$ENV_FILE" 2>/dev/null; then
-    SKIP_BUILD=true
-    echo -e "${YELLOW}[1/7] Skipping build (image uses @sha256: digest)${NC}"
-    echo -e "${GREEN}✓ Using verified image from $ENV_FILE${NC}"
+# Step 1: Prepare Docker image
+COMPOSE_MODIFIED=false
+ORIGINAL_IMAGE_LINE=""
+
+# Cleanup function to restore docker-compose (must be set BEFORE any modifications)
+cleanup() {
+    if [ "$COMPOSE_MODIFIED" = true ] && [ -f "docker/${COMPOSE_FILE}.bak" ]; then
+        mv "docker/${COMPOSE_FILE}.bak" "docker/$COMPOSE_FILE"
+        echo -e "${GREEN}✓ Restored original $COMPOSE_FILE${NC}"
+    fi
+}
+trap cleanup EXIT INT TERM
+
+if [ -n "$DEPLOY_VERSION" ]; then
+    # Fetch digest for specified version from Docker Hub
+    echo -e "${YELLOW}[1/7] Fetching digest for version $DEPLOY_VERSION...${NC}"
+
+    if [ "$COMPONENT" = "worker" ]; then
+        IMAGE_NAME="${DOCKERHUB_ORG}/near-outlayer-worker"
+    else
+        IMAGE_NAME="${DOCKERHUB_ORG}/near-outlayer-keystore"
+    fi
+
+    # Get the digest using docker buildx imagetools (works without pulling)
+    # This returns the manifest list digest which is what Sigstore attests
+    DIGEST=$(docker buildx imagetools inspect "${IMAGE_NAME}:${DEPLOY_VERSION}" --raw 2>/dev/null | \
+        sha256sum | cut -d' ' -f1 || echo "")
+    if [ -n "$DIGEST" ]; then
+        DIGEST="sha256:${DIGEST}"
+    fi
+
+    # Fallback: try to pull and inspect (works if platform matches)
+    if [ -z "$DIGEST" ] || [ "$DIGEST" = "sha256:" ]; then
+        echo "Trying pull method..."
+        if docker pull "${IMAGE_NAME}:${DEPLOY_VERSION}" --quiet >/dev/null 2>&1; then
+            DIGEST=$(docker inspect "${IMAGE_NAME}:${DEPLOY_VERSION}" --format '{{index .RepoDigests 0}}' 2>/dev/null | cut -d'@' -f2 || echo "")
+        fi
+    fi
+
+    if [ -z "$DIGEST" ]; then
+        echo -e "${RED}Error: Could not fetch digest for ${IMAGE_NAME}:${DEPLOY_VERSION}${NC}"
+        echo "Make sure the version exists (with 'v' prefix, e.g. v0.1.1) and you're logged into Docker Hub"
+        exit 1
+    fi
+
+    echo -e "${GREEN}✓ Found digest: ${DIGEST}${NC}"
+
+    # Show attestation verification command
+    echo ""
+    echo -e "${BLUE}Verify attestation with:${NC}"
+    echo "  gh attestation verify oci://docker.io/${IMAGE_NAME}@${DIGEST} -R fastnear/near-outlayer"
+    echo ""
+    echo -e "${BLUE}Docker image reference:${NC}"
+    echo "  docker.io/${IMAGE_NAME}@${DIGEST}"
+    echo ""
+
+    # Exit early if dry-run
+    if [ "$DRY_RUN" = true ]; then
+        echo -e "${GREEN}Dry run complete. No deployment performed.${NC}"
+        exit 0
+    fi
+
+    # Backup original image line and update docker-compose temporarily
+    COMPOSE_PATH="docker/$COMPOSE_FILE"
+    ORIGINAL_IMAGE_LINE=$(grep "image:" "$COMPOSE_PATH" | head -1)
+    NEW_IMAGE="docker.io/${IMAGE_NAME}@${DIGEST}"
+
+    # Update docker-compose with digest
+    sed -i.bak "s|image:.*|image: ${NEW_IMAGE}|" "$COMPOSE_PATH"
+    COMPOSE_MODIFIED=true
+
+    echo -e "${GREEN}✓ Updated $COMPOSE_FILE with verified image${NC}"
+
+elif [ "$SKIP_BUILD" = false ] && grep -q "@sha256:" "docker/$COMPOSE_FILE" 2>/dev/null; then
+    echo -e "${YELLOW}[1/7] Skipping build (docker-compose uses @sha256: digest)${NC}"
+    echo -e "${GREEN}✓ Using verified image from $COMPOSE_FILE${NC}"
 elif [ "$SKIP_BUILD" = true ]; then
     echo -e "${YELLOW}[1/7] Skipping build (--no-build flag)${NC}"
-    echo -e "${GREEN}✓ Using pre-built image from $ENV_FILE${NC}"
+    echo -e "${GREEN}✓ Using pre-built image${NC}"
 else
     echo -e "${YELLOW}[1/7] Building and pushing Docker image...${NC}"
     $BUILD_SCRIPT $BUILD_ARGS
@@ -123,13 +218,17 @@ else
     echo -e "${GREEN}✓ Created empty $PHALA_CONFIG${NC}"
 fi
 
-# Step 3: Check if CVM exists and delete if needed
+# Step 3: Check if CVM already exists
 echo -e "${YELLOW}[3/7] Checking existing CVM...${NC}"
 if phala cvms get "$CVM_NAME" --json 2>/dev/null | jq -e '.success' > /dev/null 2>&1; then
-    echo -e "${YELLOW}Existing CVM found, deleting...${NC}"
-    phala cvms delete "$CVM_NAME" --yes 2>/dev/null || true
-    echo -e "${GREEN}✓ Old CVM deleted${NC}"
-    sleep 5
+    echo -e "${RED}Error: CVM '$CVM_NAME' already exists${NC}"
+    echo ""
+    echo "To update an existing CVM, delete it first:"
+    echo "  phala cvms delete $CVM_NAME --yes"
+    echo ""
+    echo "Or use a different instance name:"
+    echo "  $0 $COMPONENT $NETWORK <new-instance-name> ${DEPLOY_VERSION:+--version $DEPLOY_VERSION}"
+    exit 1
 else
     echo -e "${GREEN}✓ No existing CVM found${NC}"
 fi
@@ -145,6 +244,7 @@ phala deploy \
     --vcpu 2 \
     --memory 2G \
     --disk-size 1G \
+    --image dstack-0.5.4 \
     --kms-id phala-prod10
 
 cd ..

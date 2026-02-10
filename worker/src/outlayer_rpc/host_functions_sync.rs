@@ -147,6 +147,7 @@ impl RpcProxy {
         Ok(body)
     }
 
+    #[allow(dead_code)]
     pub fn view_account(&self, account_id: &str) -> Result<Value> {
         let params = json!({
             "request_type": "view_account",
@@ -156,6 +157,7 @@ impl RpcProxy {
         self.call_method("query", params)
     }
 
+    #[allow(dead_code)]
     pub fn call_function(&self, account_id: &str, method_name: &str, args_base64: &str) -> Result<Value> {
         let params = json!({
             "request_type": "call_function",
@@ -177,6 +179,7 @@ impl RpcProxy {
         self.call_method("query", params)
     }
 
+    #[allow(dead_code)]
     pub fn block(&self, finality: Option<&str>, block_id: Option<Value>) -> Result<Value> {
         let params = if let Some(fin) = finality {
             json!({ "finality": fin })
@@ -188,6 +191,7 @@ impl RpcProxy {
         self.call_method("block", params)
     }
 
+    #[allow(dead_code)]
     pub fn gas_price(&self) -> Result<Value> {
         self.call_method("gas_price", json!([null]))
     }

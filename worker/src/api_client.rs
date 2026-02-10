@@ -301,6 +301,7 @@ pub enum ExecutionOutput {
 }
 
 /// Project UUID info from coordinator
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectUuidInfo {
     pub project_id: String,
@@ -1820,6 +1821,7 @@ impl ApiClient {
     /// * `Ok(Some(ProjectInfo))` - Project found with UUID and active version
     /// * `Ok(None)` - Project not found
     /// * `Err(_)` - API error
+    #[allow(dead_code)]
     pub async fn resolve_project_uuid(&self, project_id: &str) -> Result<Option<ProjectUuidInfo>> {
         let url = format!("{}/projects/uuid", self.base_url);
 

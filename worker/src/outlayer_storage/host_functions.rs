@@ -21,6 +21,7 @@ pub struct StorageHostState {
 
 impl StorageHostState {
     /// Create new storage host state from config
+    #[allow(dead_code)]
     pub fn new(config: StorageConfig) -> Result<Self> {
         let client = StorageClient::new(config)?;
         Ok(Self { client })

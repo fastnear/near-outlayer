@@ -218,6 +218,8 @@ impl KeystoreDao {
         &mut self,
         public_key: PublicKey,
         tdx_quote_hex: String,
+        #[allow(unused_variables)]
+        app_id: Option<String>,
     ) -> u64 {
         // Only init account can submit (pays gas)
         assert_eq!(
@@ -238,6 +240,11 @@ impl KeystoreDao {
             .expect("Quote collateral required (owner must call update_collateral first)");
 
         let (rtmr3, embedded_pubkey) = self.verify_tdx_quote(&tdx_quote_hex, &collateral);
+
+        // Log app_id if provided (for TEE verification)
+        if let Some(ref app_id) = app_id {
+            env::log_str(&format!("App_id: {}", app_id));
+        }
 
         env::log_str(&format!(
             "TEE Registration Request. RTMR3: {}. Public Key: {:?}",
