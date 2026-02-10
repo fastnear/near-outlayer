@@ -60,6 +60,8 @@ pub struct KeystoreClient {
     tee_mode: String,
     /// TEE session ID (set after successful challenge-response registration)
     tee_session_id: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    /// TEE signing info for auto-reconnect (public key bytes + signing key)
+    tee_signing_info: Option<std::sync::Arc<([u8; 32], ed25519_dalek::SigningKey)>>,
 }
 
 impl KeystoreClient {
@@ -71,7 +73,13 @@ impl KeystoreClient {
             http_client: reqwest::Client::new(),
             tee_mode,
             tee_session_id: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            tee_signing_info: None,
         }
+    }
+
+    /// Set TEE signing info for auto-reconnect on session expiry
+    pub fn set_tee_signing_info(&mut self, public_key_bytes: [u8; 32], signing_key: ed25519_dalek::SigningKey) {
+        self.tee_signing_info = Some(std::sync::Arc::new((public_key_bytes, signing_key)));
     }
 
     /// Set TEE session ID (called after successful challenge-response registration)
@@ -82,6 +90,125 @@ impl KeystoreClient {
     /// Get TEE session ID (for passing to StorageClient)
     pub fn get_tee_session_id(&self) -> Option<String> {
         self.tee_session_id.lock().unwrap().clone()
+    }
+
+    /// Register TEE session directly with keystore via challenge-response.
+    ///
+    /// 1. POST {keystore}/tee-challenge → get challenge
+    /// 2. Sign challenge with ed25519 key
+    /// 3. POST {keystore}/register-tee → get session_id
+    ///
+    /// This bypasses the coordinator proxy, ensuring the session is registered
+    /// on the same keystore instance that handles /decrypt requests.
+    pub async fn register_tee_session(
+        &self,
+        public_key_bytes: &[u8; 32],
+        signing_key: &ed25519_dalek::SigningKey,
+    ) -> Result<String> {
+        let near_public_key = format!("ed25519:{}", bs58::encode(public_key_bytes).into_string());
+
+        // 1. Request challenge
+        let url = format!("{}/tee-challenge", self.base_url);
+        let response = self.http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.auth_token))
+            .send()
+            .await
+            .context("Failed to request TEE challenge from keystore")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            anyhow::bail!("Keystore TEE challenge failed ({}): {}", status, text);
+        }
+
+        #[derive(serde::Deserialize)]
+        struct ChallengeResponse {
+            challenge: String,
+        }
+        let challenge_resp: ChallengeResponse = response.json().await
+            .context("Failed to parse keystore TEE challenge")?;
+
+        // 2. Sign challenge
+        let challenge_bytes = hex::decode(&challenge_resp.challenge)
+            .context("Invalid challenge hex")?;
+        use ed25519_dalek::Signer;
+        let signature = signing_key.sign(&challenge_bytes);
+        let signature_hex = hex::encode(signature.to_bytes());
+
+        // 3. Register with signed challenge
+        let url = format!("{}/register-tee", self.base_url);
+        let response = self.http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.auth_token))
+            .json(&serde_json::json!({
+                "public_key": near_public_key,
+                "challenge": challenge_resp.challenge,
+                "signature": signature_hex,
+            }))
+            .send()
+            .await
+            .context("Failed to submit keystore TEE registration")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            anyhow::bail!("Keystore TEE registration failed ({}): {}", status, text);
+        }
+
+        #[derive(serde::Deserialize)]
+        struct RegisterResponse {
+            session_id: String,
+        }
+        let register_resp: RegisterResponse = response.json().await
+            .context("Failed to parse keystore TEE registration response")?;
+
+        self.set_tee_session_id(register_resp.session_id.clone());
+        tracing::info!(
+            session_id = %register_resp.session_id,
+            "TEE session registered directly with keystore"
+        );
+
+        Ok(register_resp.session_id)
+    }
+
+    /// Check if an HTTP error response indicates TEE session expiry.
+    /// Parses JSON `{"error": "..."}` and checks for session-related keywords.
+    fn is_tee_session_expired(status: reqwest::StatusCode, body: &str) -> bool {
+        if status != reqwest::StatusCode::FORBIDDEN {
+            return false;
+        }
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(body) {
+            if let Some(error) = json.get("error").and_then(|e| e.as_str()) {
+                return error.contains("session not found") || error.contains("session expired");
+            }
+        }
+        // Fallback: plain text match
+        body.contains("session not found")
+    }
+
+    /// Try to re-register TEE session if signing info is available.
+    /// Returns Ok(()) on success, Err if reconnect failed or no signing info.
+    async fn try_reconnect_tee_session(&self) -> Result<()> {
+        let signing_info = self.tee_signing_info.as_ref()
+            .context("No TEE signing info for reconnect")?;
+        let (pub_key_bytes, signing_key) = signing_info.as_ref();
+        tracing::warn!("TEE session expired on keystore, re-registering...");
+        let session_id = self.register_tee_session(pub_key_bytes, signing_key).await?;
+        tracing::info!(session_id = %session_id, "TEE session re-registered");
+        Ok(())
+    }
+
+    /// Parse a successful decrypt response into a HashMap of env vars.
+    fn parse_decrypt_response(response_bytes: &[u8]) -> Result<std::collections::HashMap<String, String>> {
+        let decrypt_response: DecryptResponse = serde_json::from_slice(response_bytes)
+            .context("Failed to parse decrypt response")?;
+        let plaintext = base64::decode(&decrypt_response.plaintext_secrets)
+            .context("Failed to decode plaintext secrets")?;
+        let plaintext_str = String::from_utf8(plaintext)
+            .context("Invalid secrets format: not valid UTF-8 text")?;
+        serde_json::from_str(&plaintext_str)
+            .context("Invalid secrets format: must be a JSON object with string key-value pairs")
     }
 
     /// Add auth headers: Bearer token + optional X-TEE-Session
@@ -257,6 +384,46 @@ impl KeystoreClient {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
 
+            // Auto-reconnect: if 403 with session expired, re-register and retry once
+            if Self::is_tee_session_expired(status, &error_text) {
+                if let Ok(()) = self.try_reconnect_tee_session().await {
+                    // Retry the request with new session
+                    let attestation = self.generate_attestation()
+                        .context("Failed to generate attestation for retry")?;
+                    let retry_request = DecryptRequest {
+                        accessor: accessor.clone(),
+                        profile: profile.to_string(),
+                        owner: owner.to_string(),
+                        user_account_id: user_account_id.to_string(),
+                        attestation,
+                        task_id: task_id.map(|s| s.to_string()),
+                    };
+                    let retry_response = self.add_auth_headers(self.http_client.post(&url))
+                        .json(&retry_request)
+                        .send()
+                        .await
+                        .context("Failed to send retry decrypt request")?;
+
+                    if retry_response.status().is_success() {
+                        let body = retry_response.bytes().await
+                            .context("Failed to read retry decrypt response")?;
+                        let env_vars = Self::parse_decrypt_response(&body)?;
+                        tracing::info!(
+                            accessor = %accessor_desc,
+                            profile = %profile,
+                            env_count = env_vars.len(),
+                            "Successfully decrypted secrets (after reconnect)"
+                        );
+                        return Ok(env_vars);
+                    }
+                    let retry_status = retry_response.status();
+                    let retry_error = retry_response.text().await.unwrap_or_default();
+                    tracing::error!(status = %retry_status, "Decrypt retry also failed after reconnect");
+                    anyhow::bail!("Failed to decrypt secrets after TEE session reconnect ({}): {}", retry_status, retry_error);
+                }
+                // Reconnect failed — fall through to normal error handling
+            }
+
             let truncated_body: String = error_text.chars().take(500).collect();
             tracing::error!(
                 status = %status,
@@ -301,33 +468,15 @@ impl KeystoreClient {
             anyhow::bail!("{}", user_message);
         }
 
-        let decrypt_response: DecryptResponse = response
-            .json()
-            .await
-            .context("Failed to parse decrypt response")?;
-
-        // Decode plaintext from base64
-        let plaintext = base64::decode(&decrypt_response.plaintext_secrets)
-            .context("Failed to decode plaintext secrets")?;
+        let body = response.bytes().await
+            .context("Failed to read decrypt response")?;
+        let env_vars = Self::parse_decrypt_response(&body)?;
 
         tracing::info!(
             accessor = %accessor_desc,
             profile = %profile,
-            plaintext_size = plaintext.len(),
-            "Successfully decrypted secrets"
-        );
-
-        // Parse JSON to HashMap
-        let plaintext_str = String::from_utf8(plaintext)
-            .context("Invalid secrets format: not valid UTF-8 text")?;
-
-        let env_vars: std::collections::HashMap<String, String> = serde_json::from_str(&plaintext_str)
-            .context("Invalid secrets format: must be a JSON object with string key-value pairs")?;
-
-        tracing::debug!(
-            accessor = %accessor_desc,
             env_count = env_vars.len(),
-            "Parsed environment variables from decrypted secrets"
+            "Successfully decrypted secrets"
         );
 
         Ok(env_vars)

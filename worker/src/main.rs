@@ -188,7 +188,7 @@ async fn main() -> Result<()> {
     // NOTE: Executor creation moved to after registration (needs secret key for compiled cache)
 
     // Initialize keystore client (optional)
-    let keystore_client = if let (Some(keystore_url), Some(keystore_token)) = (
+    let mut keystore_client = if let (Some(keystore_url), Some(keystore_token)) = (
         &config.keystore_base_url,
         &config.keystore_auth_token,
     ) {
@@ -367,17 +367,17 @@ async fn main() -> Result<()> {
                 return Err(anyhow::anyhow!("TEE session registration with coordinator failed after {} attempts", MAX_TEE_RETRIES));
             }
 
-            // Register TEE session with keystore
-            if keystore_client.is_some() {
+            // Register TEE session directly with keystore (bypasses coordinator proxy)
+            if let Some(ref mut kc) = keystore_client {
+                // Store signing info for auto-reconnect on session expiry
+                kc.set_tee_signing_info(*pub_key_bytes, signing_key.clone());
+
                 let mut keystore_session_ok = false;
                 for attempt in 1..=MAX_TEE_RETRIES {
-                    info!("🔐 Registering TEE session with keystore (attempt {}/{})", attempt, MAX_TEE_RETRIES);
-                    match api_client.register_keystore_tee_session(pub_key_bytes, signing_key).await {
+                    info!("🔐 Registering TEE session with keystore directly (attempt {}/{})", attempt, MAX_TEE_RETRIES);
+                    match kc.register_tee_session(pub_key_bytes, signing_key).await {
                         Ok(session_id) => {
                             info!("✅ TEE session registered with keystore: {}", session_id);
-                            if let Some(ref kc) = keystore_client {
-                                kc.set_tee_session_id(session_id);
-                            }
                             keystore_session_ok = true;
                             break;
                         }

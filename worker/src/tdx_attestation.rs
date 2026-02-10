@@ -7,6 +7,11 @@
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 
+/// RTMR3 offset in TDX quote body (bytes)
+const RTMR3_OFFSET: usize = 256;
+/// RTMR3 size (48 bytes = 96 hex chars)
+const RTMR3_SIZE: usize = 48;
+
 /// Information from Phala dstack about the running app
 #[derive(Debug, Clone)]
 pub struct PhalaAppInfo {
@@ -252,8 +257,6 @@ impl TdxClient {
         );
 
         // Debug: Extract and log RTMR3 from quote
-        const RTMR3_OFFSET: usize = 256;
-        const RTMR3_SIZE: usize = 48;
         if tdx_quote.len() >= RTMR3_OFFSET + RTMR3_SIZE {
             let rtmr3_bytes = &tdx_quote[RTMR3_OFFSET..RTMR3_OFFSET + RTMR3_SIZE];
             let rtmr3_hex = hex::encode(rtmr3_bytes);
@@ -263,6 +266,18 @@ impl TdxClient {
         }
 
         Ok(tdx_quote)
+    }
+}
+
+/// Extract RTMR3 measurement from a hex-encoded TDX quote.
+///
+/// Returns None if the quote is too short or not a real TDX quote.
+pub fn extract_rtmr3_from_quote_hex(tdx_quote_hex: &str) -> Option<String> {
+    let tdx_quote = hex::decode(tdx_quote_hex).ok()?;
+    if tdx_quote.len() >= RTMR3_OFFSET + RTMR3_SIZE {
+        Some(hex::encode(&tdx_quote[RTMR3_OFFSET..RTMR3_OFFSET + RTMR3_SIZE]))
+    } else {
+        None
     }
 }
 

@@ -207,12 +207,90 @@ impl RegistrationClient {
         }
     }
 
+    /// Check if an RTMR3 measurement is approved on the register contract.
+    ///
+    /// Calls `is_rtmr3_approved` view method on the operator account
+    /// (where register-contract is deployed).
+    async fn check_rtmr3_approved(&self, rtmr3: &str) -> Result<bool> {
+        let request = methods::query::RpcQueryRequest {
+            block_reference: BlockReference::Finality(Finality::Final),
+            request: QueryRequest::CallFunction {
+                account_id: self.operator_account_id.clone(),
+                method_name: "is_rtmr3_approved".to_string(),
+                args: serde_json::json!({ "rtmr3": rtmr3 })
+                    .to_string()
+                    .into_bytes()
+                    .into(),
+            },
+        };
+
+        let response = self
+            .rpc_client
+            .call(request)
+            .await
+            .context("Failed to call is_rtmr3_approved")?;
+
+        if let near_jsonrpc_primitives::types::query::QueryResponseKind::CallResult(result) =
+            response.kind
+        {
+            let approved: bool = serde_json::from_slice(&result.result)
+                .context("Failed to parse is_rtmr3_approved result")?;
+            Ok(approved)
+        } else {
+            anyhow::bail!("Unexpected response kind from is_rtmr3_approved");
+        }
+    }
+
+    /// Wait until RTMR3 is approved on the register contract.
+    ///
+    /// Polls `is_rtmr3_approved` every 5 seconds, up to 100 times (~8 min).
+    /// If not approved, returns error so the process exits and Docker restarts it.
+    async fn wait_for_rtmr3_approval(&self, rtmr3: &str) -> Result<()> {
+        const MAX_ATTEMPTS: u32 = 100;
+        const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+        for attempt in 1..=MAX_ATTEMPTS {
+            match self.check_rtmr3_approved(rtmr3).await {
+                Ok(true) => {
+                    info!("✅ RTMR3 is approved on register contract");
+                    return Ok(());
+                }
+                Ok(false) => {
+                    if attempt == 1 {
+                        info!("⏳ RTMR3 not yet approved. Waiting for admin to approve...");
+                        info!("   RTMR3: {}", rtmr3);
+                        info!(
+                            "   To approve, run: near call {} add_approved_rtmr3 '{{\"rtmr3\":\"{}\"}}' --accountId <owner>",
+                            self.operator_account_id, rtmr3
+                        );
+                    } else {
+                        info!("⏳ RTMR3 not yet approved ({}/{})", attempt, MAX_ATTEMPTS);
+                    }
+                    tokio::time::sleep(POLL_INTERVAL).await;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to check RTMR3 approval: {}. Proceeding with registration attempt...",
+                        e
+                    );
+                    return Ok(());
+                }
+            }
+        }
+
+        anyhow::bail!(
+            "RTMR3 {} not approved after {} attempts. Add it via: near call {} add_approved_rtmr3 '{{\"rtmr3\":\"{}\"}}'",
+            rtmr3, MAX_ATTEMPTS, self.operator_account_id, rtmr3
+        );
+    }
+
     /// Register worker public key with TDX attestation
     ///
     /// This method:
     /// 1. Generates a TDX quote with the public key embedded in report_data
-    /// 2. Calls register_worker_key on the register contract
-    /// 3. The contract verifies the quote and adds the key to the operator account
+    /// 2. Checks RTMR3 is approved before spending gas
+    /// 3. Calls register_worker_key on the register contract
+    /// 4. The contract verifies the quote and adds the key to the operator account
     pub async fn register_worker_key(
         &self,
         public_key: &PublicKey,
@@ -240,6 +318,12 @@ impl RegistrationClient {
         info!("✅ Generated TDX quote (length: {} bytes)", tdx_quote_hex.len() / 2);
         info!("   TDX quote hex (first 100 chars): {}...",
             if tdx_quote_hex.len() > 100 { &tdx_quote_hex[..100] } else { &tdx_quote_hex });
+
+        // Check RTMR3 approval before spending gas on registration transaction
+        if let Some(rtmr3) = crate::tdx_attestation::extract_rtmr3_from_quote_hex(&tdx_quote_hex) {
+            info!("📏 RTMR3 from quote: {}", rtmr3);
+            self.wait_for_rtmr3_approval(&rtmr3).await?;
+        }
 
         // Call register_worker_key on the register contract
         // Note: Contract ONLY uses cached collateral (security: prevent bypass)

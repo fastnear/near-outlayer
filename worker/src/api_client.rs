@@ -495,18 +495,6 @@ impl ApiClient {
         Ok(session_id)
     }
 
-    /// Register a TEE session with the keystore-worker (via coordinator proxy).
-    /// Returns the session ID (caller must pass it to KeystoreClient).
-    pub async fn register_keystore_tee_session(
-        &self,
-        public_key_bytes: &[u8; 32],
-        signing_key: &ed25519_dalek::SigningKey,
-    ) -> Result<String> {
-        let session_id = self.do_tee_challenge_response("keystore", public_key_bytes, signing_key).await?;
-        tracing::info!("TEE session registered with keystore: {}", session_id);
-        Ok(session_id)
-    }
-
     /// Poll for a new execution request (long-polling)
     ///
     /// # Arguments

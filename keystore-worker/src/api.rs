@@ -17,6 +17,10 @@
 //! - POST /add_generated_secret - Add generated PROTECTED_ secrets
 //! - POST /update_user_secrets - Update user secrets with NEP-413 signature
 //!
+//! ### TEE registration endpoints (coordinator OR worker token):
+//! - POST /tee-challenge - Get challenge for TEE session registration
+//! - POST /register-tee - Complete challenge-response and create TEE session
+//!
 //! ## Security Model
 //!
 //! Workers (running in TEE) get access to decrypt/encrypt endpoints.
@@ -444,16 +448,15 @@ pub fn create_router(state: AppState) -> Router {
             coordinator_auth_middleware,
         ));
 
-    // TEE session routes (coordinator auth - proxied from coordinator)
-    // Workers call coordinator's /keystore/tee-challenge and /keystore/register-tee
-    // Coordinator forwards with KEYSTORE_AUTH_TOKEN (coordinator auth)
-    // Security: challenge-response + NEAR RPC key check provide the actual verification
+    // TEE session routes (coordinator OR worker auth)
+    // Workers can register directly or via coordinator proxy.
+    // Security: challenge-response + NEAR RPC key check provide the actual verification.
     let tee_routes = Router::new()
         .route("/tee-challenge", post(tee_challenge_handler))
         .route("/register-tee", post(register_tee_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
-            coordinator_auth_middleware,
+            tee_registration_auth_middleware,
         ));
 
     // Public routes (no auth required)
@@ -2135,6 +2138,57 @@ async fn coordinator_auth_middleware(
     tracing::debug!(
         token_hash = %token_hash,
         "✅ Coordinator authenticated successfully"
+    );
+
+    Ok(next.run(req).await)
+}
+
+/// TEE registration authentication middleware
+///
+/// For TEE session endpoints: /tee-challenge, /register-tee
+/// Accepts EITHER coordinator OR worker token (so workers can register directly).
+async fn tee_registration_auth_middleware(
+    State(state): State<AppState>,
+    req: axum::http::Request<axum::body::Body>,
+    next: middleware::Next,
+) -> Result<Response, ApiError> {
+    let auth_header = req
+        .headers()
+        .get("Authorization")
+        .and_then(|h| h.to_str().ok())
+        .ok_or_else(|| {
+            tracing::warn!("Missing Authorization header in TEE registration request");
+            ApiError::Unauthorized("Missing Authorization header".to_string())
+        })?;
+
+    let token = auth_header
+        .strip_prefix("Bearer ")
+        .ok_or_else(|| {
+            tracing::warn!("Invalid Authorization format (expected 'Bearer <token>')");
+            ApiError::Unauthorized("Invalid Authorization format".to_string())
+        })?;
+
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    let token_hash = hex::encode(hasher.finalize());
+
+    let is_coordinator = state.config.allowed_coordinator_token_hashes.contains(&token_hash);
+    let is_worker = state.config.allowed_worker_token_hashes.contains(&token_hash);
+
+    if !is_coordinator && !is_worker {
+        tracing::warn!(
+            token_hash = %token_hash,
+            "Unauthorized: token hash not in coordinator or worker allowed list"
+        );
+        return Err(ApiError::Unauthorized("Invalid token".to_string()));
+    }
+
+    let source = if is_coordinator { "coordinator" } else { "worker" };
+    tracing::debug!(
+        token_hash = %token_hash,
+        source = source,
+        "✅ TEE registration authenticated ({})", source
     );
 
     Ok(next.run(req).await)
