@@ -2,13 +2,31 @@
 //!
 //! This module handles topping up Payment Keys with stablecoins (stablecoins).
 //! Uses yield/resume mechanism similar to request_execution.
+//!
+//! Also supports top-up with NEAR or other tokens via swap to USDC.
 
 use crate::*;
 use near_sdk::serde_json::json;
-use near_sdk::{env, log, near_bindgen, AccountId, Gas, GasWeight};
+use near_sdk::{env, log, near_bindgen, AccountId, Gas, GasWeight, NearToken, Promise};
 
 /// Minimum top-up amount: $1.00 (1_000_000 for USDT with 6 decimals)
 pub const MIN_TOP_UP_AMOUNT: u128 = 1_000_000;
+
+/// Minimum NEAR deposit: 0.1 NEAR (to ensure enough for gas and meaningful swap)
+pub const MIN_NEAR_DEPOSIT: u128 = 100_000_000_000_000_000_000_000; // 0.1 NEAR
+
+/// wNEAR contract on mainnet
+pub const WNEAR_CONTRACT: &str = "wrap.near";
+
+/// Cost for OutLayer execution (covers base_fee + 1 yoctoNEAR for ft_transfer)
+/// Must be >= base_fee + 1. Currently set to 0.01 NEAR to have margin.
+pub const EXECUTION_COST: u128 = 10_000_000_000_000_000_000_000; // 0.01 NEAR
+
+/// Gas for wrap.near calls
+pub const WRAP_GAS: Gas = Gas::from_tgas(10);
+
+/// Gas for ft_transfer calls
+pub const FT_TRANSFER_GAS: Gas = Gas::from_tgas(30);
 
 /// Gas for on_top_up_response callback
 pub const TOP_UP_CALLBACK_GAS: Gas = Gas::from_tgas(30);
@@ -478,5 +496,249 @@ impl Contract {
         });
 
         log!("EVENT_JSON:{}", event_json.to_string());
+    }
+
+    // =========================================================================
+    // Top-up Payment Key with NEAR (swapped to USDC via Intents)
+    // =========================================================================
+    //
+    // MAINNET ONLY: NEAR Intents protocol is only available on mainnet.
+    // These methods will fail on testnet because:
+    // - wrap.near doesn't exist on testnet (use wrap.testnet)
+    // - v1.publishintent.near doesn't exist on testnet
+    // - Intents API (api.defuse.org) only supports mainnet
+    //
+    // UI should hide "Top Up with NEAR" button on testnet.
+    // =========================================================================
+
+    /// Top up a Payment Key with NEAR (MAINNET ONLY)
+    ///
+    /// This is a convenience wrapper that:
+    /// 1. Wraps NEAR to wNEAR
+    /// 2. Transfers wNEAR to swap_contract_id
+    /// 3. Calls WASI to swap wNEAR -> USDC via Intents
+    ///
+    /// The token will be swapped to USDC via NEAR Intents protocol.
+    /// Minimum deposit: 0.1 NEAR (after subtracting execution cost).
+    ///
+    /// # Arguments
+    /// * `nonce` - Payment Key nonce to top up (must already exist)
+    /// * `swap_contract_id` - Account that will execute the swap (e.g., "v1.publishintent.near")
+    ///
+    /// # Panics
+    /// * Payment key not found
+    /// * Deposit below minimum (0.1 NEAR + execution cost)
+    ///
+    /// # Note
+    /// This method only works on mainnet. NEAR Intents are not available on testnet.
+    #[payable]
+    pub fn top_up_payment_key_with_near(
+        &mut self,
+        nonce: u32,
+        swap_contract_id: AccountId,
+    ) -> Promise {
+        self.assert_not_paused();
+
+        let caller = env::predecessor_account_id();
+        let deposit = env::attached_deposit();
+
+        // Reserve NEAR for execution cost
+        let wrap_amount = deposit
+            .as_yoctonear()
+            .saturating_sub(EXECUTION_COST);
+
+        // Check minimum deposit (after subtracting execution cost)
+        assert!(
+            wrap_amount >= MIN_NEAR_DEPOSIT,
+            "Minimum deposit is {} yoctoNEAR (0.1 NEAR) + {} yoctoNEAR (execution cost), got {} yoctoNEAR",
+            MIN_NEAR_DEPOSIT,
+            EXECUTION_COST,
+            deposit.as_yoctonear()
+        );
+
+        // Verify payment key exists
+        let secret_key = SecretKey {
+            accessor: SecretAccessor::System(SystemSecretType::PaymentKey),
+            profile: nonce.to_string(),
+            owner: caller.clone(),
+        };
+
+        assert!(
+            self.secrets_storage.get(&secret_key).is_some(),
+            "Payment key not found. Create it first with store_secrets()"
+        );
+
+        // Verify we have enough reserved for ft_transfer (1 yocto) + base_fee
+        let ft_transfer_deposit: u128 = 1;
+        assert!(
+            EXECUTION_COST >= self.base_fee + ft_transfer_deposit,
+            "EXECUTION_COST ({}) must cover base_fee ({}) + ft_transfer deposit (1)",
+            EXECUTION_COST,
+            self.base_fee
+        );
+
+        log!(
+            "TopUpWithNear: owner={}, nonce={}, wrap_amount={}, swap_contract={}",
+            caller,
+            nonce,
+            wrap_amount,
+            swap_contract_id
+        );
+
+        let wnear_contract: AccountId = WNEAR_CONTRACT.parse().unwrap();
+
+        // Step 1: Wrap NEAR to wNEAR (wrap_amount, keep EXECUTION_COST for later)
+        // Step 2: Transfer wNEAR to swap_contract_id
+        // Step 3: Call request_execution for payment-keys-with-intents WASI
+        Promise::new(wnear_contract.clone())
+            .function_call(
+                "near_deposit".to_string(),
+                vec![],
+                NearToken::from_yoctonear(wrap_amount),
+                WRAP_GAS,
+            )
+            .then(
+                Promise::new(wnear_contract)
+                    .function_call(
+                        "ft_transfer".to_string(),
+                        json!({
+                            "receiver_id": swap_contract_id,
+                            "amount": wrap_amount.to_string(),
+                        })
+                        .to_string()
+                        .into_bytes(),
+                        NearToken::from_yoctonear(1), // 1 yoctoNEAR for ft_transfer
+                        FT_TRANSFER_GAS,
+                    ),
+            )
+            .then(self.internal_request_token_swap(
+                caller,
+                nonce,
+                WNEAR_CONTRACT.to_string(),
+                wrap_amount.to_string(),
+                swap_contract_id.to_string(),
+            ))
+    }
+
+    /// Top up a Payment Key with any whitelisted token (MAINNET ONLY)
+    ///
+    /// The token will be swapped to USDC via NEAR Intents protocol.
+    /// Whitelist is maintained in the payment-keys-with-intents WASI.
+    ///
+    /// # Prerequisites
+    /// The token must already be transferred to swap_contract_id.
+    /// This can be done via ft_transfer before calling this method.
+    ///
+    /// # Arguments
+    /// * `nonce` - Payment Key nonce to top up (must already exist)
+    /// * `token_id` - Token contract address (e.g., "wrap.near")
+    /// * `amount` - Token amount in minimal units
+    /// * `swap_contract_id` - Account that will execute the swap
+    ///
+    /// # Panics
+    /// * Payment key not found
+    /// * Token not in whitelist (will fail in WASI)
+    ///
+    /// # Note
+    /// This method only works on mainnet. NEAR Intents are not available on testnet.
+    pub fn top_up_payment_key_with_token(
+        &mut self,
+        nonce: u32,
+        token_id: AccountId,
+        amount: U128,
+        swap_contract_id: AccountId,
+    ) -> Promise {
+        self.assert_not_paused();
+
+        let caller = env::predecessor_account_id();
+
+        // Verify payment key exists
+        let secret_key = SecretKey {
+            accessor: SecretAccessor::System(SystemSecretType::PaymentKey),
+            profile: nonce.to_string(),
+            owner: caller.clone(),
+        };
+
+        assert!(
+            self.secrets_storage.get(&secret_key).is_some(),
+            "Payment key not found. Create it first with store_secrets()"
+        );
+
+        log!(
+            "TopUpWithToken: owner={}, nonce={}, token={}, amount={}, swap_contract={}",
+            caller,
+            nonce,
+            token_id,
+            amount.0,
+            swap_contract_id
+        );
+
+        // Token should already be at the swap contract
+        // Call request_execution for payment-keys-with-intents WASI
+        self.internal_request_token_swap(
+            caller,
+            nonce,
+            token_id.to_string(),
+            amount.0.to_string(),
+            swap_contract_id.to_string(),
+        )
+    }
+
+    /// Internal: Request execution of payment-keys-with-intents WASI
+    fn internal_request_token_swap(
+        &self,
+        owner: AccountId,
+        nonce: u32,
+        token_id: String,
+        amount: String,
+        swap_contract_id: String,
+    ) -> Promise {
+        // Build input for the WASI
+        let input_data = json!({
+            "owner": owner,
+            "nonce": nonce,
+            "token_id": token_id,
+            "amount": amount,
+            "swap_contract_id": swap_contract_id,
+        })
+        .to_string();
+
+        // Build execution source - project reference
+        let source = json!({
+            "Project": {
+                "project_id": "payment-keys-with-intents",
+                "version_key": null
+            }
+        });
+
+        // Call request_execution on ourselves
+        // Note: This is an internal call, so we use env::current_account_id()
+        // Use function_call_weight to give ALL remaining gas to this call
+        Promise::new(env::current_account_id()).function_call_weight(
+            "request_execution".to_string(),
+            json!({
+                "source": source,
+                "resource_limits": {
+                    "max_instructions": 10_000_000_000_u64, // 10B instructions
+                    "max_memory_mb": 256_u32,
+                    "max_execution_seconds": 120_u64, // 2 minutes for swap
+                },
+                "input_data": input_data,
+                // Secrets owner for swap contract private key (SWAP_CONTRACT_PRIVATE_KEY)
+                // This account must have stored secrets with profile "intents-swap"
+                "secrets_ref": {
+                    "profile": "intents-swap",
+                    "account_id": "zavodil.near", // Hardcoded: secrets owner for intents swap
+                },
+                "response_format": "Json",
+                "payer_account_id": null,
+                "params": null,
+            })
+            .to_string()
+            .into_bytes(),
+            NearToken::from_yoctonear(self.base_fee), // Pay base fee for execution
+            Gas::from_tgas(0), // minimum gas (will get all remaining)
+            GasWeight(1),      // weight = 1, gets all remaining gas
+        )
     }
 }
