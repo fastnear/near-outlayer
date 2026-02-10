@@ -10,8 +10,7 @@
 
 # Rust
 target/
-Cargo.lock
-!coordinator/monitoring/collector/Cargo.lock
+# Cargo.lock is committed for binary crates (reproducible builds)
 **/*.rs.bk
 
 # IDE
