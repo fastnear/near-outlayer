@@ -88,6 +88,7 @@ export default function SecretsSection() {
                 <li>Key: <code className="bg-gray-100 px-1 rounded">repo + branch + profile + owner</code></li>
                 <li>Example: <code className="bg-gray-100 px-1 rounded">github.com/user/repo:main:production</code></li>
                 <li>Best for: Development, CI/CD workflows, version-specific secrets</li>
+                <li className="text-amber-700"><strong>Wildcard:</strong> Leave branch empty for secrets not tied to a specific branch</li>
               </ul>
             </div>
 

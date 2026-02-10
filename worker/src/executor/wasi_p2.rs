@@ -99,12 +99,12 @@ impl WasiHttpView for HostState {
     /// Increase the max chunk size for outgoing HTTP request bodies
     /// Default is too small for large attachments (wasi-http-client sends entire body in one write)
     fn outgoing_body_buffer_chunks(&mut self) -> usize {
-        tracing::info!("🔧 outgoing_body_buffer_chunks called, returning 16");
+        tracing::trace!("outgoing_body_buffer_chunks: 16");
         16 // Allow more buffered chunks (default is 1)
     }
 
     fn outgoing_body_chunk_size(&mut self) -> usize {
-        tracing::info!("🔧 outgoing_body_chunk_size called, returning 16MB");
+        tracing::trace!("outgoing_body_chunk_size: 16MB");
         16 * 1024 * 1024 // 16MB max per write (default might be too small)
     }
 }

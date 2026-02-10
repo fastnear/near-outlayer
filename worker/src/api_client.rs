@@ -1779,10 +1779,9 @@ impl ApiClient {
         }
 
         let response = self
-            .client
-            .get(&url)
+            .add_auth_headers(self.client.get(&url))
             .query(&[("repo", repo), ("commit", commit)])
-            .send() // Note: This endpoint is public (no auth token needed)
+            .send()
             .await
             .context("Failed to send resolve-branch request")?;
 
