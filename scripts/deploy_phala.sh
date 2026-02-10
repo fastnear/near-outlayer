@@ -3,14 +3,16 @@
 # Automated deployment to Phala Cloud with RTMR3 whitelisting and DAO voting
 #
 # Usage:
-#   ./scripts/deploy_phala.sh keystore [testnet|mainnet] [instance-name]
-#   ./scripts/deploy_phala.sh worker [testnet|mainnet] [instance-name]
+#   ./scripts/deploy_phala.sh keystore [testnet|mainnet] [instance-name] [--no-build]
+#   ./scripts/deploy_phala.sh worker [testnet|mainnet] [instance-name] [--no-build]
+#
+# Options:
+#   --no-build    Skip local Docker build (use pre-built image from env file)
 #
 # Examples:
-#   ./scripts/deploy_phala.sh keystore testnet            # creates outlayer-testnet-keystore
-#   ./scripts/deploy_phala.sh keystore testnet keystore2  # creates outlayer-testnet-keystore2
-#   ./scripts/deploy_phala.sh worker testnet              # creates outlayer-testnet-worker
-#   ./scripts/deploy_phala.sh worker testnet worker2      # creates outlayer-testnet-worker2
+#   ./scripts/deploy_phala.sh keystore testnet            # build + deploy
+#   ./scripts/deploy_phala.sh worker testnet --no-build   # deploy only (use GitHub Actions image)
+#   ./scripts/deploy_phala.sh worker mainnet worker3 --no-build
 #
 
 set -euo pipefail
@@ -23,15 +25,30 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-# Check arguments
-if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
-    echo -e "${RED}Usage: $0 <keystore|worker> [testnet|mainnet] [instance-name]${NC}"
+# Parse arguments
+SKIP_BUILD=false
+POSITIONAL_ARGS=()
+
+for arg in "$@"; do
+    case $arg in
+        --no-build)
+            SKIP_BUILD=true
+            ;;
+        *)
+            POSITIONAL_ARGS+=("$arg")
+            ;;
+    esac
+done
+
+# Check positional arguments
+if [ "${#POSITIONAL_ARGS[@]}" -lt 1 ] || [ "${#POSITIONAL_ARGS[@]}" -gt 3 ]; then
+    echo -e "${RED}Usage: $0 <keystore|worker> [testnet|mainnet] [instance-name] [--no-build]${NC}"
     exit 1
 fi
 
-COMPONENT="$1"
-NETWORK="${2:-testnet}"
-INSTANCE_NAME="${3:-}"
+COMPONENT="${POSITIONAL_ARGS[0]}"
+NETWORK="${POSITIONAL_ARGS[1]:-testnet}"
+INSTANCE_NAME="${POSITIONAL_ARGS[2]:-}"
 
 # Set account suffix based on network
 if [ "$NETWORK" = "mainnet" ]; then
@@ -80,9 +97,19 @@ echo -e "${CYAN}🚀 Phala Deployment: ${COMPONENT} (${NETWORK})${NC}"
 echo -e "${CYAN}========================================${NC}"
 echo ""
 
-# Step 1: Build and push Docker image
-echo -e "${YELLOW}[1/7] Building and pushing Docker image...${NC}"
-$BUILD_SCRIPT $BUILD_ARGS
+# Step 1: Build and push Docker image (unless --no-build or using @sha256: digest)
+# Auto-skip build if image uses verified digest from GitHub Actions
+if [ "$SKIP_BUILD" = false ] && grep -q "@sha256:" "docker/$ENV_FILE" 2>/dev/null; then
+    SKIP_BUILD=true
+    echo -e "${YELLOW}[1/7] Skipping build (image uses @sha256: digest)${NC}"
+    echo -e "${GREEN}✓ Using verified image from $ENV_FILE${NC}"
+elif [ "$SKIP_BUILD" = true ]; then
+    echo -e "${YELLOW}[1/7] Skipping build (--no-build flag)${NC}"
+    echo -e "${GREEN}✓ Using pre-built image from $ENV_FILE${NC}"
+else
+    echo -e "${YELLOW}[1/7] Building and pushing Docker image...${NC}"
+    $BUILD_SCRIPT $BUILD_ARGS
+fi
 
 # Step 2: Clear phala config (required for new deployments)
 echo -e "${YELLOW}[2/7] Clearing Phala config...${NC}"

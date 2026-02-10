@@ -139,7 +139,7 @@ const DIRECT_PRESETS: DirectPreset[] = [
     name: 'Ethereum API',
     description: '⚡ Query Ethereum blockchain data (balances, smart contracts, transactions). Bridge NEAR with Ethereum data for cross-chain applications.',
     repo: 'https://github.com/zavodil/oracle-ark',
-    commit: 'main',
+    commit: '7deaa4433f693424c9e47b2e12176cb7c86f504f',
     buildTarget: 'wasm32-wasip2',
     args: '{"requests":[{"id":"alchemy","sources":[{"name":"custom","custom": {"url": "https://eth-mainnet.g.alchemy.com/v2","method": "POST","body": {"method": "eth_getBalance","params": ["0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045", "latest"],"id": 1,"jsonrpc": "2.0"}, "json_path": "result", "value_type": "string"}}]}],"max_price_deviation_percent":10.0}',
     responseFormat: 'Json',
