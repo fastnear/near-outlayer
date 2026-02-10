@@ -136,8 +136,8 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 if [ -n "$DEPLOY_VERSION" ]; then
-    # Fetch digest for specified version from Docker Hub
-    echo -e "${YELLOW}[1/7] Fetching digest for version $DEPLOY_VERSION...${NC}"
+    # Fetch digest from GitHub Release (verified by Sigstore)
+    echo -e "${YELLOW}[1/7] Fetching digest for version $DEPLOY_VERSION from GitHub...${NC}"
 
     if [ "$COMPONENT" = "worker" ]; then
         IMAGE_NAME="${DOCKERHUB_ORG}/near-outlayer-worker"
@@ -145,25 +145,28 @@ if [ -n "$DEPLOY_VERSION" ]; then
         IMAGE_NAME="${DOCKERHUB_ORG}/near-outlayer-keystore"
     fi
 
-    # Get the digest using docker buildx imagetools (works without pulling)
-    # This returns the manifest list digest which is what Sigstore attests
-    DIGEST=$(docker buildx imagetools inspect "${IMAGE_NAME}:${DEPLOY_VERSION}" --raw 2>/dev/null | \
-        sha256sum | cut -d' ' -f1 || echo "")
-    if [ -n "$DIGEST" ]; then
-        DIGEST="sha256:${DIGEST}"
+    # Normalize version (add 'v' prefix if missing)
+    VERSION_TAG="$DEPLOY_VERSION"
+    if [[ ! "$VERSION_TAG" =~ ^v ]]; then
+        VERSION_TAG="v${VERSION_TAG}"
     fi
 
-    # Fallback: try to pull and inspect (works if platform matches)
-    if [ -z "$DIGEST" ] || [ "$DIGEST" = "sha256:" ]; then
-        echo "Trying pull method..."
-        if docker pull "${IMAGE_NAME}:${DEPLOY_VERSION}" --quiet >/dev/null 2>&1; then
-            DIGEST=$(docker inspect "${IMAGE_NAME}:${DEPLOY_VERSION}" --format '{{index .RepoDigests 0}}' 2>/dev/null | cut -d'@' -f2 || echo "")
-        fi
+    # Get digest from GitHub release body (format: "| worker | `sha256:...` |" or "| keystore | `sha256:...` |")
+    RELEASE_BODY=$(gh release view "$VERSION_TAG" --repo fastnear/near-outlayer --json body -q '.body' 2>/dev/null || echo "")
+
+    if [ -z "$RELEASE_BODY" ]; then
+        echo -e "${RED}Error: Could not fetch GitHub release $VERSION_TAG${NC}"
+        echo "Make sure the release exists: https://github.com/fastnear/near-outlayer/releases/tag/$VERSION_TAG"
+        exit 1
     fi
+
+    # Extract digest for this component from release body
+    DIGEST=$(echo "$RELEASE_BODY" | grep -i "| $COMPONENT " | grep -oE 'sha256:[a-f0-9]{64}' | head -1 || echo "")
 
     if [ -z "$DIGEST" ]; then
-        echo -e "${RED}Error: Could not fetch digest for ${IMAGE_NAME}:${DEPLOY_VERSION}${NC}"
-        echo "Make sure the version exists (with 'v' prefix, e.g. v0.1.1) and you're logged into Docker Hub"
+        echo -e "${RED}Error: Could not find digest for '$COMPONENT' in release $VERSION_TAG${NC}"
+        echo "Release body:"
+        echo "$RELEASE_BODY" | head -20
         exit 1
     fi
 
