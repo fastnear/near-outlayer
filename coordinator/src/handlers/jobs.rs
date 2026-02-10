@@ -17,12 +17,6 @@ pub async fn claim_job(
     axum::Extension(tee_session): axum::Extension<crate::auth::TeeSessionInfo>,
     Json(payload): Json<ClaimJobRequest>,
 ) -> Result<Json<ClaimJobResponse>, StatusCode> {
-    // Don't give jobs to workers without valid TEE session
-    if state.config.require_tee_session && tee_session.0.is_none() {
-        warn!("Worker {} attempted to claim job without valid TEE session", payload.worker_id);
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-
     debug!(
         "Worker {} claiming task: request_id={} data_id={} capabilities={:?}",
         payload.worker_id, payload.request_id, payload.data_id, payload.capabilities
@@ -38,6 +32,24 @@ pub async fn claim_job(
             payload.worker_id
         );
         return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // TEE session required ONLY for workers with "execution" capability.
+    // Compile-only workers (outside TEE) authenticate via auth_token only.
+    if state.config.require_tee_session && can_execute && tee_session.0.is_none() {
+        warn!(
+            "Worker {} with execution capability attempted to claim job without valid TEE session",
+            payload.worker_id
+        );
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    // Log auth mode for debugging
+    if can_compile && !can_execute {
+        debug!(
+            "🔓 Compile-only worker {} authorized via auth_token (TEE not required)",
+            payload.worker_id
+        );
     }
 
     // Calculate WASM checksum from code_source
