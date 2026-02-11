@@ -2351,7 +2351,8 @@ async fn handle_execute_job(
 
                             hex::encode(hasher.finalize())
                         } else {
-                            "no-output".to_string()
+                            // No output — hash known sentinel so verifiers can match
+                            hex::encode(Sha256::digest("[EXECUTION-FAILED]"))
                         };
 
                         // Generate and store TDX attestation only if TEE registration is enabled

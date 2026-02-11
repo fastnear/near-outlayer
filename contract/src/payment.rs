@@ -37,7 +37,12 @@ pub const TOP_UP_CALLBACK_GAS: Gas = Gas::from_tgas(30);
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum FtTransferAction {
     /// Top up a Payment Key balance
-    TopUpPaymentKey { nonce: u32 },
+    /// `owner` - optional, defaults to sender_id. Required when called via
+    /// NEAR Intents ft_withdraw (sender_id = intents.near, not the actual user).
+    TopUpPaymentKey {
+        nonce: u32,
+        owner: Option<AccountId>,
+    },
     /// Deposit stablecoin to user's balance (for attached_usd payments)
     DepositBalance,
 }
@@ -118,8 +123,9 @@ impl Contract {
             .expect("Invalid msg format. Expected: {\"action\": \"top_up_payment_key\", \"nonce\": 0}");
 
         match action {
-            FtTransferAction::TopUpPaymentKey { nonce } => {
-                self.handle_top_up(sender_id, amount, nonce)
+            FtTransferAction::TopUpPaymentKey { nonce, owner } => {
+                let effective_owner = owner.unwrap_or(sender_id);
+                self.handle_top_up(effective_owner, amount, nonce)
             }
             FtTransferAction::DepositBalance => {
                 self.handle_deposit_balance(sender_id, amount)

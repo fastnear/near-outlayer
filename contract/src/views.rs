@@ -147,4 +147,29 @@ impl Contract {
 
         result
     }
+
+    /// Get the next available payment key nonce for a user.
+    ///
+    /// Scans existing payment key secrets and returns max(nonce) + 1.
+    /// Returns 1 if the user has no payment keys yet.
+    pub fn get_next_payment_key_nonce(&self, account_id: AccountId) -> u32 {
+        let user_secrets = self.user_secrets_index.get(&account_id);
+        match user_secrets {
+            Some(secrets_set) => {
+                let max_nonce = secrets_set
+                    .iter()
+                    .filter(|key| {
+                        matches!(
+                            key.accessor,
+                            SecretAccessor::System(SystemSecretType::PaymentKey)
+                        )
+                    })
+                    .filter_map(|key| key.profile.parse::<u32>().ok())
+                    .max()
+                    .unwrap_or(0);
+                max_nonce + 1
+            }
+            None => 1,
+        }
+    }
 }

@@ -47,9 +47,13 @@ struct Input {
 #[derive(Serialize, Debug)]
 struct Output {
     success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     usdc_amount: Option<String>,
-    error_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tx_hashes: Option<Vec<String>>,
+    logs: Vec<String>,
 }
 
 // ============================================================================
@@ -204,15 +208,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Execute the swap flow
-    let output = match execute_topup(&input) {
+    // logs is passed by ref so steps before error are preserved
+    let mut logs = Vec::new();
+    let output = match execute_topup(&input, &mut logs) {
         Ok(result) => result,
         Err(e) => {
             eprintln!("Top-up execution failed: {:?}", e);
+            logs.push(format!("FAILED: {}", e));
             Output {
                 success: false,
                 usdc_amount: None,
-                error_message: Some(format!("{}", e)),
+                error: Some(format!("{}", e)),
                 tx_hashes: None,
+                logs,
             }
         }
     };
@@ -224,40 +232,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn execute_topup(input: &Input) -> Result<Output, Box<dyn std::error::Error>> {
+fn execute_topup(input: &Input, logs: &mut Vec<String>) -> Result<Output, Box<dyn std::error::Error>> {
     let mut tx_hashes = Vec::new();
 
     // Step 1: Load token whitelist and validate token
-    eprintln!("Step 1: Validating token whitelist...");
     let tokens: HashMap<String, TokenConfig> = serde_json::from_str(TOKENS_JSON)?;
 
     let token_config = tokens.get(&input.token_id).ok_or_else(|| {
         format!(
-            "Token {} is not in whitelist. Allowed tokens: {:?}",
+            "Token {} is not in whitelist. Allowed: {:?}",
             input.token_id,
             tokens.keys().collect::<Vec<_>>()
         )
     })?;
 
-    eprintln!("Token {} found in whitelist: oracle_key={}, decimals={}",
-        input.token_id, token_config.oracle_key, token_config.decimals);
+    logs.push(format!(
+        "1. Token validated: {} (oracle_key={}, decimals={})",
+        input.token_id, token_config.oracle_key, token_config.decimals
+    ));
 
     // Step 2: Get token price from oracle storage
-    eprintln!("Step 2: Fetching token price from oracle storage...");
     let token_price = get_token_price(&token_config.oracle_key)?;
-    eprintln!("Token price: ${:.4}", token_price);
+    logs.push(format!("2. Oracle price: ${:.4}", token_price));
 
     // Step 3: Calculate expected USDC and validate minimum
-    eprintln!("Step 3: Validating minimum value...");
     let amount: u128 = input.amount.parse()?;
     let token_in_decimals = amount as f64 / 10f64.powi(token_config.decimals as i32);
     let expected_usdc = token_in_decimals * token_price;
     let expected_usdc_minimal = (expected_usdc * 1_000_000.0) as u128; // 6 decimals for USDC
-
-    eprintln!(
-        "{} {} = ${:.2} USDC (expected)",
-        token_in_decimals, input.token_id, expected_usdc
-    );
 
     if expected_usdc_minimal < MIN_USDC_AMOUNT {
         return Err(format!(
@@ -270,18 +272,21 @@ fn execute_topup(input: &Input) -> Result<Output, Box<dyn std::error::Error>> {
     // Apply 2% slippage tolerance for min_amount_out
     let min_usdc_out = (expected_usdc_minimal as f64 * 0.98) as u128;
 
+    logs.push(format!(
+        "3. Expected: {} {} = ~${:.2} USDC (min_out={})",
+        token_in_decimals, input.token_id, expected_usdc, min_usdc_out
+    ));
+
     // Step 4: Get swap contract credentials
-    eprintln!("Step 4: Getting swap contract credentials...");
     let swap_contract_id = &input.swap_contract_id;
     let swap_contract_private_key = env::var("SWAP_CONTRACT_PRIVATE_KEY")
         .map_err(|_| "SWAP_CONTRACT_PRIVATE_KEY not found in environment")?;
     let rpc_url = env::var("NEAR_RPC_URL")
         .unwrap_or_else(|_| "https://rpc.mainnet.near.org".to_string());
 
-    eprintln!("Swap contract: {}", swap_contract_id);
+    logs.push(format!("4. Swap contract: {}", swap_contract_id));
 
     // Step 5: Get quote from Intents API
-    eprintln!("Step 5: Getting quote from NEAR Intents API...");
     let quote = get_quote(
         &token_config.defuse_asset_id,
         USDC_DEFUSE_ASSET,
@@ -297,13 +302,12 @@ fn execute_topup(input: &Input) -> Result<Output, Box<dyn std::error::Error>> {
         .into());
     }
 
-    eprintln!(
-        "Quote received: {} {} -> {} USDC",
-        quote.amount_in, input.token_id, quote.amount_out
-    );
+    logs.push(format!(
+        "5. Quote: {} {} -> {} USDC (hash={})",
+        quote.amount_in, input.token_id, quote.amount_out, quote.quote_hash
+    ));
 
     // Step 6: Deposit tokens to intents.near
-    eprintln!("Step 6: Depositing tokens to intents.near...");
     let token_contract = &input.token_id;
 
     let deposit_tx = near_tx::ft_transfer_call(
@@ -316,40 +320,44 @@ fn execute_topup(input: &Input) -> Result<Output, Box<dyn std::error::Error>> {
         "",
     )?;
     tx_hashes.push(deposit_tx.clone());
-    eprintln!("Deposit TX: {}", deposit_tx);
+    logs.push(format!("6. Deposit to intents.near: tx={}", deposit_tx));
 
     // Step 7: Publish swap intent
-    eprintln!("Step 7: Publishing swap intent...");
-    let intent_hash = publish_swap_intent(
+    let swap_intent_hash = publish_swap_intent(
         &swap_contract_id,
         &swap_contract_private_key,
         &token_config.defuse_asset_id,
         USDC_DEFUSE_ASSET,
         &quote,
     )?;
-    eprintln!("Intent hash: {}", intent_hash);
+    logs.push(format!("7. Swap intent published: {}", swap_intent_hash));
 
     // Step 8: Wait for settlement
-    eprintln!("Step 8: Waiting for intent settlement...");
-    let settled = wait_for_settlement(&intent_hash)?;
+    let settled = wait_for_settlement(&swap_intent_hash)?;
 
     if !settled {
-        return Err("Intent failed to settle within timeout".into());
+        logs.push(format!("8. Swap intent FAILED to settle: {}", swap_intent_hash));
+        return Err("Swap intent failed to settle within timeout".into());
     }
 
-    eprintln!("Intent settled!");
+    logs.push("8. Swap intent SETTLED".to_string());
 
     // Step 9: Withdraw USDC to outlayer.near with payment key msg
-    eprintln!("Step 9: Withdrawing USDC to outlayer.near...");
-
-    // Build the msg for ft_on_transfer callback
+    // owner is required because intents ft_withdraw calls ft_transfer_call
+    // where sender_id = intents.near, not the actual payment key owner
     let withdrawal_msg = serde_json::json!({
         "action": "top_up_payment_key",
-        "nonce": input.nonce
+        "nonce": input.nonce,
+        "owner": input.owner
     })
     .to_string();
 
-    let withdraw_success = withdraw_tokens_with_msg(
+    logs.push(format!(
+        "9. Withdraw ft_withdraw: {} USDC -> {} msg={}",
+        quote.amount_out, OUTLAYER_CONTRACT, withdrawal_msg
+    ));
+
+    let (withdraw_settled, withdraw_intent_hash) = withdraw_tokens_with_msg(
         &swap_contract_id,
         &swap_contract_private_key,
         USDC_CONTRACT,
@@ -358,20 +366,36 @@ fn execute_topup(input: &Input) -> Result<Output, Box<dyn std::error::Error>> {
         &withdrawal_msg,
     )?;
 
-    if !withdraw_success {
-        return Err("Failed to withdraw USDC to outlayer.near".into());
+    tx_hashes.push(withdraw_intent_hash.clone());
+
+    if !withdraw_settled {
+        logs.push(format!(
+            "9. Withdraw intent FAILED to settle: {}",
+            withdraw_intent_hash
+        ));
+        return Err(format!(
+            "Withdraw intent failed to settle: {}",
+            withdraw_intent_hash
+        )
+        .into());
     }
 
-    eprintln!(
-        "Successfully topped up payment key {}:{} with {} USDC",
+    logs.push(format!(
+        "9. Withdraw intent SETTLED: {} (ft_transfer_call to {})",
+        withdraw_intent_hash, OUTLAYER_CONTRACT
+    ));
+
+    logs.push(format!(
+        "10. Done: owner={} nonce={} usdc={}",
         input.owner, input.nonce, quote.amount_out
-    );
+    ));
 
     Ok(Output {
         success: true,
         usdc_amount: Some(quote.amount_out.clone()),
-        error_message: None,
+        error: None,
         tx_hashes: Some(tx_hashes),
+        logs: logs.clone(),
     })
 }
 
@@ -425,7 +449,8 @@ fn get_quote(
         }],
     };
 
-    const MAX_RETRIES: u32 = 3;
+    const MAX_RETRIES: u32 = 5;
+    let mut last_error = String::from("no attempts made");
 
     for attempt in 1..=MAX_RETRIES {
         eprintln!("Quote API attempt {}/{}", attempt, MAX_RETRIES);
@@ -433,39 +458,65 @@ fn get_quote(
         match Client::new()
             .post(INTENTS_API_URL)
             .header("Content-Type", "application/json")
-            .connect_timeout(Duration::from_secs(10))
+            .connect_timeout(Duration::from_secs(15))
             .body(serde_json::to_string(&request)?.as_bytes())
             .send()
         {
             Ok(response) => {
-                if response.status() == 200 {
-                    if let Ok(body) = response.body() {
-                        if let Ok(json_response) =
-                            serde_json::from_slice::<JsonRpcResponse<Vec<Quote>>>(&body)
-                        {
-                            if let Some(quotes) = json_response.result {
-                                if let Some(best_quote) = quotes
-                                    .into_iter()
-                                    .max_by_key(|q| q.amount_out.parse::<u128>().unwrap_or(0))
-                                {
-                                    return Ok(best_quote);
+                let status = response.status();
+                match response.body() {
+                    Ok(body) => {
+                        if status != 200 {
+                            let body_str = String::from_utf8_lossy(&body);
+                            last_error = format!("HTTP {}: {}", status, &body_str[..body_str.len().min(200)]);
+                            eprintln!("Attempt {}: {}", attempt, last_error);
+                        } else {
+                            match serde_json::from_slice::<JsonRpcResponse<Vec<Quote>>>(&body) {
+                                Ok(json_response) => {
+                                    if let Some(err) = json_response.error {
+                                        last_error = format!("RPC error: {}", err.message);
+                                        eprintln!("Attempt {}: {}", attempt, last_error);
+                                    } else if let Some(quotes) = json_response.result {
+                                        if quotes.is_empty() {
+                                            last_error = "No quotes returned (empty array)".to_string();
+                                            eprintln!("Attempt {}: {}", attempt, last_error);
+                                        } else if let Some(best_quote) = quotes
+                                            .into_iter()
+                                            .max_by_key(|q| q.amount_out.parse::<u128>().unwrap_or(0))
+                                        {
+                                            return Ok(best_quote);
+                                        }
+                                    } else {
+                                        last_error = "No result field in response".to_string();
+                                        eprintln!("Attempt {}: {}", attempt, last_error);
+                                    }
+                                }
+                                Err(e) => {
+                                    let body_str = String::from_utf8_lossy(&body);
+                                    last_error = format!("JSON parse error: {} body={}", e, &body_str[..body_str.len().min(200)]);
+                                    eprintln!("Attempt {}: {}", attempt, last_error);
                                 }
                             }
                         }
                     }
+                    Err(e) => {
+                        last_error = format!("Failed to read response body: {}", e);
+                        eprintln!("Attempt {}: {}", attempt, last_error);
+                    }
                 }
             }
             Err(e) => {
-                eprintln!("Attempt {} failed: {}", attempt, e);
+                last_error = format!("HTTP request failed: {}", e);
+                eprintln!("Attempt {}: {}", attempt, last_error);
             }
         }
 
         if attempt < MAX_RETRIES {
-            std::thread::sleep(Duration::from_millis(1000));
+            std::thread::sleep(Duration::from_secs(1));
         }
     }
 
-    Err("Quote API failed after retries".into())
+    Err(format!("Quote API failed after {} retries. Last error: {}", MAX_RETRIES, last_error).into())
 }
 
 fn publish_swap_intent(
@@ -587,6 +638,7 @@ fn wait_for_settlement(intent_hash: &str) -> Result<bool, Box<dyn std::error::Er
     Ok(false) // Timeout
 }
 
+/// Returns (settled: bool, intent_hash: String)
 fn withdraw_tokens_with_msg(
     signer_id: &str,
     private_key: &str,
@@ -594,7 +646,7 @@ fn withdraw_tokens_with_msg(
     receiver_id: &str,
     amount: &str,
     msg: &str,
-) -> Result<bool, Box<dyn std::error::Error>> {
+) -> Result<(bool, String), Box<dyn std::error::Error>> {
     // Build withdraw intent with msg
     let intent_message = IntentMessage {
         signer_id: signer_id.to_string(),
@@ -658,7 +710,8 @@ fn withdraw_tokens_with_msg(
     let intent_hash = result.intent_hash.ok_or("No intent_hash for withdraw")?;
 
     // Wait for withdrawal settlement
-    wait_for_settlement(&intent_hash)
+    let settled = wait_for_settlement(&intent_hash)?;
+    Ok((settled, intent_hash))
 }
 
 // ============================================================================
