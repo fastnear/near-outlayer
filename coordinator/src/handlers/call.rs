@@ -656,59 +656,20 @@ async fn create_https_call(
 }
 
 /// Resolve project_uuid from Redis cache, falling back to contract
-/// Uses same cache as /projects/uuid endpoint (cached forever)
+/// Caches UUID only (never changes). Uses shared helpers from projects handler.
 async fn resolve_project_uuid_cached(
     state: &AppState,
     project_id: &str,
 ) -> Result<String, CallError> {
-    use crate::near_client;
-
-    let cache_key = format!("project_uuid:{}", project_id);
-
-    let mut conn = state.redis.get_multiplexed_async_connection().await
-        .map_err(|e| CallError::InternalError(format!("Redis error: {}", e)))?;
-
-    // Try Redis cache first
-    let cached: Option<String> = conn.get(&cache_key).await.unwrap_or(None);
-
-    if let Some(cached_json) = cached {
-        // Parse cached data (format: {"uuid": "...", "active_version": "..."})
-        if let Ok(cached_data) = serde_json::from_str::<serde_json::Value>(&cached_json) {
-            if let Some(uuid) = cached_data.get("uuid").and_then(|v| v.as_str()) {
-                debug!("📋 Cache hit for project_uuid: {} -> {}", project_id, uuid);
-                return Ok(uuid.to_string());
+    super::projects::resolve_project_uuid_for_call(state, project_id)
+        .await
+        .map_err(|e| {
+            if e.contains("not found") {
+                CallError::ProjectNotFound
+            } else {
+                CallError::InternalError(e)
             }
-        }
-    }
-
-    // Cache miss - fetch from contract
-    info!("📋 Cache miss for project_uuid: {}, fetching from contract", project_id);
-
-    let project = near_client::fetch_project_from_contract(
-        &state.config.near_rpc_url,
-        &state.config.contract_id,
-        project_id,
-    )
-    .await
-    .map_err(|e| CallError::InternalError(format!("Contract query failed: {}", e)))?;
-
-    match project {
-        Some(project_info) => {
-            // Cache the result (forever - UUIDs don't change)
-            let cache_data = serde_json::json!({
-                "uuid": project_info.uuid,
-                "active_version": project_info.active_version
-            });
-
-            if let Ok(cache_json) = serde_json::to_string(&cache_data) {
-                let _: Result<(), _> = conn.set(&cache_key, &cache_json).await;
-                debug!("📋 Cached project_uuid: {} -> {}", project_id, project_info.uuid);
-            }
-
-            Ok(project_info.uuid)
-        }
-        None => Err(CallError::ProjectNotFound),
-    }
+        })
 }
 
 /// Create execution task: persist in execution_requests table and push to Redis queue
