@@ -7,8 +7,8 @@
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 
-/// RTMR3 offset in TDX quote body (bytes)
-const RTMR3_OFFSET: usize = 256;
+/// RTMR3 offset in TDX Quote v4: 48 (header) + 472 (body offset) = 520 bytes
+const RTMR3_OFFSET: usize = 520;
 /// RTMR3 size (48 bytes = 96 hex chars)
 const RTMR3_SIZE: usize = 48;
 

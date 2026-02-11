@@ -135,7 +135,7 @@ impl TdxClient {
         info!("   TDX quote size: {} bytes", tdx_quote.len());
 
         // Debug: Extract and log RTMR3 from quote
-        const RTMR3_OFFSET: usize = 256;
+        const RTMR3_OFFSET: usize = 520; // 48 (header) + 472 (body offset)
         const RTMR3_SIZE: usize = 48;
         if tdx_quote.len() >= RTMR3_OFFSET + RTMR3_SIZE {
             let rtmr3_bytes = &tdx_quote[RTMR3_OFFSET..RTMR3_OFFSET + RTMR3_SIZE];
