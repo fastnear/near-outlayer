@@ -25,6 +25,7 @@ echo "Note: Built without wasm-opt due to bulk-memory operations in dcap-qvl/rin
 # near account create-account fund-myself dao.outlayer.testnet '5 NEAR' autogenerate-new-keypair save-to-legacy-keychain sign-as outlayer.testnet network-config testnet sign-with-keychain send
 # near contract deploy dao.outlayer.testnet use-file res/keystore_dao_contract.wasm without-init-call network-config testnet sign-with-keychain send
 # near contract call-function as-transaction dao.outlayer.testnet new json-args '{"owner_id": "owner.outlayer.testnet", "init_account_id": "init-keystore.outlayer.testnet", "dao_members": ["zavodil.testnet"], "mpc_contract_id": "v1.signer-prod.testnet"}' prepaid-gas '30.0 Tgas' attached-deposit '0 NEAR' sign-as dao.outlayer.testnet network-config testnet sign-with-keychain send
+# near contract call-function as-transaction dao.outlayer.testnet migrate json-args {} prepaid-gas '100.0 Tgas' attached-deposit '0 NEAR' sign-as owner.outlayer.testnet network-config testnet sign-with-keychain send
 
 # MAINNET
 # near contract deploy dao.outlayer.near use-file res/keystore_dao_contract.wasm without-init-call network-config mainnet sign-with-keychain send

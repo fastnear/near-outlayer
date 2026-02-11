@@ -248,23 +248,41 @@ impl MpcCkdClient {
         // Serialize request to JSON
         let args = serde_json::to_vec(&request)?;
 
-        // Get access key information for nonce
-        let access_key_query = methods::query::RpcQueryRequest {
-            block_reference: BlockReference::Finality(Finality::Final),
-            request: QueryRequest::ViewAccessKey {
-                account_id: self.signer.account_id.clone(),
-                public_key: self.signer.public_key.clone(),
-            },
-        };
+        // Get access key information for nonce.
+        // Retry: after DAO approval the new access key may not be visible to the RPC node yet.
+        let mut nonce = 0u64;
+        let max_retries = 5;
+        for attempt in 1..=max_retries {
+            let access_key_query = methods::query::RpcQueryRequest {
+                block_reference: BlockReference::Finality(Finality::Final),
+                request: QueryRequest::ViewAccessKey {
+                    account_id: self.signer.account_id.clone(),
+                    public_key: self.signer.public_key.clone(),
+                },
+            };
 
-        let access_key_response = self.rpc_client.call(access_key_query).await
-            .context("Failed to query access key")?;
-
-        let nonce = if let QueryResponseKind::AccessKey(access_key_view) = access_key_response.kind {
-            access_key_view.nonce + 1
-        } else {
-            anyhow::bail!("Failed to get access key nonce");
-        };
+            match self.rpc_client.call(access_key_query).await {
+                Ok(response) => {
+                    if let QueryResponseKind::AccessKey(access_key_view) = response.kind {
+                        nonce = access_key_view.nonce + 1;
+                        break;
+                    } else {
+                        anyhow::bail!("Failed to get access key nonce");
+                    }
+                }
+                Err(e) if attempt < max_retries => {
+                    tracing::warn!(
+                        attempt,
+                        max_retries,
+                        "Access key not yet visible on RPC node, retrying in 3s... ({})", e
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                }
+                Err(e) => {
+                    return Err(e).context("Failed to query access key after retries");
+                }
+            }
+        }
 
         // Get current block hash
         let block = self.rpc_client

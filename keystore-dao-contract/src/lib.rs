@@ -8,6 +8,8 @@ use schemars::JsonSchema;
 mod collateral;
 use collateral::Collateral;
 
+mod migration;
+
 // Custom getrandom implementation for WASM (required by dcap-qvl)
 #[cfg(target_arch = "wasm32")]
 use getrandom::{register_custom_getrandom, Error};
@@ -42,12 +44,34 @@ trait ExtMPC {
 
 #[derive(BorshSerialize, BorshStorageKey)]
 #[borsh(crate = "near_sdk::borsh")]
+#[allow(dead_code)]
 enum StorageKey {
-    ApprovedRtmr3,
+    ApprovedRtmr3, // legacy, kept for migration deserialization
     DaoMembers,
     Proposals,
     Votes { proposal_id: u64 },
     ApprovedKeystores,
+}
+
+/// Full TEE measurements for verifying the entire dstack environment.
+/// All fields are 96 hex characters (48 bytes).
+///
+/// Without verifying MRTD + RTMR0-2, an attacker can run a dev dstack image
+/// (with SSH enabled), connect to the container, and modify the running code
+/// while RTMR3 still passes because the docker-compose is the same.
+#[derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize, JsonSchema, Clone, PartialEq, Eq, Debug)]
+#[serde(crate = "near_sdk::serde")]
+pub struct ApprovedMeasurements {
+    /// MRTD - Virtual firmware (TDX module) identity
+    pub mrtd: String,
+    /// RTMR0 - Bootloader, firmware config
+    pub rtmr0: String,
+    /// RTMR1 - OS kernel, boot params, initrd
+    pub rtmr1: String,
+    /// RTMR2 - OS applications layer
+    pub rtmr2: String,
+    /// RTMR3 - Runtime events (compose-hash, key-provider)
+    pub rtmr3: String,
 }
 
 /// Proposal for registering a new keystore
@@ -57,7 +81,7 @@ pub struct KeystoreProposal {
     pub id: u64,
     #[schemars(with = "String")]
     pub public_key: PublicKey,
-    pub rtmr3: String,
+    pub measurements: ApprovedMeasurements,
     #[schemars(with = "String")]
     pub submitter: AccountId,
     pub created_at: u64,
@@ -81,7 +105,7 @@ pub enum ProposalStatus {
 pub struct KeystoreInfo {
     #[schemars(with = "String")]
     pub public_key: PublicKey,
-    pub rtmr3: String,
+    pub measurements: ApprovedMeasurements,
     pub approved_at: u64,
     pub proposal_id: u64,
 }
@@ -95,7 +119,7 @@ pub struct KeystoreInfo {
 /// # Flow
 /// 1. Keystore generates keypair inside TEE
 /// 2. Keystore submits registration with TDX attestation
-/// 3. Contract verifies attestation and creates proposal
+/// 3. Contract verifies attestation (MRTD + RTMR0-3) and creates proposal
 /// 4. DAO members vote on proposal
 /// 5. If approved, contract adds access key to itself
 /// 6. Keystore can now request CKD from MPC using contract's account
@@ -129,8 +153,9 @@ pub struct KeystoreDao {
     /// Approved keystore public keys
     pub approved_keystores: UnorderedSet<PublicKey>,
 
-    /// List of approved RTMR3 measurements
-    pub approved_rtmr3: UnorderedSet<String>,
+    /// Full TEE measurements approved for keystore registration.
+    /// Each entry contains MRTD + RTMR0-3 (all must match for registration).
+    pub approved_measurements: Vec<ApprovedMeasurements>,
 
     /// TDX quote collateral (Intel's reference data for verification)
     pub quote_collateral: Option<String>,
@@ -203,7 +228,7 @@ impl KeystoreDao {
             next_proposal_id: 1,
             votes: LookupMap::new(StorageKey::Votes { proposal_id: 0 }),
             approved_keystores: UnorderedSet::new(StorageKey::ApprovedKeystores),
-            approved_rtmr3: UnorderedSet::new(StorageKey::ApprovedRtmr3),
+            approved_measurements: Vec::new(),
             quote_collateral: None,
         }
     }
@@ -212,8 +237,9 @@ impl KeystoreDao {
     ///
     /// This method:
     /// 1. Verifies TDX quote signature
-    /// 2. Extracts RTMR3 and public key
-    /// 3. Creates a proposal for DAO voting
+    /// 2. Extracts MRTD + RTMR0-3 and public key
+    /// 3. Checks all measurements against approved list
+    /// 4. Creates a proposal for DAO voting
     pub fn submit_keystore_registration(
         &mut self,
         public_key: PublicKey,
@@ -239,7 +265,7 @@ impl KeystoreDao {
         let collateral = self.quote_collateral.clone()
             .expect("Quote collateral required (owner must call update_collateral first)");
 
-        let (rtmr3, embedded_pubkey) = self.verify_tdx_quote(&tdx_quote_hex, &collateral);
+        let (measurements, embedded_pubkey) = self.verify_tdx_quote(&tdx_quote_hex, &collateral);
 
         // Log app_id if provided (for TEE verification)
         if let Some(ref app_id) = app_id {
@@ -247,18 +273,24 @@ impl KeystoreDao {
         }
 
         env::log_str(&format!(
-            "TEE Registration Request. RTMR3: {}. Public Key: {:?}",
-            rtmr3, embedded_pubkey
+            "📋 Verified TDX quote. Keystore's TEE-generated key (from quote report_data): {:?}",
+            embedded_pubkey
+        ));
+        env::log_str(&format!(
+            "📋 Measurements from TDX quote: mrtd={}, rtmr0={}, rtmr1={}, rtmr2={}, rtmr3={}",
+            measurements.mrtd, measurements.rtmr0, measurements.rtmr1,
+            measurements.rtmr2, measurements.rtmr3
         ));
 
-        // CRITICAL: Check if RTMR3 is in approved list
+        // CRITICAL: Check if measurements are in approved list
         assert!(
-            self.approved_rtmr3.contains(&rtmr3),
-            "RTMR3 {} not approved for registration. Contact admin to add this RTMR3.",
-            rtmr3
+            self.approved_measurements.contains(&measurements),
+            "Worker measurements not approved. MRTD={}, RTMR0={}, RTMR1={}, RTMR2={}, RTMR3={}. Contact admin to add via add_approved_measurements.",
+            measurements.mrtd, measurements.rtmr0, measurements.rtmr1,
+            measurements.rtmr2, measurements.rtmr3
         );
 
-        env::log_str(&format!("✅ RTMR3 {} is in approved list", rtmr3));
+        env::log_str("✅ Measurements are in approved list");
 
         // Verify public key matches quote
         assert_eq!(
@@ -270,7 +302,7 @@ impl KeystoreDao {
         let proposal = KeystoreProposal {
             id: self.next_proposal_id,
             public_key: public_key.clone(),
-            rtmr3: rtmr3.clone(),
+            measurements: measurements.clone(),
             submitter: env::predecessor_account_id(),
             created_at: env::block_timestamp(),
             votes_for: self.approval_threshold,
@@ -281,11 +313,11 @@ impl KeystoreDao {
         let proposal_id = self.next_proposal_id;
         self.proposals.insert(&proposal_id, &proposal);
         self.next_proposal_id += 1;
-        
+
         env::log_str(&format!(
-            "Created proposal {} for keystore registration (RTMR3: {})",
-            proposal_id, rtmr3
-        ));    
+            "Created proposal {} for keystore registration (all 5 TEE measurements verified)",
+            proposal_id
+        ));
 
         proposal_id
     }
@@ -329,7 +361,7 @@ impl KeystoreDao {
         // Check if threshold reached
         if proposal.votes_for >= self.approval_threshold {
             proposal.status = ProposalStatus::Approved;
-                        
+
             env::log_str(&format!(
                 "Proposal {} approved with {} votes",
                 proposal_id, proposal.votes_for
@@ -348,50 +380,53 @@ impl KeystoreDao {
         else {
             // Update proposal
             self.proposals.insert(&proposal_id, &proposal);
-        }        
+        }
     }
 
-    /// Owner: Add approved RTMR3 for auto-approval
-    /// If clear_others is true, removes all existing RTMR3s before adding the new one
-    pub fn add_approved_rtmr3(&mut self, rtmr3: String, clear_others: Option<bool>) {
+    /// Owner: Add approved TEE measurements (MRTD + RTMR0-3).
+    ///
+    /// All 5 measurements must match for a keystore to register.
+    /// Get measurements from Phala attestation:
+    /// `phala cvms attestation <CVM_NAME> --json | jq '.tcb_info'`
+    ///
+    /// If `clear_others` is true, removes all existing entries before adding.
+    pub fn add_approved_measurements(&mut self, measurements: ApprovedMeasurements, clear_others: Option<bool>) {
         self.assert_owner();
-        assert_eq!(rtmr3.len(), 96, "RTMR3 must be 96 hex chars");
+        Self::validate_measurements(&measurements);
 
-        // Clear all existing RTMR3s if requested (useful for testing)
         if clear_others.unwrap_or(false) {
-            let count = self.approved_rtmr3.len();
-            self.approved_rtmr3.clear();
-            env::log_str(&format!("Cleared {} existing RTMR3 entries", count));
+            let count = self.approved_measurements.len();
+            self.approved_measurements.clear();
+            env::log_str(&format!("Cleared {} existing measurement entries", count));
         }
 
-        self.approved_rtmr3.insert(&rtmr3);
-        env::log_str(&format!("Added approved RTMR3: {}", rtmr3));
-        env::log_str(&format!("Total approved RTMR3s: {}", self.approved_rtmr3.len()));
-    }
-
-    /// Owner: Clear all approved RTMR3s (useful for testing)
-    pub fn clear_all_approved_rtmr3(&mut self) {
-        self.assert_owner();
-
-        let count = self.approved_rtmr3.len();
-        self.approved_rtmr3.clear();
-
-        env::log_str(&format!("Cleared all {} RTMR3 entries", count));
-    }
-
-    /// Owner: Remove specific approved RTMR3
-    pub fn remove_approved_rtmr3(&mut self, rtmr3: String) {
-        self.assert_owner();
-        assert_eq!(rtmr3.len(), 96, "RTMR3 must be 96 hex chars");
-
-        let was_present = self.approved_rtmr3.remove(&rtmr3);
-
-        if was_present {
-            env::log_str(&format!("Removed approved RTMR3: {}", rtmr3));
-            env::log_str(&format!("Total approved RTMR3s remaining: {}", self.approved_rtmr3.len()));
-        } else {
-            env::log_str(&format!("RTMR3 not found in approved list: {}", rtmr3));
+        if !self.approved_measurements.contains(&measurements) {
+            self.approved_measurements.push(measurements.clone());
         }
+
+        env::log_str(&format!(
+            "Approved measurements added: mrtd={}, rtmr0={}, rtmr1={}, rtmr2={}, rtmr3={}",
+            measurements.mrtd, measurements.rtmr0, measurements.rtmr1,
+            measurements.rtmr2, measurements.rtmr3
+        ));
+        env::log_str(&format!("Total approved measurements: {}", self.approved_measurements.len()));
+    }
+
+    /// Owner: Clear all approved measurements
+    pub fn clear_all_approved_measurements(&mut self) {
+        self.assert_owner();
+
+        let count = self.approved_measurements.len();
+        self.approved_measurements.clear();
+
+        env::log_str(&format!("Cleared all {} measurement entries", count));
+    }
+
+    /// Owner: Remove specific approved measurements
+    pub fn remove_approved_measurements(&mut self, measurements: ApprovedMeasurements) {
+        self.assert_owner();
+        self.approved_measurements.retain(|m| m != &measurements);
+        env::log_str(&format!("Approved measurements removed. Remaining: {}", self.approved_measurements.len()));
     }
 
     /// Owner: Add DAO member
@@ -449,14 +484,14 @@ impl KeystoreDao {
         self.dao_members.to_vec()
     }
 
-    /// Get approved RTMR3 list
-    pub fn get_approved_rtmr3(&self) -> Vec<String> {
-        self.approved_rtmr3.to_vec()
+    /// Get approved measurements list
+    pub fn get_approved_measurements(&self) -> Vec<ApprovedMeasurements> {
+        self.approved_measurements.clone()
     }
 
-    /// Check if RTMR3 is approved
-    pub fn is_rtmr3_approved(&self, rtmr3: String) -> bool {
-        self.approved_rtmr3.contains(&rtmr3)
+    /// Check if measurements are approved
+    pub fn is_measurements_approved(&self, measurements: ApprovedMeasurements) -> bool {
+        self.approved_measurements.contains(&measurements)
     }
 
     /// Check if keystore with given public key is approved
@@ -485,15 +520,15 @@ impl KeystoreDao {
             "dao_members_count": self.dao_members.len(),
             "next_proposal_id": self.next_proposal_id,
             "approved_keystores_count": self.approved_keystores.len(),
-            "approved_rtmr3_count": self.approved_rtmr3.len(),
+            "approved_measurements_count": self.approved_measurements.len(),
             "has_collateral": self.quote_collateral.is_some(),
         })
-    }    
-    
+    }
+
 
     /// Request a key from the MPC contract
     /// This function makes a cross-contract call to the MPC contract to derive a private key
-    /// The request must come from an approved keystore with a valid access key    
+    /// The request must come from an approved keystore with a valid access key
     pub fn request_key(&self, request: CKDRequestArgs) -> PromiseOrValue<CKDResponse> {
         // Make cross-contract call to MPC contract
         // Attach all gas and 1 yoctoNEAR as required by MPC contract
@@ -510,8 +545,8 @@ impl KeystoreDao {
 impl KeystoreDao {
     // ===== Internal Methods =====
 
-    /// Verify TDX quote and extract RTMR3 + public key
-    fn verify_tdx_quote(&self, tdx_quote_hex: &str, collateral_json: &str) -> (String, PublicKey) {
+    /// Verify TDX quote and extract full measurements + public key
+    fn verify_tdx_quote(&self, tdx_quote_hex: &str, collateral_json: &str) -> (ApprovedMeasurements, PublicKey) {
         use dcap_qvl::verify;
 
         // Decode hex quote
@@ -528,24 +563,29 @@ impl KeystoreDao {
         let result = verify::verify(&quote_bytes, collateral.inner(), now)
             .expect("TDX quote verification failed");
 
-        // Extract RTMR3 from TDX report
-        let rtmr3_bytes = result
+        // Extract all measurements from TDX report (MRTD + RTMR0-3)
+        let td10 = result
             .report
             .as_td10()
-            .expect("Quote is not TDX format")
-            .rt_mr3;
-        let rtmr3 = hex::encode(rtmr3_bytes.to_vec());
+            .expect("Quote is not TDX format");
+
+        let measurements = ApprovedMeasurements {
+            mrtd: hex::encode(td10.mr_td.to_vec()),
+            rtmr0: hex::encode(td10.rt_mr0.to_vec()),
+            rtmr1: hex::encode(td10.rt_mr1.to_vec()),
+            rtmr2: hex::encode(td10.rt_mr2.to_vec()),
+            rtmr3: hex::encode(td10.rt_mr3.to_vec()),
+        };
 
         // Extract public key from report_data (first 32 bytes)
-        let report_data = result.report.as_td10().unwrap().report_data;
-        let pubkey_bytes = &report_data[..32];
+        let pubkey_bytes = &td10.report_data[..32];
 
         // Convert to NEAR PublicKey (add ed25519 prefix)
         let pubkey_with_prefix = [&[0u8], pubkey_bytes].concat();
         let public_key = PublicKey::try_from(pubkey_with_prefix)
             .expect("Invalid ed25519 public key");
 
-        (rtmr3, public_key)
+        (measurements, public_key)
     }
 
     fn assert_owner(&self) {
@@ -554,6 +594,29 @@ impl KeystoreDao {
             self.owner_id,
             "Only owner can call this method"
         );
+    }
+
+    fn validate_measurement_field(name: &str, value: &str) {
+        assert_eq!(
+            value.len(),
+            96,
+            "Invalid {} format: expected 96 hex characters, got {}",
+            name,
+            value.len()
+        );
+        assert!(
+            value.chars().all(|c| c.is_ascii_hexdigit()),
+            "Invalid {} format: must be hex string",
+            name
+        );
+    }
+
+    fn validate_measurements(m: &ApprovedMeasurements) {
+        Self::validate_measurement_field("mrtd", &m.mrtd);
+        Self::validate_measurement_field("rtmr0", &m.rtmr0);
+        Self::validate_measurement_field("rtmr1", &m.rtmr1);
+        Self::validate_measurement_field("rtmr2", &m.rtmr2);
+        Self::validate_measurement_field("rtmr3", &m.rtmr3);
     }
 
     /// Execute approved proposal to add keystore access key
@@ -572,7 +635,7 @@ impl KeystoreDao {
             allowance,
             env::current_account_id(),
             "request_key".to_string(),
-        );         
+        );
 
         // Mark as executed
         proposal.status = ProposalStatus::Executed;
@@ -582,8 +645,8 @@ impl KeystoreDao {
         self.approved_keystores.insert(&proposal.public_key);
 
         env::log_str(&format!(
-            "✅ Executed proposal {}: Added keystore access key (RTMR3: {})",
-            proposal_id, proposal.rtmr3
+            "✅ Executed proposal {}: Added keystore access key {:?} (all 5 TEE measurements verified)",
+            proposal_id, proposal.public_key
         ));
     }
 }
@@ -604,5 +667,6 @@ mod tests {
         assert_eq!(dao.owner_id, "owner.near".parse::<AccountId>().unwrap());
         assert_eq!(dao.dao_members.len(), 2);
         assert_eq!(dao.approval_threshold, 2); // >50% of 2 members
+        assert_eq!(dao.approved_measurements.len(), 0);
     }
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Automated deployment to Phala Cloud with RTMR3 whitelisting and DAO voting
+# Automated deployment to Phala Cloud with TEE measurements whitelisting and DAO voting
 #
 # Usage:
 #   ./scripts/deploy_phala.sh keystore [testnet|mainnet] [instance-name] [--version vX.Y.Z]
@@ -253,11 +253,15 @@ phala deploy \
 cd ..
 echo -e "${GREEN}✓ Deployment initiated${NC}"
 
-# Step 5: Wait for CVM to be running and get RTMR3
-echo -e "${YELLOW}[5/7] Waiting for CVM to start and getting RTMR3...${NC}"
+# Step 5: Wait for CVM to be running and get TEE measurements
+echo -e "${YELLOW}[5/7] Waiting for CVM to start and getting TEE measurements...${NC}"
 
 MAX_ATTEMPTS=60
 ATTEMPT=0
+MRTD=""
+RTMR0=""
+RTMR1=""
+RTMR2=""
 RTMR3=""
 
 while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
@@ -271,12 +275,29 @@ while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
         echo ""
         echo -e "${GREEN}✓ CVM is running${NC}"
 
-        # Get attestation with RTMR3
+        # Get attestation with all measurements
         sleep 10  # Wait for attestation to be ready
-        RTMR3=$(phala cvms attestation "$CVM_NAME" --json 2>/dev/null | jq -r '.tcb_info.rtmr3 // empty' 2>/dev/null || echo "")
+        # Write to temp file: attestation JSON is ~55KB with embedded docker-compose,
+        # echo "$VAR" | jq corrupts escape sequences in app_compose field
+        ATTESTATION_TMP=$(mktemp)
+        phala cvms attestation "$CVM_NAME" --json > "$ATTESTATION_TMP" 2>/dev/null || true
 
-        if [ -n "$RTMR3" ]; then
-            echo -e "${GREEN}✓ Got RTMR3: ${RTMR3}${NC}"
+        if [ -s "$ATTESTATION_TMP" ]; then
+            MRTD=$(jq -r '.tcb_info.mrtd // empty' "$ATTESTATION_TMP" 2>/dev/null || echo "")
+            RTMR0=$(jq -r '.tcb_info.rtmr0 // empty' "$ATTESTATION_TMP" 2>/dev/null || echo "")
+            RTMR1=$(jq -r '.tcb_info.rtmr1 // empty' "$ATTESTATION_TMP" 2>/dev/null || echo "")
+            RTMR2=$(jq -r '.tcb_info.rtmr2 // empty' "$ATTESTATION_TMP" 2>/dev/null || echo "")
+            RTMR3=$(jq -r '.tcb_info.rtmr3 // empty' "$ATTESTATION_TMP" 2>/dev/null || echo "")
+        fi
+        rm -f "$ATTESTATION_TMP"
+
+        if [ -n "$MRTD" ] && [ -n "$RTMR3" ]; then
+            echo -e "${GREEN}✓ Got TEE measurements:${NC}"
+            echo -e "   MRTD:  ${MRTD}"
+            echo -e "   RTMR0: ${RTMR0}"
+            echo -e "   RTMR1: ${RTMR1}"
+            echo -e "   RTMR2: ${RTMR2}"
+            echo -e "   RTMR3: ${RTMR3}"
             break
         fi
     fi
@@ -286,21 +307,21 @@ done
 
 if [ -z "$RTMR3" ]; then
     echo ""
-    echo -e "${RED}Error: Failed to get RTMR3 after $MAX_ATTEMPTS attempts${NC}"
+    echo -e "${RED}Error: Failed to get TEE measurements after $MAX_ATTEMPTS attempts${NC}"
     exit 1
 fi
 
-# Step 6: Add RTMR3 to DAO (if not already approved)
-echo -e "${YELLOW}[6/7] Checking if RTMR3 is already approved...${NC}"
+# Step 6: Add TEE measurements to contract (if not already approved)
+echo -e "${YELLOW}[6/7] Checking if TEE measurements are already approved...${NC}"
 
-RTMR3_APPROVED=$(near contract call-function as-read-only "$DAO_CONTRACT" is_rtmr3_approved \
-    json-args "{\"rtmr3\": \"$RTMR3\"}" \
+MEASUREMENTS_APPROVED=$(near contract call-function as-read-only "$DAO_CONTRACT" is_measurements_approved \
+    json-args "{\"measurements\": {\"mrtd\": \"$MRTD\", \"rtmr0\": \"$RTMR0\", \"rtmr1\": \"$RTMR1\", \"rtmr2\": \"$RTMR2\", \"rtmr3\": \"$RTMR3\"}}" \
     network-config "$NETWORK" now 2>/dev/null | grep -o 'true\|false' | head -1 || echo "false")
 
-if [ "$RTMR3_APPROVED" = "true" ]; then
-    echo -e "${GREEN}✓ RTMR3 already approved, skipping add_approved_rtmr3${NC}"
+if [ "$MEASUREMENTS_APPROVED" = "true" ]; then
+    echo -e "${GREEN}✓ Measurements already approved, skipping${NC}"
 else
-    echo -e "${YELLOW}RTMR3 not approved, adding to DAO contract...${NC}"
+    echo -e "${YELLOW}Measurements not approved, adding to contract...${NC}"
 
     # If this is an additional instance (has INSTANCE_NAME), don't clear others
     if [ -n "$INSTANCE_NAME" ]; then
@@ -309,15 +330,15 @@ else
         CLEAR_OTHERS="true"
     fi
 
-    near contract call-function as-transaction "$DAO_CONTRACT" add_approved_rtmr3 \
-        json-args "{\"rtmr3\": \"$RTMR3\", \"clear_others\": $CLEAR_OTHERS}" \
+    near contract call-function as-transaction "$DAO_CONTRACT" add_approved_measurements \
+        json-args "{\"measurements\": {\"mrtd\": \"$MRTD\", \"rtmr0\": \"$RTMR0\", \"rtmr1\": \"$RTMR1\", \"rtmr2\": \"$RTMR2\", \"rtmr3\": \"$RTMR3\"}, \"clear_others\": $CLEAR_OTHERS}" \
         prepaid-gas '30.0 Tgas' \
         attached-deposit '0 NEAR' \
         sign-as "$SIGNER_ACCOUNT" \
         network-config "$NETWORK" \
         sign-with-keychain send
 
-    echo -e "${GREEN}✓ RTMR3 added to DAO${NC}"
+    echo -e "${GREEN}✓ Measurements added to contract${NC}"
 fi
 
 # Step 7: Restart CVM (and wait for proposal if keystore)
@@ -401,6 +422,10 @@ echo -e "${CYAN}✅ Deployment Complete!${NC}"
 echo -e "${CYAN}========================================${NC}"
 echo ""
 echo -e "CVM Name: ${GREEN}${CVM_NAME}${NC}"
+echo -e "MRTD:     ${GREEN}${MRTD}${NC}"
+echo -e "RTMR0:    ${GREEN}${RTMR0}${NC}"
+echo -e "RTMR1:    ${GREEN}${RTMR1}${NC}"
+echo -e "RTMR2:    ${GREEN}${RTMR2}${NC}"
 echo -e "RTMR3:    ${GREEN}${RTMR3}${NC}"
 if [ "$COMPONENT" = "keystore" ]; then
     echo -e "Proposal: ${GREEN}${PROPOSAL_ID}${NC}"
