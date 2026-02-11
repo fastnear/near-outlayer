@@ -36,8 +36,8 @@ export function TopUpModal({
       setIsSubmitting(true);
 
       const amountNum = parseFloat(amount);
-      if (isNaN(amountNum) || amountNum < 1) {
-        throw new Error('Minimum top-up is $1.00');
+      if (isNaN(amountNum) || amountNum < 0.01) {
+        throw new Error('Minimum top-up is $0.01');
       }
 
       const depositAmount = parseUsdToMinimalUnits(amount, stablecoin.decimals);
@@ -98,7 +98,7 @@ export function TopUpModal({
             disabled={isSubmitting}
           />
           <p className="text-xs text-gray-500 mt-1">
-            Minimum $1.00
+            Minimum $0.01
           </p>
         </div>
 

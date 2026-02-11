@@ -67,8 +67,8 @@ export function NearTopUpModal({
       setIsSubmitting(true);
 
       const amountNum = parseFloat(nearAmount);
-      if (isNaN(amountNum) || amountNum < 0.1) {
-        throw new Error('Minimum deposit is 0.1 NEAR');
+      if (isNaN(amountNum) || amountNum < 0.01) {
+        throw new Error('Minimum deposit is 0.01 NEAR');
       }
 
       // Convert NEAR to yoctoNEAR
@@ -124,7 +124,7 @@ export function NearTopUpModal({
             disabled={isSubmitting}
           />
           <p className="text-xs text-gray-500 mt-1">
-            Minimum 0.1 NEAR
+            Minimum 0.035 NEAR (includes 0.025 NEAR fee)
           </p>
         </div>
 

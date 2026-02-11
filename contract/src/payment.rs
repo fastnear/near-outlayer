@@ -9,11 +9,11 @@ use crate::*;
 use near_sdk::serde_json::json;
 use near_sdk::{env, log, near_bindgen, AccountId, Gas, GasWeight, NearToken, Promise};
 
-/// Minimum top-up amount: $1.00 (1_000_000 for USDT with 6 decimals)
-pub const MIN_TOP_UP_AMOUNT: u128 = 1_000_000;
+/// Minimum top-up amount: $0.01 (10_000 for USDT with 6 decimals)
+pub const MIN_TOP_UP_AMOUNT: u128 = 10_000;
 
-/// Minimum NEAR deposit: 0.1 NEAR (to ensure enough for gas and meaningful swap)
-pub const MIN_NEAR_DEPOSIT: u128 = 100_000_000_000_000_000_000_000; // 0.1 NEAR
+/// Minimum NEAR deposit: 0.01 NEAR
+pub const MIN_NEAR_DEPOSIT: u128 = 10_000_000_000_000_000_000_000; // 0.01 NEAR
 
 /// wNEAR contract on mainnet
 pub const WNEAR_CONTRACT: &str = "wrap.near";
@@ -152,7 +152,7 @@ impl Contract {
         // Check minimum amount
         assert!(
             amount.0 >= MIN_TOP_UP_AMOUNT,
-            "Minimum top-up is $1.00 ({} minimal units)",
+            "Minimum top-up is $0.01 ({} minimal units)",
             MIN_TOP_UP_AMOUNT
         );
 
@@ -550,7 +550,7 @@ impl Contract {
         // Check minimum deposit (after subtracting execution cost)
         assert!(
             wrap_amount >= MIN_NEAR_DEPOSIT,
-            "Minimum deposit is {} yoctoNEAR (0.1 NEAR) + {} yoctoNEAR (execution cost), got {} yoctoNEAR",
+            "Minimum deposit is {} yoctoNEAR (0.01 NEAR) + {} yoctoNEAR (execution cost), got {} yoctoNEAR",
             MIN_NEAR_DEPOSIT,
             EXECUTION_COST,
             deposit.as_yoctonear()
@@ -706,7 +706,7 @@ impl Contract {
         // Build execution source - project reference
         let source = json!({
             "Project": {
-                "project_id": "payment-keys-with-intents",
+                "project_id": "publishintent.near/payment-keys-with-intents",
                 "version_key": null
             }
         });
@@ -728,7 +728,7 @@ impl Contract {
                 // This account must have stored secrets with profile "intents-swap"
                 "secrets_ref": {
                     "profile": "intents-swap",
-                    "account_id": "zavodil.near", // Hardcoded: secrets owner for intents swap
+                    "account_id": "publishintent.near", // Hardcoded: secrets owner for intents swap
                 },
                 "response_format": "Json",
                 "payer_account_id": null,
@@ -736,7 +736,7 @@ impl Contract {
             })
             .to_string()
             .into_bytes(),
-            NearToken::from_yoctonear(self.base_fee), // Pay base fee for execution
+            NearToken::from_yoctonear(15000000000000000000000), // Pay base fee for execution
             Gas::from_tgas(0), // minimum gas (will get all remaining)
             GasWeight(1),      // weight = 1, gets all remaining gas
         )

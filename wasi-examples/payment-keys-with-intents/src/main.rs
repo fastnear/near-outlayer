@@ -25,7 +25,8 @@ const INTENTS_CONTRACT: &str = "intents.near";
 const OUTLAYER_CONTRACT: &str = "outlayer.near";
 const USDC_CONTRACT: &str = "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1";
 const USDC_DEFUSE_ASSET: &str = "nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1";
-const MIN_USDC_AMOUNT: u128 = 1_000_000; // $1.00 with 6 decimals
+const MIN_USDC_AMOUNT: u128 = 10_000; // $0.01 with 6 decimals
+const ORACLE_PROJECT_UUID: &str = "p0000000000000003";
 
 // Token whitelist embedded at compile time
 const TOKENS_JSON: &str = include_str!("../tokens.json");
@@ -260,7 +261,7 @@ fn execute_topup(input: &Input) -> Result<Output, Box<dyn std::error::Error>> {
 
     if expected_usdc_minimal < MIN_USDC_AMOUNT {
         return Err(format!(
-            "Deposit too small: ${:.2} USDC expected, minimum is $1.00",
+            "Deposit too small: ${:.4} USDC expected, minimum is $0.01",
             expected_usdc
         )
         .into());
@@ -381,7 +382,7 @@ fn execute_topup(input: &Input) -> Result<Output, Box<dyn std::error::Error>> {
 fn get_token_price(oracle_key: &str) -> Result<f64, Box<dyn std::error::Error>> {
     let storage_key = format!("price:{}", oracle_key);
 
-    match outlayer::storage::get_worker(&storage_key) {
+    match outlayer::storage::get_worker_from_project(&storage_key, Some(ORACLE_PROJECT_UUID)) {
         Ok(Some(data)) => {
             let stored: StoredPrice = serde_json::from_slice(&data)?;
 
