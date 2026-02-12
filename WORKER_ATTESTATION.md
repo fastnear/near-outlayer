@@ -129,7 +129,7 @@ Worker                          Server (coordinator or keystore)
 
 ### Keystore specifics
 
-- Endpoints: `POST /tee-challenge`, `POST /register-tee` (proxied via coordinator at `/keystore/tee-challenge`, `/keystore/register-tee`)
+- Endpoints: `POST /tee-challenge`, `POST /register-tee`
 - Keystore verifies the key on register-contract **independently** — a compromised coordinator cannot forge sessions.
 - Session middleware checks `X-TEE-Session` on all worker endpoints (`/decrypt`, `/encrypt`, `/storage/*`).
 - In-memory sessions are lost on keystore restart; workers detect 403 and re-register automatically (two HTTP calls, no blockchain transaction).

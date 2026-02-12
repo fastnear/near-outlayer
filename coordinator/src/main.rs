@@ -203,9 +203,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/payment-keys/delete", post(handlers::topup::delete_payment_key))
         // Payment key initialization (worker-protected, called on store_secrets with amount=0)
         .route("/payment-keys/init", post(handlers::topup::init_payment_key))
-        // Keystore TEE session proxy (worker-protected → coordinator → keystore)
-        .route("/keystore/tee-challenge", post(handlers::keystore_proxy::tee_challenge))
-        .route("/keystore/register-tee", post(handlers::keystore_proxy::register_tee))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::auth_middleware,

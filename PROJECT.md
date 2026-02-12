@@ -583,8 +583,6 @@ cargo build --target wasm32-wasip2 --release
 | POST | `/https-calls/complete` | Complete HTTPS call |
 | POST | `/payment-keys/delete` | Delete payment key data |
 | POST | `/payment-keys/init` | Initialize payment key |
-| POST | `/keystore/tee-challenge` | Keystore TEE challenge proxy |
-| POST | `/keystore/register-tee` | Keystore TEE register proxy |
 
 ### Public Routes (no auth)
 

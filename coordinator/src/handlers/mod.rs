@@ -5,7 +5,6 @@ pub mod grant_keys;
 pub mod health;
 pub mod internal;
 pub mod jobs;
-pub mod keystore_proxy;
 pub mod locks;
 pub mod pricing;
 pub mod projects;
