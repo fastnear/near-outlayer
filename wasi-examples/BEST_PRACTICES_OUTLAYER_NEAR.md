@@ -285,7 +285,7 @@ export function setPaymentKey(key: string | null): boolean {
 async function callOutLayerHttps(action: string, params: Record<string, any>): Promise<any> {
   if (!paymentKeyConfig.key) throw new Error('Payment key not configured');
 
-  const url = `https://outlayer.fastnear.com/call/your-account.near/your-project`;
+  const url = `https://api.outlayer.fastnear.com/call/your-account.near/your-project`;
 
   const response = await fetch(url, {
     method: 'POST',

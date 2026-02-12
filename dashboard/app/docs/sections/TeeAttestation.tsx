@@ -120,7 +120,7 @@ export default function TeeAttestationSection() {
                   <p className="font-semibold text-gray-900">Worker Generates TDX Quote</p>
                   <p className="text-gray-700 text-sm">
                     The worker running in Intel TDX hardware requests a cryptographic quote from the Intel TEE.
-                    This quote contains a measurement (RTMR3) - a SHA384 hash of the worker&apos;s environment.
+                    This quote contains measurements (MRTD + RTMR0-3) - five SHA384 hashes of the worker&apos;s environment.
                   </p>
                 </div>
               </li>
@@ -147,10 +147,10 @@ export default function TeeAttestationSection() {
               <li className="flex items-start">
                 <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-purple-500 text-white text-sm font-bold mr-3 flex-shrink-0">4</span>
                 <div>
-                  <p className="font-semibold text-gray-900">Extract & Whitelist RTMR3</p>
+                  <p className="font-semibold text-gray-900">Extract & Whitelist All 5 Measurements</p>
                   <p className="text-gray-700 text-sm">
-                    Once verified, the contract extracts the RTMR3 measurement from the quote and adds it to the
-                    whitelist. This RTMR3 becomes the worker&apos;s cryptographic identity.
+                    Once verified, the contract extracts all 5 measurements (MRTD + RTMR0-3) from the quote and checks them
+                    against the admin-approved set. These measurements become the worker&apos;s cryptographic identity.
                   </p>
                 </div>
               </li>
@@ -172,7 +172,7 @@ export default function TeeAttestationSection() {
                   <p className="font-semibold text-gray-900">Registration Complete</p>
                   <p className="text-gray-700 text-sm">
                     The worker is now authorized to execute code on OutLayer. All future executions from this
-                    worker will be verified against this RTMR3, and only this worker can submit results using its
+                    worker will be verified against these measurements, and only this worker can submit results using its
                     registered public key.
                   </p>
                 </div>
@@ -181,12 +181,12 @@ export default function TeeAttestationSection() {
           </div>
 
           <div className="bg-yellow-50 border-l-4 border-yellow-500 p-4 my-4">
-            <p className="text-yellow-900 font-semibold mb-2">What is RTMR3?</p>
+            <p className="text-yellow-900 font-semibold mb-2">What are the 5 TDX Measurements?</p>
             <p className="text-yellow-800 text-sm">
-              <strong>RTMR3 (Runtime Measurement Register 3)</strong> is a 48-byte (384-bit) SHA384 hash that uniquely
-              identifies the TEE worker&apos;s environment. It&apos;s calculated by Intel TDX hardware based on the code,
-              configuration, and initial state of the worker. Any change to the worker software produces a completely
-              different RTMR3.
+              <strong>MRTD + RTMR0-3</strong> are five 48-byte (384-bit) SHA384 hashes that together uniquely
+              identify the TEE worker&apos;s environment. They&apos;re calculated by Intel TDX hardware based on the code,
+              configuration, and initial state of the worker. Any change to the worker software produces completely
+              different measurements. All 5 must match to prevent dev/debug images (e.g., with SSH access) from passing verification.
             </p>
           </div>
         </section>
@@ -230,7 +230,9 @@ export default function TeeAttestationSection() {
               <div className="bg-green-50 p-3 rounded">
                 <p className="font-semibold text-green-900 mb-1">🔐 Worker Measurement</p>
                 <p className="text-green-800 text-sm">
-                  RTMR3 hash proving which registered worker performed the execution.
+                  TDX measurement identifying which registered worker performed the execution.
+                  Workers are registered with{' '}
+                  <a href="/docs/trust-verification#measurements" className="underline hover:text-green-600">all 5 TDX measurements</a>.
                 </p>
               </div>
               <div className="bg-green-50 p-3 rounded">
@@ -265,10 +267,12 @@ export default function TeeAttestationSection() {
               <div className="border-l-4 border-blue-500 pl-4">
                 <p className="font-semibold text-gray-900 mb-1">Step 1: Verify TDX Quote & Task Hash</p>
                 <p className="text-gray-700 text-sm mb-2">
-                  Extract the RTMR3 measurement from the TDX quote (located at byte offset 256, 48 bytes long).
+                  Extract the worker measurement (RTMR3) from the TDX quote (located at byte offset 256, 48 bytes long).
                   Compare it to the worker_measurement stored in the attestation. Also extract the Task Hash from
                   REPORTDATA (offset 568, 32 bytes) and compare it to the calculated hash of all execution parameters.
                   If both match, the quote is authentic and bound to this specific execution.
+                  Note: worker registration verifies{' '}
+                  <a href="/docs/trust-verification#measurements" className="underline hover:text-blue-600">all 5 TDX measurements (MRTD + RTMR0-3)</a>.
                 </p>
                 <p className="text-gray-600 text-xs italic">
                   The Dashboard does this automatically when you click &quot;Verify Quote&quot; in the attestation modal.
@@ -313,7 +317,7 @@ export default function TeeAttestationSection() {
             <p className="text-purple-800 text-sm">
               The attestation creates an unbreakable cryptographic chain: <strong>Source Code</strong> → compiled to →
               <strong>WASM Binary</strong> → executed with → <strong>Input Data</strong> → inside →
-              <strong>TEE Worker (RTMR3)</strong> → producing → <strong>Output Data</strong>. Every link is
+              <strong>TEE Worker</strong> (verified by <a href="/docs/trust-verification#measurements" className="underline hover:text-purple-600">5 TDX measurements</a>) → producing → <strong>Output Data</strong>. Every link is
               cryptographically hashed and signed by Intel TDX hardware.
             </p>
           </div>
@@ -429,7 +433,7 @@ export default function TeeAttestationSection() {
               full Task Hash verification:
             </p>
             <ol className="list-decimal list-inside space-y-1 text-blue-800 text-sm ml-2">
-              <li>Extracts RTMR3 from TDX quote (offset 256, 48 bytes) - verifies worker identity</li>
+              <li>Extracts worker measurement (RTMR3) from TDX quote (offset 256, 48 bytes) - verifies worker identity</li>
               <li>Extracts Task Hash from REPORTDATA (offset 568, first 32 bytes) - extracts commitment</li>
               <li>Calculates expected Task Hash from attestation parameters - computes what it should be</li>
               <li>Compares extracted vs. expected hashes - validates cryptographic binding</li>
@@ -599,7 +603,7 @@ export default function TeeAttestationSection() {
                 <div>
                   <p className="font-semibold text-gray-900">View Attestation Details</p>
                   <p className="text-gray-700 text-sm">
-                    The modal shows: Worker Measurement (RTMR3), Source Code link, WASM Hash, Input Hash, Output Hash,
+                    The modal shows: Worker Measurement, Source Code link, WASM Hash, Input Hash, Output Hash,
                     TDX Quote, and NEAR Transaction link.
                   </p>
                 </div>
@@ -609,8 +613,8 @@ export default function TeeAttestationSection() {
                 <div>
                   <p className="font-semibold text-gray-900">Verify TDX Quote</p>
                   <p className="text-gray-700 text-sm">
-                    Click <strong>&quot;Verify Quote&quot;</strong> in the purple section. The Dashboard will extract RTMR3
-                    from the TDX quote and compare it to the worker measurement. You&apos;ll see a live validation with
+                    Click <strong>&quot;Verify Quote&quot;</strong> in the purple section. The Dashboard will extract the
+                    worker measurement from the TDX quote and compare it to the stored value. You&apos;ll see a live validation with
                     green checkmark if it matches.
                   </p>
                 </div>

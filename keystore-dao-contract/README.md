@@ -111,10 +111,10 @@ near call v1.signer.testnet request_app_private_key \
 
 ### Admin Methods
 - `update_collateral(collateral)` - Update TDX verification collateral
+- `add_approved_measurements(measurements, clear_others?)` - Add approved TDX measurement set (MRTD + RTMR0-3)
+- `remove_approved_measurements(measurements)` - Remove a measurement set
 - `add_dao_member(member)` - Add a DAO member
 - `remove_dao_member(member)` - Remove a DAO member
-- `update_mpc_contract(mpc_contract_id)` - Update MPC contract ID
-- `update_init_account(init_account_id)` - Update init account
 
 ### Public Methods
 - `submit_keystore_registration(public_key, tdx_quote_hex)` - Submit TEE registration
@@ -124,13 +124,10 @@ near call v1.signer.testnet request_app_private_key \
 - `is_keystore_approved(public_key)` - Check if keystore is approved
 - `get_proposal(proposal_id)` - Get proposal details
 - `list_pending_proposals()` - List all pending proposals
-- `get_keystore_info(rtmr3)` - Get keystore by RTMR3
-- `list_approved_keystores()` - List all approved keystores
+- `get_approved_measurements()` - Get list of approved TDX measurement sets
+- `is_measurements_approved(measurements)` - Check if a measurement set (MRTD + RTMR0-3) is approved
 - `get_dao_members()` - Get DAO members list
-- `get_approval_threshold()` - Get voting threshold
-- `has_voted(proposal_id, account)` - Check if voted
 - `get_config()` - Get contract configuration
-- `get_mpc_contract()` - Get MPC contract ID
 
 ## Environment Variables for Keystore Worker
 
@@ -154,7 +151,7 @@ MPC_PUBLIC_KEY=bls12381g2:...  # Domain public key
 
 ## Security Considerations
 
-1. **TEE Verification**: All registrations require valid TDX/SGX attestation
+1. **TEE Verification**: All registrations require valid TDX attestation with all 5 measurements (MRTD + RTMR0-3)
 2. **DAO Governance**: Multiple members must approve each keystore
 3. **Deterministic Keys**: All keystores derive the same secret from MPC
 4. **Access Control**: Only approved keys can call MPC contract

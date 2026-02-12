@@ -223,7 +223,7 @@ export default function SecretsSection() {
                   <line x1="10" y1="35" x2="170" y2="35" stroke="#92400e" strokeOpacity="0.5" />
                   <text x="90" y="55" textAnchor="middle" fill="#7c2d12" fontSize="11">1. Generate keypair</text>
                   <text x="90" y="75" textAnchor="middle" fill="#7c2d12" fontSize="11">2. Generate attestation</text>
-                  <text x="90" y="95" textAnchor="middle" fill="#7c2d12" fontSize="11">3. RTMR3: 0x2641ff...</text>
+                  <text x="90" y="95" textAnchor="middle" fill="#7c2d12" fontSize="11">3. TDX measurements (MRTD+RTMR0-3)</text>
                 </g>
 
                 {/* DAO Contract */}
@@ -421,8 +421,8 @@ export default function SecretsSection() {
 │          │
 │• Generate│
 │  keypair │
-│• RTMR3   │
-│ 0x2641.. │
+│• TDX     │
+│ measures │
 └────┬─────┘
      │
      │ 1. Submit
@@ -446,7 +446,7 @@ export default function SecretsSection() {
 │ Members  │
 │          │
 │• Review  │
-│  RTMR3   │
+│ measures │
 │• Vote    │
 │  (>50%)  │
 └────┬─────┘
@@ -627,15 +627,15 @@ export default function SecretsSection() {
 
           <ol className="list-decimal list-inside space-y-3 text-gray-700 mb-4">
             <li>
-              <strong>On-Chain TEE Verification:</strong> Keystore submits Intel TDX/SGX attestation directly to DAO contract.
-              The contract cryptographically verifies the Intel certificate and TEE environment hash (RTMR3/MRENCLAVE) on-chain.
+              <strong>On-Chain TEE Verification:</strong> Keystore submits Intel TDX attestation directly to DAO contract.
+              The contract cryptographically verifies the Intel certificate and TEE measurements (MRTD + RTMR0-3) on-chain.
               This ensures submissions can only come from genuine TEE with verified binary.
             </li>
             <li>
               <strong>Automated Validation:</strong> DAO contract automatically rejects any submission that:
               <ul className="list-disc list-inside ml-6 mt-1 text-sm">
                 <li>Doesn&apos;t have valid Intel signature</li>
-                <li>Comes from unverified RTMR3/MRENCLAVE</li>
+                <li>Comes from unverified measurements (MRTD + RTMR0-3)</li>
                 <li>Attempts to bypass TEE requirements</li>
               </ul>
             </li>

@@ -135,7 +135,7 @@ export default function Web2IntegrationPage() {
 
         <SyntaxHighlighter language="bash" style={vscDarkPlus} className="rounded-lg mb-4">
           {`curl -X POST https://api.outlayer.fastnear.com/call/alice.near/my-project \\
-  -H "X-Payment-Key: alice.near:0:your_secret_key" \\
+  -H "X-Payment-Key: alice.near:1:your_secret_key" \\
   -H "Content-Type: application/json" \\
   -d '{"city": "Tokyo"}'`}
         </SyntaxHighlighter>
@@ -178,7 +178,7 @@ export default function Web2IntegrationPage() {
           {`// Response includes job_id for attestation lookup
 const result = await fetch('https://api.outlayer.fastnear.com/call/alice.near/my-api', {
   method: 'POST',
-  headers: { 'X-Payment-Key': 'alice.near:0:secret' },
+  headers: { 'X-Payment-Key': 'alice.near:1:secret' },
   body: JSON.stringify({ query: 'data' })
 });
 

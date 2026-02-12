@@ -1083,9 +1083,9 @@ For better UX (no popups, larger payloads), use Payment Keys:
 2. **Call via HTTPS**:
 
 ```bash
-curl -X POST https://outlayer.fastnear.com/call/your-account.near/your-project \
+curl -X POST https://api.outlayer.fastnear.com/call/your-account.near/your-project \
   -H "Content-Type: application/json" \
-  -H "X-Payment-Key: alice.near:0:your-secret-key" \
+  -H "X-Payment-Key: alice.near:1:your-secret-key" \
   -d '{
     "input": {"action": "process", "data": "hello"},
     "resource_limits": {

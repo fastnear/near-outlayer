@@ -56,7 +56,7 @@ export default function HttpsApiPage() {
         <SyntaxHighlighter language="bash" style={vscDarkPlus} className="rounded-lg mb-4">
           {`# Simple example
 curl -X POST https://api.outlayer.fastnear.com/call/alice.near/my-assistant \\
-  -H "X-Payment-Key: bob.near:0:K7xR2mN9pQs5vW3yZ8bF..." \\
+  -H "X-Payment-Key: bob.near:1:K7xR2mN9pQs5vW3yZ8bF..." \\
   -H "Content-Type: application/json" \\
   -d '{"input": {"prompt": "Hello!"}}'`}
         </SyntaxHighlighter>
@@ -298,7 +298,7 @@ curl -X POST https://api.outlayer.fastnear.com/call/alice.near/my-assistant \\
         </p>
 
         <SyntaxHighlighter language="bash" style={vscDarkPlus} className="rounded-lg mb-4">
-          {`curl -H "X-Payment-Key: bob.near:0:..." \\
+          {`curl -H "X-Payment-Key: bob.near:1:..." \\
   https://api.outlayer.fastnear.com/calls/550e8400-e29b-41d4-a716-446655440000`}
         </SyntaxHighlighter>
 
@@ -511,7 +511,7 @@ if usd_payment >= MIN_PREMIUM_USD {
 
         <SyntaxHighlighter language="bash" style={vscDarkPlus} className="rounded-lg mb-4">
           {`curl -X POST https://api.outlayer.fastnear.com/call/alice.near/weather-api \\
-  -H "X-Payment-Key: bob.near:0:K7xR2mN9pQs5vW3yZ8bF..." \\
+  -H "X-Payment-Key: bob.near:1:K7xR2mN9pQs5vW3yZ8bF..." \\
   -H "Content-Type: application/json" \\
   -d '{
     "input": {"city": "Tokyo"},
@@ -643,13 +643,13 @@ let db_url = std::env::var("DATABASE_URL")
         <SyntaxHighlighter language="bash" style={vscDarkPlus} className="rounded-lg mb-4">
           {`# Basic call
 curl -X POST https://api.outlayer.fastnear.com/call/alice.near/weather-api \\
-  -H "X-Payment-Key: bob.near:0:K7xR2mN9pQs5vW3yZ8bF..." \\
+  -H "X-Payment-Key: bob.near:1:K7xR2mN9pQs5vW3yZ8bF..." \\
   -H "Content-Type: application/json" \\
   -d '{"input": {"city": "Tokyo"}}'
 
 # With compute limit and author payment
 curl -X POST https://api.outlayer.fastnear.com/call/alice.near/premium-api \\
-  -H "X-Payment-Key: bob.near:0:K7xR2mN9pQs5vW3yZ8bF..." \\
+  -H "X-Payment-Key: bob.near:1:K7xR2mN9pQs5vW3yZ8bF..." \\
   -H "X-Compute-Limit: 500000" \\
   -H "X-Attached-Deposit: 100000" \\
   -H "Content-Type: application/json" \\
@@ -657,7 +657,7 @@ curl -X POST https://api.outlayer.fastnear.com/call/alice.near/premium-api \\
 
 # Async mode
 curl -X POST https://api.outlayer.fastnear.com/call/alice.near/long-running \\
-  -H "X-Payment-Key: bob.near:0:K7xR2mN9pQs5vW3yZ8bF..." \\
+  -H "X-Payment-Key: bob.near:1:K7xR2mN9pQs5vW3yZ8bF..." \\
   -H "Content-Type: application/json" \\
   -d '{"input": {...}, "async": true}'`}
         </SyntaxHighlighter>

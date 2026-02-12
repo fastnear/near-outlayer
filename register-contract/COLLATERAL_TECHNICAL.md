@@ -85,7 +85,7 @@ Intel updates `tcbInfo.issueDate` and adds new TCB levels:
 ### 3. Workers Generate Quotes
 
 Worker in TEE generates quote with:
-- **RTMR3**: Application measurement
+- **TDX measurements**: MRTD + RTMR0-3 (5 measurements identifying the TEE environment)
 - **TCB level**: Platform's current firmware version
 - **Signature**: Intel signs quote with their private key
 
@@ -210,7 +210,7 @@ set -e
 
 # Configuration
 NEAR_ACCOUNT="outlayer.near"
-REGISTER_CONTRACT="register.outlayer.near"
+REGISTER_CONTRACT="worker.outlayer.near"
 COORDINATOR_URL="https://api.outlayer.fastnear.com"
 LOG_FILE="/var/log/outlayer/collateral-update.log"
 
@@ -322,7 +322,7 @@ sudo -u outlayer /opt/outlayer/scripts/update_collateral.sh
 
 ```bash
 # Get issue date from contract
-ISSUE_DATE=$(near view register.outlayer.near get_collateral | \
+ISSUE_DATE=$(near view worker.outlayer.near get_collateral | \
     jq -r '.tcbInfo.issueDate')
 
 # Calculate age in days
@@ -392,7 +392,7 @@ groups:
 dcap-qvl fetch-collateral --quote <recent-quote> --output collateral.json
 
 # 2. Update contract
-near call register.outlayer.near update_collateral \
+near call worker.outlayer.near update_collateral \
     "$(cat collateral.json | jq -c)" \
     --accountId outlayer.near \
     --gas 300000000000000
@@ -405,7 +405,7 @@ near call register.outlayer.near update_collateral \
 **Solution**:
 ```bash
 # Check collateral validity window
-near view register.outlayer.near get_collateral | \
+near view worker.outlayer.near get_collateral | \
     jq '{issueDate: .tcbInfo.issueDate, nextUpdate: .tcbInfo.nextUpdate}'
 
 # If nextUpdate < now, update collateral immediately
@@ -430,13 +430,13 @@ If workers are failing registration:
 
 ```bash
 # 1. Check current collateral age
-near view register.outlayer.near get_collateral | jq '.tcbInfo.issueDate'
+near view worker.outlayer.near get_collateral | jq '.tcbInfo.issueDate'
 
 # 2. Get fresh collateral (fastest method)
 curl https://api.outlayer.fastnear.com/tdx/collateral > collateral.json
 
 # 3. Update immediately
-near call register.outlayer.near update_collateral \
+near call worker.outlayer.near update_collateral \
     "$(cat collateral.json | jq -c)" \
     --accountId outlayer.near \
     --gas 300000000000000

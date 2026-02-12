@@ -168,7 +168,6 @@ Network switcher available on **Playground** page.
 ## Documentation
 
 - [AUTHENTICATION.md](AUTHENTICATION.md) - Authentication setup (production mode)
-- [PORTS_CONFIGURATION.md](PORTS_CONFIGURATION.md) - Detailed port configuration
 - [CLAUDE.md](CLAUDE.md) - Complete project documentation
 - [contract/README.md](contract/README.md) - Contract API
 - [worker/README.md](worker/README.md) - Worker configuration

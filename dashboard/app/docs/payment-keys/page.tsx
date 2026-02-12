@@ -60,7 +60,7 @@ export default function PaymentKeysPage() {
         <SyntaxHighlighter language="text" style={vscDarkPlus} className="rounded-lg mb-4">
           {`X-Payment-Key: {owner}:{nonce}:{secret}
 
-Example: X-Payment-Key: alice.near:0:K7xR2mN9pQs5vW3yZ8bF...`}
+Example: X-Payment-Key: alice.near:1:K7xR2mN9pQs5vW3yZ8bF...`}
         </SyntaxHighlighter>
 
         <div className="overflow-x-auto mb-6">
@@ -144,7 +144,7 @@ echo "Your secret key: $SECRET_KEY"
 # Step 2: Create key on contract (initial_balance = 0)
 near call outlayer.near store_secrets '{
   "accessor": {"System": "PaymentKey"},
-  "profile": "0",
+  "profile": "1",
   "encrypted_data": "<encrypted JSON with key>"
 }' --accountId alice.near --depositYocto 1
 
@@ -152,7 +152,7 @@ near call outlayer.near store_secrets '{
 near call usdt.tether-token.near ft_transfer_call '{
   "receiver_id": "outlayer.near",
   "amount": "10000000",
-  "msg": "{\\"action\\": \\"top_up_payment_key\\", \\"nonce\\": 0}"
+  "msg": "{\\"action\\": \\"top_up_payment_key\\", \\"nonce\\": 1}"
 }' --accountId alice.near --depositYocto 1`}
         </SyntaxHighlighter>
       </section>
@@ -265,7 +265,7 @@ near call usdt.tether-token.near ft_transfer_call '{
 near call usdt.tether-token.near ft_transfer_call '{
   "receiver_id": "outlayer.near",
   "amount": "10000000",
-  "msg": "{\\"action\\": \\"top_up_payment_key\\", \\"nonce\\": 0}"
+  "msg": "{\\"action\\": \\"top_up_payment_key\\", \\"nonce\\": 1}"
 }' --accountId alice.near --depositYocto 1`}
         </SyntaxHighlighter>
 

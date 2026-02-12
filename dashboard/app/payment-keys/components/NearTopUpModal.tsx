@@ -100,7 +100,7 @@ export function NearTopUpModal({
             disabled={isSubmitting}
           />
           <p className="text-xs text-gray-500 mt-1">
-            Minimum 0.035 NEAR (includes 0.025 NEAR fee)
+            Minimum 0.035 NEAR (includes 0.025 NEAR fee). Exact amounts may change — see current values at <a href="/stats" className="text-[var(--primary-orange)] underline">Stats</a>.
           </p>
         </div>
 

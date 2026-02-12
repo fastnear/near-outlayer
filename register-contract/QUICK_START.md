@@ -8,7 +8,7 @@
 
 - NEAR CLI installed
 - `dcap-qvl` CLI installed
-- One worker deployed to Phala (to get RTMR3)
+- One worker deployed to Phala (to get TDX measurements)
 
 ---
 
@@ -20,31 +20,41 @@
 cd register-contract
 ./build.sh
 
-near deploy register.outlayer.near \
+near deploy worker.outlayer.near \
   use-file res/local/register_contract.wasm \
   with-init-call new \
   json-args '{"owner_id":"outlayer.near","operator_account_id":"operator.outlayer.near"}' \
   prepaid-gas '100.0 Tgas' network-config mainnet sign-with-keychain send
 ```
 
-### 2. Get RTMR3 (1 minute)
+### 2. Get TDX Measurements (1 minute)
+
+Use `scripts/deploy_phala.sh` which extracts all 5 measurements from the Phala attestation automatically, or get them manually:
 
 ```bash
-# From coordinator database (after first worker deployment)
-psql $DATABASE_URL -c "
-SELECT last_seen_rtmr3
-FROM worker_auth_tokens
-WHERE last_seen_rtmr3 IS NOT NULL
-LIMIT 1;
-" -t | tr -d '[:space:]'
+# From Phala attestation (extracts MRTD + RTMR0-3)
+phala cvms attestation --json <cvm-name> | jq '{
+  mrtd: .mrtd,
+  rtmr0: .rtmr0,
+  rtmr1: .rtmr1,
+  rtmr2: .rtmr2,
+  rtmr3: .rtmr3
+}'
 ```
 
-### 3. Add RTMR3 (30 seconds)
+### 3. Add Approved Measurements (30 seconds)
 
 ```bash
-near call register.outlayer.near add_approved_rtmr3 \
-  '{"rtmr3":"<rtmr3-from-step-2>"}' \
-  --accountId outlayer.near
+near call worker.outlayer.near add_approved_measurements '{
+  "measurements": {
+    "mrtd": "<96-hex>",
+    "rtmr0": "<96-hex>",
+    "rtmr1": "<96-hex>",
+    "rtmr2": "<96-hex>",
+    "rtmr3": "<96-hex>"
+  },
+  "clear_others": true
+}' --accountId outlayer.near
 ```
 
 ### 4. Get Collateral (1 minute)
@@ -66,7 +76,7 @@ dcap-qvl fetch-collateral --quote $(cat quote.hex) --output collateral.json
 ### 5. Update Collateral (30 seconds)
 
 ```bash
-near call register.outlayer.near update_collateral \
+near call worker.outlayer.near update_collateral \
   "$(cat collateral.json | jq -c)" \
   --accountId outlayer.near \
   --gas 300000000000000
@@ -92,7 +102,7 @@ Workers can now register their keys on startup.
 
 **What happens when worker starts**:
 1. Worker generates keypair IN TEE
-2. Worker calls `register.outlayer.near::register_worker_key()`
+2. Worker calls `worker.outlayer.near::register_worker_key()`
 3. Contract verifies TDX quote
 4. Contract adds key to `operator.outlayer.near`
 5. Worker uses this key to sign transactions
@@ -102,14 +112,14 @@ Workers can now register their keys on startup.
 ## Verify Setup
 
 ```bash
-# Check approved RTMR3
-near view register.outlayer.near get_approved_rtmr3
+# Check approved measurements
+near view worker.outlayer.near get_approved_measurements
 
 # Check collateral exists
-near view register.outlayer.near get_collateral | head -5
+near view worker.outlayer.near get_collateral | head -5
 
 # Check operator account
-near view register.outlayer.near get_operator_account
+near view worker.outlayer.near get_operator_account
 ```
 
 ---
@@ -119,12 +129,12 @@ near view register.outlayer.near get_operator_account
 **Weekly**: Update collateral
 ```bash
 dcap-qvl fetch-collateral --quote <recent-quote> -o collateral.json
-near call register.outlayer.near update_collateral "$(cat collateral.json | jq -c)" --accountId outlayer.near --gas 300000000000000
+near call worker.outlayer.near update_collateral "$(cat collateral.json | jq -c)" --accountId outlayer.near --gas 300000000000000
 ```
 
-**On worker update**: Add new RTMR3
+**On worker update**: Add new measurements (use `"clear_others": true` to replace old ones)
 ```bash
-near call register.outlayer.near add_approved_rtmr3 '{"rtmr3":"<new-rtmr3>"}' --accountId outlayer.near
+near call worker.outlayer.near add_approved_measurements '{"measurements":{...}, "clear_others": true}' --accountId outlayer.near
 ```
 
 ---

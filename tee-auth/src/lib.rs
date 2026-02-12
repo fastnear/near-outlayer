@@ -72,7 +72,7 @@ pub fn verify_signature(
 /// # Arguments
 /// * `client` - reqwest HTTP client
 /// * `rpc_url` - NEAR RPC URL (e.g., "https://rpc.mainnet.near.org")
-/// * `account_id` - register-contract account (e.g., "register.outlayer.near")
+/// * `account_id` - operator account where register-contract is deployed (e.g., "worker.outlayer.near")
 /// * `public_key` - "ed25519:..." format
 pub async fn check_access_key_on_contract(
     client: &reqwest::Client,

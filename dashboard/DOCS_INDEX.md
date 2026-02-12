@@ -46,6 +46,8 @@ dashboard/app/docs/
 ├── pricing/page.tsx              # Pricing model
 ├── tee-attestation/page.tsx      # TEE Attestation (from sections/TeeAttestation.tsx)
 ├── examples/page.tsx             # Example Projects (all examples)
+├── trust-verification/page.tsx   # Trust & Verification - why trust OutLayer
+├── storage/page.tsx              # Persistent Storage
 └── sections/
     ├── index.tsx                 # Re-exports all sections
     ├── utils.tsx                 # Shared components (AnchorHeading, useHashNavigation)
@@ -75,6 +77,7 @@ dashboard/app/docs/
 | **test-secrets-ark** | `wasi-examples/test-secrets-ark/` | ✅ | - | ❌ Hidden (test) | P2 | - |
 | **rpc-test-ark** | `wasi-examples/rpc-test-ark/` | ✅ | - | ❌ Hidden (test) | P2 | - |
 | **test-storage-ark** | `wasi-examples/test-storage-ark/` | ✅ | - | ❌ Hidden (test) | P2 | - |
+| **near-email** | `wasi-examples/near-email/` | ✅ | `/docs/examples#near-email` | ✅ Shown | P2 | Advanced |
 | **private-token-ark** | `wasi-examples/private-token-ark/` | ✅ | `/docs/examples#private-token-ark` | ✅ Shown | P2 | Advanced |
 | **wasi-test-runner** | `wasi-examples/wasi-test-runner/` | ❌ | - | ❌ Hidden (infra) | - | - |
 
@@ -562,7 +565,7 @@ HTTPS API is one of two equal ways to use OutLayer (alongside Blockchain/NEAR in
 
 **How it works:**
 1. Create Payment Key at `/payment-keys` with USD deposit
-2. Call: `POST https://aoi.outlayer.fastnear.com/call/{owner}/{project}` with `X-Payment-Key` header
+2. Call: `POST https://api.outlayer.fastnear.com/call/{owner}/{project}` with `X-Payment-Key` header
 3. Optionally attach payment to project author via `X-Attached-Deposit` header
 4. WASM reads payment via `USD_PAYMENT` env var
 

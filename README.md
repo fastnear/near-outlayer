@@ -1,336 +1,134 @@
-# NEAR OutLayer (OffchainVM)
+# NEAR OutLayer
 
-**OutLayer execution for on-chain contracts**
+**Verifiable off-chain computation for NEAR smart contracts using Intel TDX**
 
-Verifiable off-chain computation platform for NEAR smart contracts using yield/resume mechanism.
+OutLayer lets smart contracts execute arbitrary code off-chain and receive verified results on-chain. Computation runs inside Intel TDX Trusted Execution Environments (TEEs) on Phala Cloud, ensuring that neither the operator nor any third party can tamper with execution or access secrets.
+
+## Quick Links
+
+- **Dashboard & Docs**: [outlayer.fastnear.com](https://outlayer.fastnear.com/dashboard)
+- **HTTPS API**: `https://api.outlayer.fastnear.com/call/{owner}/{project}`
+- **Contract (mainnet)**: `outlayer.near`
+- **Production App**: [near.email](https://near.email) — blockchain-native email built on OutLayer
+
+## How It Works
+
+1. A NEAR smart contract (or HTTP client) submits a computation request
+2. A TEE worker picks up the task, compiles/executes the WASI binary with resource limits
+3. The verified result is returned on-chain (via yield/resume) or via HTTP response
 
 ## Project Structure
 
 ```
 near-outlayer/
-├── contract/          # NEAR smart contract (outlayer.near)
-├── register-contract/ # Worker registration contract (TEE attestation)
-├── coordinator/       # Coordinator API server (Rust + Axum)
-├── worker/           # Worker nodes (Rust + Tokio)
-├── keystore-worker/  # Encrypted secrets management (Python + FastAPI)
-├── dashboard/        # Web UI (Next.js + React)
-├── wasi-examples/    # WASI example projects (random-ark, ai-ark, etc.)
-├── scripts/          # Deployment scripts
-├── docker/           # Docker configurations
-└── docs/             # Documentation
+├── contract/              # Main NEAR contract (outlayer.near)
+├── register-contract/     # TEE worker registration contract (5-measurement TDX verification)
+├── keystore-dao-contract/ # DAO governance for keystore worker registration
+├── coordinator/           # Task queue & API server (Rust + Axum, PostgreSQL + Redis)
+├── worker/                # Execution workers (Rust + Tokio, wasmi runtime)
+├── keystore-worker/       # Secrets decryption service (Rust, runs in TEE)
+├── dashboard/             # Web UI + documentation (Next.js + React)
+├── sdk/                   # OutLayer SDK for WASI apps (Rust, wasm32-wasip2)
+├── wasi-examples/         # Example WASI projects
+├── scripts/               # Deployment & utility scripts
+├── docker/                # Docker configurations (Phala Cloud deployment)
+├── tee-auth/              # TEE authentication utilities
+└── tests/                 # Integration tests
 ```
 
-## Quick Start
+## Two Integration Modes
 
-### Prerequisites
+### Blockchain (NEAR Smart Contracts)
 
-- Rust 1.75+
-- Docker
-- PostgreSQL 14+
-- Redis 7+
-- NEAR CLI
+Your contract calls `request_execution()` on `outlayer.near`. The result comes back via NEAR's yield/resume mechanism. Best for on-chain workflows that need verified computation.
 
-### 1. Deploy Contracts
+```rust
+// In your NEAR contract
+#[ext_contract(ext_outlayer)]
+trait OutLayer {
+    fn request_execution(
+        &mut self,
+        execution_source: ExecutionSource,
+        request_params: RequestParams,
+    ) -> Promise;
+}
+```
+
+### HTTPS API (Web2 Apps)
+
+Call the API directly with a payment key. Best for web apps, bots, and services that need off-chain computation without a smart contract.
 
 ```bash
-# Main contract
-cd contract
-cargo near build --release
-near contract deploy outlayer.testnet use-file res/local/outlayer_contract.wasm with-init-call new json-args '{"owner_id":"outlayer.testnet","operator_id":"worker.outlayer.testnet"}' prepaid-gas '100.0 Tgas' attached-deposit '0 NEAR' network-config testnet sign-with-keychain send
-
-# Worker registration contract (for TEE workers)
-cd ../register-contract
-cargo near build --release
-near contract deploy register.outlayer.testnet use-file res/local/register_contract.wasm with-init-call new json-args '{}' prepaid-gas '100.0 Tgas' attached-deposit '0 NEAR' network-config testnet sign-with-keychain send
+curl -X POST https://api.outlayer.fastnear.com/call/alice.near/my-project \
+  -H "X-Payment-Key: alice.near:1:your_secret_key" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Hello"}'
 ```
 
-### 2. Setup Infrastructure
+## Security Model
 
-```bash
-# Start PostgreSQL and Redis
-docker-compose up -d postgres redis
-
-# Run database migrations
-cd coordinator
-cargo install sqlx-cli --no-default-features --features rustls,postgres
-sqlx migrate run
-```
-
-### 3. Start Keystore (Optional - for encrypted secrets)
-
-```bash
-cd keystore-worker
-docker-compose up -d
-
-# Or run without Docker:
-pip install -r requirements.txt
-python src/api.py
-```
-
-**Important**: If running coordinator in Docker, set `KEYSTORE_BASE_URL=http://host.docker.internal:8081` in `coordinator/.env`
-
-### 4. Start Coordinator API
-
-```bash
-cd coordinator
-cargo run --release
-
-# Or with Docker:
-docker-compose up -d coordinator
-```
-
-### 5. Start Workers
-
-#### Option A: Local Development Worker (Docker compilation)
-
-```bash
-cd worker
-cp .env.example .env
-# Edit .env with your configuration
-
-# Worker 1 (with event monitor)
-ENABLE_EVENT_MONITOR=true cargo run --release
-
-# Worker 2 (execution only)
-cargo run --release
-```
-
-#### Option B: TEE Worker (Phala Cloud - native compilation)
-
-**For TEE environments** (Phala, Intel TDX) where Docker-in-Docker doesn't work:
-
-```bash
-# Build Docker image with native Rust compiler
-./scripts/build_and_push_phala.sh <dockerhub-username> latest worker-compiler
-
-# Deploy to Phala Cloud
-cd docker
-cp .env.testnet-worker-phala.example .env.testnet-worker-phala
-# Edit .env.testnet-worker-phala with your configuration
-
-phala deploy \
-  --name outlayer-testnet-worker \
-  --compose docker-compose.worker-compiler.phala.yml \
-  --env-file .env.testnet-worker-phala \
-  --vcpu 2 --memory 4G --disk-size 10G \
-  --kms-id phala-prod10
-```
-
-**TEE Worker Features**:
-- ✅ **Pre-compiled WASM execution** (no compilation in TEE with keys)
-- ✅ **User-provided WASM support** (for closed-source/private projects)
-- ✅ **Intel TDX attestation** (hardware-level isolation)
-- ✅ **Auto-registration** via register-contract (generates keypair in TEE)
-- ✅ **Secrets decryption** via Keystore with access control
-- ✅ **Hash verification** (ensures WASM integrity)
-
-**Security Model**:
-1. **No compilation in TEE**: TEE workers with access to secrets do NOT compile code. This prevents supply chain attacks through malicious dependencies (build.rs scripts, proc macros) that could exfiltrate private keys.
-2. **Pre-compiled WASM only**: Users compile on their own infrastructure or use standard workers (without keys), then upload WASM to FastFS/IPFS. TEE workers execute pre-compiled binaries only.
-3. **Hardware isolation**: Intel TDX encrypts memory, protects from host
-4. **Hash verification**: WASM integrity verified via SHA256 before execution
-5. **Secrets binding**: Secrets can be bound to specific WASM hash for immutable deployments
-
-**Image size**: ~700-800MB (includes Rust toolchain + WASI SDK)
-**Use case**: Production deployments in TEE environments
-
-## Documentation
-
-- [PROJECT.md](PROJECT.md) - Technical specification
-- [MVP_DEVELOPMENT_PLAN.md](MVP_DEVELOPMENT_PLAN.md) - Development roadmap
-- [NEAROffshoreOnepager.md](NEAROffshoreOnepager.md) - Marketing one-pager
-
-## Architecture
-
-### Core Components
-
-1. **Smart Contract** (`outlayer.near`)
-   - Manages execution requests
-   - Handles payments and refunds
-   - Yield/resume mechanism integration
-   - Repo-based encrypted secrets storage
-
-2. **Worker Registration Contract** (`register.outlayer.testnet`)
-   - TEE worker registration and verification
-   - Stores worker public keys and attestation data
-   - Validates Intel TDX quotes (RTMR measurements)
-   - Manages worker stake and slashing conditions
-
-3. **Coordinator API Server**
-   - Central HTTP API server (port 8080)
-   - PostgreSQL + Redis + Local WASM cache
-   - Worker authentication via bearer tokens
-   - LRU cache eviction
-   - Proxies requests to Keystore (isolated)
-   - GitHub API integration with Redis caching
-
-4. **Keystore Worker** (Optional)
-   - Encrypted secrets management (port 8081)
-   - **Isolated**: Only accessible via Coordinator proxy
-   - Access control validation (Whitelist, NEAR/FT/NFT balance, Logic)
-   - Public key generation for client-side encryption
-   - TEE attestation verification
-
-5. **Workers**
-   - Poll tasks from Coordinator API
-   - **Two compilation modes**:
-     - **Docker mode**: Docker-in-Docker compilation (local dev)
-     - **Native mode**: env isolation + ulimit (TEE environments)
-   - Execute WASM with resource limits (wasmi)
-   - Report results to contract with attestation
-   - Decrypt secrets via Keystore (if provided)
-   - **TEE Support**: Intel TDX attestation via dstack.sock
-
-6. **Dashboard** (Optional)
-   - Next.js web UI (port 3000)
-   - Secrets management interface
-   - Execution history and monitoring
-   - Worker status tracking
-   - TEE attestation verification
-
-7. **Test WASM Projects**
-   - Random number generator (random-ark)
-   - AI integration examples (ai-ark)
-   - Used for end-to-end testing
+- **Intel TDX**: Hardware-level memory encryption and isolation — the host operator cannot read TEE memory
+- **5-Measurement Verification**: Workers are verified using all 5 TDX measurements (MRTD + RTMR0-3), preventing dev/debug images from passing attestation
+- **Sigstore Certification**: Release binaries are cryptographically linked to source code via [Sigstore](https://www.sigstore.dev/)
+- **Phala Trust Center**: Independently verify the exact image hash running in each TEE worker
+- **No Compilation in TEE**: TEE workers with access to secrets only execute pre-compiled WASM, preventing supply chain attacks via malicious build scripts
 
 ## Development
 
-### Build All Components
+### Prerequisites
+
+- Rust 1.85+ (see `rust-toolchain.toml` in each component)
+- Docker & Docker Compose
+- Node.js 18+ (for dashboard)
+- NEAR CLI
+- `cargo-near` (for contract builds)
+- `sqlx-cli` (for coordinator migrations)
+
+### Build & Run
 
 ```bash
 # Contract
-cd contract && cargo near build
+cd contract && ./build.sh
 
-# Coordinator
-cd coordinator && cargo build --release
+# Coordinator (requires PostgreSQL + Redis)
+cd coordinator && cargo run
 
 # Worker
-cd worker && cargo build --release
+cd worker && cargo run
 
-# Test WASM
-clone https://github.com/zavodil/random-ark
-cd random-ark && cargo build --target wasm32-wasi --release
+# Keystore Worker
+cd keystore-worker && cargo run
+
+# Dashboard
+cd dashboard && npm install && npm run dev
 ```
 
-### Run Tests
+See [QUICK_START.md](QUICK_START.md) for full setup instructions including database initialization and Docker services.
 
-```bash
-# Contract tests
-cd contract && cargo test
+## Documentation
 
-# Coordinator tests
-cd coordinator && cargo test
+| Document | Description |
+|----------|-------------|
+| [PROJECT.md](PROJECT.md) | Complete technical specification |
+| [QUICK_START.md](QUICK_START.md) | Setup and deployment guide |
+| [WORKER_ATTESTATION.md](WORKER_ATTESTATION.md) | TEE attestation deep dive |
+| [AUTHENTICATION.md](AUTHENTICATION.md) | Authentication configuration |
+| [Onepager.md](Onepager.md) | Project overview one-pager |
+| [contract/README.md](contract/README.md) | Contract API reference |
+| [worker/README.md](worker/README.md) | Worker configuration |
+| [wasi-examples/WASI_TUTORIAL.md](wasi-examples/WASI_TUTORIAL.md) | WASI development tutorial |
+| [wasi-examples/BEST_PRACTICES_OUTLAYER_NEAR.md](wasi-examples/BEST_PRACTICES_OUTLAYER_NEAR.md) | Best practices guide |
+| [dashboard/DOCS_INDEX.md](dashboard/DOCS_INDEX.md) | Dashboard documentation index |
 
-# Worker tests
-cd worker && cargo test
-```
+## Default Ports
 
-## Production Deployment
-
-### TEE Worker Deployment (Phala Cloud)
-
-**Prerequisites**:
-- Phala Cloud account
-- Docker Hub account
-- Deployed contracts (outlayer.testnet + register.outlayer.testnet)
-- Init account with NEAR tokens (pays gas for worker registration)
-
-**Step 1: Build and push Docker image**
-
-```bash
-# Build worker-compiler image (includes Rust toolchain)
-./scripts/build_and_push_phala.sh <dockerhub-username> latest worker-compiler
-
-# Image will be: <dockerhub-username>/near-outlayer-worker-compiler:latest
-```
-
-**Step 2: Configure environment**
-
-```bash
-cd docker
-cp .env.testnet-worker-phala.example .env.testnet-worker-phala
-
-# Edit .env.testnet-worker-phala:
-# - DOCKER_IMAGE_WORKER=<dockerhub-username>/near-outlayer-worker-compiler:latest
-# - API_BASE_URL=https://coordinator.outlayer.testnet
-# - API_AUTH_TOKEN=<your-worker-token>
-# - NEAR_RPC_URL=https://rpc.testnet.near.org
-# - OFFCHAINVM_CONTRACT_ID=outlayer.testnet
-# - USE_TEE_REGISTRATION=true
-# - TEE_MODE=outlayer_tee
-# - INIT_ACCOUNT_ID=<init-account>.testnet
-# - INIT_ACCOUNT_PRIVATE_KEY=ed25519:...
-# - COMPILATION_MODE=native
-# - COMPILATION_ENABLED=true
-# - EXECUTION_ENABLED=true
-```
-
-**Step 3: Deploy to Phala Cloud**
-
-```bash
-phala deploy \
-  --name outlayer-testnet-worker \
-  --compose docker-compose.worker-compiler.phala.yml \
-  --env-file .env.testnet-worker-phala \
-  --vcpu 2 --memory 4G --disk-size 10G \
-  --kms-id phala-prod10
-```
-
-**Step 4: Monitor deployment**
-
-```bash
-# Check status
-phala cvms status outlayer-testnet-worker
-
-# View logs
-phala cvms logs outlayer-testnet-worker --follow
-
-# Check registration on contract
-near view register.outlayer.testnet get_worker '{"account_id":"<worker-account>.testnet"}'
-```
-
-### Coordinator Deployment
-
-```bash
-# Use your preferred hosting (AWS, DigitalOcean, etc.)
-# Requirements:
-# - PostgreSQL 14+
-# - Redis 7+
-# - 2+ CPU cores
-# - 4GB+ RAM
-# - Ports: 8080 (API), 8081 (Keystore - internal only)
-
-# Setup PostgreSQL and Redis
-docker-compose -f docker/docker-compose.yml up -d postgres redis
-
-# Run migrations
-cd coordinator
-sqlx migrate run
-
-# Start coordinator
-cargo run --release
-```
-
-### Security Considerations
-
-**TEE Workers**:
-- ✅ Keys generated inside TEE (never exposed)
-- ✅ Intel TDX attestation proves code integrity
-- ✅ Environment isolation prevents secret leakage
-- ✅ Build.rs blocked to prevent code execution attacks
-- ✅ Resource limits prevent DoS attacks
-
-**Keystore**:
-- ⚠️ Must be isolated (not exposed to public internet)
-- ✅ Access control validation before decryption
-- ✅ TEE attestation verification
-- ✅ Only coordinator can access keystore
-
-**Coordinator**:
-- ✅ Bearer token authentication for workers
-- ✅ Rate limiting via Redis
-- ✅ SQL injection protection (sqlx with prepared statements)
-- ✅ WASM cache with LRU eviction
+| Service | Port |
+|---------|------|
+| Dashboard | 3000 |
+| Coordinator API | 8080 |
+| Keystore Worker | 8081 |
+| PostgreSQL | 5432 |
+| Redis | 6379 |
 
 ## License
 

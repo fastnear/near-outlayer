@@ -34,5 +34,5 @@ echo "Note: Built without wasm-opt due to bulk-memory operations in dcap-qvl/rin
 # add collateral
 # ./scripts/update_collateral.sh
 
-# add rtmr3 from phala
-# near contract call-function as-transaction dao.outlayer.testnet add_approved_rtmr3 json-args '{"rtmr3": "911f520e6cf959c314323931f7b8ce120964c969c1c8b3337828b9b1943969d9bb62c6b1f8e92162fe054a076fb5cfbb"}' prepaid-gas '30.0 Tgas' attached-deposit '0 NEAR' sign-as owner.outlayer.testnet network-config testnet sign-with-keychain send
+# add measurements from phala (use scripts/deploy_phala.sh to extract all 5 measurements)
+# near contract call-function as-transaction dao.outlayer.testnet add_approved_measurements json-args '{"measurements":{"mrtd":"...","rtmr0":"...","rtmr1":"...","rtmr2":"...","rtmr3":"..."}, "clear_others": true}' prepaid-gas '30.0 Tgas' attached-deposit '0 NEAR' sign-as owner.outlayer.testnet network-config testnet sign-with-keychain send

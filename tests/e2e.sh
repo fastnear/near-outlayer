@@ -51,10 +51,12 @@ echo ""
 
 near contract call-function as-transaction "$CONTRACT_ID" request_execution json-args \
 '{
-  "code_source": {
-    "repo": "https://github.com/zavodil/random-ark",
-    "commit": "main",
-    "build_target": "wasm32-wasip1"
+  "source": {
+    "GitHub": {
+      "repo": "https://github.com/zavodil/random-ark",
+      "commit": "main",
+      "build_target": "wasm32-wasip1"
+    }
   },
   "input_data": "{\"min\": 100, \"max\": 5000}",
   "resource_limits": {

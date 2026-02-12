@@ -88,10 +88,12 @@ TX1_OUTPUT=$(near contract call-function as-transaction \
   "$CONTRACT_ID" \
   request_execution \
   json-args "{
-    \"code_source\": {
-      \"repo\": \"$TEST_REPO\",
-      \"commit\": \"$TEST_COMMIT\",
-      \"build_target\": \"$TEST_TARGET\"
+    \"source\": {
+      \"GitHub\": {
+        \"repo\": \"$TEST_REPO\",
+        \"commit\": \"$TEST_COMMIT\",
+        \"build_target\": \"$TEST_TARGET\"
+      }
     },
     \"resource_limits\": {
       \"max_instructions\": 10000000000,
@@ -160,10 +162,12 @@ TX2_OUTPUT=$(near contract call-function as-transaction \
   "$CONTRACT_ID" \
   request_execution \
   json-args "{
-    \"code_source\": {
-      \"repo\": \"$TEST_REPO\",
-      \"commit\": \"$TEST_COMMIT\",
-      \"build_target\": \"$TEST_TARGET\"
+    \"source\": {
+      \"GitHub\": {
+        \"repo\": \"$TEST_REPO\",
+        \"commit\": \"$TEST_COMMIT\",
+        \"build_target\": \"$TEST_TARGET\"
+      }
     },
     \"resource_limits\": {
       \"max_instructions\": 10000000000,
@@ -233,10 +237,12 @@ TX3_OUTPUT=$(near contract call-function as-transaction \
   "$CONTRACT_ID" \
   request_execution \
   json-args "{
-    \"code_source\": {
-      \"repo\": \"$TEST_REPO\",
-      \"commit\": \"$TEST_COMMIT\",
-      \"build_target\": \"$TEST_TARGET\"
+    \"source\": {
+      \"GitHub\": {
+        \"repo\": \"$TEST_REPO\",
+        \"commit\": \"$TEST_COMMIT\",
+        \"build_target\": \"$TEST_TARGET\"
+      }
     },
     \"resource_limits\": {
       \"max_instructions\": 10000000000,

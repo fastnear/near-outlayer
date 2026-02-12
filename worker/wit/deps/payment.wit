@@ -14,8 +14,8 @@ interface api {
     /// - Total refund cannot exceed ATTACHED_USD env var
     /// - On error, returns error message; on success, returns empty string
     ///
-    /// Example:
-    /// ```
+    /// Example (from WASI side):
+    /// ```ignore
     /// // User attached 3 USD, WASI only needs 2 USD
     /// let err = refund_usd(1_000_000); // Refund 1 USD
     /// if !err.is_empty() {

@@ -6,7 +6,7 @@ How NEAR OutLayer cryptographically verifies that workers run inside Intel TDX a
 
 Every worker runs inside an **Intel TDX** (Trust Domain Extension) confidential VM on Phala Cloud. Before a worker can submit execution results or decrypt user secrets, it must prove two things:
 
-1. **Its code is genuine** — the TDX hardware measurement (RTMR3) matches an admin-approved value.
+1. **Its code is genuine** — the TDX hardware measurements (MRTD + RTMR0-3) match an admin-approved set.
 2. **It holds a TEE-generated private key** — the ed25519 keypair was created inside the TEE and the public key is registered on-chain.
 
 These proofs happen at two distinct stages: **key registration** (on-chain, at startup) and **session establishment** (off-chain, challenge-response with coordinator and keystore).
@@ -52,11 +52,11 @@ Happens once per worker startup. Code: `worker/src/registration.rs`.
 
 1. **Keypair generation.** The worker generates a fresh ed25519 keypair inside the TEE (`worker/src/registration.rs:80-99`). The private key never leaves the confidential VM. The keypair is persisted to `~/.near-credentials/worker-keypair.json` so that a soft restart reuses the same key.
 
-2. **TDX quote generation.** The worker calls the Phala dstack SDK to produce a TDX quote (`worker/src/tdx_attestation.rs:33-54`). The worker's public key is embedded in the first 32 bytes of `report_data`, cryptographically binding the key to the TEE instance. The quote also contains **RTMR3** — a hardware measurement of the entire TEE image.
+2. **TDX quote generation.** The worker calls the Phala dstack SDK to produce a TDX quote (`worker/src/tdx_attestation.rs:33-54`). The worker's public key is embedded in the first 32 bytes of `report_data`, cryptographically binding the key to the TEE instance. The quote also contains **5 hardware measurements** (MRTD + RTMR0-3) of the entire TEE image.
 
 3. **On-chain verification.** The worker sends the quote to `register_worker_key()` on the register-contract (`register-contract/src/lib.rs:120-187`). The contract:
    - Verifies the Intel TDX signature using `dcap-qvl` (same library as NEAR MPC Node).
-   - Extracts RTMR3 and checks it against the admin-approved list.
+   - Extracts all 5 measurements (MRTD, RTMR0-3) and checks them against the admin-approved list.
    - Extracts the public key from `report_data` and confirms it matches the `public_key` argument.
    - Adds the public key as an access key on its own account, scoped to `resolve_execution` and related methods on the main outlayer contract.
 
@@ -67,7 +67,7 @@ Happens once per worker startup. Code: `worker/src/registration.rs`.
 | Property | How |
 |----------|-----|
 | Key was generated in a TEE | Public key extracted from TDX `report_data`, signed by Intel |
-| TEE runs approved code | RTMR3 checked against admin-maintained allowlist |
+| TEE runs approved code | All 5 measurements (MRTD + RTMR0-3) checked against admin-maintained allowlist |
 | Key is scoped | Access key limited to specific contract methods with 10 NEAR gas allowance |
 
 ## Stage 2: TEE Session Establishment (Challenge-Response)
@@ -197,10 +197,10 @@ Deploy in this order:
 
 ## Key Cleanup
 
-Each worker restart generates a new keypair, leaving dead access keys on the register-contract (~0.042 NEAR storage each). Clean up periodically:
+Each worker restart generates a new keypair, leaving dead access keys on the operator account (~0.042 NEAR storage each). Clean up periodically:
 
 ```bash
-near call register.outlayer.near remove_worker_keys \
+near call worker.outlayer.near remove_worker_keys \
   '{"public_keys": ["ed25519:...", "ed25519:..."]}' \
   --accountId outlayer.near \
   --gas 300000000000000

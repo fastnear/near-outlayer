@@ -79,7 +79,7 @@ echo ""
 
 # Test 5: Create Task
 echo "📋 Test 5: Create Execution Task"
-CREATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST $COORDINATOR_URL/tasks/create \
+CREATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST $COORDINATOR_URL/executions/create \
   -H "Content-Type: application/json" \
   -d '{
     "request_id": 999,
@@ -109,7 +109,7 @@ echo ""
 
 # Test 6: Poll for Task (should get the task we just created)
 echo "📋 Test 6: Poll for Task"
-TASK=$(curl -s "$COORDINATOR_URL/tasks/poll?timeout=1")
+TASK=$(curl -s "$COORDINATOR_URL/executions/poll?timeout=1")
 if echo "$TASK" | jq -e '.type == "Compile"' > /dev/null 2>&1; then
     REQUEST_ID=$(echo "$TASK" | jq -r '.request_id')
     echo -e "${GREEN}✓${NC} Task received (request_id: $REQUEST_ID)"

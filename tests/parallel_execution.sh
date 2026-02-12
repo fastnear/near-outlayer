@@ -37,7 +37,7 @@ submit_task() {
 
     # Call contract
     local output=$(near contract call-function as-transaction "$CONTRACT_ID" request_execution json-args "{
-        \"code_source\": {
+        \"source\": {
             \"GitHub\": {
                 \"repo\": \"$GITHUB_REPO\",
                 \"commit\": \"$GITHUB_COMMIT\",

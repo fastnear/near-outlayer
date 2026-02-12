@@ -1,6 +1,6 @@
 # Register Contract - TEE Worker Key Registration
 
-**Contract**: `register.outlayer.near`
+**Contract**: `worker.outlayer.near`
 **Purpose**: Verify TDX attestations and register worker public keys with cryptographic proof
 
 ---
@@ -12,18 +12,19 @@
 ./build.sh
 
 # Deploy
-near deploy register.outlayer.near \
+near deploy worker.outlayer.near \
   use-file res/local/register_contract.wasm \
   with-init-call new \
   json-args '{"owner_id":"outlayer.near","operator_account_id":"operator.outlayer.near"}' \
   prepaid-gas '100.0 Tgas' network-config mainnet sign-with-keychain send
 
-# Add approved RTMR3
-near call register.outlayer.near add_approved_rtmr3 \
-  '{"rtmr3":"<96-hex-chars>"}' --accountId outlayer.near
+# Add approved measurements
+near call worker.outlayer.near add_approved_measurements \
+  '{"measurements":{"mrtd":"<96-hex>","rtmr0":"<96-hex>","rtmr1":"<96-hex>","rtmr2":"<96-hex>","rtmr3":"<96-hex>"}}' \
+  --accountId outlayer.near
 
 # Update collateral
-near call register.outlayer.near update_collateral \
+near call worker.outlayer.near update_collateral \
   "$(cat collateral.json | jq -c)" --accountId outlayer.near --gas 300000000000000
 ```
 
@@ -42,9 +43,9 @@ near call register.outlayer.near update_collateral \
 1. Worker starts in Phala TEE
 2. Worker generates keypair (private key NEVER leaves TEE)
 3. Worker generates TDX quote with public key embedded
-4. Worker calls register.outlayer.near::register_worker_key()
+4. Worker calls worker.outlayer.near::register_worker_key()
 5. Contract verifies TDX quote (Intel signature)
-6. Contract checks RTMR3 in approved list
+6. Contract checks all 5 measurements (MRTD + RTMR0-3) against approved list
 7. Contract adds public key to operator.outlayer.near
 8. Worker uses this key to sign resolve_execution transactions
 ```
@@ -57,22 +58,38 @@ near call register.outlayer.near update_collateral \
 
 ### Admin Methods
 
-#### `add_approved_rtmr3(rtmr3: String)`
+#### `add_approved_measurements(measurements: ApprovedMeasurements, clear_others: Option<bool>)`
 
-Add RTMR3 to approved list. Only approved RTMR3 can register keys.
+Add a set of 5 TDX measurements to the approved list. Only workers with all 5 matching measurements can register keys.
 
 ```bash
-near call register.outlayer.near add_approved_rtmr3 \
-  '{"rtmr3":"3f2a1b4c..."}' --accountId outlayer.near
+near call worker.outlayer.near add_approved_measurements '{
+  "measurements": {
+    "mrtd": "<96-hex-chars>",
+    "rtmr0": "<96-hex-chars>",
+    "rtmr1": "<96-hex-chars>",
+    "rtmr2": "<96-hex-chars>",
+    "rtmr3": "<96-hex-chars>"
+  }
+}' --accountId outlayer.near
 ```
 
-#### `remove_approved_rtmr3(rtmr3: String)`
+Use `"clear_others": true` to remove all previously approved measurements (useful when deploying a new worker version).
 
-Remove RTMR3 from approved list.
+#### `remove_approved_measurements(measurements: ApprovedMeasurements)`
+
+Remove a measurement set from the approved list.
 
 ```bash
-near call register.outlayer.near remove_approved_rtmr3 \
-  '{"rtmr3":"3f2a1b4c..."}' --accountId outlayer.near
+near call worker.outlayer.near remove_approved_measurements '{
+  "measurements": {
+    "mrtd": "<96-hex-chars>",
+    "rtmr0": "<96-hex-chars>",
+    "rtmr1": "<96-hex-chars>",
+    "rtmr2": "<96-hex-chars>",
+    "rtmr3": "<96-hex-chars>"
+  }
+}' --accountId outlayer.near
 ```
 
 #### `update_collateral(collateral: String)`
@@ -82,7 +99,7 @@ Update Intel collateral data for TDX verification.
 **Frequency**: Weekly or when Intel releases TCB updates
 
 ```bash
-near call register.outlayer.near update_collateral \
+near call worker.outlayer.near update_collateral \
   "$(cat collateral.json | jq -c)" \
   --accountId outlayer.near \
   --gas 300000000000000
@@ -93,7 +110,7 @@ near call register.outlayer.near update_collateral \
 Transfer contract ownership.
 
 ```bash
-near call register.outlayer.near transfer_ownership \
+near call worker.outlayer.near transfer_ownership \
   '{"new_owner":"new-admin.near"}' --accountId outlayer.near
 ```
 
@@ -106,7 +123,7 @@ Register worker public key with TEE proof.
 Called by worker on startup via gas account (e.g., worker1.outlayer.near).
 
 ```bash
-near call register.outlayer.near register_worker_key \
+near call worker.outlayer.near register_worker_key \
   '{"public_key":"ed25519:ABC...","tdx_quote_hex":"48656c6c6f...","quote_collateral":null}' \
   --accountId worker1.outlayer.near \
   --gas 300000000000000 \
@@ -115,8 +132,8 @@ near call register.outlayer.near register_worker_key \
 
 **What happens**:
 1. Verifies TDX quote signature (Intel)
-2. Extracts RTMR3 from quote
-3. Checks RTMR3 in approved list
+2. Extracts all 5 measurements (MRTD + RTMR0-3) from quote
+3. Checks measurements against approved list
 4. Extracts public key from quote report_data
 5. Verifies public_key matches embedded key
 6. Adds access key to operator.outlayer.near with FunctionCall permission
@@ -125,21 +142,28 @@ near call register.outlayer.near register_worker_key \
 
 ### View Methods
 
-#### `get_approved_rtmr3() -> Vec<String>`
+#### `get_approved_measurements() -> Vec<ApprovedMeasurements>`
 
-Get list of approved RTMR3 measurements.
+Get list of approved measurement sets.
 
 ```bash
-near view register.outlayer.near get_approved_rtmr3
+near view worker.outlayer.near get_approved_measurements
 ```
 
-#### `is_rtmr3_approved(rtmr3: String) -> bool`
+#### `is_measurements_approved(measurements: ApprovedMeasurements) -> bool`
 
-Check if RTMR3 is approved.
+Check if a measurement set is approved.
 
 ```bash
-near view register.outlayer.near is_rtmr3_approved \
-  '{"rtmr3":"3f2a1b4c..."}'
+near view worker.outlayer.near is_measurements_approved '{
+  "measurements": {
+    "mrtd": "<96-hex-chars>",
+    "rtmr0": "<96-hex-chars>",
+    "rtmr1": "<96-hex-chars>",
+    "rtmr2": "<96-hex-chars>",
+    "rtmr3": "<96-hex-chars>"
+  }
+}'
 ```
 
 #### `get_operator_account() -> AccountId`
@@ -147,7 +171,7 @@ near view register.outlayer.near is_rtmr3_approved \
 Get operator account ID where keys are added.
 
 ```bash
-near view register.outlayer.near get_operator_account
+near view worker.outlayer.near get_operator_account
 ```
 
 #### `get_collateral() -> Option<String>`
@@ -155,7 +179,7 @@ near view register.outlayer.near get_operator_account
 Get cached collateral data.
 
 ```bash
-near view register.outlayer.near get_collateral
+near view worker.outlayer.near get_collateral
 ```
 
 ---
@@ -181,7 +205,7 @@ near view register.outlayer.near get_collateral
 │                                                      │
 │  3. Generate TDX quote via /var/run/dstack.sock     │
 │     Quote contains:                                 │
-│       - RTMR3 (TEE measurement)                     │
+│       - TDX measurements (MRTD + RTMR0-3)            │
 │       - Public key (in report_data)                 │
 │       - Intel signature                             │
 └────────────────┬────────────────────────────────────┘
@@ -190,12 +214,12 @@ near view register.outlayer.near get_collateral
                  │
                  ↓
 ┌─────────────────────────────────────────────────────┐
-│ register.outlayer.near                              │
+│ worker.outlayer.near                              │
 │                                                      │
 │  1. Parse TDX quote                                 │
 │  2. Verify Intel signature (using collateral)       │
-│  3. Extract RTMR3                                   │
-│  4. Check RTMR3 in approved_rtmr3 list ✅           │
+│  3. Extract all 5 measurements (MRTD + RTMR0-3)     │
+│  4. Check measurements in approved list ✅           │
 │  5. Extract public_key from report_data             │
 │  6. Verify public_key matches provided key ✅       │
 │                                                      │
@@ -227,19 +251,19 @@ near view register.outlayer.near get_collateral
 ### Trust Assumptions
 
 1. **Intel TDX**: Trust Intel's cryptographic signature on quotes
-2. **Owner account**: Trust `outlayer.near` to manage approved RTMR3 list
+2. **Owner account**: Trust `outlayer.near` to manage approved measurements list
 3. **Gas accounts**: Trust that gas account keys are secured
 
 ### What This Prevents
 
 ✅ **Admin faking results**: Admin cannot generate valid signatures (no TEE key)
-✅ **Rogue workers**: Only approved RTMR3 can register keys
+✅ **Rogue workers**: Only workers with all 5 approved measurements can register keys
 ✅ **Key theft**: Private keys never leave TEE
 ✅ **Replay attacks**: TDX quotes include timestamps (checked against collateral)
 
 ### What This Doesn't Prevent
 
-❌ **Admin disabling workers**: Admin can remove RTMR3 from approved list
+❌ **Admin disabling workers**: Admin can remove measurements from approved list
 ❌ **Gas account compromise**: If gas account key leaked, attacker can register fake keys (but still need valid TDX quote)
 ❌ **Intel root compromise**: If Intel's root key compromised, all bets off
 
@@ -277,11 +301,11 @@ cargo test
 
 ## Troubleshooting
 
-### "RTMR3 not approved"
-→ Add RTMR3: `near call register.outlayer.near add_approved_rtmr3 '{"rtmr3":"..."}' --accountId outlayer.near`
+### "Measurements not approved"
+→ Add measurements: `near call worker.outlayer.near add_approved_measurements '{"measurements":{...}}' --accountId outlayer.near`
 
 ### "TDX quote verification failed"
-→ Update collateral: `near call register.outlayer.near update_collateral ...`
+→ Update collateral: `near call worker.outlayer.near update_collateral ...`
 
 ### "Out of gas"
 → Top up gas account: `near send outlayer.near worker1.outlayer.near 5`
@@ -297,8 +321,8 @@ cargo test
 - Update collateral (Intel releases TCB updates)
 
 ### On Worker Update
-- Get new RTMR3 from coordinator DB
-- Add to approved list
+- Get new measurements from coordinator DB or Phala dashboard
+- Add to approved list via `add_approved_measurements`
 
 ### Monthly
 - Check gas account balances

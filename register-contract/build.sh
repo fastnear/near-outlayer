@@ -29,5 +29,5 @@ near contract call-function as-transaction worker.outlayer.testnet migrate json-
 # mainnet
 # near contract deploy worker.outlayer.near use-file worker-contract.wasm with-init-call new json-args '{"owner_id": "owner.outlayer.near", "init_worker_account": "init-worker.outlayer.near"}' prepaid-gas '100.0 Tgas' attached-deposit '0 NEAR' network-config mainnet sign-with-keychain send
 
-# TCB Info from rtmr3
-# near contract call-function as-transaction worker.outlayer.testnet add_approved_rtmr3 json-args '{"rtmr3":"17ee4a45d48ee9e18dbe89e5c18b94e9cc41ae09d649f143c806ce12716f61c12c9e4aa98451ea509ebae8afa3420ae5"}' prepaid-gas '100.0 Tgas' attached-deposit '0 NEAR' sign-as owner.outlayer.testnet network-config testnet sign-with-legacy-keychain send
+# Add approved measurements (use scripts/deploy_phala.sh to extract all 5 measurements)
+# near contract call-function as-transaction worker.outlayer.testnet add_approved_measurements json-args '{"measurements":{"mrtd":"...","rtmr0":"...","rtmr1":"...","rtmr2":"...","rtmr3":"..."}, "clear_others": true}' prepaid-gas '100.0 Tgas' attached-deposit '0 NEAR' sign-as owner.outlayer.testnet network-config testnet sign-with-legacy-keychain send

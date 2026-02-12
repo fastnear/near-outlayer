@@ -46,7 +46,7 @@ echo ""
 START_TIME=$(date +%s)
 
 TX_OUTPUT=$(near contract call-function as-transaction "$CONTRACT_ID" request_execution json-args "{
-    \"code_source\": {
+    \"source\": {
         \"GitHub\": {
             \"repo\": \"$SLOW_COMPILE_REPO\",
             \"commit\": \"$SLOW_COMPILE_COMMIT\",

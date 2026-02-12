@@ -32,11 +32,15 @@ export default function PricingSection() {
         <section id="resource-limits">
           <AnchorHeading id="resource-limits">Resource Limits</AnchorHeading>
           <ul className="list-disc list-inside space-y-2 text-gray-700">
-            <li><strong>Max Instructions:</strong> 100 billion instructions per execution</li>
+            <li><strong>Max Instructions:</strong> 500 billion instructions per execution</li>
             <li><strong>Max Memory:</strong> Configurable up to platform limits</li>
-            <li><strong>Max Execution Time:</strong> 60 seconds per execution</li>
+            <li><strong>Max Execution Time:</strong> 180 seconds per execution (default: 60 seconds)</li>
             <li><strong>Max Compilation Time:</strong> Enforced during GitHub compilation</li>
           </ul>
+          <p className="text-sm text-gray-500 mt-3">
+            These limits are configured in the smart contract and may change without documentation updates.
+            See current values at <a href="/stats" className="text-[var(--primary-orange)] underline">Stats</a>.
+          </p>
         </section>
 
         <section id="refund-policy">

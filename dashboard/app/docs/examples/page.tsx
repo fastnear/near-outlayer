@@ -11,7 +11,8 @@ import {
   BotfatherExample,
   IntentsExample,
   PrivateDaoExample,
-  CaptchaExample
+  CaptchaExample,
+  NearEmailExample
 } from './components';
 
 export default function ExamplesPage() {
@@ -35,6 +36,7 @@ export default function ExamplesPage() {
         <IntentsExample />
         <PrivateDaoExample />
         <CaptchaExample />
+        <NearEmailExample />
       </div>
     </div>
   );

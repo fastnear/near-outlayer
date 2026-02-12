@@ -411,7 +411,6 @@ docker-compose restart coordinator
 
 ## Additional Resources
 
-- [PORTS_CONFIGURATION.md](PORTS_CONFIGURATION.md) - Port configuration guide
 - [QUICK_START.md](QUICK_START.md) - Quick start guide
 - [coordinator/README.md](coordinator/README.md) - Coordinator API documentation
 - [worker/README.md](worker/README.md) - Worker configuration guide

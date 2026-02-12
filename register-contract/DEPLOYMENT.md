@@ -2,7 +2,7 @@
 
 **Date**: 2025-11-12
 **Status**: Production ready
-**Contract**: `register.outlayer.near`
+**Contract**: `worker.outlayer.near`
 **Operator**: `operator.outlayer.near`
 
 ---
@@ -39,7 +39,7 @@ cd register-contract
 ### Step 2: Deploy contract
 
 ```bash
-near deploy register.outlayer.near \
+near deploy worker.outlayer.near \
   use-file res/local/register_contract.wasm \
   with-init-call new \
   json-args '{
@@ -55,7 +55,7 @@ near deploy register.outlayer.near \
 
 **Verify deployment**:
 ```bash
-near view register.outlayer.near get_operator_account
+near view worker.outlayer.near get_operator_account
 # Expected: "operator.outlayer.near"
 ```
 
@@ -97,7 +97,7 @@ curl https://api.outlayer.fastnear.com/tdx/collateral > collateral.json
 ### Step 4: Update collateral in contract
 
 ```bash
-near call register.outlayer.near update_collateral \
+near call worker.outlayer.near update_collateral \
   "$(cat collateral.json | jq -c)" \
   --accountId outlayer.near \
   --gas 300000000000000
@@ -105,43 +105,44 @@ near call register.outlayer.near update_collateral \
 
 **Verify**:
 ```bash
-near view register.outlayer.near get_collateral | jq .
+near view worker.outlayer.near get_collateral | jq .
 ```
 
-### Step 5: Get production worker RTMR3
+### Step 5: Get production worker TDX measurements
 
-Deploy one test worker to Phala Cloud and get its RTMR3:
+Deploy one test worker to Phala Cloud and get its measurements. Use `scripts/deploy_phala.sh` (recommended) or extract manually:
 
 ```bash
-# After worker startup (uses startup registration)
-psql $DATABASE_URL -c "
-SELECT
-    worker_name,
-    last_seen_rtmr3
-FROM worker_auth_tokens
-WHERE worker_name = 'test-worker-1'
-LIMIT 1;
-"
+# From Phala attestation (extracts all 5 measurements: MRTD + RTMR0-3)
+phala cvms attestation --json test-worker-1 | jq '{
+  mrtd: .mrtd,
+  rtmr0: .rtmr0,
+  rtmr1: .rtmr1,
+  rtmr2: .rtmr2,
+  rtmr3: .rtmr3
+}'
 ```
 
-**Example output**:
-```
- worker_name    | last_seen_rtmr3
-----------------+------------------
- test-worker-1  | 3f2a1b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4
-```
+### Step 6: Add approved measurements
 
-### Step 6: Add approved RTMR3
+All 5 measurements must match for a worker to register. This prevents dev/debug images (e.g., with SSH access) from passing verification.
 
 ```bash
-near call register.outlayer.near add_approved_rtmr3 \
-  '{"rtmr3": "3f2a1b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4"}' \
-  --accountId outlayer.near
+near call worker.outlayer.near add_approved_measurements '{
+  "measurements": {
+    "mrtd": "<96-hex>",
+    "rtmr0": "<96-hex>",
+    "rtmr1": "<96-hex>",
+    "rtmr2": "<96-hex>",
+    "rtmr3": "<96-hex>"
+  },
+  "clear_others": true
+}' --accountId outlayer.near
 ```
 
 **Verify**:
 ```bash
-near view register.outlayer.near get_approved_rtmr3
+near view worker.outlayer.near get_approved_measurements
 ```
 
 ---
@@ -172,13 +173,13 @@ Intel periodically releases new TCB (Trusted Computing Base) versions:
 dcap-qvl fetch-collateral --quote <recent-quote> --output collateral.json
 
 # 2. Update contract
-near call register.outlayer.near update_collateral \
+near call worker.outlayer.near update_collateral \
   "$(cat collateral.json | jq -c)" \
   --accountId outlayer.near \
   --gas 300000000000000
 
 # 3. Verify
-near view register.outlayer.near get_collateral | head -20
+near view worker.outlayer.near get_collateral | head -20
 ```
 
 #### Option 2: Automated update (Production)
@@ -198,7 +199,7 @@ set -e
 
 LOG_PREFIX="[Collateral Update]"
 NEAR_ACCOUNT="outlayer.near"
-CONTRACT="register.outlayer.near"
+CONTRACT="worker.outlayer.near"
 
 echo "$LOG_PREFIX Starting collateral update..."
 
@@ -223,7 +224,7 @@ echo "$LOG_PREFIX ✅ Collateral updated successfully"
 
 ```bash
 # Check TCB issue date in collateral
-near view register.outlayer.near get_collateral | \
+near view worker.outlayer.near get_collateral | \
   jq -r '.tcbInfo.issueDate'
 
 # Should be within last 30 days
@@ -231,11 +232,11 @@ near view register.outlayer.near get_collateral | \
 
 ---
 
-## RTMR3 Management
+## Measurements Management
 
-### When to Add New RTMR3
+### When Measurements Change
 
-**RTMR3 changes when**:
+**TDX measurements change when**:
 - Worker Docker image updated (new code)
 - Phala configuration changed
 - Dependencies updated (Rust version, libraries)
@@ -244,42 +245,32 @@ near view register.outlayer.near get_collateral | \
 
 1. **Update worker code**
 2. **Build new Docker image**
-3. **Deploy test worker** to Phala
-4. **Get new RTMR3** from coordinator DB:
+3. **Deploy test worker** to Phala (use `scripts/deploy_phala.sh`)
+4. **Get new measurements** from Phala attestation:
    ```bash
-   psql $DATABASE_URL -c "
-   SELECT DISTINCT last_seen_rtmr3
-   FROM worker_auth_tokens
-   WHERE last_attestation_at > NOW() - INTERVAL '1 hour'
-   ORDER BY last_attestation_at DESC;
-   "
+   phala cvms attestation --json <cvm-name> | jq '{
+     mrtd: .mrtd, rtmr0: .rtmr0, rtmr1: .rtmr1,
+     rtmr2: .rtmr2, rtmr3: .rtmr3
+   }'
    ```
-5. **Add to approved list**:
+5. **Add to approved list** (with `clear_others: true` to replace old set):
    ```bash
-   near call register.outlayer.near add_approved_rtmr3 \
-     '{"rtmr3": "<new-rtmr3>"}' \
-     --accountId outlayer.near
+   near call worker.outlayer.near add_approved_measurements '{
+     "measurements": {"mrtd":"...","rtmr0":"...","rtmr1":"...","rtmr2":"...","rtmr3":"..."},
+     "clear_others": true
+   }' --accountId outlayer.near
    ```
-6. **Rolling update**: Deploy remaining workers (they auto-register with new RTMR3)
+6. **Rolling update**: Deploy remaining workers (they auto-register with new measurements)
 
-### Remove Old RTMR3
+### Remove Old Measurements
 
-After all workers migrated to new version:
+If using `"clear_others": true` during step 5, old measurements are removed automatically.
+Otherwise, after all workers migrated to new version:
 
 ```bash
-# Verify no workers using old RTMR3
-psql $DATABASE_URL -c "
-SELECT COUNT(*)
-FROM worker_auth_tokens
-WHERE last_seen_rtmr3 = '<old-rtmr3>'
-  AND last_attestation_at > NOW() - INTERVAL '1 day';
-"
-# Should return 0
-
-# Remove from approved list
-near call register.outlayer.near remove_approved_rtmr3 \
-  '{"rtmr3": "<old-rtmr3>"}' \
-  --accountId outlayer.near
+near call worker.outlayer.near remove_approved_measurements '{
+  "measurements": {"mrtd":"<old>","rtmr0":"<old>","rtmr1":"<old>","rtmr2":"<old>","rtmr3":"<old>"}
+}' --accountId outlayer.near
 ```
 
 ---
@@ -331,7 +322,7 @@ KEYSTORE_BASE_URL=http://host.docker.internal:8081
 # Worker will automatically:
 # 1. Generate keypair inside TEE
 # 2. Generate TDX quote with public key
-# 3. Call register.outlayer.near::register_worker_key
+# 3. Call worker.outlayer.near::register_worker_key
 # 4. On success: Key added to operator.outlayer.near
 # 5. Worker starts processing tasks
 ```
@@ -349,24 +340,20 @@ near view-access-keys operator.outlayer.near
 
 ## Troubleshooting
 
-### Problem: Worker registration fails with "RTMR3 not approved"
+### Problem: Worker registration fails with "Measurements not approved"
 
-**Cause**: Worker's RTMR3 not in approved list
+**Cause**: Worker's TDX measurements not in approved list
 
 **Solution**:
 
 ```bash
-# 1. Get worker's RTMR3 from coordinator
-psql $DATABASE_URL -c "
-SELECT last_seen_rtmr3
-FROM worker_auth_tokens
-WHERE worker_name = 'worker1';
-"
+# 1. Get worker's measurements from Phala attestation
+phala cvms attestation --json <cvm-name> | jq '{mrtd,rtmr0,rtmr1,rtmr2,rtmr3}'
 
 # 2. Add to approved list
-near call register.outlayer.near add_approved_rtmr3 \
-  '{"rtmr3": "<rtmr3-from-db>"}' \
-  --accountId outlayer.near
+near call worker.outlayer.near add_approved_measurements '{
+  "measurements": {"mrtd":"...","rtmr0":"...","rtmr1":"...","rtmr2":"...","rtmr3":"..."}
+}' --accountId outlayer.near
 
 # 3. Worker will retry registration automatically (60 second interval)
 ```
@@ -382,7 +369,7 @@ near call register.outlayer.near add_approved_rtmr3 \
 dcap-qvl fetch-collateral --quote <recent-quote> -o collateral.json
 
 # 2. Update contract
-near call register.outlayer.near update_collateral \
+near call worker.outlayer.near update_collateral \
   "$(cat collateral.json | jq -c)" \
   --accountId outlayer.near \
   --gas 300000000000000
@@ -424,12 +411,12 @@ near tx-status <transaction-hash> --accountId outlayer.near
 ## Security Checklist
 
 - [ ] Register contract deployed with correct `operator_account_id`
-- [ ] Only `outlayer.near` can manage approved RTMR3 list
+- [ ] Only `outlayer.near` can manage approved measurements list
 - [ ] Collateral updated within last 30 days
-- [ ] Production worker RTMR3 added to approved list
+- [ ] Production worker measurements (all 5) added to approved list
 - [ ] Gas accounts have sufficient balance (>= 2 NEAR)
 - [ ] Gas account keys stored securely (encrypted .env)
-- [ ] Old RTMR3 removed after migration complete
+- [ ] Old measurements removed after migration complete
 
 ---
 
@@ -439,11 +426,11 @@ near tx-status <transaction-hash> --accountId outlayer.near
 
 ```bash
 # 1. Check collateral freshness
-near view register.outlayer.near get_collateral | jq '.tcbInfo.issueDate'
+near view worker.outlayer.near get_collateral | jq '.tcbInfo.issueDate'
 # Should be < 30 days old
 
-# 2. Check approved RTMR3 count
-near view register.outlayer.near get_approved_rtmr3 | jq '. | length'
+# 2. Check approved measurements count
+near view worker.outlayer.near get_approved_measurements | jq '. | length'
 # Should be 1-3 (current + maybe 1 old during migration)
 
 # 3. Check worker registrations (last 24h)
@@ -469,10 +456,10 @@ Set up monitoring for:
 
 | Frequency | Task | Command |
 |-----------|------|---------|
-| **Weekly** | Update collateral | `near call register.outlayer.near update_collateral ...` |
+| **Weekly** | Update collateral | `near call worker.outlayer.near update_collateral ...` |
 | **Monthly** | Check gas balances | `near view-account worker*.outlayer.near` |
-| **On worker update** | Add new RTMR3 | `near call register.outlayer.near add_approved_rtmr3 ...` |
-| **After migration** | Remove old RTMR3 | `near call register.outlayer.near remove_approved_rtmr3 ...` |
+| **On worker update** | Add new measurements | `near call worker.outlayer.near add_approved_measurements ...` |
+| **After migration** | Remove old measurements | `near call worker.outlayer.near remove_approved_measurements ...` |
 | **Quarterly** | Review access keys | `near view-access-keys operator.outlayer.near` |
 
 ---

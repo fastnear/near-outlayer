@@ -72,10 +72,12 @@ submit_ai_task() {
 
     # Build JSON payload with escaped prompt
     local json_payload="{
-    \"code_source\": {
-      \"repo\": \"https://github.com/zavodil/ai-ark\",
-      \"commit\": \"main\",
-      \"build_target\": \"wasm32-wasip2\"
+    \"source\": {
+      \"GitHub\": {
+        \"repo\": \"https://github.com/zavodil/ai-ark\",
+        \"commit\": \"main\",
+        \"build_target\": \"wasm32-wasip2\"
+      }
     },
     \"resource_limits\": {
       \"max_instructions\": 10000000000,

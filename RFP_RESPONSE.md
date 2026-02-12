@@ -364,7 +364,7 @@ Standalone web dashboard showing live oracle prices. Deployed as a separate app 
 | Requirement | Status | Implementation |
 |-------------|--------|----------------|
 | **Pyth-compatible interface** | DONE | `pyth-compatible-wrapper/` — full Pyth receiver API (13 methods) |
-| **Node operator allowlist** | By design | OutLayer `register-contract` maintains RTMR3 whitelist — only TEE-attested workers with approved binary can register. See [Architectural Principle](#architectural-principle-tee-proof-vs-operator-consensus) |
+| **Node operator allowlist** | By design | OutLayer `register-contract` maintains TDX measurements whitelist (MRTD + RTMR0-3) — only TEE-attested workers with approved binary can register. See [Architectural Principle](#architectural-principle-tee-proof-vs-operator-consensus) |
 | **Multisig admin (Oracle DAO)** | By design | Not required — admin methods only change operational settings (assets, oracles, OutLayer config). No funds at risk from configuration changes. Contract balance protected by 20 NEAR minimum for subsidy mode |
 | **Timelock for critical functions** | By design | Not required — same reasoning. Contract upgrade is the only destructive admin action, and it requires owner key + 1 yoctoNEAR deposit |
 | **Pause functionality** | DONE | Owner can remove oracles/assets to effectively pause |
@@ -375,7 +375,7 @@ Standalone web dashboard showing live oracle prices. Deployed as a separate app 
 |-------------|--------|----------------|
 | **Fetch from 10+ APIs (min 5)** | DONE | 9 built-in exchanges + unlimited custom sources. Major tokens (NEAR, ETH, BTC, SOL) have 8 sources each |
 | **Run in TEE** | DONE | WASI binary executes in Phala Cloud TEE workers (Intel TDX) |
-| **Provide attestation** | DONE | Verified at worker registration via `register_worker_key()` — Intel DCAP-QVL TDX Quote verification + RTMR3 whitelist. Access key cryptographically bound to TEE instance |
+| **Provide attestation** | DONE | Verified at worker registration via `register_worker_key()` — Intel DCAP-QVL TDX Quote verification + 5-measurement whitelist (MRTD + RTMR0-3). Access key cryptographically bound to TEE instance |
 | **Global distribution** | DONE | OutLayer worker pool — multiple TEE workers available, any free worker responds. See [Architectural Principle](#architectural-principle-tee-proof-vs-operator-consensus) |
 
 ### Documentation Requirements
@@ -541,7 +541,7 @@ Oracle-Ark's architecture is fundamentally different from traditional oracle des
 
 **No timelock needed.** Configuration changes are non-destructive and immediately reversible. A 7-day delay for adding a new asset or changing the OutLayer config would only slow down operations without security benefit.
 
-**No multi-node consensus (min_confirmations).** If TEE is trusted (verified via DCAP attestation), one execution is sufficient. If TEE is compromised (Intel vulnerability), running N compromised TEEs provides no additional security. The correct mitigation for TEE compromise is RTMR3 rotation (deploy new binary, update whitelist), not redundant execution.
+**No multi-node consensus (min_confirmations).** If TEE is trusted (verified via DCAP attestation), one execution is sufficient. If TEE is compromised (Intel vulnerability), running N compromised TEEs provides no additional security. The correct mitigation for TEE compromise is measurements rotation (deploy new binary, update approved measurements), not redundant execution.
 
 ---
 
@@ -556,11 +556,11 @@ Attestation is verified **at worker registration** via `register_worker_key()` i
 1. Worker generates an ED25519 keypair **inside** the Intel TDX enclave
 2. Worker produces a TDX Quote embedding the public key in `report_data` (first 32 bytes)
 3. `register_worker_key()` verifies the TDX Quote using Intel DCAP-QVL (`dcap_qvl::verify::verify()`)
-4. Extracts RTMR3 measurement (TEE binary identity) and checks it against the pre-approved whitelist (`approved_rtmr3`)
+4. Extracts all 5 TDX measurements (MRTD + RTMR0-3) and checks them against the pre-approved list (`approved_measurements`)
 5. Verifies the public key in the quote matches the submitted key — cryptographic proof the key was generated inside TEE
 6. On success, adds the key as a function-call access key limited to `resolve_execution`, `submit_execution_output_and_resolve`, etc.
 
-The resulting access key is cryptographically bound to that specific TEE instance. If the enclave is destroyed, the key is lost. Per-request re-verification is not needed — the one-time registration already proves the worker identity, and the RTMR3 whitelist ensures only approved binary versions can register.
+The resulting access key is cryptographically bound to that specific TEE instance. If the enclave is destroyed, the key is lost. Per-request re-verification is not needed — the one-time registration already proves the worker identity, and the 5-measurement whitelist ensures only approved binary versions can register.
 
 ### Worker Node Status & Reputation — Done (OutLayer Dashboard)
 
@@ -570,7 +570,7 @@ Worker status monitoring, execution history, and reputation tracking are provide
 
 Two-tier whitelisting:
 
-1. **Worker execution keys** (`register-contract`): Owner maintains `approved_rtmr3` whitelist. Only workers running an approved binary (matching RTMR3) can register.
+1. **Worker execution keys** (`register-contract`): Owner maintains `approved_measurements` whitelist (all 5 TDX measurements must match). Only workers running an approved binary can register.
 
 2. **Keystore secret access** (`keystore-dao-contract`): Full DAO governance with proposal/vote mechanism. DAO members vote on keystore registrations. Approval threshold is >50% of members. Approved keystores get access to MPC-derived secrets.
 

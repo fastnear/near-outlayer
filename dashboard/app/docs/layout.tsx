@@ -118,6 +118,16 @@ const pageStructure = {
     { id: 'use-cases', title: 'Use Cases' },
     { id: 'best-practices', title: 'Best Practices' },
   ],
+  '/docs/sdk': [
+    { id: 'installation', title: 'Installation' },
+    { id: 'when-to-use', title: 'When Do You Need the SDK?' },
+    { id: 'env-module', title: 'Environment Module' },
+    { id: 'storage-module', title: 'Storage Module' },
+    { id: 'examples', title: 'Examples Using the SDK' },
+    { id: 'minimal-project', title: 'Minimal Project Template' },
+    { id: 'api-reference', title: 'API Reference' },
+    { id: 'storage-types', title: 'Storage Types Overview' },
+  ],
   '/docs/pricing': [
     { id: 'dynamic-pricing', title: 'Dynamic Pricing Model' },
     { id: 'cost-calculation', title: 'Cost Calculation' },
@@ -136,6 +146,7 @@ const pageStructure = {
     { id: 'intents-ark', title: 'NEAR Intents swap' },
     { id: 'private-dao-ark', title: 'Private DAO Voting' },
     { id: 'captcha-ark', title: '2FA Verification' },
+    { id: 'near-email', title: 'NEAR Email' },
   ],
   '/docs/tee-attestation': [
     { id: 'what-is-tee', title: 'What is TEE Attestation?' },
@@ -144,6 +155,16 @@ const pageStructure = {
     { id: 'verification-process', title: 'Verification Process' },
     { id: 'security-guarantees', title: 'Security Guarantees' },
     { id: 'dashboard-verification', title: 'Dashboard Verification' },
+  ],
+  '/docs/trust-verification': [
+    { id: 'overview', title: 'Trust Architecture' },
+    { id: 'phala-trust-center', title: 'Phala Trust Center' },
+    { id: 'sigstore', title: 'GitHub Releases & Sigstore' },
+    { id: 'measurements', title: '5-Measurement TDX Verification' },
+    { id: 'registration-flow', title: 'Worker Registration Flow' },
+    { id: 'ephemeral-keys', title: 'Ephemeral Keys & Blockchain Trail' },
+    { id: 'ckd', title: 'Deterministic Keystore Secrets (CKD)' },
+    { id: 'operator-limits', title: 'What Operator Cannot Do' },
   ],
 };
 
@@ -542,6 +563,44 @@ export default function DocsLayout({
                 )}
               </div>
 
+              {/* SDK */}
+              <div>
+                <Link
+                  href="/docs/sdk"
+                  className={`flex items-center justify-between w-full text-left px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                    isActive('/docs/sdk')
+                      ? 'bg-[var(--primary-orange)] text-white'
+                      : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                  onClick={(e) => {
+                    if (isActive('/docs/sdk')) {
+                      e.preventDefault();
+                      toggleExpand('/docs/sdk');
+                    }
+                  }}
+                >
+                  <span>SDK</span>
+                  {pageStructure['/docs/sdk'] && (
+                    <svg className={`w-4 h-4 transition-transform ${expandedPages['/docs/sdk'] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  )}
+                </Link>
+                {expandedPages['/docs/sdk'] && pageStructure['/docs/sdk'] && (
+                  <div className="ml-4 mt-1 space-y-0.5">
+                    {pageStructure['/docs/sdk'].map(section => (
+                      <button
+                        key={section.id}
+                        onClick={() => scrollToSection(section.id)}
+                        className="block w-full text-left px-3 py-1 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
+                      >
+                        {section.title}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               {/* HTTPS API */}
               <div>
                 <Link
@@ -682,6 +741,44 @@ export default function DocsLayout({
                 {expandedPages['/docs/tee-attestation'] && pageStructure['/docs/tee-attestation'] && (
                   <div className="ml-4 mt-1 space-y-0.5">
                     {pageStructure['/docs/tee-attestation'].map(section => (
+                      <button
+                        key={section.id}
+                        onClick={() => scrollToSection(section.id)}
+                        className="block w-full text-left px-3 py-1 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
+                      >
+                        {section.title}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Trust & Verification */}
+              <div>
+                <Link
+                  href="/docs/trust-verification"
+                  className={`flex items-center justify-between w-full text-left px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                    isActive('/docs/trust-verification')
+                      ? 'bg-[var(--primary-orange)] text-white'
+                      : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                  onClick={(e) => {
+                    if (isActive('/docs/trust-verification')) {
+                      e.preventDefault();
+                      toggleExpand('/docs/trust-verification');
+                    }
+                  }}
+                >
+                  <span>Trust & Verification</span>
+                  {pageStructure['/docs/trust-verification'] && (
+                    <svg className={`w-4 h-4 transition-transform ${expandedPages['/docs/trust-verification'] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  )}
+                </Link>
+                {expandedPages['/docs/trust-verification'] && pageStructure['/docs/trust-verification'] && (
+                  <div className="ml-4 mt-1 space-y-0.5">
+                    {pageStructure['/docs/trust-verification'].map(section => (
                       <button
                         key={section.id}
                         onClick={() => scrollToSection(section.id)}
