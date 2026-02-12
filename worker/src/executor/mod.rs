@@ -51,6 +51,8 @@ pub struct VrfConfig {
     pub keystore_auth_token: String,
     pub tee_session_id: Option<String>,
     pub request_id: u64,
+    /// Signer account ID (included in alpha for per-user VRF binding)
+    pub sender_id: String,
 }
 
 /// Execution context with optional dependencies for WASM execution

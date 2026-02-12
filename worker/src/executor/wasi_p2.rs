@@ -322,6 +322,7 @@ pub async fn execute(
 
             Some(VrfHostState::new(
                 vrf_cfg.request_id,
+                &vrf_cfg.sender_id,
                 &vrf_cfg.keystore_url,
                 &vrf_cfg.keystore_auth_token,
                 vrf_cfg.tee_session_id.clone(),

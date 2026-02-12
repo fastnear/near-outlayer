@@ -24,6 +24,8 @@ type PubkeyResult = (String, String);
 pub struct VrfHostState {
     /// Request ID from the execution context (auto-prepended to seed)
     request_id: u64,
+    /// Signer account ID (included in alpha for per-user VRF binding)
+    sender_id: String,
     /// Blocking HTTP client for keystore calls
     http_client: reqwest::blocking::Client,
     /// Keystore base URL
@@ -45,6 +47,7 @@ impl VrfHostState {
     /// (same pattern as storage client: TEE sessions handle auth).
     pub fn new(
         request_id: u64,
+        sender_id: &str,
         keystore_url: &str,
         auth_token: &str,
         tee_session_id: Option<String>,
@@ -57,6 +60,7 @@ impl VrfHostState {
 
         Self {
             request_id,
+            sender_id: sender_id.to_string(),
             http_client,
             keystore_url: keystore_url.to_string(),
             auth_token: auth_token.to_string(),
@@ -89,6 +93,16 @@ impl near::vrf::api::Host for VrfHostState {
             user_seed, self.request_id
         );
 
+        // Reject ':' in user_seed — alpha uses ':' as delimiter
+        if user_seed.contains(':') {
+            return (
+                String::new(),
+                String::new(),
+                String::new(),
+                "user_seed must not contain ':'".to_string(),
+            );
+        }
+
         // Rate limit
         if self.call_count >= self.max_calls {
             return (
@@ -104,8 +118,8 @@ impl near::vrf::api::Host for VrfHostState {
         }
         self.call_count += 1;
 
-        // Construct alpha with auto-prepended request_id
-        let alpha = format!("vrf:{}:{}", self.request_id, user_seed);
+        // Construct alpha with auto-prepended request_id and sender_id
+        let alpha = format!("vrf:{}:{}:{}", self.request_id, self.sender_id, user_seed);
 
         // Call keystore (TEE session header provides auth, attestation is a stub)
         let attestation = Self::stub_attestation();
@@ -209,4 +223,47 @@ pub fn add_vrf_to_linker<T: Send + 'static>(
 fn base64_encode(data: &[u8]) -> String {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_state(request_id: u64, sender_id: &str) -> VrfHostState {
+        VrfHostState {
+            request_id,
+            sender_id: sender_id.to_string(),
+            http_client: reqwest::blocking::Client::new(),
+            keystore_url: "http://localhost:0".to_string(),
+            auth_token: String::new(),
+            tee_session_id: None,
+            call_count: 0,
+            max_calls: 10,
+        }
+    }
+
+    #[test]
+    fn test_alpha_format() {
+        let state = make_state(42, "alice.near");
+        let alpha = format!("vrf:{}:{}:{}", state.request_id, state.sender_id, "my-seed");
+        assert_eq!(alpha, "vrf:42:alice.near:my-seed");
+        // Parseable: split by ':' → ["vrf", request_id, sender_id, user_seed]
+        let parts: Vec<&str> = alpha.splitn(4, ':').collect();
+        assert_eq!(parts, vec!["vrf", "42", "alice.near", "my-seed"]);
+    }
+
+    #[test]
+    fn test_colon_in_seed_rejected() {
+        let mut state = make_state(1, "bob.near");
+        let (_, _, _, error) = near::vrf::api::Host::generate(&mut state, "bad:seed".to_string());
+        assert_eq!(error, "user_seed must not contain ':'");
+    }
+
+    #[test]
+    fn test_rate_limit() {
+        let mut state = make_state(1, "alice.near");
+        state.max_calls = 0;
+        let (_, _, _, error) = near::vrf::api::Host::generate(&mut state, "seed".to_string());
+        assert!(error.contains("rate limit"), "expected rate limit error, got: {}", error);
+    }
 }
