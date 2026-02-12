@@ -256,6 +256,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .route("/health", get(|| async { "OK" }))
         .route("/health/detailed", get(handlers::health::health_detailed))
+        // VRF public key (proxied from keystore)
+        .route("/vrf/pubkey", get(handlers::public::vrf_pubkey))
         // Attestation endpoint (public with IP rate limiting)
         .route("/attestations/:job_id", get(handlers::attestations::get_attestation));
 

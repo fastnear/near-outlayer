@@ -17,6 +17,8 @@ wasmtime::component::bindgen!({
 
 /// VRF result: (output_hex, signature_hex, alpha, error)
 type VrfResult = (String, String, String, String);
+/// Pubkey result: (pubkey_hex, error)
+type PubkeyResult = (String, String);
 
 /// Host state for VRF functions
 pub struct VrfHostState {
@@ -166,6 +168,32 @@ impl near::vrf::api::Host for VrfHostState {
                 alpha,
                 format!("VRF request failed: {}", e),
             ),
+        }
+    }
+
+    fn pubkey(&mut self) -> PubkeyResult {
+        debug!("vrf::pubkey");
+
+        let url = format!("{}/vrf/pubkey", self.keystore_url);
+
+        match self.http_client.get(&url).send() {
+            Ok(response) => {
+                if !response.status().is_success() {
+                    let status = response.status();
+                    let error = response.text().unwrap_or_default();
+                    return (String::new(), format!("Keystore VRF pubkey failed ({}): {}", status, error));
+                }
+
+                match response.json::<serde_json::Value>() {
+                    Ok(json) => {
+                        let pubkey_hex = json["vrf_public_key_hex"].as_str().unwrap_or("").to_string();
+                        debug!("vrf::pubkey success, key={}", pubkey_hex);
+                        (pubkey_hex, String::new())
+                    }
+                    Err(e) => (String::new(), format!("Failed to parse VRF pubkey response: {}", e)),
+                }
+            }
+            Err(e) => (String::new(), format!("VRF pubkey request failed: {}", e)),
         }
     }
 }

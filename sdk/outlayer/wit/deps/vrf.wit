@@ -20,6 +20,13 @@ interface api {
     /// - alpha: full alpha string used (for verification)
     /// - error: empty string on success, error message on failure
     generate: func(user-seed: string) -> tuple<string, string, string, string>;
+
+    /// Get VRF public key (hex-encoded Ed25519 public key, 32 bytes)
+    ///
+    /// Returns (pubkey-hex, error):
+    /// - pubkey-hex: hex-encoded Ed25519 public key used for VRF signatures
+    /// - error: empty string on success, error message on failure
+    pubkey: func() -> tuple<string, string>;
 }
 
 world vrf-host {

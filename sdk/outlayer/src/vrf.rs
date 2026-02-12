@@ -82,6 +82,17 @@ pub fn random_bytes(user_seed: &str) -> Result<([u8; 32], String, String), Strin
     Ok((bytes, result.signature_hex, result.alpha))
 }
 
+/// Get the VRF public key (hex-encoded Ed25519 public key, 32 bytes).
+///
+/// This key can be used for on-chain verification via `ed25519_verify`.
+pub fn public_key() -> Result<String, String> {
+    let (pubkey_hex, error) = vrf::pubkey();
+    if !error.is_empty() {
+        return Err(error);
+    }
+    Ok(pubkey_hex)
+}
+
 /// Simple hex decoder (avoids adding hex crate dependency)
 fn hex_decode(hex: &str) -> Result<Vec<u8>, String> {
     if hex.len() % 2 != 0 {
