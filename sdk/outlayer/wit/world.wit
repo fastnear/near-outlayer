@@ -99,8 +99,9 @@ world rpc-host {
     import api;
 }
 
-// Combined world with both RPC and storage
+// Combined world with RPC, storage, and VRF
 world outlayer-host {
     import api;
     import near:storage/api@0.1.0;
+    import near:vrf/api@0.1.0;
 }

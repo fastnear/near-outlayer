@@ -59,6 +59,7 @@ use crate::compiled_cache::CompiledCache;
 use crate::outlayer_rpc::RpcHostState;
 use crate::outlayer_storage::{StorageClient, StorageHostState, add_storage_to_linker};
 use crate::outlayer_payment::{PaymentHostState, add_payment_to_linker};
+use crate::outlayer_vrf::{VrfHostState, add_vrf_to_linker};
 
 use super::ExecutionContext;
 
@@ -75,6 +76,8 @@ struct HostState {
     storage_state: Option<StorageHostState>,
     /// Payment state (only present if attached_usd > 0)
     payment_state: Option<PaymentHostState>,
+    /// VRF state (only present if keystore configured + request_id available)
+    vrf_state: Option<VrfHostState>,
 }
 
 impl WasiView for HostState {
@@ -123,6 +126,11 @@ impl HostState {
     /// Get payment host state (for host function callbacks)
     fn payment_state_mut(&mut self) -> &mut PaymentHostState {
         self.payment_state.as_mut().expect("Payment state not initialized")
+    }
+
+    /// Get VRF host state (for host function callbacks)
+    fn vrf_state_mut(&mut self) -> &mut VrfHostState {
+        self.vrf_state.as_mut().expect("VRF state not initialized")
     }
 }
 
@@ -324,6 +332,34 @@ pub async fn execute(
         None
     };
 
+    // Check if component imports VRF interface
+    let has_vrf_import = component.component_type().imports(&engine)
+        .any(|(name, _)| name.contains("near:vrf/api"));
+
+    let vrf_state = if has_vrf_import {
+        if let Some(ref vrf_cfg) = exec_ctx.and_then(|ctx| ctx.vrf_config.as_ref()) {
+            debug!("Adding VRF host functions to linker, request_id={}", vrf_cfg.request_id);
+
+            add_vrf_to_linker(&mut linker, |state: &mut HostState| {
+                state.vrf_state_mut()
+            })?;
+
+            Some(VrfHostState::new(
+                vrf_cfg.request_id,
+                &vrf_cfg.keystore_url,
+                &vrf_cfg.keystore_auth_token,
+                vrf_cfg.tee_session_id.clone(),
+            ))
+        } else {
+            anyhow::bail!(
+                "WASM imports near:vrf/api but VRF is not available.\n\
+                VRF requires: keystore configured + blockchain execution with request_id."
+            );
+        }
+    } else {
+        None
+    };
+
     // Prepare stdin/stdout/stderr pipes
     let stdin_pipe = wasmtime_wasi::pipe::MemoryInputPipe::new(input_data.to_vec());
     let stdout_pipe =
@@ -365,6 +401,7 @@ pub async fn execute(
         rpc_state,
         storage_state,
         payment_state,
+        vrf_state,
     };
 
     // Create store with fuel limit

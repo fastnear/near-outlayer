@@ -1,0 +1,27 @@
+package near:vrf@0.1.0;
+
+/// Verifiable Random Function API for OutLayer
+///
+/// Provides cryptographically verifiable randomness using Ed25519 deterministic signatures.
+/// The host auto-prepends request_id to the seed — guest cannot manipulate it.
+///
+/// Verification: ed25519_verify(vrf_pubkey, alpha, signature) — works on-chain in NEAR contracts.
+interface api {
+    /// Generate verifiable random output
+    ///
+    /// user-seed: arbitrary string provided by the WASM module
+    ///
+    /// The host constructs alpha = "vrf:{request_id}:{user_seed}"
+    /// where request_id comes from the execution context (not controllable by guest).
+    ///
+    /// Returns (output-hex, signature-hex, alpha, error):
+    /// - output-hex: SHA256(signature), 32 bytes hex — use as random bytes
+    /// - signature-hex: Ed25519 signature, 64 bytes hex — the proof
+    /// - alpha: full alpha string used (for verification)
+    /// - error: empty string on success, error message on failure
+    generate: func(user-seed: string) -> tuple<string, string, string, string>;
+}
+
+world vrf-host {
+    import api;
+}

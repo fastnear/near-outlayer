@@ -245,6 +245,36 @@ impl Keystore {
             .context("Signature verification failed")
     }
 
+    /// Generate VRF output and proof for the given alpha bytes.
+    ///
+    /// Uses Ed25519 deterministic signature (RFC 8032) as VRF:
+    /// - Proof = Ed25519 signature of alpha (deterministic: same key + same alpha = same signature)
+    /// - Output = SHA256(signature) (random bytes derived from proof)
+    ///
+    /// Verification: `ed25519_verify(vrf_pubkey, alpha, signature)` — works on-chain in NEAR contracts.
+    /// The VRF key is derived from master_secret with fixed seed "vrf-key".
+    ///
+    /// Returns (output_hex, signature_hex).
+    pub fn vrf_generate(&self, alpha: &[u8]) -> Result<(String, String)> {
+        let (signing_key, _) = self.derive_keypair("vrf-key")?;
+        let signature = signing_key.sign(alpha);
+
+        let mut hasher = Sha256::new();
+        hasher.update(signature.to_bytes());
+        let output = hasher.finalize();
+
+        Ok((hex::encode(output), hex::encode(signature.to_bytes())))
+    }
+
+    /// Get the VRF public key as hex string.
+    ///
+    /// This key should be registered on-chain for verification.
+    /// All keystores with the same master_secret produce the same VRF pubkey.
+    pub fn vrf_public_key_hex(&self) -> Result<String> {
+        let (_, verifying_key) = self.derive_keypair("vrf-key")?;
+        Ok(hex::encode(verifying_key.as_bytes()))
+    }
+
     /// Clear the keypair cache (for testing or memory management)
     #[allow(dead_code)]
     pub fn clear_cache(&self) {
@@ -307,6 +337,68 @@ mod tests {
 
         let signature = keystore.sign(seed, message).unwrap();
         keystore.verify(seed, message, &signature).unwrap();
+    }
+
+    #[test]
+    fn test_vrf_deterministic() {
+        let keystore = Keystore::generate();
+        let alpha = b"vrf:42:my-seed";
+
+        let (output1, sig1) = keystore.vrf_generate(alpha).unwrap();
+        let (output2, sig2) = keystore.vrf_generate(alpha).unwrap();
+
+        assert_eq!(output1, output2, "Same alpha must produce same output");
+        assert_eq!(sig1, sig2, "Same alpha must produce same signature");
+    }
+
+    #[test]
+    fn test_vrf_different_alpha_different_output() {
+        let keystore = Keystore::generate();
+
+        let (out_a, _) = keystore.vrf_generate(b"vrf:1:seed-a").unwrap();
+        let (out_b, _) = keystore.vrf_generate(b"vrf:1:seed-b").unwrap();
+
+        assert_ne!(out_a, out_b, "Different alphas must produce different outputs");
+    }
+
+    #[test]
+    fn test_vrf_self_verify() {
+        let keystore = Keystore::generate();
+        let alpha = b"vrf:100:test";
+
+        let (_, sig_hex) = keystore.vrf_generate(alpha).unwrap();
+
+        // Reconstruct signature and verify with public key
+        let sig_bytes: [u8; 64] = hex::decode(&sig_hex).unwrap().try_into().unwrap();
+        let signature = Signature::from_bytes(&sig_bytes);
+        let vrf_pubkey = keystore.get_public_key_for_seed("vrf-key").unwrap();
+
+        vrf_pubkey.verify(alpha, &signature).expect("VRF signature must verify");
+    }
+
+    #[test]
+    fn test_vrf_pubkey_stable() {
+        let keystore = Keystore::generate();
+
+        let pk1 = keystore.vrf_public_key_hex().unwrap();
+        let pk2 = keystore.vrf_public_key_hex().unwrap();
+
+        assert_eq!(pk1, pk2);
+        assert_eq!(pk1.len(), 64); // 32-byte Ed25519 pubkey = 64 hex chars
+    }
+
+    #[test]
+    fn test_vrf_same_master_secret_same_output() {
+        let ks1 = Keystore::generate();
+        let master_hex = ks1.master_secret_hex();
+        let ks2 = Keystore::from_master_secret_hex(&master_hex).unwrap();
+
+        let alpha = b"vrf:1:test";
+        let (out1, _) = ks1.vrf_generate(alpha).unwrap();
+        let (out2, _) = ks2.vrf_generate(alpha).unwrap();
+
+        assert_eq!(out1, out2, "Same master secret must produce same VRF output");
+        assert_eq!(ks1.vrf_public_key_hex().unwrap(), ks2.vrf_public_key_hex().unwrap());
     }
 
     #[test]

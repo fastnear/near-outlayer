@@ -99,9 +99,10 @@ world rpc-host {
     import api;
 }
 
-// Combined world with RPC, storage, and payment
+// Combined world with RPC, storage, payment, and VRF
 world outlayer-host {
     import api;
     import near:storage/api@0.1.0;
     import near:payment/api@0.1.0;
+    import near:vrf/api@0.1.0;
 }

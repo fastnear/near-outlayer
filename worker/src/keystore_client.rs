@@ -536,6 +536,78 @@ impl KeystoreClient {
         self.decrypt_secrets(accessor, profile, owner, user_account_id, task_id).await
     }
 
+    /// Generate VRF output via keystore
+    ///
+    /// Returns (output_hex, signature_hex) where:
+    /// - output_hex: SHA256(Ed25519_signature), 32 bytes hex — the random value
+    /// - signature_hex: Ed25519 signature, 64 bytes hex — the proof
+    pub async fn vrf_generate(&self, alpha: &str) -> Result<(String, String)> {
+        let attestation = self.generate_attestation()
+            .context("Failed to generate attestation for VRF")?;
+
+        #[derive(serde::Serialize)]
+        struct VrfGenerateRequest {
+            alpha: String,
+            attestation: Attestation,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct VrfGenerateResponse {
+            output_hex: String,
+            signature_hex: String,
+        }
+
+        let request = VrfGenerateRequest {
+            alpha: alpha.to_string(),
+            attestation,
+        };
+
+        let url = format!("{}/vrf/generate", self.base_url);
+
+        let response = self.add_auth_headers(self.http_client.post(&url))
+            .json(&request)
+            .send()
+            .await
+            .context("Failed to send VRF generate request")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+
+            // Auto-reconnect on TEE session expiry
+            if Self::is_tee_session_expired(status, &error_text) {
+                if let Ok(()) = self.try_reconnect_tee_session().await {
+                    let attestation = self.generate_attestation()
+                        .context("Failed to generate attestation for VRF retry")?;
+                    let retry_request = VrfGenerateRequest {
+                        alpha: alpha.to_string(),
+                        attestation,
+                    };
+                    let retry_response = self.add_auth_headers(self.http_client.post(&url))
+                        .json(&retry_request)
+                        .send()
+                        .await
+                        .context("Failed to send VRF retry request")?;
+                    if retry_response.status().is_success() {
+                        let resp: VrfGenerateResponse = retry_response.json().await
+                            .context("Failed to parse VRF retry response")?;
+                        return Ok((resp.output_hex, resp.signature_hex));
+                    }
+                    let retry_status = retry_response.status();
+                    let retry_error = retry_response.text().await.unwrap_or_default();
+                    anyhow::bail!("VRF generate failed after reconnect ({}): {}", retry_status, retry_error);
+                }
+            }
+
+            anyhow::bail!("VRF generate failed ({}): {}", status, error_text);
+        }
+
+        let resp: VrfGenerateResponse = response.json().await
+            .context("Failed to parse VRF generate response")?;
+
+        Ok((resp.output_hex, resp.signature_hex))
+    }
+
     /// Encrypt data using keystore's derived key
     ///
     /// Used for TopUp flow to re-encrypt Payment Key data with updated balance.
