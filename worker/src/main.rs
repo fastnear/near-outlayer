@@ -12,6 +12,7 @@ mod registration;
 mod outlayer_rpc;
 mod outlayer_storage;
 mod outlayer_payment;
+mod outlayer_vrf;
 mod tdx_attestation;
 mod wasm_cache;
 
@@ -1990,6 +1991,27 @@ async fn handle_execute_job(
         }
     };
 
+    // Create VRF config if keystore is configured (VRF requires keystore + request_id)
+    let vrf_config = match (&config.keystore_base_url, &config.keystore_auth_token) {
+        (Some(keystore_url), Some(keystore_token)) => {
+            // sender_id: payment key owner for HTTPS, context.sender_id for blockchain
+            let sender_id: String = payment_key_owner.cloned()
+                .or_else(|| context.sender_id.clone())
+                .unwrap_or_else(|| {
+                    panic!("VRF requires sender_id but neither payment_key_owner nor context.sender_id is set (request_id={})", request_id);
+                });
+            Some(executor::VrfConfig {
+                keystore_url: keystore_url.clone(),
+                keystore_auth_token: keystore_token.clone(),
+                tee_session_id: keystore_client
+                    .and_then(|kc| kc.get_tee_session_id()),
+                request_id,
+                sender_id,
+            })
+        }
+        _ => None,
+    };
+
     // Execute WASM
     info!("🚀 Executing WASM...");
     let exec_result = executor
@@ -2002,6 +2024,7 @@ async fn handle_execute_job(
             build_target,
             response_format,
             storage_config,
+            vrf_config,
         )
         .await;
 

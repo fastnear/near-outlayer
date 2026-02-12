@@ -6,6 +6,7 @@
 //!
 //! - **Storage**: Persistent encrypted storage across executions
 //! - **Environment**: Access to execution context (signer, input/output)
+//! - **VRF**: Verifiable random function (Ed25519 signatures, on-chain verification)
 //!
 //! ## Requirements
 //!
@@ -58,16 +59,19 @@ wit_bindgen::generate!({
     path: "wit",
     with: {
         "near:storage/api@0.1.0": generate,
+        "near:vrf/api@0.1.0": generate,
     },
 });
 
 pub mod storage;
 pub mod env;
+pub mod vrf;
 
 /// Low-level access to generated WIT bindings
 ///
-/// Most users should use the high-level `storage` and `env` modules instead.
+/// Most users should use the high-level `storage`, `env`, and `vrf` modules instead.
 pub mod raw {
     pub use super::near::rpc::api as rpc;
     pub use super::near::storage::api as storage;
+    pub use super::near::vrf::api as vrf;
 }

@@ -59,6 +59,7 @@ use crate::compiled_cache::CompiledCache;
 use crate::outlayer_rpc::RpcHostState;
 use crate::outlayer_storage::{StorageClient, StorageHostState, add_storage_to_linker};
 use crate::outlayer_payment::{PaymentHostState, add_payment_to_linker};
+use crate::outlayer_vrf::{VrfHostState, add_vrf_to_linker};
 
 use super::ExecutionContext;
 
@@ -75,6 +76,8 @@ struct HostState {
     storage_state: Option<StorageHostState>,
     /// Payment state (only present if attached_usd > 0)
     payment_state: Option<PaymentHostState>,
+    /// VRF state (only present if keystore configured + request_id available)
+    vrf_state: Option<VrfHostState>,
 }
 
 impl WasiView for HostState {
@@ -123,6 +126,11 @@ impl HostState {
     /// Get payment host state (for host function callbacks)
     fn payment_state_mut(&mut self) -> &mut PaymentHostState {
         self.payment_state.as_mut().expect("Payment state not initialized")
+    }
+
+    /// Get VRF host state (for host function callbacks)
+    fn vrf_state_mut(&mut self) -> &mut VrfHostState {
+        self.vrf_state.as_mut().expect("VRF state not initialized")
     }
 }
 
@@ -186,31 +194,11 @@ pub async fn execute(
 
     debug!("Loaded as WASI Preview 2 component");
 
-    // Check for storage import if running as project
-    // For P2 components, we check if they import `near:storage/api` interface
-    // This indicates the WASM is built with OutLayer SDK and knows about project context
-    // Note: The `__outlayer_get_metadata` export doesn't work in component model
-    // because #[no_mangle] exports are not visible in component WIT
+    // Check which OutLayer SDK interfaces the WASM imports
     let has_storage_import = component.component_type().imports(&engine)
         .any(|(name, _)| name.contains("near:storage/api"));
 
     let storage_config = exec_ctx.and_then(|ctx| ctx.storage_config.as_ref());
-
-    // For P2 components: if running as project, WASM must import storage interface
-    // This ensures the WASM was built with OutLayer SDK
-    if storage_config.is_some() && !has_storage_import {
-        anyhow::bail!(
-            "WASM running in project context must import `near:storage/api` interface.\n\
-            This import is provided by the `outlayer` crate.\n\
-            Without this import, persistent storage is not available.\n\
-            \n\
-            To fix:\n\
-            1. Add `outlayer` crate to your dependencies\n\
-            2. Use storage functions from `outlayer::storage` module\n\
-            \n\
-            Or run this WASM as standalone (without project) if you don't need persistent storage."
-        );
-    }
 
     // If WASM imports storage but we don't have storage config, fail early with helpful message
     if has_storage_import && storage_config.is_none() {
@@ -229,10 +217,6 @@ pub async fn execute(
             2. Ensure keystore is properly configured in worker environment\n\
             3. Or rebuild WASM without `outlayer` crate if you don't need storage"
         );
-    }
-
-    if storage_config.is_some() && has_storage_import {
-        tracing::debug!("✅ Project WASM imports near:storage/api interface");
     }
 
     // Create linker with WASI and HTTP support
@@ -324,6 +308,35 @@ pub async fn execute(
         None
     };
 
+    // Check if component imports VRF interface
+    let has_vrf_import = component.component_type().imports(&engine)
+        .any(|(name, _)| name.contains("near:vrf/api"));
+
+    let vrf_state = if has_vrf_import {
+        if let Some(ref vrf_cfg) = exec_ctx.and_then(|ctx| ctx.vrf_config.as_ref()) {
+            debug!("Adding VRF host functions to linker, request_id={}", vrf_cfg.request_id);
+
+            add_vrf_to_linker(&mut linker, |state: &mut HostState| {
+                state.vrf_state_mut()
+            })?;
+
+            Some(VrfHostState::new(
+                vrf_cfg.request_id,
+                &vrf_cfg.sender_id,
+                &vrf_cfg.keystore_url,
+                &vrf_cfg.keystore_auth_token,
+                vrf_cfg.tee_session_id.clone(),
+            ))
+        } else {
+            anyhow::bail!(
+                "WASM imports near:vrf/api but VRF is not available.\n\
+                VRF requires: keystore configured + blockchain execution with request_id."
+            );
+        }
+    } else {
+        None
+    };
+
     // Prepare stdin/stdout/stderr pipes
     let stdin_pipe = wasmtime_wasi::pipe::MemoryInputPipe::new(input_data.to_vec());
     let stdout_pipe =
@@ -365,6 +378,7 @@ pub async fn execute(
         rpc_state,
         storage_state,
         payment_state,
+        vrf_state,
     };
 
     // Create store with fuel limit

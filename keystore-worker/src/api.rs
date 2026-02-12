@@ -5,6 +5,7 @@
 //! ### Public endpoints (no auth required):
 //! - GET /health - Health check
 //! - POST /pubkey - Get public key for encryption (used by dashboard)
+//! - GET /vrf/pubkey - Get VRF public key for verification
 //!
 //! ### Worker-only endpoints (ALLOWED_WORKER_TOKEN_HASHES):
 //! - POST /decrypt - Decrypt secrets from contract
@@ -12,6 +13,7 @@
 //! - POST /decrypt-raw - Decrypt raw data with seed
 //! - POST /storage/encrypt - Encrypt persistent storage data
 //! - POST /storage/decrypt - Decrypt persistent storage data
+//! - POST /vrf/generate - Generate VRF output (verifiable random)
 //!
 //! ### Coordinator-only endpoints (ALLOWED_COORDINATOR_TOKEN_HASHES):
 //! - POST /add_generated_secret - Add generated PROTECTED_ secrets
@@ -393,6 +395,31 @@ pub struct StorageDecryptResponse {
 
 // ==================== Generic Encryption API (for TopUp flow) ====================
 
+/// Request to generate VRF output
+#[derive(Debug, Deserialize)]
+pub struct VrfGenerateRequest {
+    /// Alpha string (VRF pre-image). Format: "vrf:{request_id}:{user_seed}"
+    pub alpha: String,
+    /// TEE attestation proving worker identity
+    pub attestation: Attestation,
+}
+
+/// Response with VRF output and signature (proof)
+#[derive(Debug, Serialize)]
+pub struct VrfGenerateResponse {
+    /// VRF output: SHA256(Ed25519_signature), 32 bytes hex
+    pub output_hex: String,
+    /// VRF proof: Ed25519 signature, 64 bytes hex
+    pub signature_hex: String,
+}
+
+/// Response with VRF public key
+#[derive(Debug, Serialize)]
+pub struct VrfPublicKeyResponse {
+    /// VRF public key (Ed25519), 32 bytes hex
+    pub vrf_public_key_hex: String,
+}
+
 /// Request to encrypt plaintext data
 /// Used by workers to re-encrypt secrets after TopUp
 #[derive(Debug, Deserialize)]
@@ -429,6 +456,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/decrypt-raw", post(decrypt_raw_handler)) // For TopUp flow - decrypt raw data with seed
         .route("/storage/encrypt", post(storage_encrypt_handler))
         .route("/storage/decrypt", post(storage_decrypt_handler))
+        .route("/vrf/generate", post(vrf_generate_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             tee_session_middleware,
@@ -463,6 +491,7 @@ pub fn create_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health_handler))
         .route("/pubkey", post(pubkey_handler)) // Public for dashboard encryption
+        .route("/vrf/pubkey", get(vrf_pubkey_handler)) // Public VRF public key
         .merge(worker_routes)
         .merge(coordinator_routes)
         .merge(tee_routes)
@@ -884,6 +913,59 @@ async fn decrypt_handler(
     Ok(Json(DecryptResponse {
         plaintext_secrets: plaintext_b64,
     }))
+}
+
+/// POST /vrf/generate — Generate VRF output for alpha (worker-only)
+async fn vrf_generate_handler(
+    State(state): State<AppState>,
+    Json(req): Json<VrfGenerateRequest>,
+) -> Result<Json<VrfGenerateResponse>, ApiError> {
+    if !state.is_ready() {
+        return Err(ApiError::Unauthorized(
+            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string()
+        ));
+    }
+
+    if req.alpha.is_empty() {
+        return Err(ApiError::BadRequest("alpha must not be empty".to_string()));
+    }
+
+    crate::attestation::verify_attestation(
+        &req.attestation,
+        &state.config.tee_mode,
+        &state.expected_measurements,
+    )
+    .map_err(|e| {
+        tracing::warn!(error = %e, "VRF attestation verification failed");
+        ApiError::Unauthorized(format!("Attestation verification failed: {}", e))
+    })?;
+
+    let keystore = state.keystore.read().await;
+    let (output_hex, signature_hex) = keystore
+        .vrf_generate(req.alpha.as_bytes())
+        .map_err(|e| ApiError::InternalError(format!("VRF generation failed: {}", e)))?;
+
+    tracing::info!(alpha = %req.alpha, "VRF generated");
+
+    Ok(Json(VrfGenerateResponse { output_hex, signature_hex }))
+}
+
+/// GET /vrf/pubkey — Get VRF public key (public, no auth)
+async fn vrf_pubkey_handler(
+    State(state): State<AppState>,
+) -> Result<Json<VrfPublicKeyResponse>, ApiError> {
+    if !state.is_ready() {
+        return Err(ApiError::Unauthorized(
+            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string()
+        ));
+    }
+
+    let keystore = state.keystore.read().await;
+    let vrf_public_key_hex = keystore
+        .vrf_public_key_hex()
+        .map_err(|e| ApiError::InternalError(format!("VRF public key derivation failed: {}", e)))?;
+
+    Ok(Json(VrfPublicKeyResponse { vrf_public_key_hex }))
 }
 
 /// Encrypt plaintext data

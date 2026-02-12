@@ -1019,3 +1019,35 @@ pub async fn batch_get_public_storage(
 
     Ok(Json(PublicStorageBatchResponse { results }))
 }
+
+/// GET /vrf/pubkey — proxy to keystore's VRF public key endpoint
+pub async fn vrf_pubkey(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let keystore_url = state
+        .config
+        .keystore_base_url
+        .as_ref()
+        .ok_or((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Keystore is not configured".to_string(),
+        ))?;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("{}/vrf/pubkey", keystore_url))
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .map_err(|e| {
+            error!("Failed to reach keystore for VRF pubkey: {}", e);
+            (StatusCode::BAD_GATEWAY, format!("Keystore unreachable: {}", e))
+        })?;
+
+    let body: serde_json::Value = resp.json().await.map_err(|e| {
+        error!("Failed to parse keystore VRF pubkey response: {}", e);
+        (StatusCode::BAD_GATEWAY, format!("Invalid keystore response: {}", e))
+    })?;
+
+    Ok(Json(body))
+}

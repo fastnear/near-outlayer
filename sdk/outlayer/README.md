@@ -199,6 +199,36 @@ cargo build --target wasm32-wasip2 --release
 echo '{"action":"increment"}' | wasmtime target/wasm32-wasip2/release/my-outlayer-app.wasm
 ```
 
+## Publishing to crates.io
+
+```bash
+cd sdk/outlayer
+
+# 1. Bump version in Cargo.toml
+#    0.1.1 -> 0.1.2 (patch: bug fixes)
+#    0.1.1 -> 0.2.0 (minor: new features like VRF)
+
+# 2. Verify it compiles for the target
+cargo check --target wasm32-wasip2
+
+# 3. Dry-run publish (checks packaging without uploading)
+cargo publish --dry-run
+
+# 4. Publish
+cargo publish
+```
+
+**Before publishing:**
+- Ensure `version` in `Cargo.toml` is bumped
+- Ensure `wit/` directory is included (check that `.gitignore` doesn't exclude it)
+- WIT files (`wit/world.wit`, `wit/deps/*.wit`) must be in the published crate — `wit-bindgen` reads them at compile time
+
+**If WIT files are missing from the published crate**, add to `Cargo.toml`:
+```toml
+[package]
+include = ["src/**/*", "wit/**/*", "Cargo.toml", "README.md", "LICENSE*"]
+```
+
 ## Documentation
 
 - [OutLayer Docs](https://outlayer.fastnear.com/docs) - Full documentation

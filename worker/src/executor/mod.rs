@@ -44,6 +44,17 @@ use crate::outlayer_storage::client::StorageConfig;
 mod wasi_p1;
 mod wasi_p2;
 
+/// VRF configuration for host functions
+#[derive(Clone)]
+pub struct VrfConfig {
+    pub keystore_url: String,
+    pub keystore_auth_token: String,
+    pub tee_session_id: Option<String>,
+    pub request_id: u64,
+    /// Signer account ID (included in alpha for per-user VRF binding)
+    pub sender_id: String,
+}
+
 /// Execution context with optional dependencies for WASM execution
 ///
 /// This struct holds external services that WASM code can use through host functions.
@@ -51,10 +62,7 @@ mod wasi_p2;
 /// - RPC Proxy: Allows WASM to make NEAR RPC calls without exposing API keys
 /// - Storage: Persistent storage for projects and standalone WASM
 /// - Compiled Cache: Pre-compiled WASM components for ~10x faster startup
-///
-/// Future extensions might include:
-/// - External API clients
-/// - Metrics/logging services
+/// - VRF: Verifiable random function via keystore
 #[derive(Clone)]
 pub struct ExecutionContext {
     /// RPC proxy for NEAR blockchain access (only used in WASI P2)
@@ -65,6 +73,8 @@ pub struct ExecutionContext {
     pub runtime_handle: tokio::runtime::Handle,
     /// Compiled component cache for fast WASM startup
     pub compiled_cache: Option<Arc<Mutex<CompiledCache>>>,
+    /// VRF configuration (only used in WASI P2, requires keystore + request_id)
+    pub vrf_config: Option<VrfConfig>,
 }
 
 impl ExecutionContext {
@@ -76,6 +86,7 @@ impl ExecutionContext {
             storage_config: None,
             runtime_handle,
             compiled_cache: None,
+            vrf_config: None,
         }
     }
 
@@ -153,6 +164,7 @@ impl Executor {
     /// * `build_target` - Build target (wasm32-wasip1, wasm32-wasip2)
     /// * `response_format` - Output format (Bytes, Text, Json)
     /// * `storage_config` - Optional per-execution storage config (overrides context)
+    /// * `vrf_config` - Optional per-execution VRF config (overrides context)
     pub async fn execute(
         &self,
         wasm_bytes: &[u8],
@@ -163,6 +175,7 @@ impl Executor {
         build_target: Option<&str>,
         response_format: &ResponseFormat,
         storage_config: Option<StorageConfig>,
+        vrf_config: Option<VrfConfig>,
     ) -> Result<ExecutionResult> {
         info!(
             "Starting WASM execution: {} instructions, {} MB memory, {} seconds, target: {:?}, format: {:?}",
@@ -172,7 +185,7 @@ impl Executor {
         let start = Instant::now();
 
         // Try to execute with different WASI versions
-        let result = self.execute_async(wasm_bytes, wasm_checksum, input_data, limits, env_vars, build_target, storage_config).await;
+        let result = self.execute_async(wasm_bytes, wasm_checksum, input_data, limits, env_vars, build_target, storage_config, vrf_config).await;
 
         let execution_time_ms = start.elapsed().as_millis() as u64;
 
@@ -275,28 +288,31 @@ impl Executor {
         env_vars: Option<HashMap<String, String>>,
         build_target: Option<&str>,
         storage_config: Option<StorageConfig>,
+        vrf_config: Option<VrfConfig>,
     ) -> Result<(Vec<u8>, u64, Option<u64>)> {
-        // Create effective execution context with storage_config override
-        let effective_ctx: Option<ExecutionContext> = if let Some(storage_cfg) = storage_config {
-            // Create new context with storage config (merge with existing if present)
+        // Create effective execution context with per-execution overrides
+        let has_overrides = storage_config.is_some() || vrf_config.is_some();
+        let effective_ctx: Option<ExecutionContext> = if has_overrides {
             if let Some(ref base_ctx) = self.context {
                 Some(ExecutionContext {
                     outlayer_rpc: base_ctx.outlayer_rpc.clone(),
-                    storage_config: Some(storage_cfg),
+                    storage_config: storage_config.or_else(|| base_ctx.storage_config.clone()),
                     runtime_handle: base_ctx.runtime_handle.clone(),
                     compiled_cache: base_ctx.compiled_cache.clone(),
+                    vrf_config: vrf_config.or_else(|| base_ctx.vrf_config.clone()),
                 })
             } else {
-                // No base context, create minimal one with just storage
+                // No base context, create minimal one with overrides
                 Some(ExecutionContext {
                     outlayer_rpc: None,
-                    storage_config: Some(storage_cfg),
+                    storage_config,
                     runtime_handle: tokio::runtime::Handle::current(),
                     compiled_cache: None,
+                    vrf_config,
                 })
             }
         } else {
-            // No override, use existing context as-is
+            // No overrides, use existing context as-is
             self.context.clone()
         };
 
