@@ -417,18 +417,6 @@ export default function ProjectsPage() {
         </div>
       )}
 
-      {/* Add Version Form */}
-      {addVersionForProject && (
-        <div className="mt-6">
-          <AddVersionForm
-            projectName={addVersionForProject}
-            onSubmit={handleAddVersion}
-            onCancel={() => setAddVersionForProject(null)}
-            isSubmitting={isSubmitting}
-          />
-        </div>
-      )}
-
       {/* Projects List */}
       {isConnected && (
         <div className="mt-8">
@@ -462,22 +450,33 @@ export default function ProjectsPage() {
           ) : (
             <div className="space-y-4">
               {projects.map((project) => (
-                <ProjectCard
-                  key={project.project_id}
-                  project={project}
-                  versions={projectVersions[project.project_id] || []}
-                  versionCount={versionCounts[project.project_id] || 0}
-                  projectStorage={projectStorage[project.project_id]}
-                  loadingVersions={loadingVersionsFor === project.project_id}
-                  expanded={expandedProject === project.project_id}
-                  onToggleExpand={() => setExpandedProject(
-                    expandedProject === project.project_id ? null : project.project_id
+                <div key={project.project_id}>
+                  <ProjectCard
+                    project={project}
+                    versions={projectVersions[project.project_id] || []}
+                    versionCount={versionCounts[project.project_id] || 0}
+                    projectStorage={projectStorage[project.project_id]}
+                    loadingVersions={loadingVersionsFor === project.project_id}
+                    expanded={expandedProject === project.project_id}
+                    onToggleExpand={() => setExpandedProject(
+                      expandedProject === project.project_id ? null : project.project_id
+                    )}
+                    onAddVersion={() => setAddVersionForProject(project.name)}
+                    onSetActiveVersion={(wasmHash) => handleSetActiveVersion(project.name, wasmHash)}
+                    onRemoveVersion={(wasmHash) => handleRemoveVersion(project.name, wasmHash)}
+                    onDeleteProject={() => handleDeleteProject(project.name)}
+                  />
+                  {addVersionForProject === project.name && (
+                    <div className="mt-2">
+                      <AddVersionForm
+                        projectName={addVersionForProject}
+                        onSubmit={handleAddVersion}
+                        onCancel={() => setAddVersionForProject(null)}
+                        isSubmitting={isSubmitting}
+                      />
+                    </div>
                   )}
-                  onAddVersion={() => setAddVersionForProject(project.name)}
-                  onSetActiveVersion={(wasmHash) => handleSetActiveVersion(project.name, wasmHash)}
-                  onRemoveVersion={(wasmHash) => handleRemoveVersion(project.name, wasmHash)}
-                  onDeleteProject={() => handleDeleteProject(project.name)}
-                />
+                </div>
               ))}
             </div>
           )}
