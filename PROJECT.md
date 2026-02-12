@@ -25,7 +25,7 @@ Two integration modes:
 | `contract/` | Main NEAR contract (`outlayer.near`) — execution requests, secrets, projects, payments |
 | `coordinator/` | HTTP API server — task queue (PostgreSQL + Redis), WASM cache, HTTPS API gateway |
 | `worker/` | Polls tasks, compiles GitHub repos, executes WASM in TEE (Intel TDX via Phala Cloud) |
-| `keystore-worker/` | Secrets decryption service running in TEE, accessed via coordinator proxy |
+| `keystore-worker/` | Secrets decryption service running in TEE, accessed directly by worker (not via coordinator) |
 | `register-contract/` | NEAR contract for TEE worker key registration with TDX quote verification (deployed to `worker.outlayer.near`) |
 | `keystore-dao-contract/` | DAO governance contract for keystore worker registration |
 | `dashboard/` | Next.js UI — project management, secrets, executions, earnings, documentation |
