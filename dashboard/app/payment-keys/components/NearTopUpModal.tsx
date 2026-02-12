@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { actionCreators } from '@near-js/transactions';
 
 interface NearTopUpModalProps {
@@ -32,32 +32,8 @@ export function NearTopUpModal({
   onCancel,
 }: NearTopUpModalProps) {
   const [nearAmount, setNearAmount] = useState<string>('1');
-  const [nearPrice, setNearPrice] = useState<number | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // Fetch NEAR price on mount
-  useEffect(() => {
-    async function fetchPrice() {
-      try {
-        // Fetch from coordinator oracle API
-        const response = await fetch('https://api.outlayer.fastnear.com/oracle/price/near');
-        if (response.ok) {
-          const data = await response.json();
-          setNearPrice(data.price);
-        }
-      } catch (err) {
-        console.error('Failed to fetch NEAR price:', err);
-        // Fallback to a reasonable estimate
-        setNearPrice(null);
-      }
-    }
-    fetchPrice();
-  }, []);
-
-  const expectedUsdc = nearPrice && nearAmount
-    ? (parseFloat(nearAmount) * nearPrice).toFixed(2)
-    : null;
 
   const handleTopUp = async () => {
     if (isSubmitting) return;
@@ -127,19 +103,6 @@ export function NearTopUpModal({
             Minimum 0.035 NEAR (includes 0.025 NEAR fee)
           </p>
         </div>
-
-        {expectedUsdc && (
-          <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg">
-            <p className="text-sm text-green-800">
-              Estimated: ~${expectedUsdc} USDC
-              {nearPrice && (
-                <span className="text-xs text-green-600 block">
-                  (1 NEAR = ${nearPrice.toFixed(2)})
-                </span>
-              )}
-            </p>
-          </div>
-        )}
 
         <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
           <p className="text-sm text-yellow-800">
