@@ -2,6 +2,10 @@
 
 Docker images for NEAR OutLayer components.
 
+## Production Releases
+
+See [DOCKER_RELEASE.md](./DOCKER_RELEASE.md) for building verified Docker images with Sigstore attestation.
+
 ## Files
 
 - **Dockerfile.coordinator** - Production image for Coordinator API

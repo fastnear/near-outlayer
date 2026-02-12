@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
 #
-# Automated deployment to Phala Cloud with RTMR3 whitelisting and DAO voting
+# Automated deployment to Phala Cloud with TEE measurements whitelisting and DAO voting
 #
 # Usage:
-#   ./scripts/deploy_phala.sh keystore [testnet|mainnet] [instance-name]
-#   ./scripts/deploy_phala.sh worker [testnet|mainnet] [instance-name]
+#   ./scripts/deploy_phala.sh keystore [testnet|mainnet] [instance-name] [--version vX.Y.Z]
+#   ./scripts/deploy_phala.sh worker [testnet|mainnet] [instance-name] [--version vX.Y.Z]
+#
+# Options:
+#   --version     Use specific version from Docker Hub (fetches digest automatically)
+#   --no-build    Skip local Docker build (use image from docker-compose)
+#   --dry-run     Only show digest and verification command, don't deploy
 #
 # Examples:
-#   ./scripts/deploy_phala.sh keystore testnet            # creates outlayer-testnet-keystore
-#   ./scripts/deploy_phala.sh keystore testnet keystore2  # creates outlayer-testnet-keystore2
-#   ./scripts/deploy_phala.sh worker testnet              # creates outlayer-testnet-worker
-#   ./scripts/deploy_phala.sh worker testnet worker2      # creates outlayer-testnet-worker2
+#   ./scripts/deploy_phala.sh worker testnet --version v0.1.1              # deploy specific version
+#   ./scripts/deploy_phala.sh worker testnet --version v0.1.1 --dry-run    # show digest only
+#   ./scripts/deploy_phala.sh worker mainnet worker3 --version v1.0.0
+#   ./scripts/deploy_phala.sh keystore testnet                             # build + deploy
 #
 
 set -euo pipefail
@@ -23,15 +28,46 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-# Check arguments
-if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
-    echo -e "${RED}Usage: $0 <keystore|worker> [testnet|mainnet] [instance-name]${NC}"
+# Docker Hub org
+DOCKERHUB_ORG="outlayer"
+
+# Parse arguments
+SKIP_BUILD=false
+DEPLOY_VERSION=""
+DRY_RUN=false
+POSITIONAL_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --no-build)
+            SKIP_BUILD=true
+            shift
+            ;;
+        --version)
+            DEPLOY_VERSION="$2"
+            SKIP_BUILD=true
+            shift 2
+            ;;
+        --dry-run|--info)
+            DRY_RUN=true
+            shift
+            ;;
+        *)
+            POSITIONAL_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+# Check positional arguments
+if [ "${#POSITIONAL_ARGS[@]}" -lt 1 ] || [ "${#POSITIONAL_ARGS[@]}" -gt 3 ]; then
+    echo -e "${RED}Usage: $0 <keystore|worker> [testnet|mainnet] [instance-name] [--version vX.Y.Z]${NC}"
     exit 1
 fi
 
-COMPONENT="$1"
-NETWORK="${2:-testnet}"
-INSTANCE_NAME="${3:-}"
+COMPONENT="${POSITIONAL_ARGS[0]}"
+NETWORK="${POSITIONAL_ARGS[1]:-testnet}"
+INSTANCE_NAME="${POSITIONAL_ARGS[2]:-}"
 
 # Set account suffix based on network
 if [ "$NETWORK" = "mainnet" ]; then
@@ -43,6 +79,12 @@ fi
 # Validate component
 if [[ "$COMPONENT" != "keystore" && "$COMPONENT" != "worker" ]]; then
     echo -e "${RED}Error: Component must be 'keystore' or 'worker'${NC}"
+    exit 1
+fi
+
+# Dry-run requires --version
+if [ "$DRY_RUN" = true ] && [ -z "$DEPLOY_VERSION" ]; then
+    echo -e "${RED}Error: --dry-run requires --version${NC}"
     exit 1
 fi
 
@@ -80,9 +122,92 @@ echo -e "${CYAN}🚀 Phala Deployment: ${COMPONENT} (${NETWORK})${NC}"
 echo -e "${CYAN}========================================${NC}"
 echo ""
 
-# Step 1: Build and push Docker image
-echo -e "${YELLOW}[1/7] Building and pushing Docker image...${NC}"
-$BUILD_SCRIPT $BUILD_ARGS
+# Step 1: Prepare Docker image
+COMPOSE_MODIFIED=false
+ORIGINAL_IMAGE_LINE=""
+
+# Cleanup function to restore docker-compose (must be set BEFORE any modifications)
+cleanup() {
+    if [ "$COMPOSE_MODIFIED" = true ] && [ -f "docker/${COMPOSE_FILE}.bak" ]; then
+        mv "docker/${COMPOSE_FILE}.bak" "docker/$COMPOSE_FILE"
+        echo -e "${GREEN}✓ Restored original $COMPOSE_FILE${NC}"
+    fi
+}
+trap cleanup EXIT INT TERM
+
+if [ -n "$DEPLOY_VERSION" ]; then
+    # Fetch digest from GitHub Release (verified by Sigstore)
+    echo -e "${YELLOW}[1/7] Fetching digest for version $DEPLOY_VERSION from GitHub...${NC}"
+
+    if [ "$COMPONENT" = "worker" ]; then
+        IMAGE_NAME="${DOCKERHUB_ORG}/near-outlayer-worker"
+    else
+        IMAGE_NAME="${DOCKERHUB_ORG}/near-outlayer-keystore"
+    fi
+
+    # Normalize version (add 'v' prefix if missing)
+    VERSION_TAG="$DEPLOY_VERSION"
+    if [[ ! "$VERSION_TAG" =~ ^v ]]; then
+        VERSION_TAG="v${VERSION_TAG}"
+    fi
+
+    # Get digest from GitHub release body (format: "| worker | `sha256:...` |" or "| keystore | `sha256:...` |")
+    RELEASE_BODY=$(gh release view "$VERSION_TAG" --repo fastnear/near-outlayer --json body -q '.body' 2>/dev/null || echo "")
+
+    if [ -z "$RELEASE_BODY" ]; then
+        echo -e "${RED}Error: Could not fetch GitHub release $VERSION_TAG${NC}"
+        echo "Make sure the release exists: https://github.com/fastnear/near-outlayer/releases/tag/$VERSION_TAG"
+        exit 1
+    fi
+
+    # Extract digest for this component from release body
+    DIGEST=$(echo "$RELEASE_BODY" | grep -i "| $COMPONENT " | grep -oE 'sha256:[a-f0-9]{64}' | head -1 || echo "")
+
+    if [ -z "$DIGEST" ]; then
+        echo -e "${RED}Error: Could not find digest for '$COMPONENT' in release $VERSION_TAG${NC}"
+        echo "Release body:"
+        echo "$RELEASE_BODY" | head -20
+        exit 1
+    fi
+
+    echo -e "${GREEN}✓ Found digest: ${DIGEST}${NC}"
+
+    # Show attestation verification command
+    echo ""
+    echo -e "${BLUE}Verify attestation with:${NC}"
+    echo "  gh attestation verify oci://docker.io/${IMAGE_NAME}@${DIGEST} -R fastnear/near-outlayer"
+    echo ""
+    echo -e "${BLUE}Docker image reference:${NC}"
+    echo "  docker.io/${IMAGE_NAME}@${DIGEST}"
+    echo ""
+
+    # Exit early if dry-run
+    if [ "$DRY_RUN" = true ]; then
+        echo -e "${GREEN}Dry run complete. No deployment performed.${NC}"
+        exit 0
+    fi
+
+    # Backup original image line and update docker-compose temporarily
+    COMPOSE_PATH="docker/$COMPOSE_FILE"
+    ORIGINAL_IMAGE_LINE=$(grep "image:" "$COMPOSE_PATH" | head -1)
+    NEW_IMAGE="docker.io/${IMAGE_NAME}@${DIGEST}"
+
+    # Update docker-compose with digest
+    sed -i.bak "s|image:.*|image: ${NEW_IMAGE}|" "$COMPOSE_PATH"
+    COMPOSE_MODIFIED=true
+
+    echo -e "${GREEN}✓ Updated $COMPOSE_FILE with verified image${NC}"
+
+elif [ "$SKIP_BUILD" = false ] && grep -q "@sha256:" "docker/$COMPOSE_FILE" 2>/dev/null; then
+    echo -e "${YELLOW}[1/7] Skipping build (docker-compose uses @sha256: digest)${NC}"
+    echo -e "${GREEN}✓ Using verified image from $COMPOSE_FILE${NC}"
+elif [ "$SKIP_BUILD" = true ]; then
+    echo -e "${YELLOW}[1/7] Skipping build (--no-build flag)${NC}"
+    echo -e "${GREEN}✓ Using pre-built image${NC}"
+else
+    echo -e "${YELLOW}[1/7] Building and pushing Docker image...${NC}"
+    $BUILD_SCRIPT $BUILD_ARGS
+fi
 
 # Step 2: Clear phala config (required for new deployments)
 echo -e "${YELLOW}[2/7] Clearing Phala config...${NC}"
@@ -96,13 +221,17 @@ else
     echo -e "${GREEN}✓ Created empty $PHALA_CONFIG${NC}"
 fi
 
-# Step 3: Check if CVM exists and delete if needed
+# Step 3: Check if CVM already exists
 echo -e "${YELLOW}[3/7] Checking existing CVM...${NC}"
 if phala cvms get "$CVM_NAME" --json 2>/dev/null | jq -e '.success' > /dev/null 2>&1; then
-    echo -e "${YELLOW}Existing CVM found, deleting...${NC}"
-    phala cvms delete "$CVM_NAME" --yes 2>/dev/null || true
-    echo -e "${GREEN}✓ Old CVM deleted${NC}"
-    sleep 5
+    echo -e "${RED}Error: CVM '$CVM_NAME' already exists${NC}"
+    echo ""
+    echo "To update an existing CVM, delete it first:"
+    echo "  phala cvms delete $CVM_NAME --yes"
+    echo ""
+    echo "Or use a different instance name:"
+    echo "  $0 $COMPONENT $NETWORK <new-instance-name> ${DEPLOY_VERSION:+--version $DEPLOY_VERSION}"
+    exit 1
 else
     echo -e "${GREEN}✓ No existing CVM found${NC}"
 fi
@@ -118,16 +247,21 @@ phala deploy \
     --vcpu 2 \
     --memory 2G \
     --disk-size 1G \
+    --image dstack-0.5.4 \
     --kms-id phala-prod10
 
 cd ..
 echo -e "${GREEN}✓ Deployment initiated${NC}"
 
-# Step 5: Wait for CVM to be running and get RTMR3
-echo -e "${YELLOW}[5/7] Waiting for CVM to start and getting RTMR3...${NC}"
+# Step 5: Wait for CVM to be running and get TEE measurements
+echo -e "${YELLOW}[5/7] Waiting for CVM to start and getting TEE measurements...${NC}"
 
 MAX_ATTEMPTS=60
 ATTEMPT=0
+MRTD=""
+RTMR0=""
+RTMR1=""
+RTMR2=""
 RTMR3=""
 
 while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
@@ -141,12 +275,29 @@ while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
         echo ""
         echo -e "${GREEN}✓ CVM is running${NC}"
 
-        # Get attestation with RTMR3
+        # Get attestation with all measurements
         sleep 10  # Wait for attestation to be ready
-        RTMR3=$(phala cvms attestation "$CVM_NAME" --json 2>/dev/null | jq -r '.tcb_info.rtmr3 // empty' 2>/dev/null || echo "")
+        # Write to temp file: attestation JSON is ~55KB with embedded docker-compose,
+        # echo "$VAR" | jq corrupts escape sequences in app_compose field
+        ATTESTATION_TMP=$(mktemp)
+        phala cvms attestation "$CVM_NAME" --json > "$ATTESTATION_TMP" 2>/dev/null || true
 
-        if [ -n "$RTMR3" ]; then
-            echo -e "${GREEN}✓ Got RTMR3: ${RTMR3}${NC}"
+        if [ -s "$ATTESTATION_TMP" ]; then
+            MRTD=$(jq -r '.tcb_info.mrtd // empty' "$ATTESTATION_TMP" 2>/dev/null || echo "")
+            RTMR0=$(jq -r '.tcb_info.rtmr0 // empty' "$ATTESTATION_TMP" 2>/dev/null || echo "")
+            RTMR1=$(jq -r '.tcb_info.rtmr1 // empty' "$ATTESTATION_TMP" 2>/dev/null || echo "")
+            RTMR2=$(jq -r '.tcb_info.rtmr2 // empty' "$ATTESTATION_TMP" 2>/dev/null || echo "")
+            RTMR3=$(jq -r '.tcb_info.rtmr3 // empty' "$ATTESTATION_TMP" 2>/dev/null || echo "")
+        fi
+        rm -f "$ATTESTATION_TMP"
+
+        if [ -n "$MRTD" ] && [ -n "$RTMR3" ]; then
+            echo -e "${GREEN}✓ Got TEE measurements:${NC}"
+            echo -e "   MRTD:  ${MRTD}"
+            echo -e "   RTMR0: ${RTMR0}"
+            echo -e "   RTMR1: ${RTMR1}"
+            echo -e "   RTMR2: ${RTMR2}"
+            echo -e "   RTMR3: ${RTMR3}"
             break
         fi
     fi
@@ -156,21 +307,21 @@ done
 
 if [ -z "$RTMR3" ]; then
     echo ""
-    echo -e "${RED}Error: Failed to get RTMR3 after $MAX_ATTEMPTS attempts${NC}"
+    echo -e "${RED}Error: Failed to get TEE measurements after $MAX_ATTEMPTS attempts${NC}"
     exit 1
 fi
 
-# Step 6: Add RTMR3 to DAO (if not already approved)
-echo -e "${YELLOW}[6/7] Checking if RTMR3 is already approved...${NC}"
+# Step 6: Add TEE measurements to contract (if not already approved)
+echo -e "${YELLOW}[6/7] Checking if TEE measurements are already approved...${NC}"
 
-RTMR3_APPROVED=$(near contract call-function as-read-only "$DAO_CONTRACT" is_rtmr3_approved \
-    json-args "{\"rtmr3\": \"$RTMR3\"}" \
+MEASUREMENTS_APPROVED=$(near contract call-function as-read-only "$DAO_CONTRACT" is_measurements_approved \
+    json-args "{\"measurements\": {\"mrtd\": \"$MRTD\", \"rtmr0\": \"$RTMR0\", \"rtmr1\": \"$RTMR1\", \"rtmr2\": \"$RTMR2\", \"rtmr3\": \"$RTMR3\"}}" \
     network-config "$NETWORK" now 2>/dev/null | grep -o 'true\|false' | head -1 || echo "false")
 
-if [ "$RTMR3_APPROVED" = "true" ]; then
-    echo -e "${GREEN}✓ RTMR3 already approved, skipping add_approved_rtmr3${NC}"
+if [ "$MEASUREMENTS_APPROVED" = "true" ]; then
+    echo -e "${GREEN}✓ Measurements already approved, skipping${NC}"
 else
-    echo -e "${YELLOW}RTMR3 not approved, adding to DAO contract...${NC}"
+    echo -e "${YELLOW}Measurements not approved, adding to contract...${NC}"
 
     # If this is an additional instance (has INSTANCE_NAME), don't clear others
     if [ -n "$INSTANCE_NAME" ]; then
@@ -179,15 +330,15 @@ else
         CLEAR_OTHERS="true"
     fi
 
-    near contract call-function as-transaction "$DAO_CONTRACT" add_approved_rtmr3 \
-        json-args "{\"rtmr3\": \"$RTMR3\", \"clear_others\": $CLEAR_OTHERS}" \
+    near contract call-function as-transaction "$DAO_CONTRACT" add_approved_measurements \
+        json-args "{\"measurements\": {\"mrtd\": \"$MRTD\", \"rtmr0\": \"$RTMR0\", \"rtmr1\": \"$RTMR1\", \"rtmr2\": \"$RTMR2\", \"rtmr3\": \"$RTMR3\"}, \"clear_others\": $CLEAR_OTHERS}" \
         prepaid-gas '30.0 Tgas' \
         attached-deposit '0 NEAR' \
         sign-as "$SIGNER_ACCOUNT" \
         network-config "$NETWORK" \
         sign-with-keychain send
 
-    echo -e "${GREEN}✓ RTMR3 added to DAO${NC}"
+    echo -e "${GREEN}✓ Measurements added to contract${NC}"
 fi
 
 # Step 7: Restart CVM (and wait for proposal if keystore)
@@ -271,6 +422,10 @@ echo -e "${CYAN}✅ Deployment Complete!${NC}"
 echo -e "${CYAN}========================================${NC}"
 echo ""
 echo -e "CVM Name: ${GREEN}${CVM_NAME}${NC}"
+echo -e "MRTD:     ${GREEN}${MRTD}${NC}"
+echo -e "RTMR0:    ${GREEN}${RTMR0}${NC}"
+echo -e "RTMR1:    ${GREEN}${RTMR1}${NC}"
+echo -e "RTMR2:    ${GREEN}${RTMR2}${NC}"
 echo -e "RTMR3:    ${GREEN}${RTMR3}${NC}"
 if [ "$COMPONENT" = "keystore" ]; then
     echo -e "Proposal: ${GREEN}${PROPOSAL_ID}${NC}"

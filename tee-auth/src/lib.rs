@@ -96,7 +96,7 @@ pub async fn check_access_key_on_contract(
         "method": "query",
         "params": {
             "request_type": "view_access_key",
-            "finality": "final",
+            "finality": "optimistic",
             "account_id": account_id,
             "public_key": near_key
         }
@@ -146,6 +146,57 @@ pub async fn check_access_key_on_contract(
     } else {
         Ok(false)
     }
+}
+
+/// Check if a public key exists on a NEAR account, with retry for finality lag.
+///
+/// Creates its own HTTP client to avoid reqwest version conflicts between crates.
+/// Retries up to 3 times with 3s delay when key is not found (may not be visible yet).
+///
+/// # Arguments
+/// * `rpc_url` - NEAR RPC URL (e.g., "https://rpc.mainnet.near.org")
+/// * `account_id` - operator account (e.g., "worker.outlayer.near")
+/// * `public_key` - "ed25519:..." format
+pub async fn check_access_key_with_retry(
+    rpc_url: &str,
+    account_id: &str,
+    public_key: &str,
+) -> Result<bool, TeeAuthError> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| TeeAuthError::NearRpcError(format!("HTTP client error: {}", e)))?;
+
+    const MAX_RETRIES: u32 = 3;
+    const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
+
+    for attempt in 1..=MAX_RETRIES {
+        match check_access_key_on_contract(&client, rpc_url, account_id, public_key).await {
+            Ok(true) => return Ok(true),
+            Ok(false) if attempt < MAX_RETRIES => {
+                tracing::info!(
+                    attempt = attempt,
+                    public_key = %public_key,
+                    account_id = %account_id,
+                    "Key not yet visible on-chain, retrying in {}s...",
+                    RETRY_DELAY.as_secs()
+                );
+                tokio::time::sleep(RETRY_DELAY).await;
+            }
+            Ok(false) => return Ok(false),
+            Err(e) if attempt < MAX_RETRIES => {
+                tracing::warn!(
+                    attempt = attempt,
+                    error = %e,
+                    "NEAR RPC check failed, retrying..."
+                );
+                tokio::time::sleep(RETRY_DELAY).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    Ok(false)
 }
 
 /// Parse public key bytes from "ed25519:..." (base58) or raw hex format.

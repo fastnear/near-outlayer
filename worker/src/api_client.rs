@@ -301,6 +301,7 @@ pub enum ExecutionOutput {
 }
 
 /// Project UUID info from coordinator
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectUuidInfo {
     pub project_id: String,
@@ -491,18 +492,6 @@ impl ApiClient {
         let session_id = self.do_tee_challenge_response("workers", public_key_bytes, signing_key).await?;
         *self.tee_session_id.lock().unwrap() = Some(session_id.clone());
         tracing::info!("TEE session registered with coordinator: {}", session_id);
-        Ok(session_id)
-    }
-
-    /// Register a TEE session with the keystore-worker (via coordinator proxy).
-    /// Returns the session ID (caller must pass it to KeystoreClient).
-    pub async fn register_keystore_tee_session(
-        &self,
-        public_key_bytes: &[u8; 32],
-        signing_key: &ed25519_dalek::SigningKey,
-    ) -> Result<String> {
-        let session_id = self.do_tee_challenge_response("keystore", public_key_bytes, signing_key).await?;
-        tracing::info!("TEE session registered with keystore: {}", session_id);
         Ok(session_id)
     }
 
@@ -1779,10 +1768,9 @@ impl ApiClient {
         }
 
         let response = self
-            .client
-            .get(&url)
+            .add_auth_headers(self.client.get(&url))
             .query(&[("repo", repo), ("commit", commit)])
-            .send() // Note: This endpoint is public (no auth token needed)
+            .send()
             .await
             .context("Failed to send resolve-branch request")?;
 
@@ -1821,6 +1809,7 @@ impl ApiClient {
     /// * `Ok(Some(ProjectInfo))` - Project found with UUID and active version
     /// * `Ok(None)` - Project not found
     /// * `Err(_)` - API error
+    #[allow(dead_code)]
     pub async fn resolve_project_uuid(&self, project_id: &str) -> Result<Option<ProjectUuidInfo>> {
         let url = format!("{}/projects/uuid", self.base_url);
 

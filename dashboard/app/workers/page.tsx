@@ -83,10 +83,28 @@ export default function WorkersPage() {
                       </td>
                     </tr>
                   ) : (
-                    workers.map((worker) => (
+                    workers.map((worker) => {
+                      // Extract app_id from worker_id (format: network-type-app_id)
+                      const parts = worker.worker_id.split('-');
+                      const appId = parts.length >= 3 ? parts.slice(2).join('-') : null;
+                      const isPhalaAppId = appId && /^[a-f0-9]{40}$/i.test(appId);
+
+                      return (
                       <tr key={worker.worker_id}>
                         <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-900 font-mono">
-                          {worker.worker_id.substring(0, 12)}...
+                          {isPhalaAppId ? (
+                            <a
+                              href={`https://trust.phala.com/app/${appId}?selected=app-code`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-blue-600 hover:text-blue-800 hover:underline"
+                              title="Verify TEE attestation on Phala Trust"
+                            >
+                              {worker.worker_id}
+                            </a>
+                          ) : (
+                            worker.worker_id
+                          )}
                         </td>
                         <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-900">
                           {worker.total_tasks_completed}
@@ -101,7 +119,7 @@ export default function WorkersPage() {
                           {new Date(worker.last_heartbeat_at).toLocaleString()}
                         </td>
                       </tr>
-                    ))
+                    );})
                   )}
                 </tbody>
               </table>

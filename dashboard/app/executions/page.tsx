@@ -539,7 +539,7 @@ export default function JobsPage() {
                             {effectiveColumns.worker && (
                               <td className="px-3 py-4 text-sm text-gray-500 font-mono">
                                 <div className="max-w-[100px] truncate" title={job.worker_id || 'N/A'}>
-                                  {job.worker_id || 'N/A'}
+                                  {job.worker_id ? job.worker_id.split('-').pop() : 'N/A'}
                                 </div>
                               </td>
                             )}

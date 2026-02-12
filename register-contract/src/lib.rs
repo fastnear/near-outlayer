@@ -1,5 +1,4 @@
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
-use near_sdk::collections::UnorderedSet;
 use near_sdk::serde::{Deserialize, Serialize};
 use near_sdk::{env, near_bindgen, AccountId, Allowance, NearToken, Promise, PublicKey, BorshStorageKey};
 use schemars::JsonSchema;
@@ -23,8 +22,30 @@ register_custom_getrandom!(randomness_unsupported);
 
 #[derive(BorshSerialize, BorshStorageKey)]
 #[borsh(crate = "near_sdk::borsh")]
+#[allow(dead_code)] // ApprovedRtmr3 used only in migration deserialization
 enum StorageKey {
-    ApprovedRtmr3
+    ApprovedRtmr3,
+}
+
+/// Full TEE measurements for verifying the entire dstack environment.
+/// All fields are 96 hex characters (48 bytes).
+///
+/// Without verifying MRTD + RTMR0-2, an attacker can run a dev dstack image
+/// (with SSH enabled), connect to the container, and modify the running code
+/// while RTMR3 still passes because the docker-compose is the same.
+#[derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize, JsonSchema, Clone, PartialEq, Eq, Debug)]
+#[serde(crate = "near_sdk::serde")]
+pub struct ApprovedMeasurements {
+    /// MRTD - Virtual firmware (TDX module) identity
+    pub mrtd: String,
+    /// RTMR0 - Bootloader, firmware config
+    pub rtmr0: String,
+    /// RTMR1 - OS kernel, boot params, initrd
+    pub rtmr1: String,
+    /// RTMR2 - OS applications layer
+    pub rtmr2: String,
+    /// RTMR3 - Runtime events (compose-hash, key-provider)
+    pub rtmr3: String,
 }
 
 /// Register Contract - TEE Worker Key Registration
@@ -36,14 +57,14 @@ enum StorageKey {
 /// 1. Worker generates keypair INSIDE TEE (private key never leaves TEE)
 /// 2. Worker generates TDX quote with public key embedded in report_data
 /// 3. This contract verifies TDX quote signature (Intel cryptographic proof)
-/// 4. This contract extracts RTMR3 and checks it against approved list
+/// 4. This contract extracts MRTD + RTMR0-3 and checks them against approved measurements list
 /// 5. This contract adds public key to itself (current_account_id) with permissions for offchainvm_contract_id
 /// 6. Result: Public key is cryptographically proven to be generated in approved TEE
 ///
 /// # Usage
 /// 1. Deploy contract: `near deploy worker.outlayer.testnet --wasmFile register.wasm`
 /// 2. Initialize: `near call worker.outlayer.testnet new '{"owner_id":"outlayer.testnet","init_worker_account":"init-worker.outlayer.testnet"}' --accountId outlayer.testnet`
-/// 3. Add approved RTMR3: `near call worker.outlayer.testnet add_approved_rtmr3 '{"rtmr3":"..."}' --accountId outlayer.testnet`
+/// 3. Add approved measurements: `near call worker.outlayer.testnet add_approved_measurements '{"measurements":{...}}' --accountId outlayer.testnet`
 /// 4. Init worker calls: `near call worker.outlayer.testnet register_worker_key '{"public_key":"...","tdx_quote_hex":"..."}' --accountId init-worker.outlayer.testnet`
 /// 5. Contract verifies and adds key to worker.outlayer.testnet with permissions for outlayer.testnet
 #[near_bindgen]
@@ -55,9 +76,9 @@ pub struct RegisterContract {
     /// Init worker account that can call register_worker_key
     pub init_worker_account: AccountId,
 
-    /// List of approved RTMR3 measurements for worker registration
-    /// Format: 96 hex characters (48 bytes)
-    pub approved_rtmr3: UnorderedSet<String>,
+    /// Full TEE measurements approved for worker registration.
+    /// Each entry contains MRTD + RTMR0-3 (all must match for registration).
+    pub approved_measurements: Vec<ApprovedMeasurements>,
 
     /// Quote collateral data (cached, updated periodically by owner)
     /// This is Intel's reference data needed for TDX quote verification
@@ -77,7 +98,7 @@ impl Default for RegisterContract {
 pub struct WorkerKeyInfo {
     #[schemars(with = "String")]
     pub public_key: PublicKey,
-    pub rtmr3: String,
+    pub measurements: ApprovedMeasurements,
     pub registered_at: u64,
 }
 
@@ -89,9 +110,9 @@ impl RegisterContract {
         Self {
             owner_id,
             init_worker_account,
-            approved_rtmr3: UnorderedSet::new(StorageKey::ApprovedRtmr3),
+            approved_measurements: Vec::new(),
             quote_collateral: None,
-            outlayer_contract_id
+            outlayer_contract_id,
         }
     }
 
@@ -134,25 +155,27 @@ impl RegisterContract {
         let collateral = self.quote_collateral.clone()
             .expect("Quote collateral required (cache via update_collateral)");
 
-        // 1. Verify TDX quote and extract RTMR3 + embedded public key
-        let (rtmr3, embedded_pubkey) =
+        // 1. Verify TDX quote and extract full measurements + embedded public key
+        let (measurements, embedded_pubkey) =
             self.verify_worker_registration(&tdx_quote_hex, &collateral);
 
-        // Log RTMR3 for admin to approve (visible even if check fails)
+        // Log verification result for admin visibility
         env::log_str(&format!(
-            "📋 Extracted RTMR3 from TDX quote: {}",
-            rtmr3
-        ));
-        env::log_str(&format!(
-            "📋 Extracted public key from quote: {:?}",
+            "📋 Verified TDX quote. Worker's TEE-generated key (from quote report_data): {:?}",
             embedded_pubkey
         ));
+        env::log_str(&format!(
+            "📋 Measurements from TDX quote: mrtd={}, rtmr0={}, rtmr1={}, rtmr2={}, rtmr3={}",
+            measurements.mrtd, measurements.rtmr0, measurements.rtmr1,
+            measurements.rtmr2, measurements.rtmr3
+        ));
 
-        // 2. Check RTMR3 is approved
+        // 2. Check full measurements are approved
         assert!(
-            self.approved_rtmr3.contains(&rtmr3),
-            "Worker RTMR3 {} not approved for registration. Contact admin to add this RTMR3.",
-            rtmr3
+            self.approved_measurements.contains(&measurements),
+            "Worker measurements not approved. MRTD={}, RTMR0={}, RTMR1={}, RTMR2={}, RTMR3={}. Contact admin to add via add_approved_measurements.",
+            measurements.mrtd, measurements.rtmr0, measurements.rtmr1,
+            measurements.rtmr2, measurements.rtmr3
         );
 
         // 3. Verify public_key matches the one embedded in TDX quote
@@ -162,8 +185,8 @@ impl RegisterContract {
         );
 
         env::log_str(&format!(
-            "✅ TEE verification passed: rtmr3={}, pubkey={:?}",
-            rtmr3, public_key
+            "✅ TEE verification passed: all 5 measurements approved, pubkey={:?}",
+            public_key
         ));
 
         // 4. Add access key to this contract's account (worker account)
@@ -197,7 +220,7 @@ impl RegisterContract {
         &self,
         quote_hex: &str,
         collateral_str: &str,
-    ) -> (String, PublicKey) {
+    ) -> (ApprovedMeasurements, PublicKey) {
         use dcap_qvl::verify;
         use hex::decode;
 
@@ -217,25 +240,29 @@ impl RegisterContract {
         let result = verify::verify(&quote_bytes, collateral.inner(), now)
             .expect("TDX quote verification failed - invalid signature or expired TCB");
 
-        // Extract RTMR3 (TEE measurement register)
-        // TDX 1.0 format: result.report.as_td10().rt_mr3
-        let rtmr3_bytes = result
+        // Extract all measurements from TDX report (MRTD + RTMR0-3)
+        let td10 = result
             .report
             .as_td10()
-            .expect("Quote is not TDX format (expected TD10)")
-            .rt_mr3;
-        let rtmr3 = hex::encode(rtmr3_bytes.to_vec());
+            .expect("Quote is not TDX format (expected TD10)");
+
+        let measurements = ApprovedMeasurements {
+            mrtd: hex::encode(td10.mr_td.to_vec()),
+            rtmr0: hex::encode(td10.rt_mr0.to_vec()),
+            rtmr1: hex::encode(td10.rt_mr1.to_vec()),
+            rtmr2: hex::encode(td10.rt_mr2.to_vec()),
+            rtmr3: hex::encode(td10.rt_mr3.to_vec()),
+        };
 
         // Extract public key from report_data (first 32 bytes)
-        let report_data = result.report.as_td10().unwrap().report_data;
-        let pubkey_bytes = &report_data[..32]; // ed25519 public key (32 bytes)
+        let pubkey_bytes = &td10.report_data[..32]; // ed25519 public key (32 bytes)
 
         // Convert bytes to NEAR PublicKey
         let pubkey_with_prefix = [&[0u8], pubkey_bytes].concat(); // Add ed25519 prefix
         let public_key = PublicKey::try_from(pubkey_with_prefix)
             .expect("Invalid ed25519 public key in quote report_data");
 
-        (rtmr3, public_key)
+        (measurements, public_key)
     }
 
     /// Update cached quote collateral
@@ -251,34 +278,48 @@ impl RegisterContract {
         env::log_str("Quote collateral updated");
     }
 
-    /// Add approved RTMR3 measurement
+    /// Add approved TEE measurements (MRTD + RTMR0-3).
     ///
-    /// RTMR3 uniquely identifies a TEE worker image (Docker + Phala config)
-    /// Get RTMR3 from first worker deployment via coordinator database:
-    /// `SELECT last_seen_rtmr3 FROM worker_auth_tokens WHERE worker_name = 'worker-1'`
-    pub fn add_approved_rtmr3(&mut self, rtmr3: String) {
+    /// All 5 measurements must match for a worker to register.
+    /// Get measurements from Phala attestation:
+    /// `phala cvms attestation <CVM_NAME> --json | jq '.tcb_info'`
+    ///
+    /// If `clear_others` is true, removes all existing entries before adding.
+    pub fn add_approved_measurements(&mut self, measurements: ApprovedMeasurements, clear_others: Option<bool>) {
         self.assert_owner();
+        Self::validate_measurements(&measurements);
 
-        // Validate RTMR3 format (96 hex chars = 48 bytes)
-        assert_eq!(
-            rtmr3.len(),
-            96,
-            "Invalid RTMR3 format: expected 96 hex characters"
-        );
-        assert!(
-            rtmr3.chars().all(|c| c.is_ascii_hexdigit()),
-            "Invalid RTMR3 format: must be hex string"
-        );
+        if clear_others.unwrap_or(false) {
+            let count = self.approved_measurements.len();
+            self.approved_measurements.clear();
+            env::log_str(&format!("Cleared {} existing measurement entries", count));
+        }
 
-        self.approved_rtmr3.insert(&rtmr3);
-        env::log_str(&format!("Approved RTMR3 added: {}", rtmr3));
+        if !self.approved_measurements.contains(&measurements) {
+            self.approved_measurements.push(measurements.clone());
+        }
+
+        env::log_str(&format!(
+            "Approved measurements added: mrtd={}, rtmr0={}, rtmr1={}, rtmr2={}, rtmr3={}",
+            measurements.mrtd, measurements.rtmr0, measurements.rtmr1,
+            measurements.rtmr2, measurements.rtmr3
+        ));
+        env::log_str(&format!("Total approved measurements: {}", self.approved_measurements.len()));
     }
 
-    /// Remove approved RTMR3
-    pub fn remove_approved_rtmr3(&mut self, rtmr3: String) {
+    /// Remove approved measurements
+    pub fn remove_approved_measurements(&mut self, measurements: ApprovedMeasurements) {
         self.assert_owner();
-        self.approved_rtmr3.remove(&rtmr3);
-        env::log_str(&format!("Approved RTMR3 removed: {}", rtmr3));
+        self.approved_measurements.retain(|m| m != &measurements);
+        env::log_str(&format!("Approved measurements removed. Remaining: {}", self.approved_measurements.len()));
+    }
+
+    /// Clear all approved measurements
+    pub fn clear_all_approved_measurements(&mut self) {
+        self.assert_owner();
+        let count = self.approved_measurements.len();
+        self.approved_measurements.clear();
+        env::log_str(&format!("Cleared all {} measurement entries", count));
     }
 
     /// Remove old worker access keys (cleanup + security revocation)
@@ -317,14 +358,14 @@ impl RegisterContract {
 
     // ========== View methods ==========
 
-    /// Get list of approved RTMR3 measurements
-    pub fn get_approved_rtmr3(&self) -> Vec<String> {
-        self.approved_rtmr3.iter().collect()
+    /// Get list of approved measurements
+    pub fn get_approved_measurements(&self) -> Vec<ApprovedMeasurements> {
+        self.approved_measurements.clone()
     }
 
-    /// Check if RTMR3 is approved
-    pub fn is_rtmr3_approved(&self, rtmr3: String) -> bool {
-        self.approved_rtmr3.contains(&rtmr3)
+    /// Check if measurements are approved
+    pub fn is_measurements_approved(&self, measurements: ApprovedMeasurements) -> bool {
+        self.approved_measurements.contains(&measurements)
     }
 
     /// Get cached collateral (if any)
@@ -346,6 +387,29 @@ impl RegisterContract {
             "Only owner can call this method"
         );
     }
+
+    fn validate_measurement_field(name: &str, value: &str) {
+        assert_eq!(
+            value.len(),
+            96,
+            "Invalid {} format: expected 96 hex characters, got {}",
+            name,
+            value.len()
+        );
+        assert!(
+            value.chars().all(|c| c.is_ascii_hexdigit()),
+            "Invalid {} format: must be hex string",
+            name
+        );
+    }
+
+    fn validate_measurements(m: &ApprovedMeasurements) {
+        Self::validate_measurement_field("mrtd", &m.mrtd);
+        Self::validate_measurement_field("rtmr0", &m.rtmr0);
+        Self::validate_measurement_field("rtmr1", &m.rtmr1);
+        Self::validate_measurement_field("rtmr2", &m.rtmr2);
+        Self::validate_measurement_field("rtmr3", &m.rtmr3);
+    }
 }
 
 
@@ -365,52 +429,111 @@ mod tests {
         builder
     }
 
+    fn dummy_measurements() -> ApprovedMeasurements {
+        ApprovedMeasurements {
+            mrtd: "a".repeat(96),
+            rtmr0: "b".repeat(96),
+            rtmr1: "c".repeat(96),
+            rtmr2: "d".repeat(96),
+            rtmr3: "e".repeat(96),
+        }
+    }
+
     #[test]
     fn test_init() {
         let context = get_context();
         testing_env!(context.build());
 
-        let contract = RegisterContract::new(accounts(1), accounts(2));
+        let contract = RegisterContract::new(accounts(1), accounts(2), accounts(3));
         assert_eq!(contract.owner_id, accounts(1));
         assert_eq!(contract.init_worker_account, accounts(2));
-        assert_eq!(contract.get_approved_rtmr3().len(), 0);
+        assert_eq!(contract.get_approved_measurements().len(), 0);
     }
 
     #[test]
-    fn test_add_approved_rtmr3() {
+    fn test_add_approved_measurements() {
         let context = get_context();
         testing_env!(context.build());
 
-        let mut contract = RegisterContract::new(accounts(1), accounts(2));
+        let mut contract = RegisterContract::new(accounts(1), accounts(2), accounts(3));
+        let m = dummy_measurements();
+        contract.add_approved_measurements(m.clone(), None);
 
-        let rtmr3 = "a".repeat(96); // Valid 96 hex chars
-        contract.add_approved_rtmr3(rtmr3.clone());
-
-        assert!(contract.is_rtmr3_approved(rtmr3));
-        assert_eq!(contract.get_approved_rtmr3().len(), 1);
+        assert!(contract.is_measurements_approved(m));
+        assert_eq!(contract.get_approved_measurements().len(), 1);
     }
 
     #[test]
-    #[should_panic(expected = "Invalid RTMR3 format")]
-    fn test_invalid_rtmr3_length() {
+    fn test_add_duplicate_measurements() {
         let context = get_context();
         testing_env!(context.build());
 
-        let mut contract = RegisterContract::new(accounts(1), accounts(2));
-        contract.add_approved_rtmr3("abc".to_string()); // Too short
+        let mut contract = RegisterContract::new(accounts(1), accounts(2), accounts(3));
+        let m = dummy_measurements();
+        contract.add_approved_measurements(m.clone(), None);
+        contract.add_approved_measurements(m.clone(), None);
+
+        assert_eq!(contract.get_approved_measurements().len(), 1);
+    }
+
+    #[test]
+    fn test_clear_others() {
+        let context = get_context();
+        testing_env!(context.build());
+
+        let mut contract = RegisterContract::new(accounts(1), accounts(2), accounts(3));
+        let m1 = dummy_measurements();
+        contract.add_approved_measurements(m1.clone(), None);
+
+        let m2 = ApprovedMeasurements { rtmr3: "f".repeat(96), ..m1 };
+        contract.add_approved_measurements(m2.clone(), Some(true));
+
+        assert_eq!(contract.get_approved_measurements().len(), 1);
+        assert!(contract.is_measurements_approved(m2));
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid mrtd format")]
+    fn test_invalid_measurement_length() {
+        let context = get_context();
+        testing_env!(context.build());
+
+        let mut contract = RegisterContract::new(accounts(1), accounts(2), accounts(3));
+        let m = ApprovedMeasurements {
+            mrtd: "abc".to_string(),
+            rtmr0: "b".repeat(96),
+            rtmr1: "c".repeat(96),
+            rtmr2: "d".repeat(96),
+            rtmr3: "e".repeat(96),
+        };
+        contract.add_approved_measurements(m, None);
     }
 
     #[test]
     #[should_panic(expected = "Only owner")]
-    fn test_non_owner_cannot_add_rtmr3() {
+    fn test_non_owner_cannot_add_measurements() {
         let mut context = get_context();
         testing_env!(context.build());
 
-        let mut contract = RegisterContract::new(accounts(1), accounts(2));
+        let mut contract = RegisterContract::new(accounts(1), accounts(2), accounts(3));
 
         // Change predecessor to non-owner
         testing_env!(context.predecessor_account_id(accounts(3)).build());
 
-        contract.add_approved_rtmr3("a".repeat(96));
+        contract.add_approved_measurements(dummy_measurements(), None);
+    }
+
+    #[test]
+    fn test_remove_measurements() {
+        let context = get_context();
+        testing_env!(context.build());
+
+        let mut contract = RegisterContract::new(accounts(1), accounts(2), accounts(3));
+        let m = dummy_measurements();
+        contract.add_approved_measurements(m.clone(), None);
+        assert_eq!(contract.get_approved_measurements().len(), 1);
+
+        contract.remove_approved_measurements(m);
+        assert_eq!(contract.get_approved_measurements().len(), 0);
     }
 }

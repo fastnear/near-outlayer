@@ -9,6 +9,7 @@ import { PaymentKeyData, PaymentKeyBalance, CreationState } from './components/t
 import { CreateKeyForm } from './components/CreateKeyForm';
 import { PaymentKeyCard } from './components/PaymentKeyCard';
 import { TopUpModal } from './components/TopUpModal';
+import { NearTopUpModal } from './components/NearTopUpModal';
 
 interface UserSecret {
   accessor: { System?: { PaymentKey?: Record<string, never> } } | Record<string, unknown>;
@@ -49,6 +50,7 @@ export default function PaymentKeysPage() {
 
   // TopUp modal
   const [topUpKey, setTopUpKey] = useState<PaymentKeyData | null>(null);
+  const [nearTopUpKey, setNearTopUpKey] = useState<PaymentKeyData | null>(null);
 
   // Load payment keys from contract
   const loadPaymentKeys = useCallback(async () => {
@@ -270,6 +272,13 @@ export default function PaymentKeysPage() {
     setSuccess('Balance topped up successfully!');
   }, [loadPaymentKeys]);
 
+  // Handle NEAR TopUp complete
+  const handleNearTopUpComplete = useCallback(() => {
+    setNearTopUpKey(null);
+    loadPaymentKeys();
+    setSuccess('NEAR deposit submitted! Balance will update after swap completes.');
+  }, [loadPaymentKeys]);
+
   // Handle continuing TopUp after first transaction (store_secrets) completed
   const handleContinueTopUp = useCallback(async () => {
     if (!pendingTopUp || !accountId) return;
@@ -489,6 +498,18 @@ export default function PaymentKeysPage() {
         />
       )}
 
+      {/* NEAR TopUp modal (mainnet only) */}
+      {nearTopUpKey && (
+        <NearTopUpModal
+          accountId={accountId!}
+          nonce={nearTopUpKey.nonce}
+          contractId={contractId}
+          signAndSendTransaction={signAndSendTransaction}
+          onComplete={handleNearTopUpComplete}
+          onCancel={() => setNearTopUpKey(null)}
+        />
+      )}
+
       {/* Payment keys list */}
       {isConnected && (
         <div className="mt-8">
@@ -531,6 +552,7 @@ export default function PaymentKeysPage() {
                   balance={balances.get(key.nonce)}
                   stablecoin={stablecoin}
                   onTopUp={() => setTopUpKey(key)}
+                  onTopUpNear={network === 'mainnet' ? () => setNearTopUpKey(key) : undefined}
                   onDelete={() => handleDeleteKey(key)}
                   coordinatorUrl={coordinatorUrl}
                   accountId={accountId!}

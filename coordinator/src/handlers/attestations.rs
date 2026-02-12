@@ -190,19 +190,10 @@ pub async fn store_attestation(
 /// Returns RTMR3 as 96 hex characters (48 bytes)
 fn parse_tdx_quote_rtmr3(quote_bytes: &[u8]) -> Result<String, String> {
     // Extract RTMR3 from raw TDX quote bytes at fixed offset
-    // TDX quote v4 structure (same as Phala dstack):
-    // - Header: 48 bytes
-    // - Body (TDReport):
-    //   - RTMR0: offset 112 (48 bytes)
-    //   - RTMR1: offset 160 (48 bytes)
-    //   - RTMR2: offset 208 (48 bytes)
-    //   - RTMR3: offset 256 (48 bytes)  ← we need this
-    //
-    // Note: We use raw offset extraction instead of dcap-qvl::quote::Quote::parse()
-    // because Phala dstack returns quote v4 which dcap-qvl doesn't support yet.
-    // Register-contract uses verify::verify() which handles this internally.
+    // TDX Quote v4 = Header (48 bytes) + TD10 Report Body (584 bytes) + Auth Data
+    // RTMR3 body offset: 472, absolute offset: 48 + 472 = 520
 
-    const RTMR3_OFFSET: usize = 256;
+    const RTMR3_OFFSET: usize = 520;
     const RTMR3_SIZE: usize = 48;
 
     if quote_bytes.len() < RTMR3_OFFSET + RTMR3_SIZE {

@@ -207,12 +207,104 @@ impl RegistrationClient {
         }
     }
 
+    /// Check if TEE measurements are approved on the register contract.
+    ///
+    /// Calls `is_measurements_approved` view method on the operator account
+    /// (where register-contract is deployed).
+    async fn check_measurements_approved(&self, measurements: &crate::tdx_attestation::TdxMeasurements) -> Result<bool> {
+        let request = methods::query::RpcQueryRequest {
+            block_reference: BlockReference::Finality(Finality::Final),
+            request: QueryRequest::CallFunction {
+                account_id: self.operator_account_id.clone(),
+                method_name: "is_measurements_approved".to_string(),
+                args: serde_json::json!({
+                    "measurements": {
+                        "mrtd": measurements.mrtd,
+                        "rtmr0": measurements.rtmr0,
+                        "rtmr1": measurements.rtmr1,
+                        "rtmr2": measurements.rtmr2,
+                        "rtmr3": measurements.rtmr3,
+                    }
+                })
+                    .to_string()
+                    .into_bytes()
+                    .into(),
+            },
+        };
+
+        let response = self
+            .rpc_client
+            .call(request)
+            .await
+            .context("Failed to call is_measurements_approved")?;
+
+        if let near_jsonrpc_primitives::types::query::QueryResponseKind::CallResult(result) =
+            response.kind
+        {
+            let approved: bool = serde_json::from_slice(&result.result)
+                .context("Failed to parse is_measurements_approved result")?;
+            Ok(approved)
+        } else {
+            anyhow::bail!("Unexpected response kind from is_measurements_approved");
+        }
+    }
+
+    /// Wait until TEE measurements are approved on the register contract.
+    ///
+    /// Polls `is_measurements_approved` every 5 seconds, up to 100 times (~8 min).
+    /// If not approved, returns error so the process exits and Docker restarts it.
+    async fn wait_for_measurements_approval(&self, measurements: &crate::tdx_attestation::TdxMeasurements) -> Result<()> {
+        const MAX_ATTEMPTS: u32 = 100;
+        const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+        for attempt in 1..=MAX_ATTEMPTS {
+            match self.check_measurements_approved(measurements).await {
+                Ok(true) => {
+                    info!("✅ TEE measurements are approved on register contract");
+                    return Ok(());
+                }
+                Ok(false) => {
+                    if attempt == 1 {
+                        info!("⏳ Measurements not yet approved. Waiting for admin...");
+                        info!("   MRTD:  {}", measurements.mrtd);
+                        info!("   RTMR0: {}", measurements.rtmr0);
+                        info!("   RTMR1: {}", measurements.rtmr1);
+                        info!("   RTMR2: {}", measurements.rtmr2);
+                        info!("   RTMR3: {}", measurements.rtmr3);
+                        info!(
+                            "   To approve, run: near call {} add_approved_measurements '{{\"measurements\":{{\"mrtd\":\"{}\",\"rtmr0\":\"{}\",\"rtmr1\":\"{}\",\"rtmr2\":\"{}\",\"rtmr3\":\"{}\"}}}}' --accountId <owner>",
+                            self.operator_account_id,
+                            measurements.mrtd, measurements.rtmr0, measurements.rtmr1,
+                            measurements.rtmr2, measurements.rtmr3
+                        );
+                    } else {
+                        info!("⏳ Measurements not yet approved ({}/{})", attempt, MAX_ATTEMPTS);
+                    }
+                    tokio::time::sleep(POLL_INTERVAL).await;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to check measurements approval: {}. Proceeding with registration attempt...",
+                        e
+                    );
+                    return Ok(());
+                }
+            }
+        }
+
+        anyhow::bail!(
+            "Measurements not approved after {} attempts. RTMR3={}. Add via: near call {} add_approved_measurements",
+            MAX_ATTEMPTS, measurements.rtmr3, self.operator_account_id
+        );
+    }
+
     /// Register worker public key with TDX attestation
     ///
     /// This method:
     /// 1. Generates a TDX quote with the public key embedded in report_data
-    /// 2. Calls register_worker_key on the register contract
-    /// 3. The contract verifies the quote and adds the key to the operator account
+    /// 2. Checks TEE measurements are approved before spending gas
+    /// 3. Calls register_worker_key on the register contract
+    /// 4. The contract verifies the quote and adds the key to the operator account
     pub async fn register_worker_key(
         &self,
         public_key: &PublicKey,
@@ -240,6 +332,17 @@ impl RegistrationClient {
         info!("✅ Generated TDX quote (length: {} bytes)", tdx_quote_hex.len() / 2);
         info!("   TDX quote hex (first 100 chars): {}...",
             if tdx_quote_hex.len() > 100 { &tdx_quote_hex[..100] } else { &tdx_quote_hex });
+
+        // Check TEE measurements approval before spending gas on registration transaction
+        if let Some(measurements) = crate::tdx_attestation::extract_all_measurements_from_quote_hex(&tdx_quote_hex) {
+            info!("📏 TEE measurements from quote:");
+            info!("   MRTD:  {}", measurements.mrtd);
+            info!("   RTMR0: {}", measurements.rtmr0);
+            info!("   RTMR1: {}", measurements.rtmr1);
+            info!("   RTMR2: {}", measurements.rtmr2);
+            info!("   RTMR3: {}", measurements.rtmr3);
+            self.wait_for_measurements_approval(&measurements).await?;
+        }
 
         // Call register_worker_key on the register contract
         // Note: Contract ONLY uses cached collateral (security: prevent bypass)

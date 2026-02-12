@@ -518,26 +518,21 @@ impl Config {
     }
 
     /// Generate worker_id from network, type, and optional Phala app_id
-    /// Format: {network}-{type}-{app_id_short} or {network}-{type}-{uuid}
+    /// Format: {network}-{type}-{app_id} or {network}-{type}-{uuid}
+    /// Full app_id allows verification via https://trust.phala.com/app/{app_id}
     pub fn generate_worker_id(&self, phala_app_id: Option<&str>) -> String {
         let network = self.detect_network();
         let worker_type = self.worker_type_string();
 
         let suffix = match phala_app_id {
             Some(app_id) => {
-                // Use first 16 chars of Phala app_id (hex) for better uniqueness
-                // Full app_id is 40 hex chars, 16 gives ~18 quintillion combinations
-                if app_id.len() >= 16 {
-                    app_id[..16].to_string()
-                } else {
-                    app_id.to_string()
-                }
+                // Use full Phala app_id (40 hex chars) for TEE verification
+                // Users can verify at: https://trust.phala.com/app/{app_id}
+                app_id.to_string()
             }
             None => {
-                // Fallback: use 16 hex chars from UUID (remove hyphens first)
-                // UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (32 hex + 4 hyphens)
-                let uuid_hex = uuid::Uuid::new_v4().to_string().replace('-', "");
-                uuid_hex[..16].to_string()
+                // Fallback: use full UUID (32 hex chars)
+                uuid::Uuid::new_v4().to_string().replace('-', "")
             }
         };
 

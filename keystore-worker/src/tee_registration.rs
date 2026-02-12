@@ -166,6 +166,7 @@ impl RegistrationClient {
         &self,
         public_key: PublicKey,
         tdx_quote_hex: String,
+        app_id: Option<String>,
     ) -> Result<u64> {
         info!("📤 Submitting keystore registration to DAO contract");
 
@@ -173,6 +174,7 @@ impl RegistrationClient {
         let args = json!({
             "public_key": public_key.to_string(),
             "tdx_quote_hex": tdx_quote_hex,
+            "app_id": app_id,
         });
 
         // Convert to JSON string first, then to bytes (NEAR expects JSON text, not MessagePack)
@@ -350,15 +352,15 @@ impl RegistrationClient {
                         error!("   ⚠️  TDX quote verification failed in contract");
                         error!("   ⚠️  This happens when using MOCK mode with a contract expecting real TDX quotes");
                         error!("   ⚠️  Solutions:");
-                        error!("      1. Add RTMR3 to pre-approved list: near call {} add_approved_rtmr3", self.dao_contract_id);
+                        error!("      1. Add measurements to pre-approved list: near call {} add_approved_measurements", self.dao_contract_id);
                         error!("      2. Or switch to real TDX mode: TEE_MODE=tdx");
 
                         if err_str.contains("Unsupported quote version") {
                             error!("   ⚠️  The MOCK quote format is not recognized by the contract");
                             error!("   ⚠️  The contract expects a real Intel TDX quote, but received 'MOCK' (0x4d4f434b)");
                         }
-                    } else if err_str.contains("RTMR3 must be 96 hex chars") {
-                        error!("   ⚠️  RTMR3 format error - must be exactly 96 hex characters");
+                    } else if err_str.contains("must be 96 hex chars") {
+                        error!("   ⚠️  Measurement format error - must be exactly 96 hex characters");
                     } else if err_str.contains("Keystore already approved") {
                         error!("   ⚠️  This keystore public key is already approved");
                     }

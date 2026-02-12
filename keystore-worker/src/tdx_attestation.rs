@@ -6,6 +6,52 @@
 use anyhow::{Context, Result};
 use tracing::{info, warn};
 
+// TDX Quote v4 = Header (48 bytes) + TD10 Report Body (584 bytes) + Auth Data
+// Absolute offsets for measurements within the raw quote bytes:
+const MEASUREMENT_SIZE: usize = 48; // Each measurement is 48 bytes (96 hex chars)
+const MRTD_OFFSET: usize = 184;     // 48 (header) + 136 (body offset for mr_td)
+const RTMR0_OFFSET: usize = 376;    // 48 (header) + 328 (body offset for rt_mr0)
+const RTMR1_OFFSET: usize = 424;    // 48 (header) + 376 (body offset for rt_mr1)
+const RTMR2_OFFSET: usize = 472;    // 48 (header) + 424 (body offset for rt_mr2)
+const RTMR3_OFFSET: usize = 520;    // 48 (header) + 472 (body offset for rt_mr3)
+
+/// All TEE measurements extracted from a TDX quote
+#[derive(Debug, Clone)]
+pub struct TdxMeasurements {
+    pub mrtd: String,
+    pub rtmr0: String,
+    pub rtmr1: String,
+    pub rtmr2: String,
+    pub rtmr3: String,
+}
+
+/// Information from Phala dstack about the running app
+#[derive(Debug, Clone)]
+pub struct PhalaAppInfo {
+    pub app_id: String,
+}
+
+/// Get Phala app info (app_id) from dstack socket
+///
+/// Returns None if not running in Phala TEE environment or if dstack is unavailable
+pub async fn get_phala_app_info() -> Option<PhalaAppInfo> {
+    use dstack_sdk::dstack_client::DstackClient;
+
+    let client = DstackClient::new(None);
+    match client.info().await {
+        Ok(info) => {
+            info!("📱 Phala app_id: {}", info.app_id);
+            Some(PhalaAppInfo {
+                app_id: info.app_id,
+            })
+        }
+        Err(e) => {
+            tracing::debug!("Could not get Phala app info (not in TEE?): {}", e);
+            None
+        }
+    }
+}
+
 /// TDX attestation client
 pub struct TdxClient {
     tee_mode: String,
@@ -107,19 +153,36 @@ impl TdxClient {
 
         info!("   TDX quote size: {} bytes", tdx_quote.len());
 
-        // Debug: Extract and log RTMR3 from quote
-        const RTMR3_OFFSET: usize = 256;
-        const RTMR3_SIZE: usize = 48;
-        if tdx_quote.len() >= RTMR3_OFFSET + RTMR3_SIZE {
-            let rtmr3_bytes = &tdx_quote[RTMR3_OFFSET..RTMR3_OFFSET + RTMR3_SIZE];
-            let rtmr3_hex = hex::encode(rtmr3_bytes);
-            info!("📏 RTMR3 extracted from quote (offset {}, {} bytes): {}", RTMR3_OFFSET, RTMR3_SIZE, rtmr3_hex);
-            info!("   ⚠️ Make sure this RTMR3 is in the DAO pre-approved list!");
-            info!("   If not, run: near call dao.outlayer.testnet add_approved_rtmr3 '{{\"rtmr3\":\"{}\"}}'", rtmr3_hex);
+        // Extract and log measurements (debug level — logged at info during registration)
+        if let Some(m) = extract_all_measurements_from_bytes(&tdx_quote) {
+            tracing::debug!("TDX Measurements: MRTD={}, RTMR0={}, RTMR1={}, RTMR2={}, RTMR3={}",
+                m.mrtd, m.rtmr0, m.rtmr1, m.rtmr2, m.rtmr3);
         } else {
-            warn!("⚠️ Quote too short to extract RTMR3: {} bytes (need {})", tdx_quote.len(), RTMR3_OFFSET + RTMR3_SIZE);
+            warn!("⚠️ Quote too short to extract measurements: {} bytes (need {})", tdx_quote.len(), RTMR3_OFFSET + MEASUREMENT_SIZE);
         }
 
         Ok(tdx_quote)
     }
+}
+
+/// Extract all TEE measurements (MRTD + RTMR0-3) from raw TDX quote bytes.
+fn extract_all_measurements_from_bytes(tdx_quote: &[u8]) -> Option<TdxMeasurements> {
+    if tdx_quote.len() < RTMR3_OFFSET + MEASUREMENT_SIZE {
+        return None;
+    }
+    Some(TdxMeasurements {
+        mrtd: hex::encode(&tdx_quote[MRTD_OFFSET..MRTD_OFFSET + MEASUREMENT_SIZE]),
+        rtmr0: hex::encode(&tdx_quote[RTMR0_OFFSET..RTMR0_OFFSET + MEASUREMENT_SIZE]),
+        rtmr1: hex::encode(&tdx_quote[RTMR1_OFFSET..RTMR1_OFFSET + MEASUREMENT_SIZE]),
+        rtmr2: hex::encode(&tdx_quote[RTMR2_OFFSET..RTMR2_OFFSET + MEASUREMENT_SIZE]),
+        rtmr3: hex::encode(&tdx_quote[RTMR3_OFFSET..RTMR3_OFFSET + MEASUREMENT_SIZE]),
+    })
+}
+
+/// Extract all TEE measurements from a hex-encoded TDX quote.
+///
+/// Returns None if the quote is too short or not a real TDX quote.
+pub fn extract_all_measurements_from_quote_hex(tdx_quote_hex: &str) -> Option<TdxMeasurements> {
+    let tdx_quote = hex::decode(tdx_quote_hex).ok()?;
+    extract_all_measurements_from_bytes(&tdx_quote)
 }

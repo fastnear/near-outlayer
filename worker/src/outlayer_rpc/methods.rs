@@ -17,6 +17,7 @@ use serde_json::{json, Value};
 
 use super::RpcProxy;
 
+#[allow(dead_code)]
 impl RpcProxy {
     // =========================================================================
     // Query Methods (view calls)

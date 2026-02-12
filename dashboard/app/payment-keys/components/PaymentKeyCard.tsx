@@ -12,6 +12,7 @@ interface PaymentKeyCardProps {
   balance?: PaymentKeyBalance;
   stablecoin: StablecoinConfig;
   onTopUp: () => void;
+  onTopUpNear?: () => void; // Only available on mainnet
   onDelete: () => void;
   coordinatorUrl: string;
   accountId: string;
@@ -23,6 +24,7 @@ export function PaymentKeyCard({
   balance,
   stablecoin,
   onTopUp,
+  onTopUpNear,
   onDelete,
   coordinatorUrl,
   accountId,
@@ -148,9 +150,19 @@ export function PaymentKeyCard({
             <button
               onClick={onTopUp}
               className="inline-flex items-center px-3 py-1.5 border border-transparent text-sm font-medium rounded-md text-white bg-[#cc6600] hover:bg-[#b35900] transition-colors"
+              title="Top up with USDC"
             >
               Top Up
             </button>
+            {onTopUpNear && (
+              <button
+                onClick={onTopUpNear}
+                className="inline-flex items-center px-3 py-1.5 border border-[#cc6600] text-sm font-medium rounded-md text-[#cc6600] bg-white hover:bg-orange-50 transition-colors"
+                title="Top up with NEAR (swapped to USDC)"
+              >
+                + NEAR
+              </button>
+            )}
             <button
               onClick={onDelete}
               className="inline-flex items-center px-3 py-1.5 border border-red-300 text-sm font-medium rounded-md text-red-700 bg-white hover:bg-red-50 transition-colors"

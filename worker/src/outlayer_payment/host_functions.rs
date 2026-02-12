@@ -48,6 +48,7 @@ impl PaymentHostState {
     }
 
     /// Get shared state reference (for passing to other contexts)
+    #[allow(dead_code)]
     pub fn get_state(&self) -> Arc<Mutex<PaymentState>> {
         self.state.clone()
     }

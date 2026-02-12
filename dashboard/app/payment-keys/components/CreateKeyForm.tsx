@@ -126,8 +126,8 @@ export function CreateKeyForm({
       setIsCreating(true);
       const depositNum = parseFloat(initialDeposit);
 
-      if (isNaN(depositNum) || depositNum < 1) {
-        throw new Error('Minimum deposit is $1.00');
+      if (isNaN(depositNum) || depositNum < 0.01) {
+        throw new Error('Minimum deposit is $0.01');
       }
 
       // Step 1: Generate key
@@ -335,7 +335,7 @@ export function CreateKeyForm({
               disabled={isSubmitting}
             />
             <p className="text-xs text-gray-500 mt-1">
-              Minimum $1.00. This will be your starting balance.
+              Minimum $0.01. This will be your starting balance.
             </p>
           </div>
         </div>
