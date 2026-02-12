@@ -194,31 +194,11 @@ pub async fn execute(
 
     debug!("Loaded as WASI Preview 2 component");
 
-    // Check for storage import if running as project
-    // For P2 components, we check if they import `near:storage/api` interface
-    // This indicates the WASM is built with OutLayer SDK and knows about project context
-    // Note: The `__outlayer_get_metadata` export doesn't work in component model
-    // because #[no_mangle] exports are not visible in component WIT
+    // Check which OutLayer SDK interfaces the WASM imports
     let has_storage_import = component.component_type().imports(&engine)
         .any(|(name, _)| name.contains("near:storage/api"));
 
     let storage_config = exec_ctx.and_then(|ctx| ctx.storage_config.as_ref());
-
-    // For P2 components: if running as project, WASM must import storage interface
-    // This ensures the WASM was built with OutLayer SDK
-    if storage_config.is_some() && !has_storage_import {
-        anyhow::bail!(
-            "WASM running in project context must import `near:storage/api` interface.\n\
-            This import is provided by the `outlayer` crate.\n\
-            Without this import, persistent storage is not available.\n\
-            \n\
-            To fix:\n\
-            1. Add `outlayer` crate to your dependencies\n\
-            2. Use storage functions from `outlayer::storage` module\n\
-            \n\
-            Or run this WASM as standalone (without project) if you don't need persistent storage."
-        );
-    }
 
     // If WASM imports storage but we don't have storage config, fail early with helpful message
     if has_storage_import && storage_config.is_none() {
@@ -237,10 +217,6 @@ pub async fn execute(
             2. Ensure keystore is properly configured in worker environment\n\
             3. Or rebuild WASM without `outlayer` crate if you don't need storage"
         );
-    }
-
-    if storage_config.is_some() && has_storage_import {
-        tracing::debug!("✅ Project WASM imports near:storage/api interface");
     }
 
     // Create linker with WASI and HTTP support
