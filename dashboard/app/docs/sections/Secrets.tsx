@@ -70,6 +70,13 @@ export default function SecretsSection() {
                 The <code className="bg-blue-100 px-1 rounded">PROTECTED_*</code> prefix proves a secret was generated in TEE and never seen by anyone (including developers).
                 Manual secrets cannot use this prefix - enforced by keystore validation.
               </p>
+              <p className="text-xs text-blue-800 mt-1">                
+                <strong>Security scope:</strong> The PROTECTED_ prefix guarantees the secret was generated inside TEE and the developer never saw its value directly. A PROTECTED_ secret cannot be accidentally leaked — it is never stored on the developer&apos;s
+                machine and cannot be exposed through a compromised workstation or accidentally committed to a repository.
+                At runtime, the WASM code does have access to the decrypted value (as an environment variable), so a malicious
+                developer could potentially exfiltrate it through a backdoor in their code. For sensitive use cases, always audit
+                the project&apos;s source code to ensure it handles PROTECTED_ secrets responsibly.
+              </p>
             </div>
           </div>
         </section>
@@ -568,8 +575,8 @@ export default function SecretsSection() {
               <strong>Two-Level Architecture:</strong>
             </p>
             <ul className="list-disc list-inside text-sm text-gray-700 space-y-1 mb-3">
-              <li><strong>Level 1:</strong> Keystore obtains derivation key from NEAR MPC via CKD protocol through DAO contract</li>
-              <li><strong>Level 2:</strong> Keystore uses derivation key to decrypt app secrets</li>
+              <li><strong>Level 1:</strong> Keystore obtains derivation key from NEAR MPC via CKD protocol through DAO contract. This happens <strong>once at keystore startup</strong>, not on every secret decryption request</li>
+              <li><strong>Level 2:</strong> Keystore uses the cached derivation key to decrypt app secrets on demand</li>
               <li>All operations happen inside TEE - keys never leave the enclave</li>
               <li>DAO governance ensures only legitimate keystores get derivation keys</li>
               <li>Functional keys restrict keystore operations through DAO contract</li>

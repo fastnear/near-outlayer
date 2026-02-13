@@ -203,6 +203,23 @@ const PROXY_PRESETS: ProxyPreset[] = [
   },
   {
     type: 'proxy',
+    name: 'VRF Coin Flip',
+    args: '{"choice":"Heads"}',
+    description: '🎲 Provably fair coin flip using VRF! Choose Heads or Tails. Result includes Ed25519 proof verified on-chain via ed25519_verify.\n\n🔗 Contract: https://github.com/zavodil/vrf-ark/tree/main/vrf-contract',
+    networks: ['testnet', 'mainnet'],
+    proxyContractIdTestnet: 'coin-flip-vrf.testnet',
+    proxyContractIdMainnet: 'coin-flip-vrf.near',
+    proxyMethod: 'flip_coin',
+    proxyDeposit: '50000000000000000000000', // 0.05 NEAR
+    proxyGas: '300000000000000', // 300 TGas
+    wasmRepo: 'https://github.com/zavodil/vrf-ark',
+    wasmCommit: 'main',
+    wasmBuildTarget: 'wasm32-wasip1',
+    increaseDepositIfNoCache: true,
+    docsLink: '/docs/examples#vrf-ark',
+  },
+  {
+    type: 'proxy',
     name: 'NEAR Intents Swap',
     args: '{"receiver_id":"v1.publishintent.near","amount":"20000","msg":"{\\"Swap\\":{\\"token_out\\":\\"wrap.near\\",\\"min_amount_out\\":\\"1000000000000000000\\"}}"}',
     description: '⚠️ Swaps USDC to wNEAR via NEAR Intents protocol.\n\n📋 Before using:\n1. Ensure you have storage_deposit for wNEAR (wrap.near)\n2. Only use whitelisted tokens\n3. Adjust token_out and min_amount_out as needed\n4. This calls ft_transfer_call on USDC token contract\n\n🔗 Contract: https://github.com/zavodil/intents-ark/tree/main/intents-contract',

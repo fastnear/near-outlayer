@@ -3,6 +3,7 @@
 import {
   useHashNavigation,
   RandomExample,
+  VrfExample,
   EchoExample,
   AiExample,
   WeatherExample,
@@ -27,6 +28,7 @@ export default function ExamplesPage() {
 
       <div className="space-y-8">
         <RandomExample />
+        <VrfExample />
         <EchoExample />
         <AiExample />
         <WeatherExample />

@@ -135,8 +135,18 @@ const pageStructure = {
     { id: 'refund-policy', title: 'Refund Policy' },
     { id: 'optimization-tips', title: 'Optimization Tips' },
   ],
+  '/docs/vrf': [
+    { id: 'overview', title: 'Overview' },
+    { id: 'how-it-works', title: 'How It Works' },
+    { id: 'sdk-usage', title: 'SDK Usage' },
+    { id: 'on-chain-verification', title: 'On-Chain Verification' },
+    { id: 'security', title: 'Security Properties' },
+    { id: 'user-verification', title: 'User Verification Guide' },
+    { id: 'api-reference', title: 'API Reference' },
+  ],
   '/docs/examples': [
     { id: 'random-ark', title: 'Random Number' },
+    { id: 'vrf-ark', title: 'VRF (Verifiable Random)' },
     { id: 'echo-ark', title: 'Echo' },
     { id: 'ai-ark', title: 'AI Integration' },
     { id: 'weather-ark', title: 'Weather Oracle' },
@@ -551,6 +561,44 @@ export default function DocsLayout({
                 {expandedPages['/docs/storage'] && pageStructure['/docs/storage'] && (
                   <div className="ml-4 mt-1 space-y-0.5">
                     {pageStructure['/docs/storage'].map(section => (
+                      <button
+                        key={section.id}
+                        onClick={() => scrollToSection(section.id)}
+                        className="block w-full text-left px-3 py-1 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
+                      >
+                        {section.title}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* VRF (Randomness) */}
+              <div>
+                <Link
+                  href="/docs/vrf"
+                  className={`flex items-center justify-between w-full text-left px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                    isActive('/docs/vrf')
+                      ? 'bg-[var(--primary-orange)] text-white'
+                      : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                  onClick={(e) => {
+                    if (isActive('/docs/vrf')) {
+                      e.preventDefault();
+                      toggleExpand('/docs/vrf');
+                    }
+                  }}
+                >
+                  <span>VRF (Randomness)</span>
+                  {pageStructure['/docs/vrf'] && (
+                    <svg className={`w-4 h-4 transition-transform ${expandedPages['/docs/vrf'] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  )}
+                </Link>
+                {expandedPages['/docs/vrf'] && pageStructure['/docs/vrf'] && (
+                  <div className="ml-4 mt-1 space-y-0.5">
+                    {pageStructure['/docs/vrf'].map(section => (
                       <button
                         key={section.id}
                         onClick={() => scrollToSection(section.id)}

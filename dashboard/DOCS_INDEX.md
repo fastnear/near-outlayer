@@ -45,6 +45,7 @@ dashboard/app/docs/
 ├── projects/page.tsx             # Projects & Versions
 ├── pricing/page.tsx              # Pricing model
 ├── tee-attestation/page.tsx      # TEE Attestation (from sections/TeeAttestation.tsx)
+├── vrf/page.tsx                  # VRF (Verifiable Random Function)
 ├── examples/page.tsx             # Example Projects (all examples)
 ├── trust-verification/page.tsx   # Trust & Verification - why trust OutLayer
 ├── storage/page.tsx              # Persistent Storage
@@ -65,6 +66,7 @@ dashboard/app/docs/
 | Example Name | Source Location | README | Dashboard Page | Status | WASI | Level |
 |--------------|----------------|--------|----------------|--------|------|-------|
 | **random-ark** | `wasi-examples/random-ark/` | ✅ | `/docs/examples#random-ark` | ✅ Shown | P1 | Beginner |
+| **vrf-ark** | `wasi-examples/vrf-ark/` | ✅ | `/docs/examples#vrf-ark` | ✅ Shown | P1 | Intermediate |
 | **echo-ark** | `wasi-examples/echo-ark/` | ✅ | `/docs/examples#echo-ark` | ✅ Shown | P1 | Beginner |
 | **ai-ark** | `wasi-examples/ai-ark/` | ✅ | `/docs/examples#ai-ark` | ✅ Shown | P2 | Intermediate |
 | **weather-ark** | `wasi-examples/weather-ark/` | ✅ | `/docs/examples#weather-ark` | ✅ Shown | P2 | Intermediate |
@@ -196,6 +198,7 @@ dashboard/app/docs/
 | `/docs/projects` | `dashboard/app/docs/projects/page.tsx` | `contract/src/projects.rs` | Projects, versions, persistent storage, project secrets |
 | `/docs/pricing` | `dashboard/app/docs/sections/Pricing.tsx` | - | Cost model, resource limits |
 | `/docs/tee-attestation` | `dashboard/app/docs/sections/TeeAttestation.tsx` | `TEE_ATTESTATION_FLOW.md` | TEE verification, attestation |
+| `/docs/vrf` | `dashboard/app/docs/vrf/page.tsx` | `VRF.md`, `sdk/outlayer/src/vrf.rs` | **VRF: verifiable randomness, SDK, on-chain verification** |
 | `/docs/examples` | `dashboard/app/docs/examples/page.tsx` | `wasi-examples/*/README.md` | All example projects |
 
 ## Navigation (layout.tsx)
