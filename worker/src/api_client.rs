@@ -1333,6 +1333,37 @@ impl ApiClient {
         Ok(())
     }
 
+    // =========================================================================
+    // Event Monitor Block Cursor
+    // =========================================================================
+
+    /// Get the last saved block cursor from coordinator.
+    /// Returns None if no cursor was saved yet.
+    pub async fn get_block_cursor(&self) -> Result<Option<u64>> {
+        let url = format!("{}/workers/block-cursor", self.base_url);
+
+        let response = self.add_auth_headers(self.client.get(&url))
+            .send()
+            .await
+            .context("Failed to get block cursor")?;
+
+        if !response.status().is_success() {
+            // Non-critical — fall back to env var
+            tracing::warn!("Failed to get block cursor: HTTP {}", response.status());
+            return Ok(None);
+        }
+
+        #[derive(Deserialize)]
+        struct BlockCursorResponse {
+            block_height: Option<u64>,
+        }
+
+        let resp: BlockCursorResponse = response.json().await
+            .context("Failed to parse block cursor response")?;
+
+        Ok(resp.block_height)
+    }
+
     /// Create a TopUp task for Payment Key balance update
     ///
     /// This is used when ft_on_transfer emits SystemEvent::TopUpPaymentKey

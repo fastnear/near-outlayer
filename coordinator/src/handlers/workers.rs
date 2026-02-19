@@ -328,3 +328,31 @@ pub async fn register_tee(
 
     Ok(Json(RegisterTeeResponse { session_id }))
 }
+
+// ========== Event Monitor Block Cursor ==========
+
+#[derive(Debug, Serialize)]
+pub struct BlockCursorResponse {
+    pub block_height: Option<u64>,
+}
+
+/// Get the highest event monitor block height across all workers.
+/// Reads from worker_status table (already populated by heartbeats).
+/// Used on startup to resume scanning from where any worker left off.
+pub async fn get_block_cursor(
+    State(state): State<AppState>,
+) -> Result<Json<BlockCursorResponse>, StatusCode> {
+    let row: Option<(Option<i64>,)> = sqlx::query_as(
+        "SELECT MAX(event_monitor_block_height) FROM worker_status WHERE event_monitor_block_height IS NOT NULL",
+    )
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| {
+        error!("Failed to query block cursor: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let block_height = row.and_then(|(h,)| h).map(|h| h as u64);
+
+    Ok(Json(BlockCursorResponse { block_height }))
+}

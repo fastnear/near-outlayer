@@ -164,6 +164,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/workers/task-completion",
             post(handlers::workers::notify_task_completion),
         )
+        // Event monitor block cursor (reads MAX block height from worker_status)
+        .route("/workers/block-cursor", get(handlers::workers::get_block_cursor))
         // TEE session management
         .route("/workers/tee-challenge", post(handlers::workers::tee_challenge))
         .route("/workers/register-tee", post(handlers::workers::register_tee))

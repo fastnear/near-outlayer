@@ -349,12 +349,35 @@ impl EventMonitor {
         // Create RPC client for view calls (e.g., fetching large input_data)
         let rpc_client = JsonRpcClient::connect(&near_rpc_url);
 
-        // If start_block is 0, fetch latest block from NEAR RPC
-        let current_block = if start_block == 0 {
-            info!("START_BLOCK_HEIGHT=0, fetching latest block from NEAR RPC...");
-            Self::fetch_latest_block(&http_client, &near_rpc_url).await?
-        } else {
-            start_block
+        // Determine starting block:
+        // 1. Try saved cursor from coordinator (persisted across restarts)
+        // 2. Fall back to START_BLOCK_HEIGHT env var
+        // 3. If 0, fetch latest block from NEAR RPC
+        let current_block = match api_client.get_block_cursor().await {
+            Ok(Some(saved_block)) if saved_block > 0 => {
+                info!(
+                    "📌 Resuming from saved block cursor: {} (START_BLOCK_HEIGHT was {})",
+                    saved_block, start_block
+                );
+                saved_block
+            }
+            Ok(_) => {
+                if start_block == 0 {
+                    info!("START_BLOCK_HEIGHT=0, fetching latest block from NEAR RPC...");
+                    Self::fetch_latest_block(&http_client, &near_rpc_url).await?
+                } else {
+                    info!("No saved block cursor, using START_BLOCK_HEIGHT={}", start_block);
+                    start_block
+                }
+            }
+            Err(e) => {
+                warn!("Failed to load block cursor (falling back to START_BLOCK_HEIGHT): {}", e);
+                if start_block == 0 {
+                    Self::fetch_latest_block(&http_client, &near_rpc_url).await?
+                } else {
+                    start_block
+                }
+            }
         };
 
         // Parse min version if provided

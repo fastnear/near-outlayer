@@ -180,9 +180,9 @@ pub async fn create_topup_task(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    // Mark data_id as processed (with TTL of 1 hour to handle timeouts)
+    // Mark data_id as processed (TTL = 25 hours, covers yield timeout of 24h + margin)
     let _: () = conn
-        .set_ex(&exists_key, task_id, 3600)
+        .set_ex(&exists_key, task_id, 90_000)
         .await
         .map_err(|e| {
             error!("Failed to mark task as existing: {}", e);
@@ -541,9 +541,9 @@ pub async fn create_delete_payment_key_task(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    // Mark data_id as processed (with TTL of 1 hour)
+    // Mark data_id as processed (TTL = 25 hours, covers yield timeout of 24h + margin)
     let _: () = conn
-        .set_ex(&exists_key, task_id, 3600)
+        .set_ex(&exists_key, task_id, 90_000)
         .await
         .map_err(|e| {
             error!("Failed to mark task as existing: {}", e);
@@ -648,9 +648,9 @@ pub async fn create_project_storage_cleanup_task(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    // Mark uuid as processed (with TTL of 1 hour)
+    // Mark uuid as processed (TTL = 25 hours, covers yield timeout of 24h + margin)
     let _: () = conn
-        .set_ex(&exists_key, task_id, 3600)
+        .set_ex(&exists_key, task_id, 90_000)
         .await
         .map_err(|e| {
             error!("Failed to mark task as existing: {}", e);

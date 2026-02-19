@@ -2716,14 +2716,22 @@ async fn run_contract_system_callbacks_handler(
                                         payload.owner, payload.nonce, e
                                     );
 
-                                    // Try to resume with error so contract doesn't hang
-                                    if let Err(resume_err) = near_client
-                                        .resume_topup_error(&payload.data_id, &format!("TopUp failed: {}", e))
-                                        .await
-                                    {
-                                        error!(
-                                            "❌ Failed to resume TopUp with error: {} (original error: {})",
-                                            resume_err, e
+                                    // Only resume with error if there's a real yield (amount > 0).
+                                    // For amount=0 (PaymentKey creation), there's no yield to resume —
+                                    // the data_id is a generated hash, not a real yield promise.
+                                    if payload.amount != "0" {
+                                        if let Err(resume_err) = near_client
+                                            .resume_topup_error(&payload.data_id, &format!("TopUp failed: {}", e))
+                                            .await
+                                        {
+                                            error!(
+                                                "❌ Failed to resume TopUp with error: {} (original error: {})",
+                                                resume_err, e
+                                            );
+                                        }
+                                    } else {
+                                        warn!(
+                                            "Skipping resume_topup_error for amount=0 (PaymentKey creation) — no yield to resume"
                                         );
                                     }
                                 }
@@ -2734,15 +2742,17 @@ async fn run_contract_system_callbacks_handler(
                                 payload.owner, payload.nonce
                             );
 
-                            // Resume with error so contract doesn't hang
-                            if let Err(e) = near_client
-                                .resume_topup_error(&payload.data_id, "Keystore not configured on this worker")
-                                .await
-                            {
-                                error!(
-                                    "❌ Failed to resume TopUp with error: {}",
-                                    e
-                                );
+                            // Only resume with error if there's a real yield (amount > 0)
+                            if payload.amount != "0" {
+                                if let Err(e) = near_client
+                                    .resume_topup_error(&payload.data_id, "Keystore not configured on this worker")
+                                    .await
+                                {
+                                    error!(
+                                        "❌ Failed to resume TopUp with error: {}",
+                                        e
+                                    );
+                                }
                             }
                         }
                     }
