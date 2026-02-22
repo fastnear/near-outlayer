@@ -1,5 +1,5 @@
 ---
-name: Agent Wallet Setup
+name: Agent Custody Wallet Setup
 description: Register a gasless multi-chain custody wallet for an AI agent. Supports NEAR, Ethereum, Bitcoin, Solana, and other chains via NEAR Intents protocol. Use when an agent needs to send/receive tokens or call smart contracts.
 metadata:
   api:

@@ -7,10 +7,23 @@ import { useState, useEffect } from 'react';
 // Define page structure with subsections
 const pageStructure = {
   '/docs/getting-started': [
-    { id: 'what-is-outlayer', title: 'Overview' },    
+    { id: 'what-is-outlayer', title: 'Overview' },
     { id: 'two-modes', title: 'Integration Modes' },
     { id: 'quick-start', title: 'Quick Start' },
     { id: 'secrets', title: 'Features' },
+  ],
+  '/docs/agent-custody': [
+    { id: 'how-it-works', title: 'How It Works' },
+    { id: 'agent-id', title: 'Agent ID' },
+    { id: 'multi-chain', title: 'Multi-Chain Support' },
+    { id: 'policy-engine', title: 'Policy Engine' },
+    { id: 'multisig', title: 'Multisig Approval' },
+    { id: 'quick-start', title: 'Quick Start' },
+    { id: 'api-reference', title: 'API Reference' },
+    { id: 'security', title: 'Security Model' },
+    { id: 'ai-skill', title: 'AI Agent Skill File' },
+    { id: 'comparison', title: 'Comparison' },
+    { id: 'dashboard', title: 'Dashboard' },
   ],
   '/docs/near-integration': [
     { id: 'request-execution', title: 'Method: request_execution' },
@@ -457,6 +470,44 @@ export default function DocsLayout({
               {/* OutLayer Features Section */}
               <div className="pt-3 pb-1">
                 <span className="px-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">OutLayer Features</span>
+              </div>
+
+              {/* Agent Custody */}
+              <div>
+                <Link
+                  href="/docs/agent-custody"
+                  className={`flex items-center justify-between w-full text-left px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                    isActive('/docs/agent-custody')
+                      ? 'bg-[var(--primary-orange)] text-white'
+                      : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                  onClick={(e) => {
+                    if (isActive('/docs/agent-custody')) {
+                      e.preventDefault();
+                      toggleExpand('/docs/agent-custody');
+                    }
+                  }}
+                >
+                  <span>Agent Custody</span>
+                  {pageStructure['/docs/agent-custody'] && (
+                    <svg className={`w-4 h-4 transition-transform ${expandedPages['/docs/agent-custody'] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  )}
+                </Link>
+                {expandedPages['/docs/agent-custody'] && pageStructure['/docs/agent-custody'] && (
+                  <div className="ml-4 mt-1 space-y-0.5">
+                    {pageStructure['/docs/agent-custody'].map(section => (
+                      <button
+                        key={section.id}
+                        onClick={() => scrollToSection(section.id)}
+                        className="block w-full text-left px-3 py-1 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
+                      >
+                        {section.title}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {/* Secrets */}
