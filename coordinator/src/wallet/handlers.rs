@@ -553,7 +553,9 @@ pub async fn withdraw(
             }));
         }
         PolicyDecision::NoPolicyAllow | PolicyDecision::Allowed => {
-            // Proceed with withdrawal
+            // Record usage immediately (before execution) so velocity limits accumulate
+            // even if the backend call fails
+            record_usage(&state.db, &auth.wallet_id, &token_key, &req.amount).await?;
         }
     }
 
@@ -709,12 +711,6 @@ pub async fn withdraw(
     .execute(&state.db)
     .await
     .map_err(|e| WalletError::InternalError(format!("DB error: {}", e)))?;
-
-    // Record usage only for non-failed operations (failed withdrawals should
-    // not count against velocity limits)
-    if status != "failed" {
-        record_usage(&state.db, &auth.wallet_id, &token_key, &req.amount).await?;
-    }
 
     // Audit log
     audit::record_audit_event(
@@ -2219,12 +2215,19 @@ pub async fn call(
     let deposit = req.deposit.as_deref().unwrap_or("0").to_string();
     let args_json = serde_json::to_string(&req.args).unwrap_or_else(|_| "{}".to_string());
 
-    // Policy check
+    // Get current usage for velocity limit checks
+    let current_usage = get_current_usage(&state.db, &auth.wallet_id).await.unwrap_or_default();
+
+    // Policy check (include "amount" = deposit so keystore velocity limits work;
+    // keystore reads action.amount for all action types)
     let action = serde_json::json!({
         "type": "call",
         "receiver_id": req.receiver_id,
         "method_name": req.method_name,
         "deposit": deposit,
+        "amount": deposit,
+        "token": "native",
+        "current_usage": current_usage,
     });
 
     let wallet_pubkey = policy::resolve_wallet_pubkey(&state.db, &auth.wallet_id).await?;
@@ -2315,6 +2318,11 @@ pub async fn call(
                 .await;
             }
 
+            // Record usage for pending approval requests too (enforces rate limits)
+            if deposit != "0" {
+                record_usage(&state.db, &auth.wallet_id, "native", &deposit).await?;
+            }
+
             return Ok(Json(CallResponse {
                 request_id: request_id.to_string(),
                 status: "pending_approval".to_string(),
@@ -2325,7 +2333,12 @@ pub async fn call(
                 approved: Some(0),
             }));
         }
-        PolicyDecision::NoPolicyAllow | PolicyDecision::Allowed => {}
+        PolicyDecision::NoPolicyAllow | PolicyDecision::Allowed => {
+            // Record usage immediately (before execution) so velocity limits accumulate
+            if deposit != "0" {
+                record_usage(&state.db, &auth.wallet_id, "native", &deposit).await?;
+            }
+        }
     }
 
     // Execute the call
