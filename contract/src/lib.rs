@@ -18,6 +18,7 @@ mod projects;
 mod secrets;
 mod types;
 mod views;
+mod wallet;
 
 pub type Balance = u128;
 pub type CryptoHash = [u8; 32];
@@ -55,6 +56,11 @@ enum StorageKey {
     DeveloperEarnings,
     // User stablecoin balances for developer payments
     UserStablecoinBalances,
+    // Wallet policies (wallet_pubkey -> WalletPolicyEntry)
+    WalletPolicies,
+    // Wallet owner index (owner -> set of wallet_pubkeys)
+    WalletOwnerIndex,
+    WalletOwnerList { account_id: AccountId },
 }
 
 /// Execution source - GitHub repo, pre-compiled WASM URL, or project reference
@@ -468,6 +474,12 @@ pub struct Contract {
     // User stablecoin balances: user_account -> balance (stablecoin minimal units)
     // Used for attached_usd payments to project developers
     user_stablecoin_balances: LookupMap<AccountId, u128>,
+
+    // Wallet policies: wallet_pubkey ("ed25519:<hex>" / "secp256k1:<hex>") -> WalletPolicyEntry
+    wallet_policies: LookupMap<String, wallet::WalletPolicyEntry>,
+
+    // Wallet owner index: owner -> set of wallet_pubkeys (for get_wallet_policies_by_owner)
+    wallet_owner_index: LookupMap<AccountId, UnorderedSet<String>>,
 }
 
 #[near_bindgen]
@@ -508,6 +520,9 @@ impl Contract {
             developer_earnings: LookupMap::new(StorageKey::DeveloperEarnings),
             // User stablecoin balances
             user_stablecoin_balances: LookupMap::new(StorageKey::UserStablecoinBalances),
+            // Wallet policies
+            wallet_policies: LookupMap::new(StorageKey::WalletPolicies),
+            wallet_owner_index: LookupMap::new(StorageKey::WalletOwnerIndex),
         }
     }
 

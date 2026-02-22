@@ -11,6 +11,7 @@ pub mod outlayer_rpc;
 pub mod outlayer_storage;
 pub mod outlayer_payment;
 pub mod outlayer_vrf;
+pub mod outlayer_wallet;
 pub mod wasm_cache;
 pub mod compiled_cache;
 pub mod event_monitor;

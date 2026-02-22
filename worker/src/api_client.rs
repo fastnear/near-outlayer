@@ -119,6 +119,9 @@ pub struct ExecutionRequest {
     /// USD payment amount for HTTPS calls (X-Attached-Deposit, in minimal token units)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usd_payment: Option<String>,
+    /// Wallet ID for wallet-enabled executions (e.g. "ed25519:abc..." from X-Wallet-Id header)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wallet_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -412,6 +415,12 @@ impl ApiClient {
         } else {
             builder
         }
+    }
+
+    /// Add wallet internal auth header (X-Internal-Wallet-Auth) for /internal/wallet-* endpoints.
+    /// These endpoints use a different auth scheme than the standard Bearer token.
+    fn add_wallet_internal_auth(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        builder.header("X-Internal-Wallet-Auth", &self.auth_token)
     }
 
     /// Perform a challenge-response TEE registration against the given endpoint path prefix.
@@ -1602,6 +1611,94 @@ impl ApiClient {
         } else {
             Ok(None)
         }
+    }
+
+    /// Notify coordinator that a wallet policy was created/updated on-chain.
+    /// Coordinator will decrypt via keystore and sync authorized key hashes.
+    pub async fn notify_wallet_policy_updated(
+        &self,
+        wallet_pubkey: &str,
+        owner: &str,
+        encrypted_data: &str,
+        frozen: bool,
+    ) -> Result<()> {
+        let url = format!("{}/internal/wallet-policy-sync", self.base_url);
+
+        let response = self
+            .add_wallet_internal_auth(self.client.post(&url))
+            .json(&serde_json::json!({
+                "wallet_pubkey": wallet_pubkey,
+                "owner": owner,
+                "encrypted_data": encrypted_data,
+                "frozen": frozen,
+            }))
+            .send()
+            .await
+            .context("Failed to notify wallet policy sync")?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            anyhow::bail!("Wallet policy sync failed: {}", error_text);
+        }
+
+        tracing::info!("✅ Wallet policy sync notified: wallet={}", wallet_pubkey);
+        Ok(())
+    }
+
+    /// Notify coordinator that a wallet policy was deleted on-chain.
+    pub async fn notify_wallet_policy_deleted(
+        &self,
+        wallet_pubkey: &str,
+        owner: &str,
+    ) -> Result<()> {
+        let url = format!("{}/internal/wallet-policy-delete", self.base_url);
+
+        let response = self
+            .add_wallet_internal_auth(self.client.post(&url))
+            .json(&serde_json::json!({
+                "wallet_pubkey": wallet_pubkey,
+                "owner": owner,
+            }))
+            .send()
+            .await
+            .context("Failed to notify wallet policy delete")?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            anyhow::bail!("Wallet policy delete failed: {}", error_text);
+        }
+
+        tracing::info!("✅ Wallet policy delete notified: wallet={}", wallet_pubkey);
+        Ok(())
+    }
+
+    /// Notify coordinator that a wallet's frozen status changed on-chain.
+    pub async fn notify_wallet_frozen_changed(
+        &self,
+        wallet_pubkey: &str,
+        owner: &str,
+        frozen: bool,
+    ) -> Result<()> {
+        let url = format!("{}/internal/wallet-frozen-change", self.base_url);
+
+        let response = self
+            .add_wallet_internal_auth(self.client.post(&url))
+            .json(&serde_json::json!({
+                "wallet_pubkey": wallet_pubkey,
+                "owner": owner,
+                "frozen": frozen,
+            }))
+            .send()
+            .await
+            .context("Failed to notify wallet frozen change")?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            anyhow::bail!("Wallet frozen change failed: {}", error_text);
+        }
+
+        tracing::info!("✅ Wallet frozen change notified: wallet={} frozen={}", wallet_pubkey, frozen);
+        Ok(())
     }
 
     /// Create a project storage cleanup task in coordinator queue

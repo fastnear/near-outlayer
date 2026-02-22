@@ -60,12 +60,13 @@ use crate::outlayer_rpc::RpcHostState;
 use crate::outlayer_storage::{StorageClient, StorageHostState, add_storage_to_linker};
 use crate::outlayer_payment::{PaymentHostState, add_payment_to_linker};
 use crate::outlayer_vrf::{VrfHostState, add_vrf_to_linker};
+use crate::outlayer_wallet::{WalletHostState, add_wallet_to_linker};
 
 use super::ExecutionContext;
 
 /// Host state for WASI P2 execution
 ///
-/// Contains WASI context, HTTP context, and optionally RPC proxy, storage and payment state.
+/// Contains WASI context, HTTP context, and optionally RPC proxy, storage, payment, VRF, and wallet state.
 struct HostState {
     wasi_ctx: WasiCtx,
     wasi_http_ctx: WasiHttpCtx,
@@ -78,6 +79,8 @@ struct HostState {
     payment_state: Option<PaymentHostState>,
     /// VRF state (only present if keystore configured + request_id available)
     vrf_state: Option<VrfHostState>,
+    /// Wallet state (only present if wallet_id in execution request)
+    wallet_state: Option<WalletHostState>,
 }
 
 impl WasiView for HostState {
@@ -131,6 +134,11 @@ impl HostState {
     /// Get VRF host state (for host function callbacks)
     fn vrf_state_mut(&mut self) -> &mut VrfHostState {
         self.vrf_state.as_mut().expect("VRF state not initialized")
+    }
+
+    /// Get wallet host state (for host function callbacks)
+    fn wallet_state_mut(&mut self) -> &mut WalletHostState {
+        self.wallet_state.as_mut().expect("Wallet state not initialized")
     }
 }
 
@@ -337,6 +345,33 @@ pub async fn execute(
         None
     };
 
+    // Check if component imports wallet interface
+    let has_wallet_import = component.component_type().imports(&engine)
+        .any(|(name, _)| name.contains("outlayer:wallet/api"));
+
+    let wallet_state = if has_wallet_import {
+        if let Some(ref wallet_cfg) = exec_ctx.and_then(|ctx| ctx.wallet_config.as_ref()) {
+            debug!("Adding wallet host functions to linker, wallet_id={}", wallet_cfg.wallet_id);
+
+            add_wallet_to_linker(&mut linker, |state: &mut HostState| {
+                state.wallet_state_mut()
+            })?;
+
+            Some(WalletHostState::new(
+                &wallet_cfg.wallet_id,
+                &wallet_cfg.coordinator_url,
+                &wallet_cfg.wallet_auth_token,
+            ))
+        } else {
+            anyhow::bail!(
+                "WASM imports outlayer:wallet/api but wallet is not available.\n\
+                Wallet requires: X-Wallet-Id header in the execution request."
+            );
+        }
+    } else {
+        None
+    };
+
     // Prepare stdin/stdout/stderr pipes
     let stdin_pipe = wasmtime_wasi::pipe::MemoryInputPipe::new(input_data.to_vec());
     let stdout_pipe =
@@ -379,6 +414,7 @@ pub async fn execute(
         storage_state,
         payment_state,
         vrf_state,
+        wallet_state,
     };
 
     // Create store with fuel limit

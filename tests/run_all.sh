@@ -55,9 +55,39 @@ else
     echo ""
 fi
 
-# Test 4: E2E Tests
+# Test 4: Wallet Tests (Mode 1 — Agent)
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
-echo -e "${BLUE}Test 4/4: End-to-End Tests${NC}"
+echo -e "${BLUE}Test 4/6: Wallet Mode 1 — Simple Agent${NC}"
+echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
+echo ""
+
+if curl -s http://localhost:8080/health > /dev/null 2>&1; then
+    "$SCRIPT_DIR/wallet_mode1_agent.sh"
+    echo ""
+else
+    echo "⚠️  Skipping wallet agent tests - Coordinator not running"
+    echo "   cd coordinator && cargo run"
+    echo ""
+fi
+
+# Test 5: Wallet Tests (Mode 2 — Policy)
+echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
+echo -e "${BLUE}Test 5/6: Wallet Mode 2 — User with Policy${NC}"
+echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
+echo ""
+
+if curl -s http://localhost:8080/health > /dev/null 2>&1; then
+    "$SCRIPT_DIR/wallet_mode2_policy.sh"
+    echo ""
+else
+    echo "⚠️  Skipping wallet policy tests - Coordinator not running"
+    echo "   cd coordinator && cargo run"
+    echo ""
+fi
+
+# Test 6: E2E Tests
+echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
+echo -e "${BLUE}Test 6/6: End-to-End Tests${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
 echo ""
 echo "⚠️  E2E tests require manual execution (requires testnet contract)"

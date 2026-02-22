@@ -88,6 +88,24 @@ pub enum SystemEvent {
         owner: AccountId,
         nonce: u32,
     },
+    /// Wallet policy created/updated — worker should sync authorized key hashes
+    WalletPolicyUpdated {
+        wallet_pubkey: String,
+        owner: AccountId,
+        encrypted_data: String,
+        frozen: bool,
+    },
+    /// Wallet policy deleted — worker should remove authorized keys
+    WalletPolicyDeleted {
+        wallet_pubkey: String,
+        owner: AccountId,
+    },
+    /// Wallet frozen/unfrozen — worker should update freeze status
+    WalletFrozenChanged {
+        wallet_pubkey: String,
+        owner: AccountId,
+        frozen: bool,
+    },
 }
 
 #[near_bindgen]

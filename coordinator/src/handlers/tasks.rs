@@ -227,6 +227,7 @@ pub async fn create_task(
         usd_payment: None,
         compute_limit_usd: None,
         attached_deposit_usd: None,
+        wallet_id: None,
     };
 
     let request_json = serde_json::to_string(&execution_request).map_err(|e| {

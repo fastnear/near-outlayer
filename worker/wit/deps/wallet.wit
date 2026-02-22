@@ -1,0 +1,69 @@
+package outlayer:wallet@0.1.0;
+
+/// Wallet API for OutLayer — Fireblocks-style custody for AI agents
+///
+/// Allows WASI modules to interact with the wallet system when
+/// the execution request includes an X-Wallet-Id header.
+///
+/// All functions return (result, error) tuples:
+/// - On success: (json_result, "")
+/// - On error: ("", error_message)
+interface api {
+    /// Get wallet public key identifier
+    ///
+    /// Returns the wallet_id (e.g. "ed25519:abc..." or "secp256k1:abc...")
+    /// that was passed via X-Wallet-Id header.
+    ///
+    /// Returns ("", "wallet not available") if no wallet_id in execution context.
+    get-id: func() -> tuple<string, string>;
+
+    /// Get derived address for a given chain
+    ///
+    /// chain: "near", "ethereum", "solana", etc.
+    ///
+    /// Returns (address_json, error):
+    /// - address_json: {"address": "...", "public_key": "..."}
+    /// - error: empty on success
+    get-address: func(chain: string) -> tuple<string, string>;
+
+    /// Withdraw funds from wallet
+    ///
+    /// chain: target chain (e.g. "near")
+    /// to: recipient address
+    /// amount: amount in minimal token units (e.g. yoctoNEAR)
+    /// token: token identifier (empty = native, "nep141:usdt.tether-token.near", etc.)
+    ///
+    /// Returns (result_json, error):
+    /// - result_json: {"request_id": "uuid", "status": "processing"}
+    /// - error: empty on success, or "policy_denied: ..." / "wallet_frozen" / etc.
+    withdraw: func(chain: string, to: string, amount: string, token: string) -> tuple<string, string>;
+
+    /// Dry-run withdraw (policy check without execution)
+    ///
+    /// Same parameters as withdraw.
+    ///
+    /// Returns (result_json, error):
+    /// - result_json: {"would_succeed": true/false, "reason": "...", "estimated_fee": "..."}
+    /// - error: empty on success
+    withdraw-dry-run: func(chain: string, to: string, amount: string, token: string) -> tuple<string, string>;
+
+    /// Get request status
+    ///
+    /// request-id: UUID of a previous withdraw/deposit request
+    ///
+    /// Returns (status_json, error):
+    /// - status_json: {"request_id": "...", "status": "processing"|"success"|"failed", ...}
+    /// - error: empty on success
+    get-request-status: func(request-id: string) -> tuple<string, string>;
+
+    /// List available tokens
+    ///
+    /// Returns (tokens_json, error):
+    /// - tokens_json: {"tokens": [{"id": "...", "symbol": "...", "chains": ["near", ...]}]}
+    /// - error: empty on success
+    list-tokens: func() -> tuple<string, string>;
+}
+
+world wallet-host {
+    import api;
+}

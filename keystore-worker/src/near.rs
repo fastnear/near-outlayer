@@ -564,6 +564,87 @@ impl NearClient {
         Ok(false)
     }
 
+    /// Get wallet policy from contract
+    ///
+    /// Calls: contract.get_wallet_policy(wallet_pubkey)
+    /// Returns: Option<WalletPolicyView> { owner, encrypted_data, frozen, updated_at }
+    pub async fn get_wallet_policy(
+        &self,
+        wallet_pubkey: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        tracing::debug!(
+            contract = %self.contract_id,
+            wallet_pubkey = %wallet_pubkey,
+            "Reading wallet policy from contract"
+        );
+
+        let args = json!({
+            "wallet_pubkey": wallet_pubkey,
+        });
+
+        let query = methods::query::RpcQueryRequest {
+            block_reference: BlockReference::latest(),
+            request: near_primitives::views::QueryRequest::CallFunction {
+                account_id: self.contract_id.clone(),
+                method_name: "get_wallet_policy".to_string(),
+                args: args.to_string().into_bytes().into(),
+            },
+        };
+
+        let response = self
+            .rpc_client
+            .call(query)
+            .await
+            .context("Failed to query wallet policy")?;
+
+        let result = match response.kind {
+            QueryResponseKind::CallResult(result) => result.result,
+            _ => anyhow::bail!("Unexpected query response"),
+        };
+
+        let policy: Option<serde_json::Value> = serde_json::from_slice(&result)
+            .context("Failed to parse wallet policy response")?;
+
+        Ok(policy)
+    }
+
+    /// Query access key nonce for transaction construction.
+    ///
+    /// Returns (nonce, block_hash) needed to build a NEAR transaction.
+    pub async fn query_access_key(
+        &self,
+        account_id: &str,
+        public_key: &near_crypto::PublicKey,
+    ) -> Result<(u64, near_primitives::hash::CryptoHash)> {
+        use near_primitives::types::Finality;
+
+        let account_id_parsed = AccountId::from_str(account_id)
+            .context("Invalid account ID")?;
+
+        let query = methods::query::RpcQueryRequest {
+            block_reference: BlockReference::Finality(Finality::Final),
+            request: near_primitives::views::QueryRequest::ViewAccessKey {
+                account_id: account_id_parsed,
+                public_key: public_key.clone(),
+            },
+        };
+
+        let response = self
+            .rpc_client
+            .call(query)
+            .await
+            .context("Failed to query access key")?;
+
+        let nonce = match response.kind {
+            QueryResponseKind::AccessKey(access_key) => access_key.nonce,
+            _ => anyhow::bail!("Unexpected query response"),
+        };
+
+        let block_hash = response.block_hash;
+
+        Ok((nonce, block_hash))
+    }
+
     /// Verify that a public key belongs to an account
     ///
     /// Calls: view_access_key_list for account_id

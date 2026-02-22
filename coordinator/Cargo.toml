@@ -27,6 +27,14 @@ sha2 = "0.10"
 hex = "0.4"
 rand = "0.8"
 base64 = "0.21"
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+k256 = { version = "0.13", features = ["ecdsa"] }
+hmac = "0.12"
+borsh = { version = "1.5", features = ["derive"] }
+bs58 = "0.5"
+
+# Async trait
+async-trait = "0.1"
 
 # UUID
 uuid = { version = "1.0", features = ["v4", "serde"] }
