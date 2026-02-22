@@ -335,6 +335,8 @@ near contract deploy dev.outlayer.testnet use-file res/local/outlayer_contract.w
 
 ```bash
 near contract deploy outlayer.testnet use-file res/local/outlayer_contract.wasm without-init-call network-config testnet sign-with-keychain send
+
+ near contract call-function as-transaction outlayer.testnet migrate json-args {} prepaid-gas '100.0 Tgas' attached-deposit '0 NEAR' sign-as outlayer.testnet network-config testnet sign-with-keychain send
 ```
 
 # Mainnet
