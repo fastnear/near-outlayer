@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback, Suspense } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useSearchParams, useRouter } from 'next/navigation';
 import { useNearWallet } from '@/contexts/NearWalletContext';
 import WalletConnectionModal from '@/components/WalletConnectionModal';
 import { getCoordinatorApiUrl } from '@/lib/api';
@@ -37,6 +37,7 @@ function WalletApprovalsContent() {
   const { accountId, isConnected, network, contractId, viewMethod, signMessage } = useNearWallet();
   const coordinatorUrl = getCoordinatorApiUrl(network);
   const searchParams = useSearchParams();
+  const router = useRouter();
 
   const [showWalletModal, setShowWalletModal] = useState(false);
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
@@ -201,7 +202,10 @@ function WalletApprovalsContent() {
       }
       const data = await resp.json();
       if (data.request_id) {
-        setSuccess(`Threshold met! Operation executing (request: ${data.request_id}). Refresh to track status.`);
+        // Threshold met — redirect to audit page
+        const auditUrl = apiKey ? `/wallet/audit?key=${encodeURIComponent(apiKey)}` : '/wallet/audit';
+        router.push(auditUrl);
+        return;
       } else {
         setSuccess(`Approved (${data.approved}/${data.required}). Waiting for more approvals.`);
       }

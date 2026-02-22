@@ -3285,11 +3285,11 @@ pub async fn pending_approvals_by_pubkey(
         })));
     };
 
-    let approvals = sqlx::query_as::<_, (Uuid, String, i32, chrono::DateTime<chrono::Utc>, i64, String, chrono::DateTime<chrono::Utc>)>(
+    let approvals = sqlx::query_as::<_, (Uuid, String, i32, chrono::DateTime<chrono::Utc>, i64, String, chrono::DateTime<chrono::Utc>, serde_json::Value)>(
         r#"
         SELECT pa.id, pa.request_type, pa.required_approvals, pa.expires_at,
                (SELECT COUNT(*) FROM wallet_approval_signatures WHERE approval_id = pa.id) as approved_count,
-               pa.request_hash, pa.created_at
+               pa.request_hash, pa.created_at, pa.request_data
         FROM wallet_pending_approvals pa
         WHERE pa.wallet_id = $1 AND pa.status = 'pending' AND pa.expires_at > NOW()
         ORDER BY pa.created_at DESC
@@ -3312,6 +3312,7 @@ pub async fn pending_approvals_by_pubkey(
                 "expires_at": a.3.to_rfc3339(),
                 "request_hash": a.5,
                 "created_at": a.6.to_rfc3339(),
+                "request_data": a.7,
             })
         })
         .collect();

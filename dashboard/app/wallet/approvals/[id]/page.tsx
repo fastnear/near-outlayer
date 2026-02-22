@@ -118,7 +118,9 @@ function ApprovalDetailContent() {
 
       const result = await resp.json();
       if (result.request_id) {
-        setSuccess(`Threshold met! Operation executing (request: ${result.request_id}). Refresh to track status.`);
+        // Threshold met — redirect to audit page
+        router.push('/wallet/audit');
+        return;
       } else {
         setSuccess(`Approved (${result.approved}/${result.required}). Waiting for more approvals.`);
       }
