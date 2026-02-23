@@ -85,7 +85,7 @@ export default function AgentCustodyPage() {
             <div className="grid grid-cols-[1fr_2fr_1fr] gap-0">
               <div className="flex flex-col items-center py-1">
                 <svg width="24" height="32" className="text-blue-400"><path d="M12 0 L12 24 M6 18 L12 24 L18 18" stroke="currentColor" strokeWidth="2" fill="none"/></svg>
-                <span className="text-[10px] text-blue-600 font-medium">withdraw, call</span>
+                <span className="text-[10px] text-blue-600 font-medium">transfer, swap, call</span>
               </div>
               <div />
               <div className="flex flex-col items-center py-1">
@@ -107,7 +107,7 @@ export default function AgentCustodyPage() {
                 <div className="bg-white rounded-lg border border-green-300 p-3 text-center">
                   <div className="text-lg mb-1">&#9997;&#65039;</div>
                   <div className="text-xs font-semibold text-gray-800">Transaction Signing</div>
-                  <div className="text-xs text-gray-500 mt-1">Signs withdraw, call, intents</div>
+                  <div className="text-xs text-gray-500 mt-1">Signs transfer, swap, call, withdraw</div>
                   <div className="text-xs text-gray-500">inside secure enclave</div>
                 </div>
                 <div className="bg-white rounded-lg border border-green-300 p-3 text-center">
@@ -156,7 +156,7 @@ export default function AgentCustodyPage() {
 
         <ol className="list-decimal list-inside text-gray-700 space-y-2 mt-4">
           <li><strong>Register</strong> &mdash; one API call creates a wallet and returns an API key. The TEE derives the private key from the MPC master secret and returns the public key. No blockchain transaction needed.</li>
-          <li><strong>Call contracts / send tokens</strong> &mdash; the agent uses the API key to withdraw, transfer, or call smart contracts. The TEE checks the policy, signs the transaction, and submits it via NEAR Intents.</li>
+          <li><strong>Operate</strong> &mdash; the agent uses the API key to transfer NEAR, swap tokens, call smart contracts, or withdraw cross-chain. The TEE checks the policy, signs the transaction, and broadcasts it to the NEAR network.</li>
           <li><strong>Control</strong> &mdash; the wallet owner configures policies for the agent via the dashboard: spending limits, address whitelists, transaction confirmations, multisig, or instant freeze.</li>
         </ol>
       </section>
@@ -338,8 +338,8 @@ export default function AgentCustodyPage() {
               </tr>
               <tr className="border-b">
                 <td className="px-4 py-2 font-semibold">Transaction types</td>
-                <td className="px-4 py-2">Restrict allowed operations</td>
-                <td className="px-4 py-2 font-mono text-xs">withdraw only, no calls</td>
+                <td className="px-4 py-2">Restrict allowed operations (withdraw, call, transfer, swap, intents_deposit)</td>
+                <td className="px-4 py-2 font-mono text-xs">call, swap only</td>
               </tr>
               <tr>
                 <td className="px-4 py-2 font-semibold">Emergency freeze</td>
@@ -364,6 +364,7 @@ export default function AgentCustodyPage() {
       "daily": { "*": "100000000000000000000000000" },
       "hourly": { "*": "50000000000000000000000000" }
     },
+    "transaction_types": ["withdraw", "call", "transfer", "swap", "intents_deposit"],
     "addresses": {
       "mode": "whitelist",
       "list": ["bob.near", "dex.near"]
@@ -464,15 +465,35 @@ curl -s -H "Authorization: Bearer $API_KEY" \\
   "https://api.outlayer.fastnear.com/wallet/v1/address?chain=ethereum"`}
         </SyntaxHighlighter>
 
-        <h3 className="text-lg font-semibold mt-4 mb-2">3. Withdraw (gasless cross-chain)</h3>
+        <h3 className="text-lg font-semibold mt-4 mb-2">3. Check balance</h3>
+        <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
+{`# Native NEAR balance
+curl -s -H "Authorization: Bearer $API_KEY" \\
+  "https://api.outlayer.fastnear.com/wallet/v1/balance?chain=near"
+
+# FT token balance (e.g. USDT)
+curl -s -H "Authorization: Bearer $API_KEY" \\
+  "https://api.outlayer.fastnear.com/wallet/v1/balance?chain=near&token=usdt.tether-token.near"`}
+        </SyntaxHighlighter>
+
+        <h3 className="text-lg font-semibold mt-4 mb-2">4. Transfer NEAR</h3>
         <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
 {`curl -s -X POST -H "Content-Type: application/json" \\
   -H "Authorization: Bearer $API_KEY" \\
-  -d '{"to":"receiver.near","amount":"1000000000000000000000000","chain":"near"}' \\
-  "https://api.outlayer.fastnear.com/wallet/v1/withdraw"`}
+  -d '{"receiver_id":"bob.near","amount":"1000000000000000000000000"}' \\
+  "https://api.outlayer.fastnear.com/wallet/v1/transfer"`}
         </SyntaxHighlighter>
 
-        <h3 className="text-lg font-semibold mt-4 mb-2">4. Call a NEAR contract</h3>
+        <h3 className="text-lg font-semibold mt-4 mb-2">5. Swap tokens</h3>
+        <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
+{`# Swap wNEAR -> USDT (handles deposit, storage, and settlement automatically)
+curl -s -X POST -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer $API_KEY" \\
+  -d '{"token_in":"nep141:wrap.near","token_out":"nep141:usdt.tether-token.near","amount_in":"1000000000000000000000000"}' \\
+  "https://api.outlayer.fastnear.com/wallet/v1/swap"`}
+        </SyntaxHighlighter>
+
+        <h3 className="text-lg font-semibold mt-4 mb-2">6. Call a NEAR contract</h3>
         <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
 {`curl -s -X POST -H "Content-Type: application/json" \\
   -H "Authorization: Bearer $API_KEY" \\
@@ -480,7 +501,16 @@ curl -s -H "Authorization: Bearer $API_KEY" \\
   "https://api.outlayer.fastnear.com/wallet/v1/call"`}
         </SyntaxHighlighter>
 
-        <h3 className="text-lg font-semibold mt-4 mb-2">5. Configure policy (optional)</h3>
+        <h3 className="text-lg font-semibold mt-4 mb-2">7. Withdraw (gasless cross-chain via Intents)</h3>
+        <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
+{`# Tokens must be in Intents balance first (use /intents/deposit or /swap)
+curl -s -X POST -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer $API_KEY" \\
+  -d '{"to":"receiver.near","amount":"1000000","token":"usdt.tether-token.near","chain":"near"}' \\
+  "https://api.outlayer.fastnear.com/wallet/v1/withdraw"`}
+        </SyntaxHighlighter>
+
+        <h3 className="text-lg font-semibold mt-4 mb-2">8. Configure policy (optional)</h3>
         <p className="text-gray-700 mb-2">Share the handoff URL with the wallet owner so they can set spending limits, whitelists, and multisig rules from the dashboard:</p>
         <SyntaxHighlighter language="text" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
 {`https://outlayer.fastnear.com/wallet?key=wk_...`}
@@ -514,19 +544,39 @@ curl -s -H "Authorization: Bearer $API_KEY" \\
                 <td className="px-4 py-2 font-mono text-xs">/wallet/v1/address?chain=&#123;chain&#125;</td>
               </tr>
               <tr className="border-b">
-                <td className="px-4 py-2">Withdraw / transfer</td>
-                <td className="px-4 py-2 font-mono">POST</td>
-                <td className="px-4 py-2 font-mono text-xs">/wallet/v1/withdraw</td>
+                <td className="px-4 py-2">Check balance</td>
+                <td className="px-4 py-2 font-mono">GET</td>
+                <td className="px-4 py-2 font-mono text-xs">/wallet/v1/balance?chain=near&amp;token=&#123;token&#125;</td>
               </tr>
               <tr className="border-b">
-                <td className="px-4 py-2">Dry-run (check first)</td>
+                <td className="px-4 py-2">Transfer NEAR</td>
                 <td className="px-4 py-2 font-mono">POST</td>
-                <td className="px-4 py-2 font-mono text-xs">/wallet/v1/withdraw/dry-run</td>
+                <td className="px-4 py-2 font-mono text-xs">/wallet/v1/transfer</td>
               </tr>
               <tr className="border-b">
                 <td className="px-4 py-2">Call NEAR contract</td>
                 <td className="px-4 py-2 font-mono">POST</td>
                 <td className="px-4 py-2 font-mono text-xs">/wallet/v1/call</td>
+              </tr>
+              <tr className="border-b">
+                <td className="px-4 py-2">Swap tokens</td>
+                <td className="px-4 py-2 font-mono">POST</td>
+                <td className="px-4 py-2 font-mono text-xs">/wallet/v1/swap</td>
+              </tr>
+              <tr className="border-b">
+                <td className="px-4 py-2">Deposit to Intents</td>
+                <td className="px-4 py-2 font-mono">POST</td>
+                <td className="px-4 py-2 font-mono text-xs">/wallet/v1/intents/deposit</td>
+              </tr>
+              <tr className="border-b">
+                <td className="px-4 py-2">Withdraw (cross-chain)</td>
+                <td className="px-4 py-2 font-mono">POST</td>
+                <td className="px-4 py-2 font-mono text-xs">/wallet/v1/withdraw</td>
+              </tr>
+              <tr className="border-b">
+                <td className="px-4 py-2">Dry-run withdraw</td>
+                <td className="px-4 py-2 font-mono">POST</td>
+                <td className="px-4 py-2 font-mono text-xs">/wallet/v1/withdraw/dry-run</td>
               </tr>
               <tr className="border-b">
                 <td className="px-4 py-2">Request status</td>
@@ -626,11 +676,14 @@ curl -s https://outlayer.fastnear.com/SKILL.md`}
           <h4 className="font-semibold text-gray-900 mb-2">What the skill file covers:</h4>
           <ul className="list-disc list-inside text-sm text-gray-700 space-y-1">
             <li>Wallet registration (one POST call, no blockchain needed)</li>
-            <li>Getting addresses on any supported chain</li>
-            <li>Cross-chain transfers and contract calls</li>
-            <li>Dry-run checks before real transactions</li>
-            <li>Status polling for async operations</li>
-            <li>Error handling and policy-denied recovery</li>
+            <li>Getting addresses and balances on any supported chain</li>
+            <li>Native NEAR transfers, FT transfers, token swaps</li>
+            <li>Cross-chain withdrawals via Intents (gasless)</li>
+            <li>Intents deposits for manual balance management</li>
+            <li>Contract calls with arbitrary function arguments</li>
+            <li>Balance checks before every operation (required)</li>
+            <li>Status polling, error handling, and automatic storage registration</li>
+            <li>Fund link generation for requesting NEAR from the user</li>
             <li>Guiding the user to configure spending policies</li>
           </ul>
         </div>
