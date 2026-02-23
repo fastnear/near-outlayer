@@ -109,8 +109,8 @@ export function PolicyFormFields({ policyForm, onChange, apiKeyHash, knownKeyHas
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Allowed Transaction Types</label>
-          <div className="flex gap-4 mt-1">
-            {['withdraw', 'call'].map((txType) => {
+          <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1">
+            {['withdraw', 'call', 'transfer', 'swap', 'intents_deposit'].map((txType) => {
               const types = policyForm.transaction_types.split(',').map((t) => t.trim()).filter(Boolean);
               const checked = types.includes(txType);
               return (

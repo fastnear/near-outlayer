@@ -360,7 +360,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.contract_id.clone(),
         std::env::var("ONECLICK_BASE_URL")
             .unwrap_or_else(|_| "https://1click.chaindefuser.com".to_string()),
-        std::env::var("ONECLICK_JWT").ok(),
+        std::env::var("ONECLICK_JWT").ok().filter(|s| !s.is_empty()),
         std::env::var("WALLET_WEBHOOK_SECRET")
             .unwrap_or_else(|_| "default-webhook-secret".to_string()),
         allowed_worker_token_hashes,

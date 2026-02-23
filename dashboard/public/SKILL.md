@@ -178,6 +178,8 @@ Response:
 
 Send native NEAR to another account. Requires NEAR balance for both the amount and gas.
 
+**Before calling:** check NEAR balance with `GET /wallet/v1/balance?chain=near` and verify it covers the transfer amount + gas (~0.001 NEAR).
+
 ```bash
 curl -s -X POST -H "Content-Type: application/json" \
   -H "Authorization: Bearer $API_KEY" \
@@ -193,6 +195,8 @@ Response:
 
 Use the generic contract call endpoint with `ft_transfer`. The receiver must already have storage registered on the token contract. Requires 1 yoctoNEAR deposit.
 
+**Before calling:** check the token balance with `GET /wallet/v1/balance?chain=near&token={token_contract}` and verify it covers the transfer amount. Also check NEAR balance for gas.
+
 ```bash
 curl -s -X POST -H "Content-Type: application/json" \
   -H "Authorization: Bearer $API_KEY" \
@@ -207,6 +211,9 @@ Response:
 **Note:** If the receiver doesn't have storage on the token contract, `ft_transfer` will fail. In that case, first call `storage_deposit` on the token contract for the receiver, or use `ft_transfer_call` instead.
 
 ### Call a contract
+
+**Before calling:** check NEAR balance with `GET /wallet/v1/balance?chain=near` and verify it covers the `deposit` amount + gas (~0.005 NEAR). If the call involves FT tokens, also check the token balance.
+
 ```bash
 curl -s -X POST -H "Content-Type: application/json" \
   -H "Authorization: Bearer $API_KEY" \
@@ -223,6 +230,8 @@ The `result` field contains the decoded return value of the contract call (if an
 ### Withdraw (cross-chain via Intents)
 
 Withdraw tokens from your Intents balance to any supported chain. Uses NEAR Intents `ft_withdraw` — gasless on the destination chain.
+
+**Before calling:** check NEAR balance with `GET /wallet/v1/balance?chain=near` (needed for gas, ~0.005 NEAR). Tokens must already be in your Intents balance — if not, deposit them first with `/wallet/v1/intents/deposit`.
 
 ```bash
 curl -s -X POST -H "Content-Type: application/json" \
@@ -245,6 +254,8 @@ Deposits a FT from your wallet's NEAR account into `intents.near` via `ft_transf
 
 This is used for manual intents operations and as a prerequisite for `/wallet/v1/withdraw`. The `/wallet/v1/swap` endpoint handles deposits internally — you do NOT need to call this before swapping.
 
+**Before calling:** check the token balance with `GET /wallet/v1/balance?chain=near&token={token_contract}` and verify it covers the deposit amount. Also check NEAR balance for gas (~0.005 NEAR).
+
 ```bash
 curl -s -X POST -H "Content-Type: application/json" \
   -H "Authorization: Bearer $API_KEY" \
@@ -258,7 +269,11 @@ Response:
 
 ### Swap tokens
 
-Swap one token for another via 1Click API. Token identifiers use `nep141:` prefix (defuse asset format). The swap handles everything internally:
+Swap one token for another via 1Click API. Token identifiers use `nep141:` prefix (defuse asset format).
+
+**Before calling:** check the input token balance with `GET /wallet/v1/balance?chain=near&token={token_contract}` (e.g. `&token=wrap.near` for wNEAR) and verify it covers `amount_in`. Also check NEAR balance for gas (~0.01 NEAR for storage deposits + transaction fees).
+
+The swap handles everything internally:
 
 1. Gets a quote from 1Click API
 2. Auto-registers storage for the output token on your wallet (if needed)
@@ -427,6 +442,7 @@ Storage deposit costs 0.00125 NEAR per token contract per account.
 
 ## Guidelines
 
+- **Always check balance before any operation.** Before calling `/swap`, `/transfer`, `/call`, or `/withdraw`, query `/wallet/v1/balance` to verify the wallet has sufficient funds. For swaps and calls, also check NEAR balance for gas. Failing to check balance first wastes gas on transactions that will fail.
 - Always use `withdraw/dry-run` before real withdrawals to check policy and balance
 - Store the API key as a secret — never log or expose it
 - If a request returns `pending_approval`, inform the user and provide the dashboard link

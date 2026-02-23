@@ -30,7 +30,7 @@ export const DEFAULT_POLICY: PolicyForm = {
   allowed_tokens: '*',
   address_mode: 'none',
   addresses: '',
-  transaction_types: 'withdraw,call',
+  transaction_types: 'withdraw,call,transfer,swap,intents_deposit',
   allowed_hours_start: '',
   allowed_hours_end: '',
   allowed_days: '',
