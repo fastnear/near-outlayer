@@ -437,23 +437,6 @@ pub struct KeystoreDeriveAddressResponse {
 }
 
 #[derive(Debug, Serialize)]
-pub struct KeystoreSignNep413Request {
-    pub wallet_id: String,
-    pub chain: String,
-    pub message: String,
-    pub nonce_base64: String,
-    pub recipient: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub approval_info: Option<ApprovalInfo>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct KeystoreSignNep413Response {
-    pub signature_base58: String,
-    pub public_key: String,
-}
-
-#[derive(Debug, Serialize)]
 pub struct KeystoreCheckPolicyRequest {
     pub wallet_id: String,
     pub action: serde_json::Value,
@@ -506,6 +489,48 @@ pub struct KeystoreSignPolicyResponse {
 pub struct ApprovalInfo {
     pub approver_ids: Vec<String>,
     pub request_hash: String,
+}
+
+// ============================================================================
+// Transfer types (chain-agnostic — dispatch by chain param)
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct TransferRequest {
+    #[serde(default = "default_near_chain")]
+    pub chain: String, // "near", "ethereum", "bitcoin", etc.
+    pub receiver_id: String,
+    pub amount: String, // minimal units (yoctoNEAR, wei, satoshi, etc.)
+}
+
+fn default_near_chain() -> String {
+    "near".to_string()
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct KeystoreSignNearTransferRequest {
+    pub wallet_id: String,
+    pub receiver_id: String,
+    pub amount: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval_info: Option<ApprovalInfo>,
+}
+
+// ============================================================================
+// Balance types (chain-agnostic — dispatch by chain param)
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct BalanceQuery {
+    pub chain: Option<String>, // "near" (default), "ethereum", "bitcoin", etc.
+    pub token: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BalanceResponse {
+    pub balance: String,
+    pub token: String,
+    pub account_id: String,
 }
 
 // ============================================================================
@@ -562,6 +587,47 @@ pub struct KeystoreSignNearCallResponse {
     pub tx_hash: String,
     pub signer_id: String,
     pub public_key: String,
+}
+
+// ============================================================================
+// Intents deposit types
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct IntentsDepositRequest {
+    pub token: String,  // FT contract account_id (e.g. "wrap.near")
+    pub amount: String, // minimal units
+}
+
+#[derive(Debug, Serialize)]
+pub struct IntentsDepositResponse {
+    pub request_id: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tx_hash: Option<String>,
+}
+
+// ============================================================================
+// Swap types
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct SwapRequest {
+    pub token_in: String,      // defuse asset ID e.g. "nep141:wrap.near"
+    pub token_out: String,     // defuse asset ID e.g. "nep141:usdt.tether-token.near"
+    pub amount_in: String,     // minimal units
+    #[serde(default)]
+    pub min_amount_out: Option<String>, // slippage protection, omit for market order
+}
+
+#[derive(Debug, Serialize)]
+pub struct SwapResponse {
+    pub request_id: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub amount_out: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intent_hash: Option<String>,
 }
 
 #[cfg(test)]
@@ -633,6 +699,18 @@ mod tests {
         });
         assert!(json["error"].is_string());
         assert!(json["message"].is_string());
+    }
+
+    #[test]
+    fn test_transfer_request_chain_default() {
+        let json = r#"{"receiver_id": "bob.near", "amount": "1000000"}"#;
+        let req: TransferRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.chain, "near"); // default
+        assert_eq!(req.receiver_id, "bob.near");
+
+        let json_with_chain = r#"{"chain": "ethereum", "receiver_id": "0x123", "amount": "1000000"}"#;
+        let req2: TransferRequest = serde_json::from_str(json_with_chain).unwrap();
+        assert_eq!(req2.chain, "ethereum");
     }
 
     #[test]

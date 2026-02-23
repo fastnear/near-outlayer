@@ -221,6 +221,108 @@ impl outlayer::wallet::api::Host for WalletHostState {
 
         self.call_coordinator("GET", "/wallet/v1/tokens", None)
     }
+
+    fn transfer(&mut self, chain: String, to: String, amount: String) -> WalletResult {
+        debug!(
+            "wallet::transfer chain={}, to={}, amount={}, wallet_id={}",
+            chain, to, amount, self.wallet_id
+        );
+
+        if let Some(err) = self.check_rate_limit() {
+            return (String::new(), err);
+        }
+
+        if to.is_empty() || amount.is_empty() {
+            return (String::new(), "to and amount are required".to_string());
+        }
+
+        let body = serde_json::json!({
+            "chain": if chain.is_empty() { "near".to_string() } else { chain },
+            "receiver_id": to,
+            "amount": amount,
+        });
+
+        self.call_coordinator("POST", "/wallet/v1/transfer", Some(&body))
+    }
+
+    fn get_balance(&mut self, chain: String, token: String) -> WalletResult {
+        debug!(
+            "wallet::get_balance chain={}, token={}, wallet_id={}",
+            chain, token, self.wallet_id
+        );
+
+        if let Some(err) = self.check_rate_limit() {
+            return (String::new(), err);
+        }
+
+        let chain_param = if chain.is_empty() { "near" } else { &chain };
+        let path = if token.is_empty() {
+            format!("/wallet/v1/balance?chain={}", chain_param)
+        } else {
+            format!(
+                "/wallet/v1/balance?chain={}&token={}",
+                chain_param,
+                urlencoding::encode(&token)
+            )
+        };
+
+        self.call_coordinator("GET", &path, None)
+    }
+
+    fn intents_deposit(&mut self, token: String, amount: String) -> WalletResult {
+        debug!(
+            "wallet::intents_deposit token={}, amount={}, wallet_id={}",
+            token, amount, self.wallet_id
+        );
+
+        if let Some(err) = self.check_rate_limit() {
+            return (String::new(), err);
+        }
+
+        if token.is_empty() || amount.is_empty() {
+            return (String::new(), "token and amount are required".to_string());
+        }
+
+        let body = serde_json::json!({
+            "token": token,
+            "amount": amount,
+        });
+
+        self.call_coordinator("POST", "/wallet/v1/intents/deposit", Some(&body))
+    }
+
+    fn swap(
+        &mut self,
+        token_in: String,
+        token_out: String,
+        amount_in: String,
+        min_amount_out: String,
+    ) -> WalletResult {
+        debug!(
+            "wallet::swap token_in={}, token_out={}, amount_in={}, min_amount_out={}, wallet_id={}",
+            token_in, token_out, amount_in, min_amount_out, self.wallet_id
+        );
+
+        if let Some(err) = self.check_rate_limit() {
+            return (String::new(), err);
+        }
+
+        if token_in.is_empty() || token_out.is_empty() || amount_in.is_empty() {
+            return (
+                String::new(),
+                "token_in, token_out, and amount_in are required".to_string(),
+            );
+        }
+
+        let body = serde_json::json!({
+            "token_in": token_in,
+            "token_out": token_out,
+            "amount_in": amount_in,
+            "min_amount_out": if min_amount_out.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(min_amount_out) },
+        });
+
+        self.call_coordinator("POST", "/wallet/v1/swap", Some(&body))
+    }
 }
 
 /// Add wallet host functions to a wasmtime component linker

@@ -510,6 +510,16 @@ pub struct WalletSignNep413Response {
     pub public_key: String,
 }
 
+/// Request to build and sign a native NEAR transfer transaction
+#[derive(Debug, Deserialize)]
+pub struct WalletSignNearTransferRequest {
+    pub wallet_id: String,
+    pub receiver_id: String,
+    pub amount: String,
+    #[serde(default)]
+    pub approval_info: Option<ApprovalInfo>,
+}
+
 /// Request to build and sign a NEAR function call transaction
 #[derive(Debug, Deserialize)]
 pub struct WalletSignNearCallRequest {
@@ -607,6 +617,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/wallet/sign-transaction", post(wallet_sign_transaction_handler))
         .route("/wallet/sign-nep413", post(wallet_sign_nep413_handler))
         .route("/wallet/sign-near-call", post(wallet_sign_near_call_handler))
+        .route("/wallet/sign-near-transfer", post(wallet_sign_near_transfer_handler))
         .route("/wallet/sign-policy", post(wallet_sign_policy_handler))
         .route("/wallet/check-policy", post(wallet_check_policy_handler))
         .route("/wallet/encrypt-policy", post(wallet_encrypt_policy_handler))
@@ -2809,6 +2820,102 @@ async fn wallet_sign_near_call_handler(
             gas: req.gas,
             deposit,
         }))],
+    });
+
+    // 6. Hash and sign
+    let (tx_hash, _) = transaction.get_hash_and_size();
+
+    use ed25519_dalek::Signer;
+    let sig = signing_key.sign(tx_hash.as_ref());
+
+    let sig_str = format!("ed25519:{}", bs58::encode(sig.to_bytes()).into_string());
+    let signature: near_crypto::Signature = sig_str.parse().map_err(|e| {
+        ApiError::InternalError(format!("Failed to construct signature: {}", e))
+    })?;
+
+    // 7. Assemble SignedTransaction
+    let signed_tx = near_primitives::transaction::SignedTransaction::new(signature, transaction);
+    let signed_tx_bytes = borsh::to_vec(&signed_tx).map_err(|e| {
+        ApiError::InternalError(format!("Failed to serialize signed transaction: {}", e))
+    })?;
+
+    Ok(Json(WalletSignNearCallResponse {
+        signed_tx_base64: base64::encode(&signed_tx_bytes),
+        tx_hash: bs58::encode(tx_hash.as_ref()).into_string(),
+        signer_id: signer_id_str,
+        public_key: public_key.to_string(),
+    }))
+}
+
+/// Build and sign a native NEAR transfer transaction.
+///
+/// Similar to `wallet_sign_near_call_handler` but uses `Action::Transfer`
+/// instead of `Action::FunctionCall`. Used for sending native NEAR tokens.
+async fn wallet_sign_near_transfer_handler(
+    State(state): State<AppState>,
+    Json(req): Json<WalletSignNearTransferRequest>,
+) -> Result<Json<WalletSignNearCallResponse>, ApiError> {
+    use near_primitives::transaction::{Action, TransferAction, Transaction, TransactionV0};
+    use near_primitives::types::AccountId;
+    use std::str::FromStr;
+
+    if !state.is_ready() {
+        return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
+    }
+
+    // Verify approval signatures if this is an approved operation
+    if let Some(ref info) = req.approval_info {
+        verify_approvals(&state, &req.wallet_id, info).await?;
+    }
+
+    let near_client = state.near_client.as_ref().ok_or_else(|| {
+        ApiError::InternalError("NEAR client not configured".to_string())
+    })?;
+
+    // 1. Derive wallet keypair
+    let seed = format!("wallet:{}:near", req.wallet_id);
+    let keystore = state.keystore.read().await;
+    let (signing_key, verifying_key) = keystore.derive_keypair(&seed).map_err(|e| {
+        ApiError::InternalError(format!("Key derivation failed: {}", e))
+    })?;
+    drop(keystore);
+
+    // 2. Compute implicit account ID and public key
+    let pubkey_bytes = verifying_key.to_bytes();
+    let signer_id_str = hex::encode(pubkey_bytes);
+    let signer_id = AccountId::from_str(&signer_id_str).map_err(|e| {
+        ApiError::InternalError(format!("Invalid implicit account ID: {}", e))
+    })?;
+    let public_key_str = format!("ed25519:{}", bs58::encode(&pubkey_bytes).into_string());
+    let public_key: near_crypto::PublicKey = public_key_str.parse().map_err(|e| {
+        ApiError::InternalError(format!("Invalid public key: {}", e))
+    })?;
+
+    // 3. Query access key nonce and block hash
+    let (nonce, block_hash) = near_client
+        .query_access_key(&signer_id_str, &public_key)
+        .await
+        .map_err(|e| {
+            ApiError::InternalError(format!("Failed to query access key: {}", e))
+        })?;
+
+    // 4. Parse request parameters
+    let receiver_id = AccountId::from_str(&req.receiver_id).map_err(|e| {
+        ApiError::BadRequest(format!("Invalid receiver_id: {}", e))
+    })?;
+
+    let deposit: u128 = req.amount.parse().map_err(|e| {
+        ApiError::BadRequest(format!("Invalid amount: {}", e))
+    })?;
+
+    // 5. Build Transaction::V0 with Transfer action
+    let transaction = Transaction::V0(TransactionV0 {
+        signer_id: signer_id.clone(),
+        public_key: public_key.clone(),
+        nonce: nonce + 1,
+        receiver_id,
+        block_hash,
+        actions: vec![Action::Transfer(TransferAction { deposit })],
     });
 
     // 6. Hash and sign

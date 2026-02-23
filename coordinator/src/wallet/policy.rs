@@ -343,6 +343,11 @@ async fn rpc_has_wallet_policy(
 
     // Parse RPC response
     if let Some(error) = rpc_result.get("error") {
+        let err_str = error.to_string();
+        // Contract account doesn't exist → no policy
+        if err_str.contains("UNKNOWN_ACCOUNT") || err_str.contains("does not exist") {
+            return Ok(false);
+        }
         anyhow::bail!("NEAR RPC error: {}", error);
     }
 

@@ -64,7 +64,11 @@ pub fn router<S>(state: WalletState) -> Router<S> {
         .route("/wallet/v1/withdraw", post(handlers::withdraw))
         .route("/wallet/v1/withdraw/dry-run", post(handlers::withdraw_dry_run))
         .route("/wallet/v1/call", post(handlers::call))
+        .route("/wallet/v1/transfer", post(handlers::transfer))
+        .route("/wallet/v1/balance", get(handlers::get_balance))
         .route("/wallet/v1/deposit", post(handlers::deposit))
+        .route("/wallet/v1/intents/deposit", post(handlers::intents_deposit))
+        .route("/wallet/v1/swap", post(handlers::swap))
         .route("/wallet/v1/requests/:request_id", get(handlers::get_request_status))
         .route("/wallet/v1/requests", get(handlers::list_requests))
         .route("/wallet/v1/encrypt-policy", post(handlers::encrypt_policy))
@@ -96,11 +100,12 @@ pub fn create_wallet_state(
     keystore_auth_token: Option<String>,
     near_rpc_url: String,
     contract_id: String,
-    intents_base_url: String,
+    oneclick_base_url: String,
+    oneclick_jwt: Option<String>,
     webhook_secret: String,
     allowed_worker_token_hashes: Vec<String>,
 ) -> WalletState {
-    let backend = IntentsBackend::new(intents_base_url);
+    let backend = IntentsBackend::new(oneclick_base_url, oneclick_jwt);
 
     WalletState {
         db,

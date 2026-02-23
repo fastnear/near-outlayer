@@ -4,7 +4,7 @@
 
 use super::audit;
 use super::auth::{self, authenticate};
-use super::backend::{BackendDepositRequest, BackendWithdrawRequest, WalletInfo};
+use super::backend::{OneClickQuoteRequest, OneClickSubmitDeposit};
 use super::idempotency;
 use super::policy::{self, PolicyDecision};
 use super::types::*;
@@ -160,55 +160,6 @@ async fn keystore_derive_address(
         let body = response.text().await.unwrap_or_default();
         return Err(WalletError::KeystoreError(format!(
             "Keystore derive-address failed: {}",
-            body
-        )));
-    }
-
-    response.json().await.map_err(|e| {
-        WalletError::KeystoreError(format!("Invalid keystore response: {}", e))
-    })
-}
-
-/// Helper: call keystore sign-nep413 (for NEAR Intents protocol)
-async fn keystore_sign_nep413(
-    state: &WalletState,
-    wallet_id: &str,
-    chain: &str,
-    message: &str,
-    nonce_base64: &str,
-    recipient: &str,
-    approval_info: Option<&ApprovalInfo>,
-) -> Result<KeystoreSignNep413Response, WalletError> {
-    let keystore_url = state.keystore_base_url.as_ref().ok_or_else(|| {
-        WalletError::InternalError("Keystore URL not configured".to_string())
-    })?;
-
-    let payload = KeystoreSignNep413Request {
-        wallet_id: wallet_id.to_string(),
-        chain: chain.to_string(),
-        message: message.to_string(),
-        nonce_base64: nonce_base64.to_string(),
-        recipient: recipient.to_string(),
-        approval_info: approval_info.cloned(),
-    };
-
-    let mut request = state
-        .http_client
-        .post(format!("{}/wallet/sign-nep413", keystore_url))
-        .json(&payload);
-
-    if let Some(ref token) = state.keystore_auth_token {
-        request = request.header("Authorization", format!("Bearer {}", token));
-    }
-
-    let response = request.send().await.map_err(|e| {
-        WalletError::KeystoreError(format!("Failed to connect to keystore: {}", e))
-    })?;
-
-    if !response.status().is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return Err(WalletError::KeystoreError(format!(
-            "Keystore sign-nep413 failed: {}",
             body
         )));
     }
@@ -563,74 +514,37 @@ pub async fn withdraw(
     let nonce_lock = state.nonce_locks.get_lock(&auth.wallet_id).await;
     let _nonce_guard = nonce_lock.lock().await;
 
-    // Derive chain address (= signer_id for intents)
-    let derived = keystore_derive_address(&state, &auth.wallet_id, &chain).await?;
-
-    // Strip nep141: prefix from token if present (intents ft_withdraw uses plain token ID)
-    let token_for_intent = req.token.as_deref().unwrap_or("native").to_string();
-    let token_for_intent = token_for_intent
+    // Strip nep141: prefix from token if present (intents.near ft_withdraw uses plain token ID)
+    let raw_token = req.token.as_deref().unwrap_or("");
+    if raw_token.is_empty() || raw_token == "native" {
+        return Err(WalletError::InternalError(
+            "Withdraw requires a token (e.g. 'wrap.near' or 'nep141:wrap.near'). Native NEAR cannot be withdrawn via intents — use /wallet/v1/transfer instead.".to_string(),
+        ));
+    }
+    let token_for_withdraw = raw_token
         .strip_prefix("nep141:")
-        .unwrap_or(&token_for_intent)
+        .unwrap_or(raw_token)
         .to_string();
 
-    // Build NEP-413 intent message for ft_withdraw
-    let deadline = (Utc::now() + chrono::Duration::seconds(180))
-        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
-        .to_string();
-
-    let intent_message = serde_json::json!({
-        "signer_id": derived.address,
-        "deadline": deadline,
-        "intents": [{
-            "intent": "ft_withdraw",
-            "token": token_for_intent,
-            "receiver_id": req.to,
-            "amount": req.amount,
-        }]
+    // Direct ft_withdraw on intents.near — single synchronous NEAR transaction
+    // No solver-relay needed. The caller (wallet) must own the intents balance.
+    let ft_withdraw_args = serde_json::json!({
+        "token": token_for_withdraw,
+        "receiver_id": req.to,
+        "amount": req.amount,
     });
 
-    // Serialize with spaces after colons (intents protocol format, matches intents-ark)
-    let message_str = serde_json::to_string(&intent_message)
-        .map_err(|e| WalletError::InternalError(format!("Failed to serialize intent: {}", e)))?
-        .replace("\":", "\": ");
-
-    // Generate nonce: SHA256(timestamp_nanos) -> base64
-    let nonce_base64 = {
-        let timestamp_nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-            .to_string();
-        let hash = Sha256::digest(timestamp_nanos.as_bytes());
-        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, hash)
-    };
-
-    // Sign intent via keystore NEP-413 endpoint
-    let sign_result = keystore_sign_nep413(
+    let sign_result = keystore_sign_near_call(
         &state,
         &auth.wallet_id,
-        &chain,
-        &message_str,
-        &nonce_base64,
-        "intents.near",
+        INTENTS_CONTRACT,
+        "ft_withdraw",
+        &serde_json::to_string(&ft_withdraw_args).unwrap(),
+        100_000_000_000_000, // 100 TGas — ft_withdraw does ft_transfer internally
+        "1",                 // 1 yoctoNEAR required
         None,
     )
     .await?;
-
-    // Package signed intent data for backend
-    let signed_intent = serde_json::json!({
-        "message": message_str,
-        "nonce": nonce_base64,
-        "recipient": "intents.near",
-        "signature": sign_result.signature_base58,
-        "public_key": sign_result.public_key,
-        "standard": "nep413",
-    });
-
-    let signed_intent_base64 = base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        serde_json::to_string(&signed_intent).unwrap().as_bytes(),
-    );
 
     // Create request record
     let request_id = Uuid::new_v4();
@@ -656,57 +570,20 @@ pub async fn withdraw(
     .await
     .map_err(|e| WalletError::InternalError(format!("DB error: {}", e)))?;
 
-    // Submit to backend (solver-relay)
-    let wallet_info = WalletInfo {
-        wallet_id: auth.wallet_id.clone(),
-        chain: chain.clone(),
-        chain_address: derived.address.clone(),
-        chain_public_key: derived.public_key.clone(),
-    };
+    // Broadcast the ft_withdraw transaction
+    let (status, tx_hash, _result_value) =
+        broadcast_near_tx(&state.http_client, &state.near_rpc_url, &sign_result.signed_tx_base64).await?;
 
-    let backend_req = BackendWithdrawRequest {
-        to: req.to.clone(),
-        amount: req.amount.clone(),
-        token: req.token.clone(),
-        chain: chain.clone(),
-    };
-
-    let (status, result_data, operation_id) = match state
-        .backend
-        .withdraw(&wallet_info, backend_req, &signed_intent_base64)
-        .await
-    {
-        Ok(result) => {
-            let status = if result.status == "success" {
-                "success"
-            } else {
-                "processing"
-            };
-            let data = serde_json::json!({
-                "intent_hash": result.operation_id,
-                "tx_hash": result.tx_hash,
-                "fee": result.fee,
-                "fee_token": result.fee_token,
-            });
-            (status.to_string(), data, Some(result.operation_id))
-        }
-        Err(e) => {
-            let full_error = format!("{:#}", e);
-            warn!("Withdraw backend error for request {}: {}", request_id, full_error);
-            let data = serde_json::json!({
-                "error": full_error,
-            });
-            ("failed".to_string(), data, None)
-        }
-    };
+    let result_data = serde_json::json!({
+        "tx_hash": tx_hash,
+    });
 
     // Update request with result
     sqlx::query(
-        "UPDATE wallet_requests SET status = $2, intents_ref = $3, result_data = $4, updated_at = NOW() WHERE request_id = $1",
+        "UPDATE wallet_requests SET status = $2, result_data = $3, updated_at = NOW() WHERE request_id = $1",
     )
     .bind(request_id)
     .bind(&status)
-    .bind(&operation_id)
     .bind(&result_data)
     .execute(&state.db)
     .await
@@ -718,7 +595,7 @@ pub async fn withdraw(
         &auth.wallet_id,
         "withdraw",
         &auth.wallet_id,
-        serde_json::json!({"to": req.to, "amount": req.amount, "chain": chain, "status": status}),
+        serde_json::json!({"to": req.to, "amount": req.amount, "chain": chain, "status": status, "tx_hash": tx_hash}),
         Some(&request_id.to_string()),
     )
     .await;
@@ -876,47 +753,14 @@ pub async fn deposit(
     let req: DepositRequest =
         serde_json::from_str(&body).map_err(|e| WalletError::InternalError(format!("Invalid request body: {}", e)))?;
 
-    // For deposits, we need the destination address on the target chain (NEAR by default)
+    // Return wallet's own NEAR address for direct deposit
     let target_chain = "near";
     let derived = keystore_derive_address(&state, &auth.wallet_id, target_chain).await?;
 
-    let wallet_info = WalletInfo {
-        wallet_id: auth.wallet_id.clone(),
-        chain: target_chain.to_string(),
-        chain_address: derived.address.clone(),
-        chain_public_key: derived.public_key.clone(),
-    };
-
-    let backend_req = BackendDepositRequest {
-        source_chain: req.source_chain.clone(),
-        token: req.token.clone(),
-        amount: req.amount.clone(),
-        destination_address: derived.address.clone(),
-    };
-
-    // Try to get deposit quote from backend; fallback to direct deposit address
-    let (deposit_address, deposit_chain, expires_at, intents_ref) = match state
-        .backend
-        .deposit_quote(&wallet_info, backend_req)
-        .await
-    {
-        Ok(result) => (
-            result.deposit_address,
-            result.chain,
-            result.expires_at,
-            Some(result.operation_id),
-        ),
-        Err(e) => {
-            // Backend unavailable — use wallet's own address for direct deposit
-            warn!("Deposit quote backend unavailable, using direct address: {}", e);
-            (
-                derived.address.clone(),
-                req.source_chain.clone(),
-                None,
-                None,
-            )
-        }
-    };
+    let deposit_address = derived.address.clone();
+    let deposit_chain = req.source_chain.clone();
+    let expires_at: Option<String> = None;
+    let intents_ref: Option<String> = None;
 
     // Create request record
     let request_id = Uuid::new_v4();
@@ -990,41 +834,6 @@ pub async fn get_request_status(
     .await
     .map_err(|e| WalletError::InternalError(format!("DB error: {}", e)))?
     .ok_or(WalletError::RequestNotFound)?;
-
-    // If still processing, check backend for updated status
-    if row.status == "processing" {
-        if let Some(ref intents_ref) = row.intents_ref {
-            if let Ok(op_status) = state.backend.operation_status(intents_ref).await {
-                if op_status.status != "processing" {
-                    let new_status = &op_status.status;
-                    let result_data = serde_json::json!({
-                        "tx_hash": op_status.tx_hash,
-                        "fee": op_status.fee,
-                        "fee_token": op_status.fee_token,
-                        "error": op_status.error,
-                    });
-
-                    let _ = sqlx::query(
-                        "UPDATE wallet_requests SET status = $2, result_data = $3, updated_at = NOW() WHERE request_id = $1",
-                    )
-                    .bind(request_uuid)
-                    .bind(new_status)
-                    .bind(&result_data)
-                    .execute(&state.db)
-                    .await;
-
-                    return Ok(Json(RequestStatusResponse {
-                        request_id: row.request_id.to_string(),
-                        r#type: row.request_type,
-                        status: new_status.clone(),
-                        result: Some(result_data),
-                        created_at: row.created_at.to_rfc3339(),
-                        updated_at: Some(Utc::now().to_rfc3339()),
-                    }));
-                }
-            }
-        }
-    }
 
     Ok(Json(RequestStatusResponse {
         request_id: row.request_id.to_string(),
@@ -1679,6 +1488,16 @@ pub async fn approve(
                         approval_info,
                     )
                     .await;
+                } else if request_type == "transfer" {
+                    execute_approved_transfer(
+                        state_clone,
+                        wallet_id,
+                        request_id,
+                        request_data,
+                        wh_url,
+                        approval_info,
+                    )
+                    .await;
                 } else {
                     warn!(
                         "Auto-execute not implemented for request type: {}",
@@ -1863,8 +1682,8 @@ async fn execute_approved_withdraw(
     let token = request_data["token"].as_str().map(|s| s.to_string());
     let token_key = token.as_deref().unwrap_or("native").to_string();
 
-    // Strip nep141: prefix (intents ft_withdraw uses plain token ID)
-    let token_for_intent = token_key
+    // Strip nep141: prefix (intents.near ft_withdraw uses plain token ID)
+    let token_for_withdraw = token_key
         .strip_prefix("nep141:")
         .unwrap_or(&token_key)
         .to_string();
@@ -1873,14 +1692,28 @@ async fn execute_approved_withdraw(
     let nonce_lock = state.nonce_locks.get_lock(&wallet_id).await;
     let _nonce_guard = nonce_lock.lock().await;
 
-    // Derive address
-    let derived = match keystore_derive_address(&state, &wallet_id, &chain).await {
-        Ok(d) => d,
+    // Direct ft_withdraw on intents.near — single synchronous NEAR transaction
+    let ft_withdraw_args = serde_json::json!({
+        "token": token_for_withdraw,
+        "receiver_id": to,
+        "amount": amount,
+    });
+
+    let sign_result = match keystore_sign_near_call(
+        &state,
+        &wallet_id,
+        INTENTS_CONTRACT,
+        "ft_withdraw",
+        &serde_json::to_string(&ft_withdraw_args).unwrap(),
+        100_000_000_000_000, // 100 TGas
+        "1",
+        Some(&approval_info),
+    )
+    .await
+    {
+        Ok(s) => s,
         Err(e) => {
-            warn!(
-                "Auto-execute derive-address failed for {}: {:?}",
-                request_id, e
-            );
+            warn!("Auto-execute sign failed for {}: {:?}", request_id, e);
             let _ = sqlx::query(
                 "UPDATE wallet_requests SET status = 'failed', result_data = $2, updated_at = NOW() WHERE request_id = $1",
             )
@@ -1892,114 +1725,23 @@ async fn execute_approved_withdraw(
         }
     };
 
-    // Build NEP-413 intent message (same as normal withdraw flow)
-    let deadline = (Utc::now() + chrono::Duration::seconds(180))
-        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
-        .to_string();
-
-    let intent_message = serde_json::json!({
-        "signer_id": derived.address,
-        "deadline": deadline,
-        "intents": [{
-            "intent": "ft_withdraw",
-            "token": token_for_intent,
-            "receiver_id": to,
-            "amount": amount,
-        }]
-    });
-
-    // Serialize with spaces after colons (intents protocol format)
-    let message_str = serde_json::to_string(&intent_message)
-        .unwrap()
-        .replace("\":", "\": ");
-
-    // Generate nonce: SHA256(timestamp_nanos) -> base64
-    let nonce_base64 = {
-        let timestamp_nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-            .to_string();
-        let hash = Sha256::digest(timestamp_nanos.as_bytes());
-        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, hash)
-    };
-
-    // Sign intent via keystore NEP-413 endpoint
-    let sign_result =
-        match keystore_sign_nep413(&state, &wallet_id, &chain, &message_str, &nonce_base64, "intents.near", Some(&approval_info)).await {
-            Ok(s) => s,
-            Err(e) => {
-                warn!("Auto-execute sign failed for {}: {:?}", request_id, e);
-                let _ = sqlx::query(
-                    "UPDATE wallet_requests SET status = 'failed', result_data = $2, updated_at = NOW() WHERE request_id = $1",
-                )
-                .bind(request_id)
-                .bind(serde_json::json!({"error": format!("{:?}", e)}))
-                .execute(&state.db)
-                .await;
-                return;
-            }
-        };
-
-    // Package signed intent (same format as normal withdraw)
-    let signed_intent = serde_json::json!({
-        "message": message_str,
-        "nonce": nonce_base64,
-        "recipient": "intents.near",
-        "signature": sign_result.signature_base58,
-        "public_key": sign_result.public_key,
-        "standard": "nep413",
-    });
-
-    let signed_intent_base64 = base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        serde_json::to_string(&signed_intent).unwrap().as_bytes(),
-    );
-
-    // Submit to backend
-    let wallet_info = WalletInfo {
-        wallet_id: wallet_id.clone(),
-        chain: chain.clone(),
-        chain_address: derived.address.clone(),
-        chain_public_key: derived.public_key.clone(),
-    };
-
-    let backend_req = BackendWithdrawRequest {
-        to: to.clone(),
-        amount: amount.clone(),
-        token,
-        chain: chain.clone(),
-    };
-
-    match state
-        .backend
-        .withdraw(&wallet_info, backend_req, &signed_intent_base64)
-        .await
-    {
-        Ok(result) => {
-            let status = if result.status == "success" {
-                "success"
-            } else {
-                "processing"
-            };
-
+    // Broadcast the ft_withdraw transaction
+    match broadcast_near_tx(&state.http_client, &state.near_rpc_url, &sign_result.signed_tx_base64).await {
+        Ok((status, tx_hash, _)) => {
             let result_data = serde_json::json!({
-                "tx_hash": result.tx_hash,
-                "fee": result.fee,
-                "fee_token": result.fee_token,
+                "tx_hash": tx_hash,
             });
 
             let _ = sqlx::query(
-                "UPDATE wallet_requests SET status = $2, intents_ref = $3, result_data = $4, updated_at = NOW() WHERE request_id = $1",
+                "UPDATE wallet_requests SET status = $2, result_data = $3, updated_at = NOW() WHERE request_id = $1",
             )
             .bind(request_id)
-            .bind(status)
-            .bind(&result.operation_id)
+            .bind(&status)
             .bind(&result_data)
             .execute(&state.db)
             .await;
 
-            // Usage already recorded when pending_approval was created (handlers.rs line 533).
+            // Usage already recorded when pending_approval was created.
             // Recording again here would double-count against velocity limits.
 
             // Audit
@@ -2008,7 +1750,7 @@ async fn execute_approved_withdraw(
                 &wallet_id,
                 "withdraw_auto_executed",
                 "system",
-                serde_json::json!({"to": to, "amount": amount, "chain": chain, "status": status}),
+                serde_json::json!({"to": to, "amount": amount, "chain": chain, "status": status, "tx_hash": tx_hash}),
                 Some(&request_id.to_string()),
             )
             .await;
@@ -2031,12 +1773,12 @@ async fn execute_approved_withdraw(
             }
         }
         Err(e) => {
-            warn!("Auto-execute backend failed for {}: {}", request_id, e);
+            warn!("Auto-execute broadcast failed for {}: {:?}", request_id, e);
             let _ = sqlx::query(
                 "UPDATE wallet_requests SET status = 'failed', result_data = $2, updated_at = NOW() WHERE request_id = $1",
             )
             .bind(request_id)
-            .bind(serde_json::json!({"error": e.to_string()}))
+            .bind(serde_json::json!({"error": format!("{:?}", e)}))
             .execute(&state.db)
             .await;
         }
@@ -2558,6 +2300,1178 @@ async fn execute_approved_call(
             .await;
         }
     }
+}
+
+// ============================================================================
+// POST /transfer — native NEAR transfer
+// ============================================================================
+
+async fn keystore_sign_near_transfer(
+    state: &WalletState,
+    wallet_id: &str,
+    receiver_id: &str,
+    amount: &str,
+    approval_info: Option<&ApprovalInfo>,
+) -> Result<KeystoreSignNearCallResponse, WalletError> {
+    let keystore_url = state.keystore_base_url.as_ref().ok_or_else(|| {
+        WalletError::InternalError("Keystore URL not configured".to_string())
+    })?;
+
+    let payload = KeystoreSignNearTransferRequest {
+        wallet_id: wallet_id.to_string(),
+        receiver_id: receiver_id.to_string(),
+        amount: amount.to_string(),
+        approval_info: approval_info.cloned(),
+    };
+
+    let mut request = state
+        .http_client
+        .post(format!("{}/wallet/sign-near-transfer", keystore_url))
+        .json(&payload);
+
+    if let Some(ref token) = state.keystore_auth_token {
+        request = request.header("Authorization", format!("Bearer {}", token));
+    }
+
+    let response = request.send().await.map_err(|e| {
+        WalletError::KeystoreError(format!("Failed to connect to keystore: {}", e))
+    })?;
+
+    if !response.status().is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(WalletError::KeystoreError(format!(
+            "Keystore sign-near-transfer failed: {}",
+            body
+        )));
+    }
+
+    response.json().await.map_err(|e| {
+        WalletError::KeystoreError(format!("Invalid keystore response: {}", e))
+    })
+}
+
+pub async fn transfer(
+    State(state): State<WalletState>,
+    headers: HeaderMap,
+    body: String,
+) -> Result<Json<CallResponse>, WalletError> {
+    let auth = authenticate(&headers, &state.allowed_worker_token_hashes, &state.db, &state.api_key_cache).await?;
+
+    // Idempotency key
+    let idempotency_key = if auth.is_internal {
+        auth.idempotency_key.clone()
+    } else {
+        Some(auth.idempotency_key.clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()))
+    };
+
+    if let Some(ref key) = idempotency_key {
+        if let Some(existing_id) = idempotency::check_idempotency(&state.db, &auth.wallet_id, key).await? {
+            return Err(WalletError::DuplicateIdempotencyKey {
+                request_id: existing_id,
+            });
+        }
+    }
+
+    // Parse request
+    let req: TransferRequest = serde_json::from_str(&body).map_err(|e| {
+        WalletError::InternalError(format!("Invalid request: {}", e))
+    })?;
+
+    // Chain dispatch — currently only NEAR is supported
+    match req.chain.as_str() {
+        "near" => {}
+        other => {
+            return Err(WalletError::InternalError(format!(
+                "Chain '{}' is not yet supported for transfer. Currently supported: near",
+                other
+            )));
+        }
+    }
+
+    // Get current usage for velocity limit checks
+    let current_usage = get_current_usage(&state.db, &auth.wallet_id).await.unwrap_or_default();
+
+    // Policy check
+    let action = serde_json::json!({
+        "type": "transfer",
+        "to": req.receiver_id,
+        "receiver_id": req.receiver_id,
+        "amount": req.amount,
+        "token": "native",
+        "current_usage": current_usage,
+    });
+
+    let wallet_pubkey = policy::resolve_wallet_pubkey(&state.db, &auth.wallet_id).await?;
+    let policy_output = policy::check_wallet_policy_with_overrides(
+        &state.policy_cache,
+        &state.near_rpc_url,
+        &state.contract_id,
+        state.keystore_base_url.as_deref().unwrap_or(""),
+        state.keystore_auth_token.as_deref().unwrap_or(""),
+        &auth.wallet_id,
+        &wallet_pubkey,
+        action,
+        Some(&state.policy_overrides),
+    )
+    .await?;
+
+    let webhook_url = policy_output.webhook_url.clone();
+    match policy_output.decision {
+        PolicyDecision::Frozen => return Err(WalletError::WalletFrozen),
+        PolicyDecision::Denied(reason) => return Err(WalletError::PolicyDenied(reason)),
+        PolicyDecision::RequiresApproval { required_approvals } => {
+            let request_id = Uuid::new_v4();
+            let approval_id = Uuid::new_v4();
+            let request_data = serde_json::json!({
+                "receiver_id": req.receiver_id,
+                "amount": req.amount,
+            });
+
+            let request_hash = sha256_hex(&serde_json::to_string(&request_data).unwrap_or_default());
+
+            sqlx::query(
+                r#"
+                INSERT INTO wallet_pending_approvals (id, wallet_id, request_type, request_data, request_hash, required_approvals, expires_at)
+                VALUES ($1, $2, 'transfer', $3, $4, $5, NOW() + INTERVAL '24 hours')
+                "#,
+            )
+            .bind(approval_id)
+            .bind(&auth.wallet_id)
+            .bind(&request_data)
+            .bind(&request_hash)
+            .bind(required_approvals)
+            .execute(&state.db)
+            .await
+            .map_err(|e| WalletError::InternalError(format!("DB error: {}", e)))?;
+
+            sqlx::query(
+                r#"
+                INSERT INTO wallet_requests (request_id, wallet_id, request_type, chain, request_data, approval_id, status, idempotency_key)
+                VALUES ($1, $2, 'transfer', 'near', $3, $4, 'pending_approval', $5)
+                "#,
+            )
+            .bind(request_id)
+            .bind(&auth.wallet_id)
+            .bind(&request_data)
+            .bind(approval_id)
+            .bind(idempotency_key.as_deref())
+            .execute(&state.db)
+            .await
+            .map_err(|e| WalletError::InternalError(format!("DB error: {}", e)))?;
+
+            audit::record_audit_event(
+                &state.db,
+                &auth.wallet_id,
+                "transfer_pending_approval",
+                &auth.wallet_id,
+                serde_json::json!({"receiver_id": req.receiver_id, "amount": req.amount}),
+                Some(&request_id.to_string()),
+            )
+            .await;
+
+            if let Some(ref url) = webhook_url {
+                let _ = webhooks::enqueue_webhook(
+                    &state.db,
+                    &auth.wallet_id,
+                    "approval_needed",
+                    serde_json::json!({
+                        "request_id": request_id.to_string(),
+                        "approval_id": approval_id.to_string(),
+                        "type": "transfer",
+                        "required": required_approvals,
+                    }),
+                    url,
+                )
+                .await;
+            }
+
+            record_usage(&state.db, &auth.wallet_id, "native", &req.amount).await?;
+
+            return Ok(Json(CallResponse {
+                request_id: request_id.to_string(),
+                status: "pending_approval".to_string(),
+                tx_hash: None,
+                result: None,
+                approval_id: Some(approval_id.to_string()),
+                required: Some(required_approvals),
+                approved: Some(0),
+            }));
+        }
+        PolicyDecision::NoPolicyAllow | PolicyDecision::Allowed => {
+            record_usage(&state.db, &auth.wallet_id, "native", &req.amount).await?;
+        }
+    }
+
+    // Execute the transfer
+    let nonce_lock = state.nonce_locks.get_lock(&auth.wallet_id).await;
+    let _nonce_guard = nonce_lock.lock().await;
+
+    let sign_result = keystore_sign_near_transfer(
+        &state,
+        &auth.wallet_id,
+        &req.receiver_id,
+        &req.amount,
+        None,
+    )
+    .await?;
+
+    // Create request record
+    let request_id = Uuid::new_v4();
+    let request_data = serde_json::json!({
+        "receiver_id": req.receiver_id,
+        "amount": req.amount,
+    });
+
+    sqlx::query(
+        r#"
+        INSERT INTO wallet_requests (request_id, wallet_id, request_type, chain, request_data, status, idempotency_key)
+        VALUES ($1, $2, 'transfer', 'near', $3, 'processing', $4)
+        "#,
+    )
+    .bind(request_id)
+    .bind(&auth.wallet_id)
+    .bind(&request_data)
+    .bind(idempotency_key.as_deref())
+    .execute(&state.db)
+    .await
+    .map_err(|e| WalletError::InternalError(format!("DB error: {}", e)))?;
+
+    // Broadcast
+    let (status, tx_hash, result_value) =
+        broadcast_near_tx(&state.http_client, &state.near_rpc_url, &sign_result.signed_tx_base64).await?;
+
+    let result_data = serde_json::json!({
+        "tx_hash": tx_hash,
+        "signer_id": sign_result.signer_id,
+        "result": result_value,
+    });
+
+    // Update request
+    sqlx::query(
+        "UPDATE wallet_requests SET status = $2, result_data = $3, updated_at = NOW() WHERE request_id = $1",
+    )
+    .bind(request_id)
+    .bind(&status)
+    .bind(&result_data)
+    .execute(&state.db)
+    .await
+    .ok();
+
+    // Audit
+    audit::record_audit_event(
+        &state.db,
+        &auth.wallet_id,
+        "transfer",
+        &auth.wallet_id,
+        serde_json::json!({
+            "receiver_id": req.receiver_id,
+            "amount": req.amount,
+            "status": status,
+            "tx_hash": tx_hash,
+        }),
+        Some(&request_id.to_string()),
+    )
+    .await;
+
+    // Webhook
+    if let Some(ref url) = webhook_url {
+        let _ = webhooks::enqueue_webhook(
+            &state.db,
+            &auth.wallet_id,
+            "request_completed",
+            serde_json::json!({
+                "request_id": request_id.to_string(),
+                "type": "transfer",
+                "status": status,
+                "result": result_data,
+            }),
+            url,
+        )
+        .await;
+    }
+
+    Ok(Json(CallResponse {
+        request_id: request_id.to_string(),
+        status,
+        tx_hash: Some(tx_hash),
+        result: result_value,
+        approval_id: None,
+        required: None,
+        approved: None,
+    }))
+}
+
+/// Execute an approved transfer operation (called after multisig threshold met)
+async fn execute_approved_transfer(
+    state: WalletState,
+    wallet_id: String,
+    request_id: Uuid,
+    request_data: serde_json::Value,
+    webhook_url: Option<String>,
+    approval_info: ApprovalInfo,
+) {
+    let still_valid = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM wallet_pending_approvals WHERE id = (SELECT approval_id FROM wallet_requests WHERE request_id = $1) AND status = 'approved' AND expires_at > NOW()",
+    )
+    .bind(request_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+
+    if still_valid == 0 {
+        warn!("Auto-execute transfer aborted for {}: approval expired or invalid", request_id);
+        let _ = sqlx::query(
+            "UPDATE wallet_requests SET status = 'failed', result_data = $2, updated_at = NOW() WHERE request_id = $1",
+        )
+        .bind(request_id)
+        .bind(serde_json::json!({"error": "Approval expired before execution"}))
+        .execute(&state.db)
+        .await;
+        return;
+    }
+
+    let receiver_id = request_data["receiver_id"].as_str().unwrap_or("").to_string();
+    let amount = request_data["amount"].as_str().unwrap_or("0").to_string();
+
+    let nonce_lock = state.nonce_locks.get_lock(&wallet_id).await;
+    let _nonce_guard = nonce_lock.lock().await;
+
+    match keystore_sign_near_transfer(&state, &wallet_id, &receiver_id, &amount, Some(&approval_info)).await {
+        Ok(sign_result) => {
+            match broadcast_near_tx(&state.http_client, &state.near_rpc_url, &sign_result.signed_tx_base64).await {
+                Ok((status, tx_hash, result_value)) => {
+                    let result_data = serde_json::json!({
+                        "tx_hash": tx_hash,
+                        "signer_id": sign_result.signer_id,
+                        "result": result_value,
+                    });
+
+                    let _ = sqlx::query(
+                        "UPDATE wallet_requests SET status = $2, result_data = $3, updated_at = NOW() WHERE request_id = $1",
+                    )
+                    .bind(request_id)
+                    .bind(&status)
+                    .bind(&result_data)
+                    .execute(&state.db)
+                    .await;
+
+                    audit::record_audit_event(
+                        &state.db,
+                        &wallet_id,
+                        "transfer_auto_executed",
+                        &wallet_id,
+                        serde_json::json!({"receiver_id": receiver_id, "amount": amount, "status": status, "tx_hash": tx_hash}),
+                        Some(&request_id.to_string()),
+                    )
+                    .await;
+
+                    if let Some(ref url) = webhook_url {
+                        let _ = webhooks::enqueue_webhook(
+                            &state.db,
+                            &wallet_id,
+                            "request_completed",
+                            serde_json::json!({
+                                "request_id": request_id.to_string(),
+                                "type": "transfer",
+                                "status": status,
+                                "result": result_data,
+                            }),
+                            url,
+                        )
+                        .await;
+                    }
+                }
+                Err(e) => {
+                    warn!("Auto-execute transfer broadcast failed for {}: {:?}", request_id, e);
+                    let _ = sqlx::query(
+                        "UPDATE wallet_requests SET status = 'failed', result_data = $2, updated_at = NOW() WHERE request_id = $1",
+                    )
+                    .bind(request_id)
+                    .bind(serde_json::json!({"error": format!("{:?}", e)}))
+                    .execute(&state.db)
+                    .await;
+                }
+            }
+        }
+        Err(e) => {
+            warn!("Auto-execute transfer signing failed for {}: {:?}", request_id, e);
+            let _ = sqlx::query(
+                "UPDATE wallet_requests SET status = 'failed', result_data = $2, updated_at = NOW() WHERE request_id = $1",
+            )
+            .bind(request_id)
+            .bind(serde_json::json!({"error": format!("{:?}", e)}))
+            .execute(&state.db)
+            .await;
+        }
+    }
+}
+
+// ============================================================================
+// GET /balance — query native NEAR or FT token balance
+// ============================================================================
+
+pub async fn get_balance(
+    State(state): State<WalletState>,
+    headers: HeaderMap,
+    Query(query): Query<BalanceQuery>,
+) -> Result<Json<BalanceResponse>, WalletError> {
+    let auth = authenticate(&headers, &state.allowed_worker_token_hashes, &state.db, &state.api_key_cache).await?;
+
+    let chain = query.chain.as_deref().unwrap_or("near");
+
+    // Chain dispatch — currently only NEAR is supported
+    match chain {
+        "near" => {}
+        other => {
+            return Err(WalletError::InternalError(format!(
+                "Chain '{}' is not yet supported for balance. Currently supported: near",
+                other
+            )));
+        }
+    }
+
+    // Resolve wallet's NEAR implicit account
+    let wallet_pubkey = policy::resolve_wallet_pubkey(&state.db, &auth.wallet_id).await?;
+    // The implicit account is the hex-encoded pubkey (strip "ed25519:" prefix)
+    let account_id = wallet_pubkey.strip_prefix("ed25519:").unwrap_or(&wallet_pubkey).to_string();
+
+    let token = query.token.as_deref().unwrap_or("");
+
+    if token.is_empty() || token == "near" {
+        // Native NEAR balance via view_account
+        let rpc_body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "balance",
+            "method": "query",
+            "params": {
+                "request_type": "view_account",
+                "finality": "final",
+                "account_id": account_id,
+            },
+        });
+
+        let response = state
+            .http_client
+            .post(&state.near_rpc_url)
+            .json(&rpc_body)
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+            .map_err(|e| WalletError::InternalError(format!("NEAR RPC error: {}", e)))?;
+
+        let rpc_result: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| WalletError::InternalError(format!("Invalid RPC response: {}", e)))?;
+
+        if let Some(err) = rpc_result.get("error") {
+            // Account may not exist yet (not funded)
+            let err_str = err.to_string();
+            if err_str.contains("does not exist") || err_str.contains("UNKNOWN_ACCOUNT") {
+                return Ok(Json(BalanceResponse {
+                    balance: "0".to_string(),
+                    token: "near".to_string(),
+                    account_id,
+                }));
+            }
+            return Err(WalletError::InternalError(format!("NEAR RPC error: {}", err)));
+        }
+
+        let balance = rpc_result
+            .pointer("/result/amount")
+            .and_then(|v| v.as_str())
+            .unwrap_or("0")
+            .to_string();
+
+        Ok(Json(BalanceResponse {
+            balance,
+            token: "near".to_string(),
+            account_id,
+        }))
+    } else {
+        // FT token balance via ft_balance_of view call
+        let args_json = serde_json::json!({"account_id": account_id});
+        let args_base64 = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            serde_json::to_string(&args_json).unwrap_or_default(),
+        );
+
+        let rpc_body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "balance",
+            "method": "query",
+            "params": {
+                "request_type": "call_function",
+                "finality": "final",
+                "account_id": token,
+                "method_name": "ft_balance_of",
+                "args_base64": args_base64,
+            },
+        });
+
+        let response = state
+            .http_client
+            .post(&state.near_rpc_url)
+            .json(&rpc_body)
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+            .map_err(|e| WalletError::InternalError(format!("NEAR RPC error: {}", e)))?;
+
+        let rpc_result: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| WalletError::InternalError(format!("Invalid RPC response: {}", e)))?;
+
+        if let Some(err) = rpc_result.get("error") {
+            return Err(WalletError::InternalError(format!("NEAR RPC error: {}", err)));
+        }
+
+        // Result is base64-encoded bytes of the return value
+        let result_bytes: Vec<u8> = rpc_result
+            .pointer("/result/result")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|b| b.as_u64().map(|n| n as u8)).collect())
+            .unwrap_or_default();
+
+        let balance_str = String::from_utf8(result_bytes).unwrap_or_else(|_| "\"0\"".to_string());
+        // ft_balance_of returns a JSON string like "12345"
+        let balance = balance_str.trim_matches('"').to_string();
+
+        Ok(Json(BalanceResponse {
+            balance,
+            token: token.to_string(),
+            account_id,
+        }))
+    }
+}
+
+// ============================================================================
+// POST /intents/deposit — deposit FT into intents.near via ft_transfer_call
+// ============================================================================
+
+const INTENTS_CONTRACT: &str = "intents.near";
+const STORAGE_DEPOSIT_AMOUNT: &str = "1250000000000000000000"; // 0.00125 NEAR
+const FT_TRANSFER_CALL_GAS: u64 = 300_000_000_000_000; // 300 TGas
+const STORAGE_DEPOSIT_GAS: u64 = 30_000_000_000_000; // 30 TGas
+
+/// RPC view call helper — calls a contract method and returns the raw JSON result.
+async fn near_rpc_view(
+    http_client: &reqwest::Client,
+    rpc_url: &str,
+    contract_id: &str,
+    method_name: &str,
+    args_json: &serde_json::Value,
+) -> Result<serde_json::Value, WalletError> {
+    let args_base64 = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        serde_json::to_string(args_json).unwrap_or_default(),
+    );
+
+    let rpc_body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": "view",
+        "method": "query",
+        "params": {
+            "request_type": "call_function",
+            "finality": "final",
+            "account_id": contract_id,
+            "method_name": method_name,
+            "args_base64": args_base64,
+        },
+    });
+
+    let response = http_client
+        .post(rpc_url)
+        .json(&rpc_body)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| WalletError::InternalError(format!("NEAR RPC error: {}", e)))?;
+
+    let rpc_result: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| WalletError::InternalError(format!("Invalid RPC response: {}", e)))?;
+
+    if let Some(err) = rpc_result.get("error") {
+        return Err(WalletError::InternalError(format!("NEAR RPC error: {}", err)));
+    }
+
+    let result_bytes: Vec<u8> = rpc_result
+        .pointer("/result/result")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|b| b.as_u64().map(|n| n as u8)).collect())
+        .unwrap_or_default();
+
+    let result_str = String::from_utf8(result_bytes).unwrap_or_else(|_| "null".to_string());
+    let val = serde_json::from_str(&result_str).unwrap_or(serde_json::Value::Null);
+    Ok(val)
+}
+
+/// Check storage_balance_of for an account on a contract. Returns true if registered.
+async fn check_storage_registered(
+    http_client: &reqwest::Client,
+    rpc_url: &str,
+    contract_id: &str,
+    account_id: &str,
+) -> bool {
+    let args = serde_json::json!({"account_id": account_id});
+    match near_rpc_view(http_client, rpc_url, contract_id, "storage_balance_of", &args).await {
+        Ok(val) => !val.is_null(),
+        Err(_) => false, // assume not registered on error
+    }
+}
+
+pub async fn intents_deposit(
+    State(state): State<WalletState>,
+    headers: HeaderMap,
+    body: String,
+) -> Result<Json<IntentsDepositResponse>, WalletError> {
+    let auth = authenticate(&headers, &state.allowed_worker_token_hashes, &state.db, &state.api_key_cache).await?;
+
+    // Idempotency
+    let idempotency_key = auth
+        .idempotency_key
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    if let Some(existing_id) = idempotency::check_idempotency(&state.db, &auth.wallet_id, &idempotency_key).await? {
+        return Err(WalletError::DuplicateIdempotencyKey {
+            request_id: existing_id,
+        });
+    }
+
+    let req: IntentsDepositRequest = serde_json::from_str(&body).map_err(|e| {
+        WalletError::InternalError(format!("Invalid request: {}", e))
+    })?;
+
+    // Policy check
+    let current_usage = get_current_usage(&state.db, &auth.wallet_id).await.unwrap_or_default();
+    let action = serde_json::json!({
+        "type": "intents_deposit",
+        "token": req.token,
+        "amount": req.amount,
+        "current_usage": current_usage,
+    });
+
+    let wallet_pubkey = policy::resolve_wallet_pubkey(&state.db, &auth.wallet_id).await?;
+    let policy_output = policy::check_wallet_policy_with_overrides(
+        &state.policy_cache,
+        &state.near_rpc_url,
+        &state.contract_id,
+        state.keystore_base_url.as_deref().unwrap_or(""),
+        state.keystore_auth_token.as_deref().unwrap_or(""),
+        &auth.wallet_id,
+        &wallet_pubkey,
+        action,
+        Some(&state.policy_overrides),
+    )
+    .await?;
+
+    match policy_output.decision {
+        PolicyDecision::Frozen => return Err(WalletError::WalletFrozen),
+        PolicyDecision::Denied(reason) => return Err(WalletError::PolicyDenied(reason)),
+        PolicyDecision::RequiresApproval { .. } => {
+            return Err(WalletError::InternalError(
+                "Intents deposit does not support multisig approval yet".to_string(),
+            ));
+        }
+        PolicyDecision::NoPolicyAllow | PolicyDecision::Allowed => {
+            record_usage(&state.db, &auth.wallet_id, &req.token, &req.amount).await?;
+        }
+    }
+
+    // Resolve wallet NEAR address
+    let derived = keystore_derive_address(&state, &auth.wallet_id, "near").await?;
+
+    // Acquire nonce lock
+    let nonce_lock = state.nonce_locks.get_lock(&auth.wallet_id).await;
+    let _nonce_guard = nonce_lock.lock().await;
+
+    // Check if wallet needs storage registration on intents.near for receiving tokens back
+    let needs_intents_storage = !check_storage_registered(
+        &state.http_client,
+        &state.near_rpc_url,
+        INTENTS_CONTRACT,
+        &derived.address,
+    )
+    .await;
+
+    if needs_intents_storage {
+        debug!("Wallet {} needs storage deposit on intents.near", auth.wallet_id);
+        let storage_args = serde_json::json!({"account_id": derived.address, "registration_only": true});
+        let storage_sign = keystore_sign_near_call(
+            &state,
+            &auth.wallet_id,
+            INTENTS_CONTRACT,
+            "storage_deposit",
+            &serde_json::to_string(&storage_args).unwrap(),
+            STORAGE_DEPOSIT_GAS,
+            STORAGE_DEPOSIT_AMOUNT,
+            None,
+        )
+        .await?;
+
+        let (storage_status, _storage_tx, _) =
+            broadcast_near_tx(&state.http_client, &state.near_rpc_url, &storage_sign.signed_tx_base64).await?;
+        debug!("Storage deposit on intents.near status: {}", storage_status);
+    }
+
+    // Build ft_transfer_call: send tokens to intents.near
+    let ft_args = serde_json::json!({
+        "receiver_id": INTENTS_CONTRACT,
+        "amount": req.amount,
+        "msg": "",
+    });
+
+    let sign_result = keystore_sign_near_call(
+        &state,
+        &auth.wallet_id,
+        &req.token,        // receiver = token contract
+        "ft_transfer_call",
+        &serde_json::to_string(&ft_args).unwrap(),
+        FT_TRANSFER_CALL_GAS,
+        "1",               // 1 yoctoNEAR deposit
+        None,
+    )
+    .await?;
+
+    // Create request record
+    let request_id = Uuid::new_v4();
+    let request_data = serde_json::json!({
+        "token": req.token,
+        "amount": req.amount,
+        "receiver": INTENTS_CONTRACT,
+    });
+
+    sqlx::query(
+        r#"
+        INSERT INTO wallet_requests (request_id, wallet_id, request_type, chain, request_data, status, idempotency_key)
+        VALUES ($1, $2, 'intents_deposit', 'near', $3, 'processing', $4)
+        "#,
+    )
+    .bind(request_id)
+    .bind(&auth.wallet_id)
+    .bind(&request_data)
+    .bind(&idempotency_key)
+    .execute(&state.db)
+    .await
+    .map_err(|e| WalletError::InternalError(format!("DB error: {}", e)))?;
+
+    // Broadcast
+    let (status, tx_hash, _result_value) =
+        broadcast_near_tx(&state.http_client, &state.near_rpc_url, &sign_result.signed_tx_base64).await?;
+
+    let result_data = serde_json::json!({
+        "tx_hash": tx_hash,
+        "signer_id": sign_result.signer_id,
+    });
+
+    // Update request
+    sqlx::query(
+        "UPDATE wallet_requests SET status = $2, result_data = $3, updated_at = NOW() WHERE request_id = $1",
+    )
+    .bind(request_id)
+    .bind(&status)
+    .bind(&result_data)
+    .execute(&state.db)
+    .await
+    .ok();
+
+    // Audit
+    audit::record_audit_event(
+        &state.db,
+        &auth.wallet_id,
+        "intents_deposit",
+        &auth.wallet_id,
+        serde_json::json!({
+            "token": req.token,
+            "amount": req.amount,
+            "status": status,
+            "tx_hash": tx_hash,
+        }),
+        Some(&request_id.to_string()),
+    )
+    .await;
+
+    // Webhook
+    if let Some(ref url) = policy_output.webhook_url {
+        let _ = webhooks::enqueue_webhook(
+            &state.db,
+            &auth.wallet_id,
+            "request_completed",
+            serde_json::json!({
+                "request_id": request_id.to_string(),
+                "type": "intents_deposit",
+                "status": status,
+                "tx_hash": tx_hash,
+            }),
+            url,
+        )
+        .await;
+    }
+
+    Ok(Json(IntentsDepositResponse {
+        request_id: request_id.to_string(),
+        status,
+        tx_hash: Some(tx_hash),
+    }))
+}
+
+// ============================================================================
+// POST /swap — token swap via 1Click API: quote → deposit → poll → done
+// ============================================================================
+
+pub async fn swap(
+    State(state): State<WalletState>,
+    headers: HeaderMap,
+    body: String,
+) -> Result<Json<SwapResponse>, WalletError> {
+    let auth = authenticate(&headers, &state.allowed_worker_token_hashes, &state.db, &state.api_key_cache).await?;
+
+    // Idempotency
+    let idempotency_key = auth
+        .idempotency_key
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    if let Some(existing_id) = idempotency::check_idempotency(&state.db, &auth.wallet_id, &idempotency_key).await? {
+        return Err(WalletError::DuplicateIdempotencyKey {
+            request_id: existing_id,
+        });
+    }
+
+    let req: SwapRequest = serde_json::from_str(&body).map_err(|e| {
+        WalletError::InternalError(format!("Invalid request: {}", e))
+    })?;
+
+    // Validate token format: must have nep141: prefix
+    if !req.token_in.starts_with("nep141:") || !req.token_out.starts_with("nep141:") {
+        return Err(WalletError::InternalError(
+            "token_in and token_out must use defuse asset format (e.g. 'nep141:wrap.near')".to_string(),
+        ));
+    }
+
+    // Policy check
+    let current_usage = get_current_usage(&state.db, &auth.wallet_id).await.unwrap_or_default();
+    let action = serde_json::json!({
+        "type": "swap",
+        "token_in": req.token_in,
+        "token_out": req.token_out,
+        "amount_in": req.amount_in,
+        "current_usage": current_usage,
+    });
+
+    let wallet_pubkey = policy::resolve_wallet_pubkey(&state.db, &auth.wallet_id).await?;
+    let policy_output = policy::check_wallet_policy_with_overrides(
+        &state.policy_cache,
+        &state.near_rpc_url,
+        &state.contract_id,
+        state.keystore_base_url.as_deref().unwrap_or(""),
+        state.keystore_auth_token.as_deref().unwrap_or(""),
+        &auth.wallet_id,
+        &wallet_pubkey,
+        action,
+        Some(&state.policy_overrides),
+    )
+    .await?;
+
+    match policy_output.decision {
+        PolicyDecision::Frozen => return Err(WalletError::WalletFrozen),
+        PolicyDecision::Denied(reason) => return Err(WalletError::PolicyDenied(reason)),
+        PolicyDecision::RequiresApproval { .. } => {
+            return Err(WalletError::InternalError(
+                "Swap does not support multisig approval yet".to_string(),
+            ));
+        }
+        PolicyDecision::NoPolicyAllow | PolicyDecision::Allowed => {
+            record_usage(&state.db, &auth.wallet_id, &req.token_in, &req.amount_in).await?;
+        }
+    }
+
+    // Create request record early (status=processing)
+    let request_id = Uuid::new_v4();
+    let request_data = serde_json::json!({
+        "token_in": req.token_in,
+        "token_out": req.token_out,
+        "amount_in": req.amount_in,
+        "min_amount_out": req.min_amount_out,
+    });
+
+    sqlx::query(
+        r#"
+        INSERT INTO wallet_requests (request_id, wallet_id, request_type, chain, request_data, status, idempotency_key)
+        VALUES ($1, $2, 'swap', 'near', $3, 'processing', $4)
+        "#,
+    )
+    .bind(request_id)
+    .bind(&auth.wallet_id)
+    .bind(&request_data)
+    .bind(&idempotency_key)
+    .execute(&state.db)
+    .await
+    .map_err(|e| WalletError::InternalError(format!("DB error: {}", e)))?;
+
+    // Resolve wallet NEAR address
+    let derived = keystore_derive_address(&state, &auth.wallet_id, "near").await?;
+
+    // Step 1: Get 1Click quote
+    debug!("Swap step 1: getting 1Click quote {} → {}", req.token_in, req.token_out);
+    let deadline = (Utc::now() + chrono::Duration::seconds(300))
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string();
+
+    let quote_req = OneClickQuoteRequest {
+        dry: false,
+        swap_type: "EXACT_INPUT".to_string(),
+        slippage_tolerance: 100, // 1%
+        origin_asset: req.token_in.clone(),
+        deposit_type: "INTENTS".to_string(),
+        destination_asset: req.token_out.clone(),
+        amount: req.amount_in.clone(),
+        refund_to: derived.address.clone(),
+        refund_type: "INTENTS".to_string(),
+        recipient: derived.address.clone(),
+        recipient_type: "DESTINATION_CHAIN".to_string(),
+        deadline,
+    };
+
+    let quote_resp = state
+        .backend
+        .oneclick_quote(quote_req)
+        .await
+        .map_err(|e| WalletError::InternalError(format!("Failed to get 1Click quote: {}", e)))?;
+
+    let deposit_address = &quote_resp.quote.deposit_address;
+    let amount_out = &quote_resp.quote.amount_out;
+
+    debug!("1Click quote: deposit_address={}, amount_out={}", deposit_address, amount_out);
+
+    // Validate min_amount_out
+    if let Some(ref min_out) = req.min_amount_out {
+        let out: u128 = amount_out.parse().unwrap_or(0);
+        let min: u128 = min_out.parse().unwrap_or(0);
+        if out < min {
+            let err_msg = format!(
+                "Quote amount_out ({}) is less than min_amount_out ({})",
+                amount_out, min_out
+            );
+            sqlx::query(
+                "UPDATE wallet_requests SET status = 'failed', result_data = $2, updated_at = NOW() WHERE request_id = $1",
+            )
+            .bind(request_id)
+            .bind(serde_json::json!({"error": err_msg}))
+            .execute(&state.db)
+            .await
+            .ok();
+            return Err(WalletError::InternalError(err_msg));
+        }
+    }
+
+    // Step 2: Auto-register storage for output token (needed to receive tokens)
+    let token_out_contract = req.token_out.strip_prefix("nep141:").unwrap_or(&req.token_out);
+    let token_in_contract = req.token_in.strip_prefix("nep141:").unwrap_or(&req.token_in);
+
+    let nonce_lock = state.nonce_locks.get_lock(&auth.wallet_id).await;
+    let _nonce_guard = nonce_lock.lock().await;
+
+    if !check_storage_registered(&state.http_client, &state.near_rpc_url, token_out_contract, &derived.address).await {
+        debug!("Swap: auto-registering storage for output token {} on {}", token_out_contract, derived.address);
+        let storage_args = serde_json::json!({"account_id": derived.address, "registration_only": true});
+        let storage_sign = keystore_sign_near_call(
+            &state,
+            &auth.wallet_id,
+            token_out_contract,
+            "storage_deposit",
+            &serde_json::to_string(&storage_args).unwrap(),
+            STORAGE_DEPOSIT_GAS,
+            STORAGE_DEPOSIT_AMOUNT,
+            None,
+        )
+        .await?;
+        let _ = broadcast_near_tx(&state.http_client, &state.near_rpc_url, &storage_sign.signed_tx_base64).await?;
+    }
+
+    // Step 3: Deposit tokens into intents.near via ft_transfer_call
+    // Using INTENTS deposit type — tokens go to intents.near (always has storage),
+    // then mt_transfer moves them to the 1Click deposit address within intents.
+    debug!("Swap step 3: depositing {} {} into intents.near", req.amount_in, token_in_contract);
+
+    let ft_args = serde_json::json!({
+        "receiver_id": "intents.near",
+        "amount": req.amount_in,
+        "msg": "",
+    });
+
+    let deposit_sign = keystore_sign_near_call(
+        &state,
+        &auth.wallet_id,
+        token_in_contract,
+        "ft_transfer_call",
+        &serde_json::to_string(&ft_args).unwrap(),
+        FT_TRANSFER_CALL_GAS,
+        "1",
+        None,
+    )
+    .await?;
+
+    let (deposit_status, deposit_tx, _) =
+        broadcast_near_tx(&state.http_client, &state.near_rpc_url, &deposit_sign.signed_tx_base64).await?;
+
+    if deposit_status == "failed" {
+        let err_msg = format!("Deposit tx failed: {}", deposit_tx);
+        sqlx::query(
+            "UPDATE wallet_requests SET status = 'failed', result_data = $2, updated_at = NOW() WHERE request_id = $1",
+        )
+        .bind(request_id)
+        .bind(serde_json::json!({"error": err_msg, "deposit_tx": deposit_tx}))
+        .execute(&state.db)
+        .await
+        .ok();
+        return Err(WalletError::InternalError(err_msg));
+    }
+
+    debug!("Swap deposit tx (intents.near): {}", deposit_tx);
+
+    // Step 3b: mt_transfer on intents.near — move tokens to 1Click deposit address
+    debug!("Swap step 3b: mt_transfer {} {} to deposit address {}", req.amount_in, req.token_in, deposit_address);
+
+    let mt_args = serde_json::json!({
+        "receiver_id": deposit_address,
+        "token_id": req.token_in,
+        "amount": req.amount_in,
+    });
+
+    let mt_sign = keystore_sign_near_call(
+        &state,
+        &auth.wallet_id,
+        "intents.near",
+        "mt_transfer",
+        &serde_json::to_string(&mt_args).unwrap(),
+        100_000_000_000_000, // 100 TGas — mt_transfer does internal balance accounting
+        "1",
+        None,
+    )
+    .await?;
+
+    let (mt_status, mt_tx, _) =
+        broadcast_near_tx(&state.http_client, &state.near_rpc_url, &mt_sign.signed_tx_base64).await?;
+
+    if mt_status == "failed" {
+        let err_msg = format!("mt_transfer tx failed: {}", mt_tx);
+        sqlx::query(
+            "UPDATE wallet_requests SET status = 'failed', result_data = $2, updated_at = NOW() WHERE request_id = $1",
+        )
+        .bind(request_id)
+        .bind(serde_json::json!({"error": err_msg, "deposit_tx": deposit_tx, "mt_tx": mt_tx}))
+        .execute(&state.db)
+        .await
+        .ok();
+        return Err(WalletError::InternalError(err_msg));
+    }
+
+    debug!("Swap mt_transfer tx: {}", mt_tx);
+
+    // Step 4: Notify 1Click about the deposit (speeds up processing)
+    let submit_req = OneClickSubmitDeposit {
+        tx_hash: mt_tx.clone(),
+        deposit_address: deposit_address.clone(),
+        near_sender_account: Some(derived.address.clone()),
+    };
+    if let Err(e) = state.backend.oneclick_submit_deposit(submit_req).await {
+        warn!("Failed to submit deposit notification to 1Click (non-fatal): {}", e);
+    }
+
+    // Step 5: Poll 1Click status until terminal state
+    debug!("Swap step 5: polling 1Click status for deposit_address={}", deposit_address);
+    let status_resp = state
+        .backend
+        .oneclick_poll_status(deposit_address)
+        .await
+        .map_err(|e| WalletError::InternalError(format!("Swap failed: {}", e)))?;
+
+    let final_status = match status_resp.status.as_str() {
+        "SUCCESS" => "success",
+        "FAILED" | "REFUNDED" => "failed",
+        _ => "processing",
+    };
+
+    // Extract actual amount_out from swap details if available
+    let actual_amount_out = status_resp.swap_details
+        .as_ref()
+        .and_then(|d| d.amount_out.clone())
+        .unwrap_or_else(|| amount_out.clone());
+
+    let intent_hash = status_resp.swap_details
+        .as_ref()
+        .and_then(|d| d.intent_hashes.first().cloned());
+
+    // Update request
+    let result_data = serde_json::json!({
+        "amount_out": actual_amount_out,
+        "deposit_address": deposit_address,
+        "deposit_tx": deposit_tx,
+        "mt_transfer_tx": mt_tx,
+        "oneclick_status": status_resp.status,
+        "correlation_id": quote_resp.correlation_id,
+    });
+
+    sqlx::query(
+        "UPDATE wallet_requests SET status = $2, result_data = $3, intents_ref = $4, updated_at = NOW() WHERE request_id = $1",
+    )
+    .bind(request_id)
+    .bind(final_status)
+    .bind(&result_data)
+    .bind(deposit_address)
+    .execute(&state.db)
+    .await
+    .ok();
+
+    // Audit
+    audit::record_audit_event(
+        &state.db,
+        &auth.wallet_id,
+        "swap",
+        &auth.wallet_id,
+        serde_json::json!({
+            "token_in": req.token_in,
+            "token_out": req.token_out,
+            "amount_in": req.amount_in,
+            "amount_out": actual_amount_out,
+            "status": final_status,
+            "deposit_address": deposit_address,
+            "deposit_tx": deposit_tx,
+            "mt_transfer_tx": mt_tx,
+        }),
+        Some(&request_id.to_string()),
+    )
+    .await;
+
+    // Webhook
+    if let Some(ref url) = policy_output.webhook_url {
+        let _ = webhooks::enqueue_webhook(
+            &state.db,
+            &auth.wallet_id,
+            "request_completed",
+            serde_json::json!({
+                "request_id": request_id.to_string(),
+                "type": "swap",
+                "status": final_status,
+                "result": result_data,
+            }),
+            url,
+        )
+        .await;
+    }
+
+    Ok(Json(SwapResponse {
+        request_id: request_id.to_string(),
+        status: final_status.to_string(),
+        amount_out: Some(actual_amount_out),
+        intent_hash,
+    }))
 }
 
 // ============================================================================

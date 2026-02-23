@@ -358,8 +358,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.keystore_auth_token.clone(),
         config.near_rpc_url.clone(),
         config.contract_id.clone(),
-        std::env::var("INTENTS_BASE_URL")
-            .unwrap_or_else(|_| "https://solver-relay-v2.chaindefuser.com/rpc".to_string()),
+        std::env::var("ONECLICK_BASE_URL")
+            .unwrap_or_else(|_| "https://1click.chaindefuser.com".to_string()),
+        std::env::var("ONECLICK_JWT").ok(),
         std::env::var("WALLET_WEBHOOK_SECRET")
             .unwrap_or_else(|_| "default-webhook-secret".to_string()),
         allowed_worker_token_hashes,
