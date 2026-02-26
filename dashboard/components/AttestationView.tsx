@@ -133,7 +133,7 @@ export default function AttestationView({
         bytes[i] = binaryString.charCodeAt(i);
       }
 
-      const RTMR3_OFFSET = 256;
+      const RTMR3_OFFSET = 520;
       const RTMR3_SIZE = 48;
       const REPORTDATA_OFFSET = 568;
       const REPORTDATA_SIZE = 64;
