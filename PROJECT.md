@@ -721,6 +721,72 @@ Blockchain-native email for NEAR accounts. Every NEAR account has an email: `ali
 | Register Contract | Production — 5-measurement TDX verification, scoped access keys |
 | Dashboard | Production — project management, secrets UI, executions view, earnings page, documentation |
 | SDK | Published — `outlayer` crate on crates.io, wasm32-wasip2, storage + env + RPC |
+| Agent Custody | Production — multi-chain wallets for AI agents, MPC+TEE key derivation, policy engine, multisig, NEAR Intents |
+
+---
+
+## Agent Custody
+
+Multi-chain custody wallets for AI agents. Agent gets an API key, private keys live in TEE, wallet owner controls policy. Full spec: [CUSTODY.md](CUSTODY.md).
+
+### Architecture
+
+- **Coordinator** (`coordinator/src/wallet/`) — stateless proxy. Auth API key, forward to keystore, track usage in PostgreSQL
+- **Keystore TEE** (`keystore-worker/src/api.rs` wallet routes) — key derivation (`HMAC-SHA256(MPC_master, "wallet:{id}:{chain}")`), tx signing, policy evaluation. All inside Intel TDX
+- **Contract** (`contract/src/wallet.rs`) — encrypted policy storage, freeze/unfreeze, on-chain signature verification
+- **Worker WASI** (`worker/src/outlayer_wallet/`) — `outlayer:wallet/api@0.1.0` host functions for WASI containers
+- **Dashboard** (`dashboard/app/wallet/`) — policy management, approvals, audit log
+
+### Key Files
+
+| File | Description |
+|------|-------------|
+| `coordinator/src/wallet/handlers.rs` | HTTP handlers: register, withdraw, call, approve, policy |
+| `coordinator/src/wallet/auth.rs` | API key auth (SHA-256 hash lookup) |
+| `coordinator/src/wallet/policy.rs` | Negative cache, NEAR RPC `has_wallet_policy()` |
+| `coordinator/src/wallet/backend/intents.rs` | NEAR Intents integration |
+| `keystore-worker/src/api.rs:2439-2843` | Wallet endpoints: derive-address, sign-tx, check-policy |
+| `keystore-worker/src/crypto.rs:108` | `derive_keypair()` — HMAC-SHA256 from MPC master secret |
+| `contract/src/wallet.rs` | `WalletPolicyEntry`, store/freeze/unfreeze/has/get methods |
+| `worker/wit/deps/wallet.wit` | WASI WIT interface |
+| `dashboard/app/wallet/` | 5 pages: handoff, manage, approvals, approval detail, audit |
+| `dashboard/app/docs/agent-custody/page.tsx` | User-facing documentation |
+
+### API Endpoints
+
+Base: `https://api.outlayer.fastnear.com`
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/register` | None | Create wallet → API key + NEAR address |
+| GET | `/wallet/v1/address?chain=` | Bearer | Derive address for any chain |
+| POST | `/wallet/v1/withdraw` | Bearer | Transfer (gasless cross-chain via Intents) |
+| POST | `/wallet/v1/withdraw/dry-run` | Bearer | Simulate withdrawal |
+| POST | `/wallet/v1/call` | Bearer | Native NEAR contract call |
+| GET | `/wallet/v1/requests/{id}` | Bearer | Poll async status |
+| GET | `/wallet/v1/policy` | Bearer | View decrypted policy |
+| POST | `/wallet/v1/encrypt-policy` | Bearer | Encrypt policy for on-chain storage |
+| POST | `/wallet/v1/approve/{id}` | Bearer | Multisig approval (NEP-413 sig) |
+| GET | `/wallet/v1/audit` | Bearer | Full event history |
+
+### Database Tables
+
+`coordinator/migrations/20260220000001_wallet.sql`
+
+| Table | Purpose |
+|-------|---------|
+| `wallet_accounts` | wallet_id → near_pubkey, policy cache, frozen flag |
+| `wallet_api_keys` | SHA-256(api_key) → wallet_id |
+| `wallet_requests` | Async operations (withdraw, deposit, call) |
+| `wallet_pending_approvals` | Multisig state machine |
+| `wallet_approval_signatures` | Individual approver signatures |
+| `wallet_usage` | Per-token per-period spending (hourly/daily/monthly) |
+| `wallet_audit_log` | Complete event history |
+| `wallet_webhook_deliveries` | Webhook retry queue |
+
+### Policy Engine
+
+Encrypted on NEAR blockchain → decrypted only inside TEE. Rules: per-tx limits, velocity limits (hourly/daily/monthly), address whitelist/blacklist, time restrictions, rate limits, multisig approval thresholds, emergency freeze. See [CUSTODY.md](CUSTODY.md) for full policy format.
 
 ---
 

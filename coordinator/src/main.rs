@@ -7,6 +7,7 @@ mod middleware;
 mod models;
 mod near_client;
 mod storage;
+mod wallet;
 
 use axum::{
     routing::{delete, get, post},
@@ -310,6 +311,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             axum::http::HeaderName::from_static("x-payment-key"),
             axum::http::HeaderName::from_static("x-compute-limit"),
             axum::http::HeaderName::from_static("x-attached-deposit"),
+            axum::http::HeaderName::from_static("x-wallet-id"),
         ])
         .allow_origin(tower_http::cors::Any);
     let https_api = Router::new()
@@ -327,6 +329,125 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024)) // 10 MB for large attachments
         .with_state(state.clone());
     info!("HTTPS API routes initialized (100 req/min IP rate limit, permissive CORS, 10MB body limit)");
+
+    // Build wallet API routes (wallet auth via X-Wallet-Id headers)
+    let wallet_ip_rate_limiter = Arc::new(middleware::ip_rate_limit::IpRateLimiter::new(100));
+    let cors_wallet = CorsLayer::new()
+        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::AUTHORIZATION,
+            axum::http::HeaderName::from_static("x-wallet-id"),
+            axum::http::HeaderName::from_static("x-idempotency-key"),
+        ])
+        .allow_origin(tower_http::cors::Any);
+
+    // Load active worker token hashes for internal wallet auth (WASI host functions)
+    let allowed_worker_token_hashes: Vec<String> = sqlx::query_scalar(
+        "SELECT token_hash FROM worker_auth_tokens WHERE is_active = true",
+    )
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+
+    tracing::info!("Loaded {} active worker tokens for wallet internal auth", allowed_worker_token_hashes.len());
+
+    let wallet_state = wallet::create_wallet_state(
+        state.db.clone(),
+        config.keystore_base_url.clone(),
+        config.keystore_auth_token.clone(),
+        config.near_rpc_url.clone(),
+        config.contract_id.clone(),
+        std::env::var("ONECLICK_BASE_URL")
+            .unwrap_or_else(|_| "https://1click.chaindefuser.com".to_string()),
+        std::env::var("ONECLICK_JWT").ok().filter(|s| !s.is_empty()),
+        std::env::var("WALLET_WEBHOOK_SECRET")
+            .unwrap_or_else(|_| "default-webhook-secret".to_string()),
+        allowed_worker_token_hashes,
+    );
+
+    let wallet_api = wallet::router(wallet_state.clone())
+        .layer(axum::middleware::from_fn_with_state(
+            wallet_ip_rate_limiter.clone(),
+            middleware::ip_rate_limit::ip_rate_limit_middleware,
+        ))
+        .layer(cors_wallet);
+    info!("Wallet API routes initialized (100 req/min IP rate limit, permissive CORS)");
+
+    // Start wallet webhook background task
+    let db_for_webhooks = state.db.clone();
+    let webhook_secret = wallet_state.webhook_secret.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            wallet::webhooks::process_pending_webhooks(&db_for_webhooks, &webhook_secret).await;
+        }
+    });
+    info!("Wallet webhook delivery task started (every 10s)");
+
+    // Start wallet nonce lock cleanup task
+    let nonce_locks = wallet_state.nonce_locks.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+            nonce_locks.cleanup().await;
+        }
+    });
+
+    // Start wallet policy cache cleanup task
+    let policy_cache = wallet_state.policy_cache.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            policy_cache.cleanup_expired().await;
+        }
+    });
+
+    // Start wallet DB cleanup task (old webhook deliveries + usage records)
+    let db_for_cleanup = state.db.clone();
+    tokio::spawn(async move {
+        loop {
+            // Run every 6 hours
+            tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
+
+            // Delete delivered/failed webhooks older than 30 days
+            let _ = sqlx::query(
+                "DELETE FROM wallet_webhook_deliveries WHERE status IN ('delivered', 'failed') AND created_at < NOW() - INTERVAL '30 days'",
+            )
+            .execute(&db_for_cleanup)
+            .await;
+
+            // Delete usage records older than 90 days
+            // Period format: "daily:2026-02-18", "hourly:2026-02-18T14", "monthly:2026-02"
+            // We can safely delete by created-date proxy: periods older than 90 days
+            let cutoff_daily = chrono::Utc::now() - chrono::Duration::days(90);
+            let cutoff_prefix = format!("daily:{}", cutoff_daily.format("%Y-%m-%d"));
+            let _ = sqlx::query(
+                "DELETE FROM wallet_usage WHERE period < $1 AND period LIKE 'daily:%'",
+            )
+            .bind(&cutoff_prefix)
+            .execute(&db_for_cleanup)
+            .await;
+
+            let cutoff_hourly = format!("hourly:{}", cutoff_daily.format("%Y-%m-%dT%H"));
+            let _ = sqlx::query(
+                "DELETE FROM wallet_usage WHERE period < $1 AND period LIKE 'hourly:%'",
+            )
+            .bind(&cutoff_hourly)
+            .execute(&db_for_cleanup)
+            .await;
+
+            let cutoff_monthly = format!("monthly:{}", cutoff_daily.format("%Y-%m"));
+            let _ = sqlx::query(
+                "DELETE FROM wallet_usage WHERE period < $1 AND period LIKE 'monthly:%'",
+            )
+            .bind(&cutoff_monthly)
+            .execute(&db_for_cleanup)
+            .await;
+
+            tracing::debug!("Wallet DB cleanup completed");
+        }
+    });
 
     // Configure CORS with allowed origins from config (for dashboard/internal routes)
     let cors_restricted = CorsLayer::new()
@@ -357,6 +478,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .layer(cors_restricted)
         .merge(https_api)
         .merge(public_storage)
+        .merge(wallet_api)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 

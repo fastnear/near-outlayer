@@ -13,6 +13,7 @@ mod outlayer_rpc;
 mod outlayer_storage;
 mod outlayer_payment;
 mod outlayer_vrf;
+mod outlayer_wallet;
 mod tdx_attestation;
 mod wasm_cache;
 
@@ -645,6 +646,7 @@ async fn worker_iteration(
     let payment_key_owner = execution_request.payment_key_owner.clone();
     let payment_key_nonce = execution_request.payment_key_nonce;
     let usd_payment = execution_request.usd_payment.clone();
+    let wallet_id = execution_request.wallet_id.clone();
 
     // Invariant: HTTPS calls must have call_id to route responses back to the user.
     // Without it, complete_https_call cannot update https_calls table → user gets 524 timeout.
@@ -879,6 +881,7 @@ async fn worker_iteration(
                     payment_key_owner.as_ref(),
                     payment_key_nonce,
                     usd_payment.as_ref(),
+                    wallet_id.as_ref(),
                     wasm_cache,
                     compiled_cache,
                 )
@@ -1506,6 +1509,7 @@ async fn handle_execute_job(
     payment_key_owner: Option<&String>, // Payment Key owner for HTTPS calls
     payment_key_nonce: Option<i32>, // Payment Key nonce for HTTPS calls
     usd_payment: Option<&String>, // USD payment amount for HTTPS calls
+    wallet_id: Option<&String>, // Wallet ID for wallet-enabled WASM executions
     wasm_cache: Option<&Arc<Mutex<WasmCache>>>, // Local WASM LRU cache (P1 only)
     compiled_cache: Option<&Arc<Mutex<CompiledCache>>>, // Compiled component cache (P2 only)
 ) -> Result<()> {
@@ -1928,7 +1932,7 @@ async fn handle_execute_job(
     };
 
     // Merge environment variables
-    let env_vars = merge_env_vars(
+    let mut env_vars = merge_env_vars(
         user_secrets,
         context,
         resource_limits,
@@ -1947,6 +1951,11 @@ async fn handle_execute_job(
         // Network configuration
         &config.near_rpc_url,
     );
+
+    // Add WALLET_ID to env vars if wallet is available
+    if let Some(ref wid) = wallet_id {
+        env_vars.insert("WALLET_ID".to_string(), wid.to_string());
+    }
 
     // Get build target from code source
     let build_target = match code_source {
@@ -2012,6 +2021,16 @@ async fn handle_execute_job(
         _ => None,
     };
 
+    // Create wallet config if wallet_id is present in execution request
+    let wallet_config = wallet_id.map(|wid| {
+        debug!("Wallet enabled for execution: wallet_id={}", wid);
+        executor::WalletConfig {
+            wallet_id: wid.clone(),
+            coordinator_url: config.api_base_url.clone(),
+            wallet_auth_token: config.api_auth_token.clone(),
+        }
+    });
+
     // Execute WASM
     info!("🚀 Executing WASM...");
     let exec_result = executor
@@ -2025,6 +2044,7 @@ async fn handle_execute_job(
             response_format,
             storage_config,
             vrf_config,
+            wallet_config,
         )
         .await;
 

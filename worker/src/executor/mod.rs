@@ -55,6 +55,17 @@ pub struct VrfConfig {
     pub sender_id: String,
 }
 
+/// Wallet configuration for host functions
+#[derive(Clone)]
+pub struct WalletConfig {
+    /// Wallet ID (e.g. "ed25519:abc..." from X-Wallet-Id header)
+    pub wallet_id: String,
+    /// Coordinator base URL for wallet API calls
+    pub coordinator_url: String,
+    /// Internal auth token for coordinator wallet API
+    pub wallet_auth_token: String,
+}
+
 /// Execution context with optional dependencies for WASM execution
 ///
 /// This struct holds external services that WASM code can use through host functions.
@@ -75,6 +86,8 @@ pub struct ExecutionContext {
     pub compiled_cache: Option<Arc<Mutex<CompiledCache>>>,
     /// VRF configuration (only used in WASI P2, requires keystore + request_id)
     pub vrf_config: Option<VrfConfig>,
+    /// Wallet configuration (only used in WASI P2, requires wallet_id in execution request)
+    pub wallet_config: Option<WalletConfig>,
 }
 
 impl ExecutionContext {
@@ -87,6 +100,7 @@ impl ExecutionContext {
             runtime_handle,
             compiled_cache: None,
             vrf_config: None,
+            wallet_config: None,
         }
     }
 
@@ -165,6 +179,7 @@ impl Executor {
     /// * `response_format` - Output format (Bytes, Text, Json)
     /// * `storage_config` - Optional per-execution storage config (overrides context)
     /// * `vrf_config` - Optional per-execution VRF config (overrides context)
+    /// * `wallet_config` - Optional per-execution wallet config (overrides context)
     pub async fn execute(
         &self,
         wasm_bytes: &[u8],
@@ -176,6 +191,7 @@ impl Executor {
         response_format: &ResponseFormat,
         storage_config: Option<StorageConfig>,
         vrf_config: Option<VrfConfig>,
+        wallet_config: Option<WalletConfig>,
     ) -> Result<ExecutionResult> {
         info!(
             "Starting WASM execution: {} instructions, {} MB memory, {} seconds, target: {:?}, format: {:?}",
@@ -185,7 +201,7 @@ impl Executor {
         let start = Instant::now();
 
         // Try to execute with different WASI versions
-        let result = self.execute_async(wasm_bytes, wasm_checksum, input_data, limits, env_vars, build_target, storage_config, vrf_config).await;
+        let result = self.execute_async(wasm_bytes, wasm_checksum, input_data, limits, env_vars, build_target, storage_config, vrf_config, wallet_config).await;
 
         let execution_time_ms = start.elapsed().as_millis() as u64;
 
@@ -289,9 +305,10 @@ impl Executor {
         build_target: Option<&str>,
         storage_config: Option<StorageConfig>,
         vrf_config: Option<VrfConfig>,
+        wallet_config: Option<WalletConfig>,
     ) -> Result<(Vec<u8>, u64, Option<u64>)> {
         // Create effective execution context with per-execution overrides
-        let has_overrides = storage_config.is_some() || vrf_config.is_some();
+        let has_overrides = storage_config.is_some() || vrf_config.is_some() || wallet_config.is_some();
         let effective_ctx: Option<ExecutionContext> = if has_overrides {
             if let Some(ref base_ctx) = self.context {
                 Some(ExecutionContext {
@@ -300,6 +317,7 @@ impl Executor {
                     runtime_handle: base_ctx.runtime_handle.clone(),
                     compiled_cache: base_ctx.compiled_cache.clone(),
                     vrf_config: vrf_config.or_else(|| base_ctx.vrf_config.clone()),
+                    wallet_config: wallet_config.or_else(|| base_ctx.wallet_config.clone()),
                 })
             } else {
                 // No base context, create minimal one with overrides
@@ -309,6 +327,7 @@ impl Executor {
                     runtime_handle: tokio::runtime::Handle::current(),
                     compiled_cache: None,
                     vrf_config,
+                    wallet_config,
                 })
             }
         } else {

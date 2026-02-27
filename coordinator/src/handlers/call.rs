@@ -210,6 +210,22 @@ pub async fn https_call(
     let attached_deposit = parse_header_u128(&headers, "X-Attached-Deposit")
         .unwrap_or(0);
 
+    // 2b. Parse optional X-Wallet-Id (for WASI wallet host functions)
+    let wallet_id = headers
+        .get("x-wallet-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    if let Some(ref wid) = wallet_id {
+        debug!("Wallet ID provided: {}", wid);
+        // Basic format validation (ed25519:hex or secp256k1:hex)
+        let parts: Vec<&str> = wid.splitn(2, ':').collect();
+        if parts.len() != 2 || (parts[0] != "ed25519" && parts[0] != "secp256k1") {
+            return Err(CallError::InternalError(
+                "Invalid X-Wallet-Id format. Expected 'ed25519:<hex>' or 'secp256k1:<hex>'".to_string(),
+            ));
+        }
+    }
+
     // 3. Validate compute limit
     if compute_limit < state.config.min_compute_limit {
         return Err(CallError::ComputeLimitTooLow {
@@ -294,6 +310,7 @@ pub async fn https_call(
         attached_deposit,
         body.secrets_ref.as_ref(),
         body.version_key.as_deref(),
+        wallet_id.as_deref(),
     ).await?;
 
     if !task_created {
@@ -685,6 +702,7 @@ async fn create_execution_task(
     attached_deposit: u128,
     secrets_ref: Option<&crate::models::SecretsReference>,
     version_key: Option<&str>,
+    wallet_id: Option<&str>,
 ) -> Result<bool, CallError> {
     // Resolve project_uuid from cache (uses Redis cache, falls back to contract)
     let project_uuid = resolve_project_uuid_cached(state, project_id).await?;
@@ -712,10 +730,10 @@ async fn create_execution_task(
             project_uuid, project_id, attached_usd,
             is_https_call, call_id, payment_key_owner, payment_key_nonce,
             usd_payment, compute_limit_usd, attached_deposit_usd,
-            version_key, user_account_id
+            version_key, user_account_id, wallet_id
         ) VALUES (
             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-            TRUE, $14, $15, $16, $17, $18, $19, $20, $21
+            TRUE, $14, $15, $16, $17, $18, $19, $20, $21, $22
         )
         "#
     )
@@ -740,6 +758,7 @@ async fn create_execution_task(
     .bind(attached_deposit.to_string()) // attached_deposit_usd
     .bind(version_key) // version_key
     .bind(sender_id) // user_account_id
+    .bind(&wallet_id) // wallet_id
     .execute(&state.db)
     .await
     .map_err(|e| CallError::InternalError(format!("Failed to insert execution_request: {}", e)))?;
@@ -765,7 +784,8 @@ async fn create_execution_task(
         "attached_deposit_usd": attached_deposit.to_string(),
         "payment_key_owner": sender_id,
         "payment_key_nonce": payment_key_nonce,
-        "usd_payment": attached_deposit.to_string()
+        "usd_payment": attached_deposit.to_string(),
+        "wallet_id": wallet_id
     });
 
     // Add secrets_ref if provided (for WASI modules that need secrets)

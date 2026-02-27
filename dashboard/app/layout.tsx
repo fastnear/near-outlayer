@@ -4,9 +4,58 @@ import { Inter } from 'next/font/google';
 import './globals.css';
 import { NearWalletProvider } from '@/contexts/NearWalletContext';
 import Link from 'next/link';
-import { useState } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { useNearWallet } from '@/contexts/NearWalletContext';
+import { getCoordinatorApiUrl } from '@/lib/api';
 
 const inter = Inter({ subsets: ['latin'] });
+
+function PendingApprovalsBadge() {
+  const { accountId, isConnected, network, contractId, viewMethod } = useNearWallet();
+  const coordinatorUrl = getCoordinatorApiUrl(network);
+  const [count, setCount] = useState(0);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const fetchCount = useCallback(async () => {
+    if (!accountId || !contractId) return;
+    try {
+      const wallets = await viewMethod({
+        contractId,
+        method: 'get_wallet_policies_by_owner',
+        args: { owner: accountId },
+      }).catch(() => []) as Array<{ wallet_pubkey: string }>;
+
+      if (wallets.length === 0) { setCount(0); return; }
+
+      let total = 0;
+      for (const w of wallets) {
+        try {
+          const resp = await fetch(
+            `${coordinatorUrl}/wallet/v1/pending_approvals_by_pubkey?near_pubkey=${encodeURIComponent(w.wallet_pubkey)}`
+          );
+          if (!resp.ok) continue;
+          const data = await resp.json();
+          total += (data.pending_approvals?.length ?? 0);
+        } catch { /* skip */ }
+      }
+      setCount(total);
+    } catch { /* skip */ }
+  }, [accountId, contractId, coordinatorUrl, viewMethod]);
+
+  useEffect(() => {
+    if (!isConnected || !accountId) { setCount(0); return; }
+    fetchCount();
+    intervalRef.current = setInterval(fetchCount, 30_000);
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+  }, [isConnected, accountId, fetchCount]);
+
+  if (count <= 0) return null;
+  return (
+    <span className="ml-1.5 inline-flex items-center justify-center w-5 h-5 text-xs font-bold text-white bg-red-500 rounded-full">
+      {count}
+    </span>
+  );
+}
 
 export default function RootLayout({
   children,
@@ -59,6 +108,7 @@ export default function RootLayout({
                         className="text-gray-700 hover:text-[#cc6600] px-3 py-2 rounded-md text-sm font-medium transition-colors border border-gray-200 hover:border-[#cc6600] rounded-lg inline-flex items-center gap-1"
                       >
                         My Workspace
+                        <PendingApprovalsBadge />
                         <svg className="w-4 h-4 transition-transform group-hover:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                         </svg>
@@ -80,6 +130,14 @@ export default function RootLayout({
                           </Link>
                           <Link href="/earnings" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 hover:text-[#cc6600]">
                             Earnings
+                          </Link>
+                          <div className="border-t border-gray-100 my-1"></div>
+                          <Link href="/wallet/manage" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 hover:text-[#cc6600]">
+                            Wallet Management
+                          </Link>
+                          <Link href="/wallet/approvals" className="flex items-center px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 hover:text-[#cc6600]">
+                            Wallet Approvals
+                            <PendingApprovalsBadge />
                           </Link>
                           <div className="border-t border-gray-100 my-1"></div>
                           <Link href="/settings" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 hover:text-[#cc6600]">

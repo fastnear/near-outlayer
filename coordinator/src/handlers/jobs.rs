@@ -547,7 +547,7 @@ pub async fn complete_job(
                    attached_usd,
                    is_https_call, call_id, payment_key_owner, payment_key_nonce,
                    usd_payment, compute_limit_usd, attached_deposit_usd,
-                   version_key, user_account_id
+                   version_key, user_account_id, wallet_id
             FROM execution_requests
             WHERE request_id = $1
             "#
@@ -663,6 +663,7 @@ pub async fn complete_job(
                     usd_payment: row.get("usd_payment"),
                     compute_limit_usd: row.get("compute_limit_usd"),
                     attached_deposit_usd: row.get("attached_deposit_usd"),
+                    wallet_id: row.get("wallet_id"),
                 }
             }
             Ok(None) => {
@@ -698,6 +699,7 @@ pub async fn complete_job(
                     usd_payment: None,
                     compute_limit_usd: None,
                     attached_deposit_usd: None,
+                    wallet_id: None,
                 }
             }
             Err(e) => {
@@ -733,6 +735,7 @@ pub async fn complete_job(
                     usd_payment: None,
                     compute_limit_usd: None,
                     attached_deposit_usd: None,
+                    wallet_id: None,
                 }
             }
         };  // end match original_request
@@ -902,6 +905,7 @@ pub async fn complete_job(
                         usd_payment: None,
                         compute_limit_usd: None,
                         attached_deposit_usd: None,
+                        wallet_id: None,
                     }
                 }
                 _ => {
@@ -936,6 +940,7 @@ pub async fn complete_job(
                         usd_payment: None,
                         compute_limit_usd: None,
                         attached_deposit_usd: None,
+                        wallet_id: None,
                     }
                 }
             };
@@ -1113,7 +1118,7 @@ async fn reconstruct_execution_request_json(
                attached_usd,
                is_https_call, call_id, payment_key_owner, payment_key_nonce,
                usd_payment, compute_limit_usd, attached_deposit_usd,
-               version_key, user_account_id
+               version_key, user_account_id, wallet_id
         FROM execution_requests WHERE request_id = $1
         "#
     )
@@ -1161,6 +1166,7 @@ async fn reconstruct_execution_request_json(
     let attached_deposit_usd: Option<String> = row.get("attached_deposit_usd");
     let version_key: Option<String> = row.get("version_key");
     let user_account_id: Option<String> = row.get("user_account_id");
+    let wallet_id: Option<String> = row.get("wallet_id");
 
     let execution_request = serde_json::json!({
         "request_id": request_id,
@@ -1207,7 +1213,8 @@ async fn reconstruct_execution_request_json(
         "compute_limit_usd": compute_limit_usd,
         "attached_deposit_usd": attached_deposit_usd,
         "version_key": version_key,
-        "user_account_id": user_account_id
+        "user_account_id": user_account_id,
+        "wallet_id": wallet_id
     });
 
     serde_json::to_string(&execution_request)

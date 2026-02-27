@@ -119,6 +119,9 @@ impl Contract {
             // Developer earnings
             developer_earnings: old_state.developer_earnings,
             user_stablecoin_balances: old_state.user_stablecoin_balances,
+            // Wallet policies (new in v6)
+            wallet_policies: LookupMap::new(StorageKey::WalletPolicies),
+            wallet_owner_index: LookupMap::new(StorageKey::WalletOwnerIndex),
         }
     }
 

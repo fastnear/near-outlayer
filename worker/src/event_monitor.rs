@@ -35,6 +35,9 @@ pub enum ContractEvent {
     ProjectStorageCleanup(ProjectStorageCleanupEvent),
     TopUpPaymentKey(TopUpPaymentKeyEvent),
     DeletePaymentKey(DeletePaymentKeyEvent),
+    WalletPolicyUpdated(WalletPolicyUpdatedEvent),
+    WalletPolicyDeleted(WalletPolicyDeletedEvent),
+    WalletFrozenChanged(WalletFrozenChangedEvent),
 }
 
 /// TopUpPaymentKey event data from SystemEvent
@@ -53,6 +56,30 @@ pub struct DeletePaymentKeyEvent {
     pub data_id: Vec<u8>,          // CryptoHash for yield/resume
     pub owner: String,              // Payment Key owner
     pub nonce: u32,                 // Payment Key nonce (profile)
+}
+
+/// WalletPolicyUpdated event data from SystemEvent
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletPolicyUpdatedEvent {
+    pub wallet_pubkey: String,      // "ed25519:<hex>" or "secp256k1:<hex>"
+    pub owner: String,              // Controller NEAR account
+    pub encrypted_data: String,     // Encrypted policy (keystore decrypts to extract key hashes)
+    pub frozen: bool,
+}
+
+/// WalletPolicyDeleted event data from SystemEvent
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletPolicyDeletedEvent {
+    pub wallet_pubkey: String,
+    pub owner: String,
+}
+
+/// WalletFrozenChanged event data from SystemEvent
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletFrozenChangedEvent {
+    pub wallet_pubkey: String,
+    pub owner: String,
+    pub frozen: bool,
 }
 
 /// ExecutionRequested event data from contract (matches contract's event structure)
@@ -294,6 +321,7 @@ pub struct EventMonitor {
     event_json_regex: Regex,
     blocks_scanned: u64,
     events_found: u64,
+    system_events_found: u64,
     // Event filters
     event_filter_standard_name: String,
     #[allow(dead_code)]
@@ -353,13 +381,27 @@ impl EventMonitor {
         // 1. Try saved cursor from coordinator (persisted across restarts)
         // 2. Fall back to START_BLOCK_HEIGHT env var
         // 3. If 0, fetch latest block from NEAR RPC
+        // Max blocks behind before we skip to latest (100 blocks ≈ 2 minutes)
+        const MAX_CATCHUP_BLOCKS: u64 = 1000;
+
         let current_block = match api_client.get_block_cursor().await {
             Ok(Some(saved_block)) if saved_block > 0 => {
-                info!(
-                    "📌 Resuming from saved block cursor: {} (START_BLOCK_HEIGHT was {})",
-                    saved_block, start_block
-                );
-                saved_block
+                // Check if cursor is too far behind — skip to latest instead of slow catch-up
+                let latest = Self::fetch_latest_block(&http_client, &near_rpc_url).await
+                    .unwrap_or(saved_block);
+                if latest > saved_block + MAX_CATCHUP_BLOCKS {
+                    info!(
+                        "⏩ Saved cursor {} is {} blocks behind latest {}. Skipping to latest.",
+                        saved_block, latest - saved_block, latest
+                    );
+                    latest
+                } else {
+                    info!(
+                        "📌 Resuming from saved block cursor: {} ({} blocks behind latest)",
+                        saved_block, latest.saturating_sub(saved_block)
+                    );
+                    saved_block
+                }
             }
             Ok(_) => {
                 if start_block == 0 {
@@ -405,6 +447,7 @@ impl EventMonitor {
                 .context("Failed to compile regex")?,
             blocks_scanned: 0,
             events_found: 0,
+            system_events_found: 0,
             event_filter_standard_name,
             event_filter_function_name,
             event_filter_min_version: parsed_min_version,
@@ -472,10 +515,16 @@ impl EventMonitor {
 
                     if !events.is_empty() {
                         self.events_found += events.len() as u64;
+                        let system_count = events.iter().filter(|e| !matches!(e, ContractEvent::ExecutionRequested(_))).count();
+                        if system_count > 0 {
+                            self.system_events_found += system_count as u64;
+                        }
                         info!(
-                            "📦 Block {}: Found {} contract events (total: {} events in {} blocks)",
+                            "📦 Block {}: Found {} events ({} execution, {} system) — total: {} events in {} blocks",
                             self.current_block,
                             events.len(),
+                            events.len() - system_count,
+                            system_count,
                             self.events_found,
                             self.blocks_scanned
                         );
@@ -504,6 +553,21 @@ impl EventMonitor {
                                     error!("Failed to handle delete_payment_key event: {}", e);
                                 }
                             }
+                            ContractEvent::WalletPolicyUpdated(event) => {
+                                if let Err(e) = self.handle_wallet_policy_updated(event).await {
+                                    error!("Failed to handle wallet_policy_updated event: {}", e);
+                                }
+                            }
+                            ContractEvent::WalletPolicyDeleted(event) => {
+                                if let Err(e) = self.handle_wallet_policy_deleted(event).await {
+                                    error!("Failed to handle wallet_policy_deleted event: {}", e);
+                                }
+                            }
+                            ContractEvent::WalletFrozenChanged(event) => {
+                                if let Err(e) = self.handle_wallet_frozen_changed(event).await {
+                                    error!("Failed to handle wallet_frozen_changed event: {}", e);
+                                }
+                            }
                         }
                     }
 
@@ -514,11 +578,13 @@ impl EventMonitor {
                     // Log progress every 100 blocks
                     if self.blocks_scanned % 100 == 0 {
                         info!(
-                            "📊 Progress: Scanned blocks {}-{} ({} blocks, {} events found)",
+                            "📊 Progress: Scanned blocks {}-{} ({} blocks, {} events: {} execution, {} system)",
                             start_block,
                             self.current_block - 1,
                             self.blocks_scanned,
-                            self.events_found
+                            self.events_found,
+                            self.events_found - self.system_events_found,
+                            self.system_events_found
                         );
                     }
 
@@ -698,6 +764,17 @@ impl EventMonitor {
                     if let Some(execution) = &outcome.execution_outcome {
                         if let Some(outcome_data) = &execution.outcome {
                             if let Some(logs) = &outcome_data.logs {
+                                if !logs.is_empty() {
+                                    let event_logs: Vec<_> = logs.iter()
+                                        .filter(|l| l.contains("EVENT_JSON:"))
+                                        .collect();
+                                    if !event_logs.is_empty() {
+                                        info!(
+                                            "📋 Block {}: contract receipt has {} EVENT_JSON logs",
+                                            block_height, event_logs.len()
+                                        );
+                                    }
+                                }
                                 for log in logs {
                                     if let Some(mut event) =
                                         self.process_log(log, block_height)
@@ -839,12 +916,69 @@ impl EventMonitor {
                     );
 
                     Some(ContractEvent::ProjectStorageCleanup(event_data))
+                } else if let Some(data) = system_event.get("WalletPolicyUpdated") {
+                    match serde_json::from_value::<WalletPolicyUpdatedEvent>(data.clone()) {
+                        Ok(event_data) => {
+                            info!(
+                                "✅ Found system_event WalletPolicyUpdated at block {}: wallet={} owner={}",
+                                block_height, event_data.wallet_pubkey, event_data.owner
+                            );
+                            Some(ContractEvent::WalletPolicyUpdated(event_data))
+                        }
+                        Err(e) => {
+                            error!(
+                                "❌ Failed to parse WalletPolicyUpdated at block {}: {}. Raw: {:?}",
+                                block_height, e, data
+                            );
+                            None
+                        }
+                    }
+                } else if let Some(data) = system_event.get("WalletPolicyDeleted") {
+                    match serde_json::from_value::<WalletPolicyDeletedEvent>(data.clone()) {
+                        Ok(event_data) => {
+                            info!(
+                                "✅ Found system_event WalletPolicyDeleted at block {}: wallet={} owner={}",
+                                block_height, event_data.wallet_pubkey, event_data.owner
+                            );
+                            Some(ContractEvent::WalletPolicyDeleted(event_data))
+                        }
+                        Err(e) => {
+                            error!(
+                                "❌ Failed to parse WalletPolicyDeleted at block {}: {}. Raw: {:?}",
+                                block_height, e, data
+                            );
+                            None
+                        }
+                    }
+                } else if let Some(data) = system_event.get("WalletFrozenChanged") {
+                    match serde_json::from_value::<WalletFrozenChangedEvent>(data.clone()) {
+                        Ok(event_data) => {
+                            info!(
+                                "✅ Found system_event WalletFrozenChanged at block {}: wallet={} frozen={}",
+                                block_height, event_data.wallet_pubkey, event_data.frozen
+                            );
+                            Some(ContractEvent::WalletFrozenChanged(event_data))
+                        }
+                        Err(e) => {
+                            error!(
+                                "❌ Failed to parse WalletFrozenChanged at block {}: {}. Raw: {:?}",
+                                block_height, e, data
+                            );
+                            None
+                        }
+                    }
                 } else {
                     warn!("Unknown system_event type at block {}: {:?}", block_height, system_event);
                     None
                 }
             }
-            _ => None,
+            other => {
+                info!(
+                    "📨 Block {}: skipping unrecognized event type '{}'",
+                    block_height, other
+                );
+                None
+            }
         }
     }
 
@@ -1084,6 +1218,47 @@ impl EventMonitor {
         }
 
         Ok(())
+    }
+
+    /// Handle WalletPolicyUpdated event — notify coordinator to sync authorized key hashes
+    async fn handle_wallet_policy_updated(&self, event: WalletPolicyUpdatedEvent) -> Result<()> {
+        info!(
+            "🔑 Processing WalletPolicyUpdated: wallet={} owner={} frozen={}",
+            event.wallet_pubkey, event.owner, event.frozen
+        );
+
+        self.api_client
+            .notify_wallet_policy_updated(
+                &event.wallet_pubkey,
+                &event.owner,
+                &event.encrypted_data,
+                event.frozen,
+            )
+            .await
+    }
+
+    /// Handle WalletPolicyDeleted event — notify coordinator to remove wallet keys
+    async fn handle_wallet_policy_deleted(&self, event: WalletPolicyDeletedEvent) -> Result<()> {
+        info!(
+            "🗑️ Processing WalletPolicyDeleted: wallet={} owner={}",
+            event.wallet_pubkey, event.owner
+        );
+
+        self.api_client
+            .notify_wallet_policy_deleted(&event.wallet_pubkey, &event.owner)
+            .await
+    }
+
+    /// Handle WalletFrozenChanged event — notify coordinator to update freeze status
+    async fn handle_wallet_frozen_changed(&self, event: WalletFrozenChangedEvent) -> Result<()> {
+        info!(
+            "🧊 Processing WalletFrozenChanged: wallet={} frozen={}",
+            event.wallet_pubkey, event.frozen
+        );
+
+        self.api_client
+            .notify_wallet_frozen_changed(&event.wallet_pubkey, &event.owner, event.frozen)
+            .await
     }
 
     /// Fetch input_data from contract state via RPC view call

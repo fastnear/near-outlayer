@@ -33,6 +33,7 @@ Both modes provide the same cryptographic proof via Intel TDX attestation.
 dashboard/app/docs/
 ├── page.tsx                      # Main documentation page (overview)
 ├── layout.tsx                    # Sidebar navigation menu
+├── agent-custody/page.tsx        # Agent Custody — multi-chain wallet for AI agents
 ├── getting-started/page.tsx      # Getting Started (from sections/GettingStarted.tsx)
 ├── web2-integration/page.tsx     # Web2 Integration - HTTPS API with TEE attestation
 ├── https-api/page.tsx            # ✨ HTTPS API (NEW) - full API reference
@@ -186,6 +187,7 @@ dashboard/app/docs/
 | Dashboard Page | Primary Source | Secondary Sources | Key Topics |
 |----------------|---------------|-------------------|------------|
 | `/docs` | `dashboard/app/docs/page.tsx` | - | Overview, getting started |
+| `/docs/agent-custody` | `dashboard/app/docs/agent-custody/page.tsx` | `.ignore/FIREBLOCKS.md`, `dashboard/public/SKILL.md` | **Agent Custody: multi-chain wallet, policy engine, gasless transfers, MPC security** |
 | `/docs/getting-started` | `dashboard/app/docs/sections/GettingStarted.tsx` | - | **TEE attestation, two integration modes (HTTPS & Blockchain), quick start** |
 | `/docs/web2-integration` | `dashboard/app/docs/web2-integration/page.tsx` | - | HTTPS integration overview, TEE attestation |
 | `/docs/https-api` | `dashboard/app/docs/https-api/page.tsx` | `DESIGN_HTTPS_API.md` | **Full HTTPS API reference, headers, responses** |
@@ -222,6 +224,19 @@ const pageStructure = {
     { id: 'secrets', title: 'Secrets' },
     { id: 'payment', title: 'Payment & Pricing' },
     { id: 'persistent-storage', title: 'Persistent Storage' },
+  ],
+  '/docs/agent-custody': [
+    { id: 'how-it-works', title: 'How It Works' },
+    { id: 'agent-id', title: 'Agent ID' },
+    { id: 'multi-chain', title: 'Multi-Chain Support' },
+    { id: 'policy-engine', title: 'Policy Engine' },
+    { id: 'multisig', title: 'Multisig Approval' },
+    { id: 'quick-start', title: 'Quick Start' },
+    { id: 'api-reference', title: 'API Reference' },
+    { id: 'security', title: 'Security Model' },
+    { id: 'ai-skill', title: 'AI Agent Skill File' },
+    { id: 'comparison', title: 'Comparison' },
+    { id: 'dashboard', title: 'Dashboard' },
   ],
   '/docs/examples': [
     { id: 'random-ark', title: 'Random Number' },

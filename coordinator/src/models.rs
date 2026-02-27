@@ -174,6 +174,12 @@ pub struct ExecutionRequest {
     /// Attached deposit in USD for HTTPS calls (X-Attached-Deposit header value)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attached_deposit_usd: Option<String>,
+
+    // ===== Wallet fields =====
+    /// Wallet ID for WASI wallet host functions (e.g., "ed25519:abc...")
+    /// Set from X-Wallet-Id header on /call/ requests
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wallet_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
