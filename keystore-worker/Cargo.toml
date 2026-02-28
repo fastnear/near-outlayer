@@ -19,6 +19,7 @@ borsh = "1.5"  # For NEP-413 payload serialization
 
 # Cryptography
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+k256 = { version = "0.13", features = ["ecdsa", "arithmetic"] }
 rand = "0.8"
 sha2 = "0.10"
 sha3 = "0.10"

@@ -479,6 +479,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(https_api)
         .merge(public_storage)
         .merge(wallet_api)
+        .fallback(|| async {
+            (
+                axum::http::StatusCode::NOT_FOUND,
+                axum::Json(serde_json::json!({"error": "not_found", "message": "Unknown endpoint"})),
+            )
+        })
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, Suspense } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useSearchParams, useRouter } from 'next/navigation';
 import { useNearWallet } from '@/contexts/NearWalletContext';
 import WalletConnectionModal from '@/components/WalletConnectionModal';
 import { getCoordinatorApiUrl } from '@/lib/api';
@@ -29,6 +29,7 @@ export default function WalletHandoffPage() {
 
 function WalletHandoffContent() {
   const searchParams = useSearchParams();
+  const router = useRouter();
   const apiKey = searchParams.get('key');
 
   const {
@@ -80,6 +81,9 @@ function WalletHandoffContent() {
   const [requireApproval, setRequireApproval] = useState(true);
   const [approvalRequired, setApprovalRequired] = useState('1');
   const [additionalApprovers, setAdditionalApprovers] = useState('');
+  // Which types require approval (unchecked = excluded_types)
+  const allTxTypes = ['transfer', 'call', 'delete', 'intents_withdraw', 'intents_swap', 'intents_deposit'] as const;
+  const [approvalTypes, setApprovalTypes] = useState<Set<string>>(new Set(['transfer', 'call', 'delete', 'intents_withdraw']));
 
   // Policy form with augmentPolicy that adds owner-based approval
   const {
@@ -101,11 +105,16 @@ function WalletHandoffContent() {
           if (id) approvers.push({ id, role: role || 'signer' });
         });
       }
+      const excluded_types = allTxTypes.filter((t) => !approvalTypes.has(t));
       return {
         ...base,
-        approval: { above_usd: 0, threshold: { required: parseInt(approvalRequired, 10) || 1 }, approvers },
+        approval: {
+          threshold: { required: parseInt(approvalRequired, 10) || 1 },
+          ...(excluded_types.length > 0 ? { excluded_types } : {}),
+          approvers,
+        },
       };
-    }, [requireApproval, approvalRequired, additionalApprovers, effectiveOwner]),
+    }, [requireApproval, approvalRequired, additionalApprovers, effectiveOwner, approvalTypes]),
   });
 
   // Fetch wallet info using the API key
@@ -167,12 +176,18 @@ function WalletHandoffContent() {
               setRequireApproval(true);
               setApprovalRequired(parsed.approval.required);
               setAdditionalApprovers(
-                // Remove first line (the owner/admin) since it's auto-added
+                // Remove owner since it's auto-added — match by account_id, not role
                 parsed.approval.approvers
                   .split('\n')
-                  .filter((line) => !line.includes('admin'))
+                  .filter((line) => {
+                    const id = line.split(',').map((s) => s.trim())[0] || '';
+                    return id !== effectiveOwner;
+                  })
                   .join('\n')
               );
+              // Restore approvalTypes from excluded_types
+              const excluded = (data.approval?.excluded_types || []) as string[];
+              setApprovalTypes(new Set(allTxTypes.filter((t) => !excluded.includes(t))));
             }
           }
         } catch {
@@ -220,8 +235,9 @@ function WalletHandoffContent() {
       // Save API key to browser localStorage for approvals
       saveWalletKey(walletPubkey, apiKey!);
 
-      setSuccess('Policy stored on-chain! API key saved to browser for approvals.');
+      setSuccess('Policy stored on-chain! Redirecting to wallet management...');
       setExistingPolicy(true);
+      setTimeout(() => router.push('/wallet/manage'), 2000);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -457,6 +473,61 @@ function WalletHandoffContent() {
                         className="w-full border border-gray-300 rounded px-3 py-2 text-sm font-mono"
                       />
                       <p className="text-xs text-gray-400 mt-1">Roles: admin (can update policy), signer (can only approve)</p>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-2">Require approval for:</label>
+                      {(() => {
+                        const txTypeLabels: Record<string, string> = {
+                          transfer: 'Transfer (send native currency)',
+                          call: 'Contract call',
+                          delete: 'Delete wallet',
+                          intents_withdraw: 'Send cross-chain',
+                          intents_swap: 'Swap',
+                          intents_deposit: 'Deposit to Intents',
+                        };
+                        const directTypes = ['transfer', 'call', 'delete'] as const;
+                        const intentsTypes = ['intents_withdraw', 'intents_swap', 'intents_deposit'] as const;
+                        const renderCheckbox = (txType: string) => (
+                          <label key={txType} className="flex items-center gap-1.5 text-sm cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={approvalTypes.has(txType)}
+                              onChange={() => {
+                                setApprovalTypes((prev) => {
+                                  const next = new Set(prev);
+                                  next.has(txType) ? next.delete(txType) : next.add(txType);
+                                  return next;
+                                });
+                              }}
+                              className="rounded border-gray-300"
+                            />
+                            <span>{txTypeLabels[txType] || txType}</span>
+                          </label>
+                        );
+                        return (
+                          <div className="space-y-3">
+                            <div>
+                              <span className="text-xs text-gray-400">Direct on-chain operations:</span>
+                              <div className="flex flex-col gap-1 mt-1">
+                                {directTypes.map(renderCheckbox)}
+                              </div>
+                            </div>
+                            <div>
+                              <span className="text-xs text-gray-400">NEAR Intents (use expiring quotes):</span>
+                              <div className="flex flex-col gap-1 mt-1">
+                                {intentsTypes.map(renderCheckbox)}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()}
+                      <p className="text-xs text-gray-400 mt-1">Unchecked types execute immediately without approval.</p>
+                      {(approvalTypes.has('intents_swap') || approvalTypes.has('intents_deposit')) && (
+                        <p className="text-xs text-red-600 font-medium mt-1 animate-pulse">
+                          Warning: Intents operations (deposit, swap) use expiring quotes — approval delays may cause transaction failures.
+                        </p>
+                      )}
                     </div>
                   </div>
                 )}

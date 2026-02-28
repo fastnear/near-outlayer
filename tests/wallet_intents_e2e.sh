@@ -7,7 +7,7 @@
 #   2. fund     — send NEAR to implicit address (manual step via near CLI)
 #   3. policy   — set policy via dashboard (limits, whitelist, multisig)
 #   4. call     — test /wallet/v1/call: wrap NEAR via wrap.near near_deposit
-#   5. withdraw — test /wallet/v1/withdraw: unwrap via intents ft_withdraw
+#   5. withdraw — test /wallet/v1/intents/withdraw: unwrap via intents ft_withdraw
 #
 # Usage:
 #   # Step 1: Register wallet + get address
@@ -177,13 +177,13 @@ cmd_setup() {
     echo ""
     echo "    curl -s -X POST -H 'Content-Type: application/json' -H 'Authorization: Bearer $WALLET_API_KEY' \\"
     echo "      -d '{\"to\":\"${YOUR_ACCOUNT}\",\"amount\":\"1000000000000000000000\",\"token\":\"$WRAP_CONTRACT\",\"chain\":\"near\"}' \\"
-    echo "      '${COORDINATOR_URL}/wallet/v1/withdraw/dry-run' | jq ."
+    echo "      '${COORDINATOR_URL}/wallet/v1/intents/withdraw/dry-run' | jq ."
     echo ""
     echo " 7. Withdraw via intents (real):"
     echo ""
     echo "    curl -s -X POST -H 'Content-Type: application/json' -H 'Authorization: Bearer $WALLET_API_KEY' \\"
     echo "      -d '{\"to\":\"${YOUR_ACCOUNT}\",\"amount\":\"1000000000000000000000\",\"token\":\"$WRAP_CONTRACT\",\"chain\":\"near\"}' \\"
-    echo "      '${COORDINATOR_URL}/wallet/v1/withdraw' | jq ."
+    echo "      '${COORDINATOR_URL}/wallet/v1/intents/withdraw' | jq ."
     echo ""
     echo " 8. Check request status (replace REQUEST_ID):"
     echo ""
@@ -388,7 +388,7 @@ cmd_withdraw() {
     # 3. Dry-run withdraw
     echo -e "${CYAN}[3/5] Dry-run withdraw...${NC}"
     BODY="{\"to\":\"$WITHDRAW_TO\",\"amount\":\"$WITHDRAW_AMOUNT\",\"token\":\"$WITHDRAW_TOKEN\",\"chain\":\"near\"}"
-    RESPONSE=$(curl_post "/wallet/v1/withdraw/dry-run" "$BODY" "dry-run-$(date +%s)")
+    RESPONSE=$(curl_post "/wallet/v1/intents/withdraw/dry-run" "$BODY" "dry-run-$(date +%s)")
     parse_response "$RESPONSE"
 
     echo -e "  HTTP $RESP_CODE"
@@ -403,7 +403,7 @@ cmd_withdraw() {
     echo ""
 
     IDEM_KEY="intents-e2e-$(date +%s)-$$"
-    RESPONSE=$(curl_post "/wallet/v1/withdraw" "$BODY" "$IDEM_KEY")
+    RESPONSE=$(curl_post "/wallet/v1/intents/withdraw" "$BODY" "$IDEM_KEY")
     parse_response "$RESPONSE"
 
     echo "  HTTP: $RESP_CODE"

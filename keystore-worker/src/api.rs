@@ -520,6 +520,15 @@ pub struct WalletSignNearTransferRequest {
     pub approval_info: Option<ApprovalInfo>,
 }
 
+/// Request to build and sign a NEAR DeleteAccount transaction
+#[derive(Debug, Deserialize)]
+pub struct WalletSignNearDeleteAccountRequest {
+    pub wallet_id: String,
+    pub beneficiary_id: String,
+    #[serde(default)]
+    pub approval_info: Option<ApprovalInfo>,
+}
+
 /// Request to build and sign a NEAR function call transaction
 #[derive(Debug, Deserialize)]
 pub struct WalletSignNearCallRequest {
@@ -531,6 +540,11 @@ pub struct WalletSignNearCallRequest {
     pub deposit: String,
     #[serde(default)]
     pub approval_info: Option<ApprovalInfo>,
+    /// Override the nonce instead of querying RPC.
+    /// Used when sending multiple transactions sequentially (e.g. swap flow)
+    /// to avoid nonce conflicts due to RPC finality lag.
+    #[serde(default)]
+    pub override_nonce: Option<u64>,
 }
 
 /// Response with signed NEAR transaction
@@ -540,6 +554,8 @@ pub struct WalletSignNearCallResponse {
     pub tx_hash: String,
     pub signer_id: String,
     pub public_key: String,
+    /// The nonce used in this transaction (callers can pass nonce+1 as override_nonce for the next tx)
+    pub nonce: u64,
 }
 
 /// Request to check policy for a wallet action
@@ -618,6 +634,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/wallet/sign-nep413", post(wallet_sign_nep413_handler))
         .route("/wallet/sign-near-call", post(wallet_sign_near_call_handler))
         .route("/wallet/sign-near-transfer", post(wallet_sign_near_transfer_handler))
+        .route("/wallet/sign-near-delete-account", post(wallet_sign_near_delete_account_handler))
         .route("/wallet/sign-policy", post(wallet_sign_policy_handler))
         .route("/wallet/check-policy", post(wallet_check_policy_handler))
         .route("/wallet/encrypt-policy", post(wallet_encrypt_policy_handler))
@@ -2485,23 +2502,15 @@ async fn wallet_derive_address_handler(
                 public_key: address,
             }))
         }
-        "ethereum" => {
-            // For Ethereum, derive secp256k1 key using a separate seed
-            // Use HMAC-SHA256 to derive 32 bytes, then use as secp256k1 private key
-            let (_, verifying_key) = keystore.derive_keypair(&seed).map_err(|e| {
+        // EVM chains (Ethereum, Base, Arbitrum, etc.) — secp256k1
+        // See: docs/MULTI_CHAIN.md
+        "ethereum" | "base" | "arbitrum" => {
+            let (address, pubkey_hex) = keystore.derive_eth_address(&seed).map_err(|e| {
                 ApiError::InternalError(format!("Key derivation failed: {}", e))
             })?;
-            // Use Ed25519 public key bytes as seed for keccak256 → Ethereum address
-            // This is a simplified approach; for production, derive actual secp256k1 key
-            let pubkey_bytes = verifying_key.as_bytes();
-            use sha3::{Digest as Sha3Digest, Keccak256};
-            let mut hasher = Keccak256::new();
-            hasher.update(pubkey_bytes);
-            let hash = hasher.finalize();
-            let address = format!("0x{}", hex::encode(&hash[12..]));
             Ok(Json(WalletDeriveAddressResponse {
                 address,
-                public_key: hex::encode(pubkey_bytes),
+                public_key: format!("secp256k1:{}", pubkey_hex),
             }))
         }
         _ => Err(ApiError::BadRequest(format!(
@@ -2534,13 +2543,26 @@ async fn wallet_sign_transaction_handler(
 
     let keystore = state.keystore.read().await;
 
-    let signature = keystore.sign(&seed, &tx_bytes).map_err(|e| {
-        ApiError::InternalError(format!("Signing failed: {}", e))
-    })?;
-
-    Ok(Json(WalletSignTransactionResponse {
-        signature_base64: base64::encode(signature.to_bytes()),
-    }))
+    match chain.as_str() {
+        // EVM chains — secp256k1 ECDSA
+        "ethereum" | "base" | "arbitrum" => {
+            let sig_bytes = keystore.sign_secp256k1(&seed, &tx_bytes).map_err(|e| {
+                ApiError::InternalError(format!("Signing failed: {}", e))
+            })?;
+            Ok(Json(WalletSignTransactionResponse {
+                signature_base64: base64::encode(&sig_bytes),
+            }))
+        }
+        // NEAR, Solana, etc. — Ed25519
+        _ => {
+            let signature = keystore.sign(&seed, &tx_bytes).map_err(|e| {
+                ApiError::InternalError(format!("Signing failed: {}", e))
+            })?;
+            Ok(Json(WalletSignTransactionResponse {
+                signature_base64: base64::encode(signature.to_bytes()),
+            }))
+        }
+    }
 }
 
 /// Sign encrypted policy data so the NEAR contract can verify wallet ownership.
@@ -2646,8 +2668,11 @@ async fn verify_approvals(
         .unwrap_or_default();
 
     if approvers.is_empty() {
-        // No approvers configured — can't verify, allow (policy only has threshold)
-        return Ok(());
+        return Err(ApiError::Forbidden(format!(
+            "Policy requires {} approvals but no approvers are configured. \
+             Add approvers to the policy before using multisig.",
+            threshold
+        )));
     }
 
     // Count valid approvals
@@ -2788,13 +2813,15 @@ async fn wallet_sign_near_call_handler(
         ApiError::InternalError(format!("Invalid public key: {}", e))
     })?;
 
-    // 3. Query access key nonce and block hash
-    let (nonce, block_hash) = near_client
+    // 3. Query access key nonce and block hash (or use override)
+    let (rpc_nonce, block_hash) = near_client
         .query_access_key(&signer_id_str, &public_key)
         .await
         .map_err(|e| {
             ApiError::InternalError(format!("Failed to query access key: {}", e))
         })?;
+    // Use override_nonce if provided (for sequential tx chains), otherwise rpc_nonce + 1
+    let tx_nonce = req.override_nonce.unwrap_or(rpc_nonce + 1);
 
     // 4. Parse request parameters
     let receiver_id = AccountId::from_str(&req.receiver_id).map_err(|e| {
@@ -2811,7 +2838,7 @@ async fn wallet_sign_near_call_handler(
     let transaction = Transaction::V0(TransactionV0 {
         signer_id: signer_id.clone(),
         public_key: public_key.clone(),
-        nonce: nonce + 1,
+        nonce: tx_nonce,
         receiver_id,
         block_hash,
         actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
@@ -2844,6 +2871,7 @@ async fn wallet_sign_near_call_handler(
         tx_hash: bs58::encode(tx_hash.as_ref()).into_string(),
         signer_id: signer_id_str,
         public_key: public_key.to_string(),
+        nonce: tx_nonce,
     }))
 }
 
@@ -2940,6 +2968,102 @@ async fn wallet_sign_near_transfer_handler(
         tx_hash: bs58::encode(tx_hash.as_ref()).into_string(),
         signer_id: signer_id_str,
         public_key: public_key.to_string(),
+        nonce: nonce + 1,
+    }))
+}
+
+/// Build and sign a NEAR DeleteAccount transaction.
+///
+/// Deletes the wallet's on-chain account and sends all remaining balance
+/// to the beneficiary. This is irreversible.
+async fn wallet_sign_near_delete_account_handler(
+    State(state): State<AppState>,
+    Json(req): Json<WalletSignNearDeleteAccountRequest>,
+) -> Result<Json<WalletSignNearCallResponse>, ApiError> {
+    use near_primitives::transaction::{Action, DeleteAccountAction, Transaction, TransactionV0};
+    use near_primitives::types::AccountId;
+    use std::str::FromStr;
+
+    if !state.is_ready() {
+        return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
+    }
+
+    if let Some(ref info) = req.approval_info {
+        verify_approvals(&state, &req.wallet_id, info).await?;
+    }
+
+    let near_client = state.near_client.as_ref().ok_or_else(|| {
+        ApiError::InternalError("NEAR client not configured".to_string())
+    })?;
+
+    // 1. Derive wallet keypair
+    let seed = format!("wallet:{}:near", req.wallet_id);
+    let keystore = state.keystore.read().await;
+    let (signing_key, verifying_key) = keystore.derive_keypair(&seed).map_err(|e| {
+        ApiError::InternalError(format!("Key derivation failed: {}", e))
+    })?;
+    drop(keystore);
+
+    // 2. Compute implicit account ID and public key
+    let pubkey_bytes = verifying_key.to_bytes();
+    let signer_id_str = hex::encode(pubkey_bytes);
+    let signer_id = AccountId::from_str(&signer_id_str).map_err(|e| {
+        ApiError::InternalError(format!("Invalid implicit account ID: {}", e))
+    })?;
+    let public_key_str = format!("ed25519:{}", bs58::encode(&pubkey_bytes).into_string());
+    let public_key: near_crypto::PublicKey = public_key_str.parse().map_err(|e| {
+        ApiError::InternalError(format!("Invalid public key: {}", e))
+    })?;
+
+    // 3. Query access key nonce and block hash
+    let (nonce, block_hash) = near_client
+        .query_access_key(&signer_id_str, &public_key)
+        .await
+        .map_err(|e| {
+            ApiError::InternalError(format!("Failed to query access key: {}", e))
+        })?;
+
+    // 4. Parse beneficiary
+    let beneficiary_id = AccountId::from_str(&req.beneficiary_id).map_err(|e| {
+        ApiError::BadRequest(format!("Invalid beneficiary_id: {}", e))
+    })?;
+
+    // 5. Build Transaction::V0 with DeleteAccount action
+    // receiver_id = signer_id (deleting own account)
+    let transaction = Transaction::V0(TransactionV0 {
+        signer_id: signer_id.clone(),
+        public_key: public_key.clone(),
+        nonce: nonce + 1,
+        receiver_id: signer_id.clone(),
+        block_hash,
+        actions: vec![Action::DeleteAccount(DeleteAccountAction {
+            beneficiary_id,
+        })],
+    });
+
+    // 6. Hash and sign
+    let (tx_hash, _) = transaction.get_hash_and_size();
+
+    use ed25519_dalek::Signer;
+    let sig = signing_key.sign(tx_hash.as_ref());
+
+    let sig_str = format!("ed25519:{}", bs58::encode(sig.to_bytes()).into_string());
+    let signature: near_crypto::Signature = sig_str.parse().map_err(|e| {
+        ApiError::InternalError(format!("Failed to construct signature: {}", e))
+    })?;
+
+    // 7. Assemble SignedTransaction
+    let signed_tx = near_primitives::transaction::SignedTransaction::new(signature, transaction);
+    let signed_tx_bytes = borsh::to_vec(&signed_tx).map_err(|e| {
+        ApiError::InternalError(format!("Failed to serialize signed transaction: {}", e))
+    })?;
+
+    Ok(Json(WalletSignNearCallResponse {
+        signed_tx_base64: base64::encode(&signed_tx_bytes),
+        tx_hash: bs58::encode(tx_hash.as_ref()).into_string(),
+        signer_id: signer_id_str,
+        public_key: public_key.to_string(),
+        nonce: nonce + 1,
     }))
 }
 
@@ -3093,6 +3217,27 @@ pub(crate) fn evaluate_policy(
         }
     }
 
+    // Check allowed_tokens restriction
+    if let Some(allowed_tokens) = rules.get("allowed_tokens").and_then(|v| v.as_array()) {
+        let token = action.get("token").and_then(|v| v.as_str()).unwrap_or("native");
+        let token_allowed = allowed_tokens
+            .iter()
+            .any(|t| t.as_str() == Some(token));
+        if !token_allowed {
+            return WalletCheckPolicyResponse {
+                allowed: false,
+                frozen: false,
+                requires_approval: None,
+                required_approvals: None,
+                reason: Some(format!(
+                    "Token '{}' is not allowed by policy",
+                    token
+                )),
+                policy: Some(policy.clone()),
+            };
+        }
+    }
+
     // Check address whitelist/blacklist
     if let Some(addresses) = rules.get("addresses") {
         let mode = addresses.get("mode").and_then(|v| v.as_str()).unwrap_or("whitelist");
@@ -3145,11 +3290,23 @@ pub(crate) fn evaluate_policy(
         }
     }
 
-    // Check per-transaction limits and velocity limits
+    // Check per-transaction limits and velocity limits (per-token, in raw units)
     if let Some(limits) = rules.get("limits") {
         let token = action.get("token").and_then(|v| v.as_str()).unwrap_or("native");
         let amount_str = action.get("amount").and_then(|v| v.as_str()).unwrap_or("0");
-        let amount: u128 = amount_str.parse().unwrap_or(0);
+        let amount: u128 = match amount_str.parse() {
+            Ok(v) => v,
+            Err(_) => {
+                return WalletCheckPolicyResponse {
+                    allowed: false,
+                    frozen: false,
+                    requires_approval: None,
+                    required_approvals: None,
+                    reason: Some(format!("Invalid amount '{}': must be a valid integer", amount_str)),
+                    policy: Some(policy.clone()),
+                };
+            }
+        };
 
         if let Some(per_tx) = limits.get("per_transaction") {
             // Check token-specific limit first, then wildcard
@@ -3366,22 +3523,22 @@ pub(crate) fn evaluate_policy(
 
     // Check approval threshold
     if let Some(approval) = policy.get("approval") {
-        let above_usd = approval
-            .get("above_usd")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(f64::MAX);
+        // Skip approval for excluded operation types (e.g. intents_deposit, swap —
+        // these rely on Intents quotes that expire quickly and can't wait for multisig)
+        let excluded = approval
+            .get("excluded_types")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
+            .unwrap_or_default();
 
-        // For now, simple check: if approval is configured and amount exceeds threshold
-        // The coordinator provides usage context to determine if approval is needed
-        let threshold = approval.get("threshold");
-        if let Some(threshold) = threshold {
-            let required = threshold.get("required").and_then(|v| v.as_i64()).unwrap_or(2) as i32;
+        if !excluded.iter().any(|t| *t == action_type) {
+            // Note: above_usd threshold comparison is not implemented yet —
+            // if approval.threshold is configured, ALL non-excluded operations require approval.
+            // Per-amount USD threshold will be added later.
+            let threshold = approval.get("threshold");
+            if let Some(threshold) = threshold {
+                let required = threshold.get("required").and_then(|v| v.as_i64()).unwrap_or(2) as i32;
 
-            // Check if the operation amount exceeds the approval threshold
-            // (simplified: check if approval config exists and has a threshold)
-            if above_usd < f64::MAX {
-                // Only require approval for amounts above threshold
-                // The coordinator will handle the actual USD conversion
                 return WalletCheckPolicyResponse {
                     allowed: true,
                     frozen: false,
@@ -3713,7 +3870,7 @@ mod tests {
     #[test]
     fn test_policy_frozen_wallet() {
         let policy = serde_json::json!({ "frozen": true });
-        let action = serde_json::json!({ "type": "withdraw" });
+        let action = serde_json::json!({ "type": "intents_withdraw" });
         let result = evaluate_policy(&policy, &action);
         assert!(!result.allowed);
         assert!(result.frozen);
@@ -3723,7 +3880,7 @@ mod tests {
     #[test]
     fn test_policy_no_rules() {
         let policy = serde_json::json!({});
-        let action = serde_json::json!({ "type": "withdraw" });
+        let action = serde_json::json!({ "type": "intents_withdraw" });
         let result = evaluate_policy(&policy, &action);
         assert!(result.allowed);
         assert!(!result.frozen);
@@ -3732,7 +3889,7 @@ mod tests {
     #[test]
     fn test_policy_empty_rules() {
         let policy = serde_json::json!({ "rules": {} });
-        let action = serde_json::json!({ "type": "withdraw" });
+        let action = serde_json::json!({ "type": "intents_withdraw" });
         let result = evaluate_policy(&policy, &action);
         assert!(result.allowed);
     }
@@ -3740,9 +3897,9 @@ mod tests {
     #[test]
     fn test_policy_tx_type_allowed() {
         let policy = serde_json::json!({
-            "rules": { "transaction_types": ["withdraw", "deposit"] }
+            "rules": { "transaction_types": ["intents_withdraw", "call"] }
         });
-        let action = serde_json::json!({ "type": "withdraw" });
+        let action = serde_json::json!({ "type": "intents_withdraw" });
         let result = evaluate_policy(&policy, &action);
         assert!(result.allowed);
     }
@@ -3750,9 +3907,9 @@ mod tests {
     #[test]
     fn test_policy_tx_type_denied() {
         let policy = serde_json::json!({
-            "rules": { "transaction_types": ["withdraw"] }
+            "rules": { "transaction_types": ["intents_withdraw"] }
         });
-        let action = serde_json::json!({ "type": "deposit" });
+        let action = serde_json::json!({ "type": "transfer" });
         let result = evaluate_policy(&policy, &action);
         assert!(!result.allowed);
         assert!(result.reason.unwrap().contains("not allowed"));
@@ -3765,7 +3922,7 @@ mod tests {
                 "addresses": { "mode": "whitelist", "list": ["a.near", "b.near"] }
             }
         });
-        let action = serde_json::json!({ "type": "withdraw", "to": "a.near" });
+        let action = serde_json::json!({ "type": "intents_withdraw", "to": "a.near" });
         let result = evaluate_policy(&policy, &action);
         assert!(result.allowed);
     }
@@ -3777,7 +3934,7 @@ mod tests {
                 "addresses": { "mode": "whitelist", "list": ["a.near"] }
             }
         });
-        let action = serde_json::json!({ "type": "withdraw", "to": "b.near" });
+        let action = serde_json::json!({ "type": "intents_withdraw", "to": "b.near" });
         let result = evaluate_policy(&policy, &action);
         assert!(!result.allowed);
         assert!(result.reason.unwrap().contains("not in whitelist"));
@@ -3790,7 +3947,7 @@ mod tests {
                 "addresses": { "mode": "blacklist", "list": ["bad.near"] }
             }
         });
-        let action = serde_json::json!({ "type": "withdraw", "to": "good.near" });
+        let action = serde_json::json!({ "type": "intents_withdraw", "to": "good.near" });
         let result = evaluate_policy(&policy, &action);
         assert!(result.allowed);
     }
@@ -3802,7 +3959,7 @@ mod tests {
                 "addresses": { "mode": "blacklist", "list": ["bad.near"] }
             }
         });
-        let action = serde_json::json!({ "type": "withdraw", "to": "bad.near" });
+        let action = serde_json::json!({ "type": "intents_withdraw", "to": "bad.near" });
         let result = evaluate_policy(&policy, &action);
         assert!(!result.allowed);
         assert!(result.reason.unwrap().contains("blacklisted"));
@@ -3813,7 +3970,7 @@ mod tests {
         let policy = serde_json::json!({
             "rules": { "limits": { "per_transaction": { "native": "100" } } }
         });
-        let action = serde_json::json!({ "type": "withdraw", "amount": "50", "token": "native" });
+        let action = serde_json::json!({ "type": "intents_withdraw", "amount": "50", "token": "native" });
         let result = evaluate_policy(&policy, &action);
         assert!(result.allowed);
     }
@@ -3823,7 +3980,7 @@ mod tests {
         let policy = serde_json::json!({
             "rules": { "limits": { "per_transaction": { "native": "100" } } }
         });
-        let action = serde_json::json!({ "type": "withdraw", "amount": "150", "token": "native" });
+        let action = serde_json::json!({ "type": "intents_withdraw", "amount": "150", "token": "native" });
         let result = evaluate_policy(&policy, &action);
         assert!(!result.allowed);
         assert!(result.reason.unwrap().contains("Per-transaction limit"));
@@ -3834,7 +3991,7 @@ mod tests {
         let policy = serde_json::json!({
             "rules": { "limits": { "per_transaction": { "*": "100" } } }
         });
-        let action = serde_json::json!({ "type": "withdraw", "amount": "150", "token": "usdc" });
+        let action = serde_json::json!({ "type": "intents_withdraw", "amount": "150", "token": "usdc" });
         let result = evaluate_policy(&policy, &action);
         assert!(!result.allowed);
         assert!(result.reason.unwrap().contains("Per-transaction limit"));
@@ -3846,7 +4003,7 @@ mod tests {
             "rules": { "limits": { "daily": { "native": "1000" } } }
         });
         let action = serde_json::json!({
-            "type": "withdraw", "amount": "100", "token": "native",
+            "type": "intents_withdraw", "amount": "100", "token": "native",
             "current_usage": { "daily": { "native": "500" } }
         });
         let result = evaluate_policy(&policy, &action);
@@ -3859,7 +4016,7 @@ mod tests {
             "rules": { "limits": { "daily": { "native": "1000" } } }
         });
         let action = serde_json::json!({
-            "type": "withdraw", "amount": "100", "token": "native",
+            "type": "intents_withdraw", "amount": "100", "token": "native",
             "current_usage": { "daily": { "native": "950" } }
         });
         let result = evaluate_policy(&policy, &action);
@@ -3873,7 +4030,7 @@ mod tests {
             "rules": { "limits": { "hourly": { "native": "500" } } }
         });
         let action = serde_json::json!({
-            "type": "withdraw", "amount": "100", "token": "native",
+            "type": "intents_withdraw", "amount": "100", "token": "native",
             "current_usage": { "hourly": { "native": "450" } }
         });
         let result = evaluate_policy(&policy, &action);
@@ -3887,7 +4044,7 @@ mod tests {
             "rules": { "limits": { "monthly": { "native": "10000" } } }
         });
         let action = serde_json::json!({
-            "type": "withdraw", "amount": "100", "token": "native",
+            "type": "intents_withdraw", "amount": "100", "token": "native",
             "current_usage": { "monthly": { "native": "9950" } }
         });
         let result = evaluate_policy(&policy, &action);
@@ -3901,7 +4058,7 @@ mod tests {
             "rules": { "rate_limit": { "max_per_hour": 10 } }
         });
         let action = serde_json::json!({
-            "type": "withdraw", "current_usage": { "hourly_tx_count": 5 }
+            "type": "intents_withdraw", "current_usage": { "hourly_tx_count": 5 }
         });
         let result = evaluate_policy(&policy, &action);
         assert!(result.allowed);
@@ -3913,7 +4070,7 @@ mod tests {
             "rules": { "rate_limit": { "max_per_hour": 10 } }
         });
         let action = serde_json::json!({
-            "type": "withdraw", "current_usage": { "hourly_tx_count": 10 }
+            "type": "intents_withdraw", "current_usage": { "hourly_tx_count": 10 }
         });
         let result = evaluate_policy(&policy, &action);
         assert!(!result.allowed);
@@ -3926,7 +4083,7 @@ mod tests {
         let policy = serde_json::json!({
             "rules": { "time_restrictions": { "allowed_days": [8] } }
         });
-        let action = serde_json::json!({ "type": "withdraw" });
+        let action = serde_json::json!({ "type": "intents_withdraw" });
         let result = evaluate_policy(&policy, &action);
         assert!(!result.allowed);
         assert!(result.reason.unwrap().contains("weekday"));
@@ -3934,7 +4091,6 @@ mod tests {
 
     #[test]
     fn test_policy_approval_threshold() {
-        // Note: `rules` must exist (even empty) for the code to reach the approval check
         let policy = serde_json::json!({
             "rules": {},
             "approval": {
@@ -3942,7 +4098,7 @@ mod tests {
                 "threshold": { "required": 3 }
             }
         });
-        let action = serde_json::json!({ "type": "withdraw", "amount": "1000" });
+        let action = serde_json::json!({ "type": "intents_withdraw", "amount": "1000" });
         let result = evaluate_policy(&policy, &action);
         assert!(result.allowed);
         assert_eq!(result.requires_approval, Some(true));
@@ -3950,10 +4106,55 @@ mod tests {
     }
 
     #[test]
+    fn test_policy_approval_excluded_types() {
+        let policy = serde_json::json!({
+            "rules": {},
+            "approval": {
+                "above_usd": 100,
+                "threshold": { "required": 2 },
+                "excluded_types": ["intents_deposit", "intents_swap"]
+            }
+        });
+        // intents_deposit — excluded, no approval
+        let action = serde_json::json!({ "type": "intents_deposit", "amount": "1000" });
+        let result = evaluate_policy(&policy, &action);
+        assert!(result.allowed);
+        assert!(result.requires_approval.is_none());
+
+        // swap — excluded, no approval
+        let action = serde_json::json!({ "type": "intents_swap", "amount": "1000" });
+        let result = evaluate_policy(&policy, &action);
+        assert!(result.allowed);
+        assert!(result.requires_approval.is_none());
+
+        // withdraw — NOT excluded, requires approval
+        let action = serde_json::json!({ "type": "intents_withdraw", "amount": "1000" });
+        let result = evaluate_policy(&policy, &action);
+        assert!(result.allowed);
+        assert_eq!(result.requires_approval, Some(true));
+        assert_eq!(result.required_approvals, Some(2));
+    }
+
+    #[test]
+    fn test_policy_invalid_amount() {
+        let policy = serde_json::json!({
+            "rules": {
+                "limits": {
+                    "per_transaction": { "native": "1000" }
+                }
+            }
+        });
+        let action = serde_json::json!({ "type": "intents_withdraw", "amount": "not_a_number", "token": "native" });
+        let result = evaluate_policy(&policy, &action);
+        assert!(!result.allowed);
+        assert!(result.reason.unwrap().contains("Invalid amount"));
+    }
+
+    #[test]
     fn test_policy_all_checks_pass() {
         let policy = serde_json::json!({
             "rules": {
-                "transaction_types": ["withdraw"],
+                "transaction_types": ["intents_withdraw"],
                 "addresses": { "mode": "whitelist", "list": ["dest.near"] },
                 "limits": {
                     "per_transaction": { "native": "1000" },
@@ -3963,7 +4164,7 @@ mod tests {
             }
         });
         let action = serde_json::json!({
-            "type": "withdraw",
+            "type": "intents_withdraw",
             "to": "dest.near",
             "amount": "500",
             "token": "native",
@@ -3976,5 +4177,44 @@ mod tests {
         assert!(result.allowed);
         assert!(!result.frozen);
         assert!(result.requires_approval.is_none());
+    }
+
+    #[test]
+    fn test_policy_allowed_tokens() {
+        let policy = serde_json::json!({
+            "rules": {
+                "allowed_tokens": ["native", "nep141:usdt.tether-token.near"]
+            }
+        });
+
+        // native — allowed
+        let action = serde_json::json!({ "type": "intents_withdraw", "amount": "100", "token": "native" });
+        let result = evaluate_policy(&policy, &action);
+        assert!(result.allowed);
+
+        // usdt — allowed
+        let action = serde_json::json!({ "type": "intents_withdraw", "amount": "100", "token": "nep141:usdt.tether-token.near" });
+        let result = evaluate_policy(&policy, &action);
+        assert!(result.allowed);
+
+        // random token — rejected
+        let action = serde_json::json!({ "type": "intents_withdraw", "amount": "100", "token": "nep141:evil.near" });
+        let result = evaluate_policy(&policy, &action);
+        assert!(!result.allowed);
+        assert!(result.reason.unwrap().contains("not allowed"));
+
+        // no token field defaults to "native" — allowed
+        let action = serde_json::json!({ "type": "intents_withdraw", "amount": "100" });
+        let result = evaluate_policy(&policy, &action);
+        assert!(result.allowed);
+    }
+
+    #[test]
+    fn test_policy_no_allowed_tokens_allows_all() {
+        // No allowed_tokens rule — any token should pass
+        let policy = serde_json::json!({ "rules": {} });
+        let action = serde_json::json!({ "type": "intents_withdraw", "amount": "100", "token": "nep141:anything.near" });
+        let result = evaluate_policy(&policy, &action);
+        assert!(result.allowed);
     }
 }

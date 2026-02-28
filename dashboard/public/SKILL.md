@@ -19,8 +19,9 @@ You are an AI agent that needs a custody wallet for multi-chain operations (tran
 | A crypto wallet for your agent | Register via `POST /register` |
 | Send NEAR to someone | Use `POST /wallet/v1/transfer` with `chain: "near"` |
 | Send FT tokens (USDT, wNEAR) to someone | Use `POST /wallet/v1/call` with `ft_transfer` (see FT transfer section) |
-| Send tokens cross-chain (gasless) | Use `POST /wallet/v1/withdraw` — no gas tokens needed on destination chain |
-| Swap tokens (e.g. wNEAR → USDT) | Use `POST /wallet/v1/swap` — atomic swap via 1Click API, output tokens delivered to wallet |
+| Send tokens cross-chain (gasless) | Use `POST /wallet/v1/intents/withdraw` — no gas tokens needed on destination chain |
+| Delete the wallet | Use `POST /wallet/v1/delete` — deletes on-chain account, sends NEAR to beneficiary, revokes API keys |
+| Swap tokens (e.g. wNEAR → USDT) | Use `POST /wallet/v1/intents/swap` — atomic swap via 1Click API, output tokens delivered to wallet |
 | Deposit tokens into Intents balance | Use `POST /wallet/v1/intents/deposit` — for manual intents operations |
 | Call a NEAR smart contract | Use `POST /wallet/v1/call` — requires NEAR balance for gas |
 | Check your balance | Use `GET /wallet/v1/balance?chain=near` or `&token=usdt.tether-token.near` |
@@ -58,7 +59,7 @@ The `near_account_id` is the NEAR implicit account (hex public key). Cross-chain
 
 ## Step 2: Request Funding from User
 
-NEAR balance is needed for on-chain operations (`/wallet/v1/call`, `/wallet/v1/swap`, `/wallet/v1/transfer`). Cross-chain operations via Intents (`/wallet/v1/withdraw`) are gasless — no NEAR balance required.
+NEAR balance is needed for on-chain operations (`/wallet/v1/call`, `/wallet/v1/intents/swap`, `/wallet/v1/transfer`). Cross-chain operations via Intents (`/wallet/v1/intents/withdraw`) are gasless — no NEAR balance required.
 
 Ask the user to send at least 0.1 NEAR.
 
@@ -83,7 +84,7 @@ A policy defines spending limits, address whitelists, and multisig rules for the
 | **Spending limits** | Cap per-transaction, hourly, daily, or monthly amounts (in USD) |
 | **Address whitelist/blacklist** | Restrict which addresses the agent can send to |
 | **Allowed tokens** | Limit which tokens the agent can transfer (default: all) |
-| **Transaction types** | Restrict to `withdraw` only, `call` only, or both |
+| **Transaction types** | Restrict to `transfer`, `call`, `intents_withdraw`, `intents_swap`, `intents_deposit`, `delete` or any combination |
 | **Time restrictions** | Allow operations only during certain hours/days (UTC) |
 | **Rate limit** | Max transactions per hour |
 | **Multisig approval** | Require human approval for transactions above a USD threshold |
@@ -137,10 +138,11 @@ In these cases, register a new wallet with `POST /register`. The funds in the ol
 | Get balance | GET | `https://api.outlayer.fastnear.com/wallet/v1/balance?chain={chain}&token={token}` |
 | Transfer NEAR | POST | `https://api.outlayer.fastnear.com/wallet/v1/transfer` |
 | Call contract | POST | `https://api.outlayer.fastnear.com/wallet/v1/call` |
-| Withdraw (cross-chain) | POST | `https://api.outlayer.fastnear.com/wallet/v1/withdraw` |
-| Dry-run (check first) | POST | `https://api.outlayer.fastnear.com/wallet/v1/withdraw/dry-run` |
+| Withdraw (cross-chain) | POST | `https://api.outlayer.fastnear.com/wallet/v1/intents/withdraw` |
+| Dry-run (check first) | POST | `https://api.outlayer.fastnear.com/wallet/v1/intents/withdraw/dry-run` |
 | Intents deposit | POST | `https://api.outlayer.fastnear.com/wallet/v1/intents/deposit` |
-| Swap | POST | `https://api.outlayer.fastnear.com/wallet/v1/swap` |
+| Swap | POST | `https://api.outlayer.fastnear.com/wallet/v1/intents/swap` |
+| Delete wallet | POST | `https://api.outlayer.fastnear.com/wallet/v1/delete` |
 | Request status | GET | `https://api.outlayer.fastnear.com/wallet/v1/requests/{request_id}` |
 | List tokens | GET | `https://api.outlayer.fastnear.com/wallet/v1/tokens` |
 | Audit log | GET | `https://api.outlayer.fastnear.com/wallet/v1/audit?limit=50` |
@@ -237,7 +239,7 @@ Withdraw tokens from your Intents balance to any supported chain. Uses NEAR Inte
 curl -s -X POST -H "Content-Type: application/json" \
   -H "Authorization: Bearer $API_KEY" \
   -d '{"to":"receiver.near","amount":"1000000000000000000000000","token":"wrap.near","chain":"near"}' \
-  "https://api.outlayer.fastnear.com/wallet/v1/withdraw" ```
+  "https://api.outlayer.fastnear.com/wallet/v1/intents/withdraw" ```
 
 **Important:** Tokens must be in your Intents balance first. If tokens are in your NEAR account, deposit them first with `/wallet/v1/intents/deposit`, then withdraw.
 
@@ -246,13 +248,13 @@ curl -s -X POST -H "Content-Type: application/json" \
 curl -s -X POST -H "Content-Type: application/json" \
   -H "Authorization: Bearer $API_KEY" \
   -d '{"to":"receiver.near","amount":"1000000000000000000000000","token":"wrap.near","chain":"near"}' \
-  "https://api.outlayer.fastnear.com/wallet/v1/withdraw/dry-run" ```
+  "https://api.outlayer.fastnear.com/wallet/v1/intents/withdraw/dry-run" ```
 
 ### Deposit tokens into Intents balance
 
 Deposits a FT from your wallet's NEAR account into `intents.near` via `ft_transfer_call`. Storage deposit on intents.near is handled automatically if needed.
 
-This is used for manual intents operations and as a prerequisite for `/wallet/v1/withdraw`. The `/wallet/v1/swap` endpoint handles deposits internally — you do NOT need to call this before swapping.
+This is used for manual intents operations and as a prerequisite for `/wallet/v1/intents/withdraw`. The `/wallet/v1/intents/swap` endpoint handles deposits internally — you do NOT need to call this before swapping.
 
 **Before calling:** check the token balance with `GET /wallet/v1/balance?chain=near&token={token_contract}` and verify it covers the deposit amount. Also check NEAR balance for gas (~0.005 NEAR).
 
@@ -286,7 +288,7 @@ The swap handles everything internally:
 curl -s -X POST -H "Content-Type: application/json" \
   -H "Authorization: Bearer $API_KEY" \
   -d '{"token_in":"nep141:wrap.near","token_out":"nep141:usdt.tether-token.near","amount_in":"1000000000000000000000000","min_amount_out":"3000000"}' \
-  "https://api.outlayer.fastnear.com/wallet/v1/swap" ```
+  "https://api.outlayer.fastnear.com/wallet/v1/intents/swap" ```
 
 Response:
 ```json
@@ -298,6 +300,27 @@ Response:
 **Requires NEAR balance** for gas (~0.01 NEAR for storage deposits + transaction fees).
 
 **No prerequisites** — swap handles intents deposit, storage registration, and token transfer internally.
+
+### Delete wallet
+
+Permanently delete the wallet's on-chain NEAR account using the native `DeleteAccount` action. All remaining native NEAR balance is automatically sent to the beneficiary. All API keys are revoked.
+
+**WARNING:** Only native NEAR tokens are sent to the beneficiary (this is handled by NEAR's `DeleteAccount` action). FT tokens (USDT, wNEAR, etc.) and Intents balances are **lost permanently** because the account is deleted from the network. Withdraw or transfer those assets before deleting.
+
+**Before calling:** transfer all FT tokens (via `/wallet/v1/call` with `ft_transfer`), withdraw Intents balances (via `/wallet/v1/intents/withdraw`), and move any other on-chain assets to another account.
+
+```bash
+curl -s -X POST -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $API_KEY" \
+  -d '{"beneficiary":"receiver.near","chain":"near"}' \
+  "https://api.outlayer.fastnear.com/wallet/v1/delete" ```
+
+Response:
+```json
+{"request_id": "uuid", "status": "success", "tx_hash": "...", "beneficiary": "receiver.near"}
+```
+
+After deletion, the on-chain account no longer exists and all API keys are revoked. Subsequent requests will return `invalid_api_key`.
 
 ### Check request status
 ```bash
@@ -379,11 +402,11 @@ Every mutating endpoint returns a `status` field. Here's how to interpret them:
 **`/wallet/v1/transfer`** — returns `{ request_id, status, tx_hash }`:
 - `tx_hash`: NEAR transaction hash
 
-**`/wallet/v1/swap`** — returns `{ request_id, status, amount_out, intent_hash }`:
+**`/wallet/v1/intents/swap`** — returns `{ request_id, status, amount_out, intent_hash }`:
 - `amount_out`: actual amount of output tokens received (in smallest unit — e.g. 6 decimals for USDT)
 - `intent_hash`: 1Click internal swap reference
 
-**`/wallet/v1/withdraw`** — returns `{ request_id, status }`:
+**`/wallet/v1/intents/withdraw`** — returns `{ request_id, status }`:
 - If `status: "pending_approval"`, also returns `approval_id`, `required`, `approved`
 - Poll `GET /wallet/v1/requests/{request_id}` for final result
 
@@ -405,7 +428,7 @@ Several endpoints handle NEP-141 storage registration automatically:
 
 | Endpoint | What it auto-registers |
 |----------|----------------------|
-| `/wallet/v1/swap` | Output token storage on your wallet (e.g. registers USDT before swap delivers it) |
+| `/wallet/v1/intents/swap` | Output token storage on your wallet (e.g. registers USDT before swap delivers it) |
 | `/wallet/v1/intents/deposit` | Your wallet's storage on `intents.near` (needed for intents balance) |
 | Fund link (dashboard) | Your wallet's storage on the token contract (included in the funding transaction) |
 

@@ -30,7 +30,7 @@ export const DEFAULT_POLICY: PolicyForm = {
   allowed_tokens: '*',
   address_mode: 'none',
   addresses: '',
-  transaction_types: 'withdraw,call,transfer,swap,intents_deposit',
+  transaction_types: 'transfer,call,delete,intents_withdraw,intents_swap,intents_deposit',
   allowed_hours_start: '',
   allowed_hours_end: '',
   allowed_days: '',
@@ -38,6 +38,29 @@ export const DEFAULT_POLICY: PolicyForm = {
   webhook_url: '',
   additional_key_hashes: '',
 };
+
+// ============================================================================
+// NEAR ↔ yoctoNEAR conversion helpers
+// ============================================================================
+
+/** Convert human-readable NEAR (e.g. "10.5") to yoctoNEAR string */
+export function nearToYocto(near: string): string {
+  if (!near || near === '0') return '0';
+  const parts = near.split('.');
+  const whole = parts[0] || '0';
+  const frac = (parts[1] || '').padEnd(24, '0').slice(0, 24);
+  const raw = whole + frac;
+  return raw.replace(/^0+/, '') || '0';
+}
+
+/** Convert yoctoNEAR string to human-readable NEAR (e.g. "10.5") */
+export function yoctoToNear(yocto: string): string {
+  if (!yocto || yocto === '0') return '';
+  const padded = yocto.padStart(25, '0');
+  const whole = padded.slice(0, -24).replace(/^0+/, '') || '0';
+  const frac = padded.slice(-24).replace(/0+$/, '');
+  return frac ? `${whole}.${frac}` : whole;
+}
 
 // ============================================================================
 // Build policy rules from form state (everything except approval)
@@ -50,10 +73,10 @@ export function buildPolicyRules(
   const rules: Record<string, unknown> = {};
 
   const limits: Record<string, unknown> = {};
-  if (form.per_transaction_limit) limits.per_transaction = { '*': form.per_transaction_limit };
-  if (form.daily_limit) limits.daily = { '*': form.daily_limit };
-  if (form.hourly_limit) limits.hourly = { '*': form.hourly_limit };
-  if (form.monthly_limit) limits.monthly = { '*': form.monthly_limit };
+  if (form.per_transaction_limit) limits.per_transaction = { native: nearToYocto(form.per_transaction_limit) };
+  if (form.daily_limit) limits.daily = { native: nearToYocto(form.daily_limit) };
+  if (form.hourly_limit) limits.hourly = { native: nearToYocto(form.hourly_limit) };
+  if (form.monthly_limit) limits.monthly = { native: nearToYocto(form.monthly_limit) };
   if (Object.keys(limits).length > 0) rules.limits = limits;
 
   if (form.address_mode !== 'none' && form.addresses.trim()) {
@@ -135,10 +158,10 @@ export function parsePolicyResponse(
   const tr = rules.time_restrictions || {};
 
   const form: PolicyForm = {
-    per_transaction_limit: limits.per_transaction?.['*'] || '',
-    daily_limit: limits.daily?.['*'] || '',
-    hourly_limit: limits.hourly?.['*'] || '',
-    monthly_limit: limits.monthly?.['*'] || '',
+    per_transaction_limit: yoctoToNear(limits.per_transaction?.native || limits.per_transaction?.['*'] || ''),
+    daily_limit: yoctoToNear(limits.daily?.native || limits.daily?.['*'] || ''),
+    hourly_limit: yoctoToNear(limits.hourly?.native || limits.hourly?.['*'] || ''),
+    monthly_limit: yoctoToNear(limits.monthly?.native || limits.monthly?.['*'] || ''),
     address_mode: addr.mode || 'none',
     addresses: (addr.list || []).join(', '),
     transaction_types: (rules.transaction_types || []).join(','),

@@ -7,12 +7,7 @@ import WalletConnectionModal from '@/components/WalletConnectionModal';
 import { getCoordinatorApiUrl } from '@/lib/api';
 import Link from 'next/link';
 import { actionCreators } from '@near-js/transactions';
-import { saveWalletKey, getAllWalletKeys, removeWalletKey, computeKeyHash } from '@/lib/wallet-keys';
-import { DEFAULT_POLICY, submitPolicy, parsePolicyResponse } from '@/lib/wallet-policy';
-import { useApiKeyHash } from '@/hooks/useApiKeyHash';
-import { usePolicyForm } from '@/hooks/usePolicyForm';
-import { PolicyFormFields } from '@/components/wallet/PolicyFormFields';
-import { PolicyJsonEditor } from '@/components/wallet/PolicyJsonEditor';
+import { saveWalletKey, getAllWalletKeys, removeWalletKey } from '@/lib/wallet-keys';
 
 interface WalletPolicy {
   wallet_pubkey: string;
@@ -46,10 +41,6 @@ function WalletManagePage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-
-  // Policy form state
-  const [selectedWallet, setSelectedWallet] = useState<string>('');
-  const [showPolicyForm, setShowPolicyForm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   // API key wallet (from ?key=wk_... query param)
@@ -60,66 +51,6 @@ function WalletManagePage() {
   const [showKeyInput, setShowKeyInput] = useState<string | null>(null);
   const [keyInput, setKeyInput] = useState('');
   const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set());
-
-  // Manage-specific approval fields (separate from shared PolicyForm)
-  const [approvalThreshold, setApprovalThreshold] = useState('');
-  const [approvalRequired, setApprovalRequired] = useState('');
-  const [approvers, setApprovers] = useState('');
-
-  // SHA256 hash of current API key (for authorized_key_hashes in policy)
-  const effectiveApiKey = (selectedWallet && savedKeys[selectedWallet]) || searchParams.get('key') || null;
-  const apiKeyHash = useApiKeyHash(effectiveApiKey);
-
-  // Policy form with augmentPolicy that adds USD-threshold-based approval
-  const {
-    policyForm,
-    setPolicyForm,
-    policyJsonText,
-    setPolicyJsonText,
-    jsonEdited,
-    setJsonEdited,
-    resetJson,
-  } = usePolicyForm({
-    apiKeyHash,
-    augmentPolicy: useCallback((base: Record<string, unknown>) => {
-      if (!approvalThreshold) return base;
-      const approval: Record<string, unknown> = {
-        above_usd: parseFloat(approvalThreshold),
-        threshold: { required: parseInt(approvalRequired || '1', 10) },
-      };
-      if (approvers.trim()) {
-        approval.approvers = approvers.split('\n').filter((l) => l.trim()).map((line) => {
-          const [id, role] = line.split(',').map((s) => s.trim());
-          return { id, role: role || 'signer' };
-        });
-      }
-      return { ...base, approval };
-    }, [approvalThreshold, approvalRequired, approvers]),
-  });
-
-  // Build knownKeyHashes map from saved keys (hash → label)
-  const [knownKeyHashes, setKnownKeyHashes] = useState<Map<string, string>>(new Map());
-
-  useEffect(() => {
-    async function buildMap() {
-      const map = new Map<string, string>();
-      // Only include the key for the currently selected wallet
-      const key = selectedWallet && savedKeys[selectedWallet];
-      if (key) {
-        const hash = await computeKeyHash(key);
-        map.set(hash, 'your saved key');
-      }
-      setKnownKeyHashes(map);
-    }
-    buildMap();
-  }, [savedKeys, selectedWallet]);
-
-  const handleSaveKey = useCallback((newKey: string) => {
-    if (selectedWallet) {
-      saveWalletKey(selectedWallet, newKey, 'generated key');
-      setSavedKeys((prev) => ({ ...prev, [selectedWallet]: newKey }));
-    }
-  }, [selectedWallet]);
 
   // Load saved keys on mount
   useEffect(() => {
@@ -250,101 +181,9 @@ function WalletManagePage() {
     }
   };
 
-  const handleSubmitPolicy = async () => {
-    if (!accountId || !selectedWallet) return;
-    setError(null);
-    setSubmitting(true);
-
-    try {
-      // Validate approval settings
-      if (approvalThreshold) {
-        const approverCount = approvers.split('\n').filter((l) => l.trim()).length;
-        const required = parseInt(approvalRequired || '1', 10);
-        if (approverCount === 0) {
-          throw new Error('Add at least one approver when setting an approval threshold');
-        }
-        if (required > approverCount) {
-          throw new Error(`Required approvals (${required}) cannot exceed number of approvers (${approverCount})`);
-        }
-      }
-
-      // Resolve wallet_id and API key (from URL param or saved in localStorage)
-      const currentApiKey = savedKeys[selectedWallet] || searchParams.get('key');
-      if (!currentApiKey) {
-        throw new Error('API key is required. Save an API key for this wallet or navigate with ?key=wk_...');
-      }
-
-      // Resolve wallet_id from API key
-      const addrResp = await fetch(`${coordinatorUrl}/wallet/v1/address?chain=near`, {
-        headers: { 'Authorization': `Bearer ${currentApiKey}` },
-      });
-      if (!addrResp.ok) {
-        throw new Error('Failed to resolve wallet from API key');
-      }
-      const addrData = await addrResp.json();
-
-      await submitPolicy({
-        coordinatorUrl,
-        apiKey: currentApiKey,
-        walletId: addrData.wallet_id,
-        policyJsonText,
-        contractId,
-        viewMethod,
-        signAndSendTransaction,
-      });
-
-      setSuccess('Policy stored on-chain successfully!');
-      setShowPolicyForm(false);
-      setTimeout(() => {
-        setSuccess(null);
-        loadWallets();
-      }, 3000);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const [policyLoading, setPolicyLoading] = useState(false);
-
-  const openPolicyForm = async (walletPubkey: string) => {
-    setSelectedWallet(walletPubkey);
-    setPolicyForm(DEFAULT_POLICY);
-    setApprovalThreshold('');
-    setApprovalRequired('');
-    setApprovers('');
-    setJsonEdited(false);
-    setShowPolicyForm(true);
-
-    // Try to load current policy from coordinator
-    const currentApiKey = savedKeys[walletPubkey] || searchParams.get('key');
-    if (!currentApiKey) return;
-
-    setPolicyLoading(true);
-    try {
-      const resp = await fetch(`${coordinatorUrl}/wallet/v1/policy`, {
-        headers: { 'Authorization': `Bearer ${currentApiKey}` },
-      });
-      if (!resp.ok) return;
-      const data = await resp.json();
-
-      const parsed = parsePolicyResponse(data, apiKeyHash || undefined);
-      setPolicyForm(parsed.form);
-
-      if (parsed.approval) {
-        setApprovalThreshold(parsed.approval.above_usd);
-        setApprovalRequired(parsed.approval.required);
-        setApprovers(parsed.approval.approvers);
-      }
-
-      // Set the full JSON in the editor
-      setPolicyJsonText(JSON.stringify(parsed.fullJson, null, 2));
-    } catch {
-      // Failed to load — form stays with defaults (owner as admin approver)
-    } finally {
-      setPolicyLoading(false);
-    }
+  /** Get the API key for a wallet — from saved keys or URL param */
+  const getWalletApiKey = (walletPubkey: string): string | null => {
+    return savedKeys[walletPubkey] || searchParams.get('key') || null;
   };
 
   const formatTimestamp = (nanos: number) => {
@@ -448,7 +287,9 @@ function WalletManagePage() {
         </div>
       ) : (
         <div className="space-y-4">
-          {wallets.map((wallet) => (
+          {wallets.map((wallet) => {
+            const walletKey = getWalletApiKey(wallet.wallet_pubkey);
+            return (
             <div
               key={wallet.wallet_pubkey}
               className={`bg-white shadow rounded-lg border ${
@@ -459,8 +300,8 @@ function WalletManagePage() {
                 <div className="flex items-center justify-between">
                   <div>
                     <div className="flex items-center space-x-2">
-                      <span className="text-sm font-medium text-gray-900">
-                        {wallet.wallet_pubkey.split(':')[0]}
+                      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700">
+                        {wallet.wallet_pubkey.startsWith('ed25519:') ? 'NEAR' : wallet.wallet_pubkey.split(':')[0]}
                       </span>
                       {wallet.frozen ? (
                         <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
@@ -473,20 +314,25 @@ function WalletManagePage() {
                       )}
                     </div>
                     <p className="mt-1 text-xs text-gray-500 font-mono break-all">
-                      {wallet.wallet_pubkey}
+                      {wallet.wallet_pubkey.split(':').slice(1).join(':') || wallet.wallet_pubkey}
                     </p>
                     <p className="text-xs text-gray-400 mt-1">
                       Updated: {formatTimestamp(wallet.updated_at)}
                     </p>
                   </div>
                   <div className="flex items-center space-x-2">
-                    <button
-                      onClick={() => openPolicyForm(wallet.wallet_pubkey)}
-                      disabled={submitting}
-                      className="px-3 py-1.5 text-sm border border-[#cc6600] text-[#cc6600] rounded hover:bg-orange-50 disabled:opacity-50"
-                    >
-                      Edit Policy
-                    </button>
+                    {walletKey ? (
+                      <Link
+                        href={`/wallet?key=${walletKey}`}
+                        className="px-3 py-1.5 text-sm border border-[#cc6600] text-[#cc6600] rounded hover:bg-orange-50"
+                      >
+                        Edit Policy
+                      </Link>
+                    ) : (
+                      <span className="px-3 py-1.5 text-sm border border-gray-300 text-gray-400 rounded cursor-not-allowed" title="Save an API key first to edit policy">
+                        Edit Policy
+                      </span>
+                    )}
                     {wallet.frozen ? (
                       <button
                         onClick={() => handleUnfreeze(wallet.wallet_pubkey)}
@@ -595,117 +441,8 @@ function WalletManagePage() {
                 </div>
               </div>
             </div>
-          ))}
-        </div>
-      )}
-
-      {/* Policy editor modal */}
-      {showPolicyForm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto p-6 m-4">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xl font-bold text-gray-900">Edit Wallet Policy</h2>
-              <button onClick={() => setShowPolicyForm(false)} className="text-gray-400 hover:text-gray-600">
-                &times;
-              </button>
-            </div>
-
-            <p className="text-sm text-gray-500 mb-4 font-mono break-all">
-              {selectedWallet}
-            </p>
-
-            {error && (
-              <div className="mb-4 bg-red-50 border border-red-200 rounded-md p-3">
-                <p className="text-sm text-red-800">{error}</p>
-              </div>
-            )}
-
-            {policyLoading && (
-              <div className="flex items-center py-4">
-                <svg className="animate-spin h-5 w-5 text-[#cc6600] mr-3" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                </svg>
-                <span className="text-gray-500">Loading current policy...</span>
-              </div>
-            )}
-
-            <div className="space-y-4">
-              {/* Shared policy form fields */}
-              <PolicyFormFields policyForm={policyForm} onChange={setPolicyForm} apiKeyHash={apiKeyHash} knownKeyHashes={knownKeyHashes} onSaveKey={handleSaveKey} />
-
-              {/* Multisig Approval (manage-specific) */}
-              <div>
-                <h3 className="text-sm font-semibold text-gray-800 mb-2">Multisig Approval</h3>
-                <div className="grid grid-cols-2 gap-4 mb-2">
-                  <div>
-                    <label className="block text-xs font-medium text-gray-600 mb-1">Above USD (threshold)</label>
-                    <input
-                      type="text"
-                      value={approvalThreshold}
-                      onChange={(e) => setApprovalThreshold(e.target.value)}
-                      placeholder="e.g. 100"
-                      className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-gray-600 mb-1">Required Approvals</label>
-                    <input
-                      type="number"
-                      min="1"
-                      max={approvers.split('\n').filter((l) => l.trim()).length || undefined}
-                      value={approvalRequired}
-                      onChange={(e) => setApprovalRequired(e.target.value)}
-                      placeholder="1"
-                      className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
-                    />
-                    {approvers.trim() && parseInt(approvalRequired || '0', 10) > approvers.split('\n').filter((l) => l.trim()).length && (
-                      <p className="text-xs text-red-500 mt-1">
-                        Cannot exceed the number of approvers ({approvers.split('\n').filter((l) => l.trim()).length})
-                      </p>
-                    )}
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">
-                    Approvers (one per line: account_id, role)
-                  </label>
-                  <textarea
-                    value={approvers}
-                    onChange={(e) => setApprovers(e.target.value)}
-                    placeholder={"alice.near, admin\nbob.near, signer"}
-                    rows={3}
-                    className="w-full border border-gray-300 rounded px-3 py-2 text-sm font-mono"
-                  />
-                  <p className="text-xs text-gray-400 mt-1">Roles: admin (can update policy), signer (can only approve)</p>
-                </div>
-              </div>
-            </div>
-
-            {/* Policy JSON Editor */}
-            <PolicyJsonEditor
-              policyJsonText={policyJsonText}
-              onChangeText={(text) => { setPolicyJsonText(text); setJsonEdited(true); }}
-              jsonEdited={jsonEdited}
-              onReset={resetJson}
-            />
-
-            <div className="flex justify-end space-x-3 mt-4 pt-4 border-t">
-              <button
-                onClick={() => setShowPolicyForm(false)}
-                className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg font-medium hover:bg-gray-50"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleSubmitPolicy}
-                disabled={submitting}
-                className="px-4 py-2 bg-gradient-to-r from-[#cc6600] to-[#d4a017] text-white rounded-lg font-medium hover:from-[#b35900] hover:to-[#c49016] disabled:opacity-50"
-              >
-                {submitting ? 'Encrypting & Storing...' : 'Store Policy On-Chain'}
-              </button>
-            </div>
-          </div>
+            );
+          })}
         </div>
       )}
     </div>

@@ -15,11 +15,14 @@ function PendingApprovalsBadge() {
   const coordinatorUrl = getCoordinatorApiUrl(network);
   const [count, setCount] = useState(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Stable ref for viewMethod to avoid re-triggering useEffect on every render
+  const viewMethodRef = useRef(viewMethod);
+  viewMethodRef.current = viewMethod;
 
   const fetchCount = useCallback(async () => {
     if (!accountId || !contractId) return;
     try {
-      const wallets = await viewMethod({
+      const wallets = await viewMethodRef.current({
         contractId,
         method: 'get_wallet_policies_by_owner',
         args: { owner: accountId },
@@ -40,7 +43,7 @@ function PendingApprovalsBadge() {
       }
       setCount(total);
     } catch { /* skip */ }
-  }, [accountId, contractId, coordinatorUrl, viewMethod]);
+  }, [accountId, contractId, coordinatorUrl]);
 
   useEffect(() => {
     if (!isConnected || !accountId) { setCount(0); return; }

@@ -173,7 +173,7 @@ POLICY_BODY=$(cat <<ENDJSON
 {
     "wallet_id": "$WALLET_ID",
     "rules": {
-        "transaction_types": ["withdraw"],
+        "transaction_types": ["intents_withdraw"],
         "addresses": {
             "mode": "whitelist",
             "list": ["allowed.near", "recipient.near"]
@@ -249,7 +249,7 @@ echo ""
 # Test 4: Dry-run within limits, whitelisted address
 echo "4. Dry-run: within limits, whitelisted address"
 DRYRUN_OK='{"chain":"near","to":"allowed.near","amount":"1000000000000000000000000"}'
-parse_response "$(curl_post "$API_KEY" "/wallet/v1/withdraw/dry-run" "$DRYRUN_OK" "dryrun-ok-$(date +%s%N)")"
+parse_response "$(curl_post "$API_KEY" "/wallet/v1/intents/withdraw/dry-run" "$DRYRUN_OK" "dryrun-ok-$(date +%s%N)")"
 assert_status "200" "$RESP_CODE" "POST /withdraw/dry-run (within limits)"
 assert_json_field "$RESP_BODY" ".would_succeed" "true" "would_succeed=true (within limits)"
 echo ""
@@ -258,7 +258,7 @@ echo ""
 echo "5. Dry-run: non-whitelisted address"
 if [ "${POLICY_ACTIVE:-false}" = true ]; then
     DRYRUN_BAD_ADDR='{"chain":"near","to":"evil.near","amount":"1000000000000000000000000"}'
-    parse_response "$(curl_post "$API_KEY" "/wallet/v1/withdraw/dry-run" "$DRYRUN_BAD_ADDR" "dryrun-badaddr-$(date +%s%N)")"
+    parse_response "$(curl_post "$API_KEY" "/wallet/v1/intents/withdraw/dry-run" "$DRYRUN_BAD_ADDR" "dryrun-badaddr-$(date +%s%N)")"
     assert_status "200" "$RESP_CODE" "POST /withdraw/dry-run (non-whitelisted)"
     assert_json_field "$RESP_BODY" ".would_succeed" "false" "would_succeed=false (non-whitelisted)"
 else
@@ -270,7 +270,7 @@ echo ""
 echo "6. Dry-run: exceeding per-tx limit"
 if [ "${POLICY_ACTIVE:-false}" = true ]; then
     DRYRUN_BIG='{"chain":"near","to":"allowed.near","amount":"9000000000000000000000000"}'
-    parse_response "$(curl_post "$API_KEY" "/wallet/v1/withdraw/dry-run" "$DRYRUN_BIG" "dryrun-big-$(date +%s%N)")"
+    parse_response "$(curl_post "$API_KEY" "/wallet/v1/intents/withdraw/dry-run" "$DRYRUN_BIG" "dryrun-big-$(date +%s%N)")"
     assert_status "200" "$RESP_CODE" "POST /withdraw/dry-run (over per-tx limit)"
     assert_json_field "$RESP_BODY" ".would_succeed" "false" "would_succeed=false (over per-tx limit)"
 else
@@ -288,7 +288,7 @@ echo ""
 # Test 7: Withdrawal (triggers pending_approval when policy has approval section)
 echo "7. Withdrawal"
 WITHDRAW_BODY='{"chain":"near","to":"allowed.near","amount":"1000000000000000000000000"}'
-parse_response "$(curl_post "$API_KEY" "/wallet/v1/withdraw" "$WITHDRAW_BODY" "wd-small-$(date +%s%N)")"
+parse_response "$(curl_post "$API_KEY" "/wallet/v1/intents/withdraw" "$WITHDRAW_BODY" "wd-small-$(date +%s%N)")"
 assert_status "200" "$RESP_CODE" "POST /withdraw"
 SMALL_REQUEST_ID=$(echo "$RESP_BODY" | jq -r '.request_id')
 SMALL_STATUS=$(echo "$RESP_BODY" | jq -r '.status')
@@ -413,11 +413,11 @@ if [ "${POLICY_ACTIVE:-false}" = true ]; then
     # We already did 1 withdraw in test 7. Do 4 more, then 6th should be denied.
     for i in $(seq 2 5); do
         RAPID_BODY="{\"chain\":\"near\",\"to\":\"allowed.near\",\"amount\":\"100000000000000000000000\"}"
-        parse_response "$(curl_post "$API_KEY" "/wallet/v1/withdraw" "$RAPID_BODY" "rate-$i-$(date +%s%N)")"
+        parse_response "$(curl_post "$API_KEY" "/wallet/v1/intents/withdraw" "$RAPID_BODY" "rate-$i-$(date +%s%N)")"
     done
     # 6th request (exceeds max_per_hour=5)
     RAPID_BODY="{\"chain\":\"near\",\"to\":\"allowed.near\",\"amount\":\"100000000000000000000000\"}"
-    parse_response "$(curl_post "$API_KEY" "/wallet/v1/withdraw/dry-run" "$RAPID_BODY" "rate-6-$(date +%s%N)")"
+    parse_response "$(curl_post "$API_KEY" "/wallet/v1/intents/withdraw/dry-run" "$RAPID_BODY" "rate-6-$(date +%s%N)")"
     assert_status "200" "$RESP_CODE" "dry-run after rate limit"
     assert_json_field "$RESP_BODY" ".would_succeed" "false" "would_succeed=false (rate limit)"
 else

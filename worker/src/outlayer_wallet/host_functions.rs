@@ -167,7 +167,7 @@ impl outlayer::wallet::api::Host for WalletHostState {
             "token": if token.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(token) },
         });
 
-        self.call_coordinator("POST", "/wallet/v1/withdraw", Some(&body))
+        self.call_coordinator("POST", "/wallet/v1/intents/withdraw", Some(&body))
     }
 
     fn withdraw_dry_run(&mut self, chain: String, to: String, amount: String, token: String) -> WalletResult {
@@ -191,7 +191,7 @@ impl outlayer::wallet::api::Host for WalletHostState {
             "token": if token.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(token) },
         });
 
-        self.call_coordinator("POST", "/wallet/v1/withdraw/dry-run", Some(&body))
+        self.call_coordinator("POST", "/wallet/v1/intents/withdraw/dry-run", Some(&body))
     }
 
     fn get_request_status(&mut self, request_id: String) -> WalletResult {
@@ -321,7 +321,7 @@ impl outlayer::wallet::api::Host for WalletHostState {
             "min_amount_out": if min_amount_out.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(min_amount_out) },
         });
 
-        self.call_coordinator("POST", "/wallet/v1/swap", Some(&body))
+        self.call_coordinator("POST", "/wallet/v1/intents/swap", Some(&body))
     }
 }
 

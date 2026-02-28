@@ -38,6 +38,9 @@ function WalletApprovalsContent() {
   const coordinatorUrl = getCoordinatorApiUrl(network);
   const searchParams = useSearchParams();
   const router = useRouter();
+  // Stable ref for viewMethod to avoid re-triggering useEffect on every render
+  const viewMethodRef = useRef(viewMethod);
+  viewMethodRef.current = viewMethod;
 
   const [showWalletModal, setShowWalletModal] = useState(false);
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
@@ -105,7 +108,7 @@ function WalletApprovalsContent() {
     setError(null);
 
     try {
-      const wallets = await viewMethod({
+      const wallets = await viewMethodRef.current({
         contractId,
         method: 'get_wallet_policies_by_owner',
         args: { owner: accountId },
@@ -126,7 +129,7 @@ function WalletApprovalsContent() {
     } finally {
       setLoading(false);
     }
-  }, [accountId, contractId, viewMethod, fetchPendingApprovals]);
+  }, [accountId, contractId, fetchPendingApprovals]);
 
   // Initial load when connected
   useEffect(() => {

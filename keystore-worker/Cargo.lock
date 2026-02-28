@@ -2673,6 +2673,7 @@ dependencies = [
  "once_cell",
  "serdect",
  "sha2",
+ "signature",
 ]
 
 [[package]]
@@ -2713,6 +2714,7 @@ dependencies = [
  "hex",
  "hkdf",
  "hmac",
+ "k256",
  "near-crypto",
  "near-jsonrpc-client",
  "near-jsonrpc-primitives",

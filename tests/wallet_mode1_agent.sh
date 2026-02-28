@@ -182,7 +182,7 @@ echo ""
 
 echo "5. Withdraw dry-run (no policy)"
 DRY_RUN_BODY='{"chain":"near","to":"recipient.near","amount":"1000000000000000000000000"}'
-parse_response "$(curl_post "/wallet/v1/withdraw/dry-run" "$DRY_RUN_BODY" "dry-run-$(date +%s)")"
+parse_response "$(curl_post "/wallet/v1/intents/withdraw/dry-run" "$DRY_RUN_BODY" "dry-run-$(date +%s)")"
 assert_status "200" "$RESP_CODE" "POST /withdraw/dry-run"
 assert_json_field "$RESP_BODY" ".would_succeed" "true" "would_succeed=true (no policy)"
 echo ""
@@ -194,7 +194,7 @@ echo ""
 echo "6. Withdraw"
 IDEM_KEY="agent-test-$(date +%s%N)"
 WITHDRAW_BODY='{"chain":"near","to":"recipient.near","amount":"1000000000000000000000000"}'
-parse_response "$(curl_post "/wallet/v1/withdraw" "$WITHDRAW_BODY" "$IDEM_KEY")"
+parse_response "$(curl_post "/wallet/v1/intents/withdraw" "$WITHDRAW_BODY" "$IDEM_KEY")"
 assert_status "200" "$RESP_CODE" "POST /withdraw"
 assert_json_not_empty "$RESP_BODY" ".request_id" "request_id present"
 REQUEST_ID=$(echo "$RESP_BODY" | jq -r '.request_id')
@@ -207,7 +207,7 @@ echo ""
 # ============================================================================
 
 echo "7. Idempotent duplicate"
-parse_response "$(curl_post "/wallet/v1/withdraw" "$WITHDRAW_BODY" "$IDEM_KEY")"
+parse_response "$(curl_post "/wallet/v1/intents/withdraw" "$WITHDRAW_BODY" "$IDEM_KEY")"
 assert_status "200" "$RESP_CODE" "POST /withdraw (duplicate idempotency key)"
 assert_json_field "$RESP_BODY" ".error" "duplicate_idempotency_key" "duplicate detected"
 echo ""
@@ -289,7 +289,7 @@ echo ""
 # ============================================================================
 
 echo "15. Missing idempotency key (currently allowed)"
-parse_response "$(curl_post "/wallet/v1/withdraw" "$WITHDRAW_BODY" "")"
+parse_response "$(curl_post "/wallet/v1/intents/withdraw" "$WITHDRAW_BODY" "")"
 assert_status "200" "$RESP_CODE" "no idempotency key -> 200 (allowed)"
 echo ""
 

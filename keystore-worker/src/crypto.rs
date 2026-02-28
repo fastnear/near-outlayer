@@ -10,6 +10,7 @@
 //! - Format: [nonce (12 bytes) | ciphertext | auth_tag (16 bytes)]
 
 use anyhow::{Context, Result};
+use k256::elliptic_curve::sec1::ToEncodedPoint;
 use chacha20poly1305::{
     aead::{Aead, AeadCore, KeyInit, OsRng as AeadOsRng},
     ChaCha20Poly1305, Nonce,
@@ -229,20 +230,74 @@ impl Keystore {
         Ok(result)
     }
 
-    /// Sign a message with the private key for a specific seed
+    /// Sign a message with the Ed25519 private key for a specific seed
     #[allow(dead_code)]
     pub fn sign(&self, seed: &str, message: &[u8]) -> Result<Signature> {
         let (signing_key, _) = self.derive_keypair(seed)?;
         Ok(signing_key.sign(message))
     }
 
-    /// Verify a signature for a specific seed
+    /// Verify an Ed25519 signature for a specific seed
     #[allow(dead_code)]
     pub fn verify(&self, seed: &str, message: &[u8], signature: &Signature) -> Result<()> {
         let (_, verifying_key) = self.derive_keypair(seed)?;
         verifying_key
             .verify(message, signature)
             .context("Signature verification failed")
+    }
+
+    // =========================================================================
+    // secp256k1 (Ethereum/Base/EVM chains)
+    // See: docs/MULTI_CHAIN.md for integration guide
+    // =========================================================================
+
+    /// Derive a secp256k1 keypair from seed (for EVM chains).
+    ///
+    /// Uses the same HMAC-SHA256(master_secret, seed) derivation as Ed25519,
+    /// but interprets the 32 bytes as a secp256k1 scalar.
+    pub fn derive_secp256k1_keypair(
+        &self,
+        seed: &str,
+    ) -> Result<(k256::ecdsa::SigningKey, k256::elliptic_curve::PublicKey<k256::Secp256k1>)> {
+        let mut mac = <HmacSha256 as Mac>::new_from_slice(&self.master_secret)
+            .expect("HMAC can take key of any size");
+        mac.update(seed.as_bytes());
+        let derived_bytes = mac.finalize().into_bytes();
+
+        let mut secret_bytes = [0u8; 32];
+        secret_bytes.copy_from_slice(&derived_bytes[..32]);
+        let signing_key = k256::ecdsa::SigningKey::from_slice(&secret_bytes)
+            .context("Derived bytes are not a valid secp256k1 scalar (astronomically unlikely)")?;
+        let public_key = signing_key.verifying_key().into();
+
+        Ok((signing_key, public_key))
+    }
+
+    /// Derive Ethereum address from seed: keccak256(uncompressed_pubkey[1..65])[12..32]
+    pub fn derive_eth_address(&self, seed: &str) -> Result<(String, String)> {
+        let (_, public_key) = self.derive_secp256k1_keypair(seed)?;
+
+        // Uncompressed public key = 0x04 || x (32 bytes) || y (32 bytes) = 65 bytes
+        let uncompressed = public_key.to_encoded_point(false);
+        let pubkey_bytes = &uncompressed.as_bytes()[1..]; // skip 0x04 prefix
+
+        use sha3::{Digest as Sha3Digest, Keccak256};
+        let hash = Keccak256::digest(pubkey_bytes);
+        let address = format!("0x{}", hex::encode(&hash[12..]));
+
+        // Return compressed public key (33 bytes) for on-chain storage
+        let compressed = public_key.to_encoded_point(true);
+        let pubkey_hex = hex::encode(compressed.as_bytes());
+
+        Ok((address, pubkey_hex))
+    }
+
+    /// Sign a message with secp256k1 ECDSA (for EVM chains)
+    pub fn sign_secp256k1(&self, seed: &str, message: &[u8]) -> Result<Vec<u8>> {
+        use k256::ecdsa::{signature::Signer as _, Signature as EcdsaSignature};
+        let (signing_key, _) = self.derive_secp256k1_keypair(seed)?;
+        let signature: EcdsaSignature = signing_key.sign(message);
+        Ok(signature.to_bytes().to_vec())
     }
 
     /// Generate VRF output and proof for the given alpha bytes.

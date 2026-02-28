@@ -241,6 +241,27 @@ export async function fetchPricing(): Promise<PricingConfig> {
   return response.data;
 }
 
+// ============================================================================
+// Wallet Stats (public, no auth)
+// ============================================================================
+
+export interface WalletStats {
+  wallets: { total: number; active: number; deleted: number };
+  transactions: {
+    total: number;
+    by_type: Record<string, number>;
+    by_status: Record<string, number>;
+  };
+  pending_approvals: number;
+  registrations_per_day: Array<{ date: string; count: number }>;
+  transactions_per_day: Array<{ date: string; count: number }>;
+}
+
+export async function fetchWalletStats(): Promise<WalletStats> {
+  const response = await axios.get(`${API_BASE_URL}/wallet/v1/stats`);
+  return response.data;
+}
+
 /**
  * API Key Management
  */

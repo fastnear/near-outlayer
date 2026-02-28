@@ -760,8 +760,8 @@ Base: `https://api.outlayer.fastnear.com`
 |--------|------|------|-------------|
 | POST | `/register` | None | Create wallet → API key + NEAR address |
 | GET | `/wallet/v1/address?chain=` | Bearer | Derive address for any chain |
-| POST | `/wallet/v1/withdraw` | Bearer | Transfer (gasless cross-chain via Intents) |
-| POST | `/wallet/v1/withdraw/dry-run` | Bearer | Simulate withdrawal |
+| POST | `/wallet/v1/intents/withdraw` | Bearer | Transfer (gasless cross-chain via Intents) |
+| POST | `/wallet/v1/intents/withdraw/dry-run` | Bearer | Simulate withdrawal |
 | POST | `/wallet/v1/call` | Bearer | Native NEAR contract call |
 | GET | `/wallet/v1/requests/{id}` | Bearer | Poll async status |
 | GET | `/wallet/v1/policy` | Bearer | View decrypted policy |

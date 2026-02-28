@@ -107,7 +107,7 @@ export default function AgentCustodyPage() {
                 <div className="bg-white rounded-lg border border-green-300 p-3 text-center">
                   <div className="text-lg mb-1">&#9997;&#65039;</div>
                   <div className="text-xs font-semibold text-gray-800">Transaction Signing</div>
-                  <div className="text-xs text-gray-500 mt-1">Signs transfer, swap, call, withdraw</div>
+                  <div className="text-xs text-gray-500 mt-1">Signs transfer, intents_withdraw, intents_swap, call, delete</div>
                   <div className="text-xs text-gray-500">inside secure enclave</div>
                 </div>
                 <div className="bg-white rounded-lg border border-green-300 p-3 text-center">
@@ -266,7 +266,7 @@ export default function AgentCustodyPage() {
 
         <div className="bg-blue-50 border-l-4 border-blue-400 p-4 mb-4">
           <p className="text-sm text-gray-700">
-            <strong>Gasless cross-chain:</strong> When the agent calls <code className="bg-blue-100 px-1 rounded">POST /wallet/v1/withdraw</code> to send tokens to Ethereum or Solana,
+            <strong>Gasless cross-chain:</strong> When the agent calls <code className="bg-blue-100 px-1 rounded">POST /wallet/v1/intents/withdraw</code> to send tokens to Ethereum or Solana,
             it does not need ETH or SOL for gas. The NEAR Intents protocol handles execution and fee settlement natively.
           </p>
         </div>
@@ -338,7 +338,7 @@ export default function AgentCustodyPage() {
               </tr>
               <tr className="border-b">
                 <td className="px-4 py-2 font-semibold">Transaction types</td>
-                <td className="px-4 py-2">Restrict allowed operations (withdraw, call, transfer, swap, intents_deposit)</td>
+                <td className="px-4 py-2">Restrict allowed operations (transfer, call, intents_withdraw, intents_swap, intents_deposit, delete)</td>
                 <td className="px-4 py-2 font-mono text-xs">call, swap only</td>
               </tr>
               <tr>
@@ -364,7 +364,7 @@ export default function AgentCustodyPage() {
       "daily": { "*": "100000000000000000000000000" },
       "hourly": { "*": "50000000000000000000000000" }
     },
-    "transaction_types": ["withdraw", "call", "transfer", "swap", "intents_deposit"],
+    "transaction_types": ["transfer", "call", "intents_withdraw", "intents_swap", "intents_deposit", "delete"],
     "addresses": {
       "mode": "whitelist",
       "list": ["bob.near", "dex.near"]
@@ -399,7 +399,7 @@ export default function AgentCustodyPage() {
         </p>
 
         <SyntaxHighlighter language="text" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
-{`Agent: POST /wallet/v1/withdraw { amount: "$5,000" }
+{`Agent: POST /wallet/v1/intents/withdraw { amount: "$5,000" }
   -> Response: { status: "pending_approval", required: 2, approved: 0 }
 
 Approver 1: Signs approval via NEAR wallet (dashboard)
@@ -490,7 +490,7 @@ curl -s -H "Authorization: Bearer $API_KEY" \\
 curl -s -X POST -H "Content-Type: application/json" \\
   -H "Authorization: Bearer $API_KEY" \\
   -d '{"token_in":"nep141:wrap.near","token_out":"nep141:usdt.tether-token.near","amount_in":"1000000000000000000000000"}' \\
-  "https://api.outlayer.fastnear.com/wallet/v1/swap"`}
+  "https://api.outlayer.fastnear.com/wallet/v1/intents/swap"`}
         </SyntaxHighlighter>
 
         <h3 className="text-lg font-semibold mt-4 mb-2">6. Call a NEAR contract</h3>
@@ -507,10 +507,25 @@ curl -s -X POST -H "Content-Type: application/json" \\
 curl -s -X POST -H "Content-Type: application/json" \\
   -H "Authorization: Bearer $API_KEY" \\
   -d '{"to":"receiver.near","amount":"1000000","token":"usdt.tether-token.near","chain":"near"}' \\
-  "https://api.outlayer.fastnear.com/wallet/v1/withdraw"`}
+  "https://api.outlayer.fastnear.com/wallet/v1/intents/withdraw"`}
         </SyntaxHighlighter>
 
-        <h3 className="text-lg font-semibold mt-4 mb-2">8. Configure policy (optional)</h3>
+        <h3 className="text-lg font-semibold mt-4 mb-2">8. Delete wallet (irreversible)</h3>
+        <p className="text-gray-700 mb-2">Delete the on-chain account, send all NEAR to a beneficiary, and revoke all API keys:</p>
+        <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
+{`curl -s -X POST -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer $API_KEY" \\
+  -d '{"beneficiary":"receiver.near","chain":"near"}' \\
+  "https://api.outlayer.fastnear.com/wallet/v1/delete"`}
+        </SyntaxHighlighter>
+        <div className="bg-red-50 border-l-4 border-red-500 p-4 mt-2 mb-4">
+          <p className="text-sm text-gray-700">
+            <strong>Warning:</strong> Only native NEAR tokens are sent to the beneficiary. FT tokens (USDT, wNEAR, etc.) and Intents balances
+            are <strong>lost permanently</strong> because the account is deleted from the network. Withdraw or transfer those assets <strong>before</strong> deleting.
+          </p>
+        </div>
+
+        <h3 className="text-lg font-semibold mt-4 mb-2">9. Configure policy (optional)</h3>
         <p className="text-gray-700 mb-2">Share the handoff URL with the wallet owner so they can set spending limits, whitelists, and multisig rules from the dashboard:</p>
         <SyntaxHighlighter language="text" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
 {`https://outlayer.fastnear.com/wallet?key=wk_...`}
@@ -561,7 +576,7 @@ curl -s -X POST -H "Content-Type: application/json" \\
               <tr className="border-b">
                 <td className="px-4 py-2">Swap tokens</td>
                 <td className="px-4 py-2 font-mono">POST</td>
-                <td className="px-4 py-2 font-mono text-xs">/wallet/v1/swap</td>
+                <td className="px-4 py-2 font-mono text-xs">/wallet/v1/intents/swap</td>
               </tr>
               <tr className="border-b">
                 <td className="px-4 py-2">Deposit to Intents</td>
@@ -571,12 +586,17 @@ curl -s -X POST -H "Content-Type: application/json" \\
               <tr className="border-b">
                 <td className="px-4 py-2">Withdraw (cross-chain)</td>
                 <td className="px-4 py-2 font-mono">POST</td>
-                <td className="px-4 py-2 font-mono text-xs">/wallet/v1/withdraw</td>
+                <td className="px-4 py-2 font-mono text-xs">/wallet/v1/intents/withdraw</td>
               </tr>
               <tr className="border-b">
                 <td className="px-4 py-2">Dry-run withdraw</td>
                 <td className="px-4 py-2 font-mono">POST</td>
-                <td className="px-4 py-2 font-mono text-xs">/wallet/v1/withdraw/dry-run</td>
+                <td className="px-4 py-2 font-mono text-xs">/wallet/v1/intents/withdraw/dry-run</td>
+              </tr>
+              <tr className="border-b">
+                <td className="px-4 py-2">Delete wallet</td>
+                <td className="px-4 py-2 font-mono">POST</td>
+                <td className="px-4 py-2 font-mono text-xs">/wallet/v1/delete</td>
               </tr>
               <tr className="border-b">
                 <td className="px-4 py-2">Request status</td>
@@ -609,6 +629,53 @@ curl -s -X POST -H "Content-Type: application/json" \\
 
         <p className="text-gray-700">
           Base URL: <code className="bg-gray-100 px-1 rounded">https://api.outlayer.fastnear.com</code>
+        </p>
+      </section>
+
+      {/* Delete Wallet */}
+      <section id="delete-wallet" className="mb-10 scroll-mt-4">
+        <AnchorHeading id="delete-wallet">Delete Wallet</AnchorHeading>
+
+        <p className="text-gray-700 mb-4">
+          Permanently delete the wallet&apos;s on-chain NEAR account using the native <code className="bg-gray-100 px-1 rounded">DeleteAccount</code> action.
+          All remaining native NEAR balance is automatically sent to the beneficiary. All API keys are revoked.
+        </p>
+
+        <div className="bg-red-50 border-l-4 border-red-500 p-4 mb-4">
+          <p className="text-sm text-gray-700">
+            <strong>Warning:</strong> Only native NEAR tokens are sent to the beneficiary (handled by NEAR&apos;s <code className="bg-red-100 px-1 rounded">DeleteAccount</code>).
+            FT tokens (USDT, wNEAR, etc.) and Intents balances are <strong>lost permanently</strong> because the account is deleted from the network.
+            Withdraw or transfer those assets <strong>before</strong> deleting the wallet.
+          </p>
+        </div>
+
+        <h3 className="text-lg font-semibold mt-4 mb-2">Before deleting</h3>
+        <ol className="list-decimal list-inside text-gray-700 space-y-2 mb-4">
+          <li>Transfer all FT tokens via <code className="bg-gray-100 px-1 rounded">POST /wallet/v1/call</code> with <code className="bg-gray-100 px-1 rounded">ft_transfer</code></li>
+          <li>Withdraw Intents balances via <code className="bg-gray-100 px-1 rounded">POST /wallet/v1/intents/withdraw</code></li>
+          <li>Move any other on-chain assets to another account</li>
+        </ol>
+
+        <h3 className="text-lg font-semibold mt-4 mb-2">Request</h3>
+        <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
+{`curl -s -X POST -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer $API_KEY" \\
+  -d '{"beneficiary":"receiver.near","chain":"near"}' \\
+  "https://api.outlayer.fastnear.com/wallet/v1/delete"`}
+        </SyntaxHighlighter>
+
+        <h3 className="text-lg font-semibold mt-4 mb-2">Response</h3>
+        <SyntaxHighlighter language="json" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
+{`{
+  "request_id": "uuid",
+  "status": "success",
+  "tx_hash": "...",
+  "beneficiary": "receiver.near"
+}`}
+        </SyntaxHighlighter>
+
+        <p className="text-gray-700 mt-4">
+          After deletion, the on-chain account no longer exists and all API keys are revoked. Subsequent API requests will return <code className="bg-gray-100 px-1 rounded">invalid_api_key</code>.
         </p>
       </section>
 

@@ -188,7 +188,8 @@ impl IntoResponse for WalletError {
 #[derive(Debug, Deserialize)]
 pub struct WithdrawRequest {
     pub chain: String,
-    pub to: String,
+    #[serde(default)]
+    pub to: Option<String>, // None = withdraw to self
     pub amount: String,
     #[serde(default)]
     pub token: Option<String>, // null = native
@@ -517,6 +518,40 @@ pub struct KeystoreSignNearTransferRequest {
 }
 
 // ============================================================================
+// Delete types
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct DeleteRequest {
+    pub beneficiary: String,
+    #[serde(default = "default_near_chain")]
+    pub chain: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DeleteResponse {
+    pub request_id: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tx_hash: Option<String>,
+    pub beneficiary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approved: Option<i32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct KeystoreSignNearDeleteAccountRequest {
+    pub wallet_id: String,
+    pub beneficiary_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval_info: Option<ApprovalInfo>,
+}
+
+// ============================================================================
 // Balance types (chain-agnostic — dispatch by chain param)
 // ============================================================================
 
@@ -579,6 +614,9 @@ pub struct KeystoreSignNearCallRequest {
     pub deposit: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub approval_info: Option<ApprovalInfo>,
+    /// Override nonce for sequential tx chains (avoids RPC finality lag)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub override_nonce: Option<u64>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -587,6 +625,9 @@ pub struct KeystoreSignNearCallResponse {
     pub tx_hash: String,
     pub signer_id: String,
     pub public_key: String,
+    /// The nonce used in this transaction
+    #[serde(default)]
+    pub nonce: u64,
 }
 
 // ============================================================================
@@ -628,6 +669,39 @@ pub struct SwapResponse {
     pub amount_out: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub intent_hash: Option<String>,
+}
+
+// ============================================================================
+// Stats types (public, no auth)
+// ============================================================================
+
+#[derive(Debug, Serialize)]
+pub struct WalletStatsResponse {
+    pub wallets: WalletCounts,
+    pub transactions: TransactionStats,
+    pub pending_approvals: i64,
+    pub registrations_per_day: Vec<DayCount>,
+    pub transactions_per_day: Vec<DayCount>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WalletCounts {
+    pub total: i64,
+    pub active: i64,
+    pub deleted: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TransactionStats {
+    pub total: i64,
+    pub by_type: std::collections::HashMap<String, i64>,
+    pub by_status: std::collections::HashMap<String, i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DayCount {
+    pub date: String,
+    pub count: i64,
 }
 
 #[cfg(test)]

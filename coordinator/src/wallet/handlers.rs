@@ -384,20 +384,26 @@ pub async fn withdraw(
 
     let token_key = req.token.as_deref().unwrap_or("native").to_string();
 
+    let wallet_pubkey = policy::resolve_wallet_pubkey(&state.db, &auth.wallet_id).await?;
+
+    // Default `to` = wallet's own implicit account
+    let withdraw_to = match req.to.as_deref() {
+        Some(to) if !to.is_empty() => to.to_string(),
+        _ => wallet_pubkey.strip_prefix("ed25519:").unwrap_or(&wallet_pubkey).to_string(),
+    };
+
     // Get current usage for velocity limit checks
     let current_usage = get_current_usage(&state.db, &auth.wallet_id).await.unwrap_or_default();
 
     // Check policy
     let action = serde_json::json!({
-        "type": "withdraw",
+        "type": "intents_withdraw",
         "chain": chain,
-        "to": req.to,
+        "to": withdraw_to,
         "amount": req.amount,
         "token": token_key,
         "current_usage": current_usage,
     });
-
-    let wallet_pubkey = policy::resolve_wallet_pubkey(&state.db, &auth.wallet_id).await?;
     let policy_output = policy::check_wallet_policy_with_overrides(
         &state.policy_cache,
         &state.near_rpc_url,
@@ -423,7 +429,7 @@ pub async fn withdraw(
 
             let request_data = serde_json::json!({
                 "chain": chain,
-                "to": req.to,
+                "to": withdraw_to,
                 "amount": req.amount,
                 "token": token_key,
             });
@@ -469,27 +475,29 @@ pub async fn withdraw(
                 &auth.wallet_id,
                 "withdraw_pending_approval",
                 &auth.wallet_id,
-                serde_json::json!({"to": req.to, "amount": req.amount, "chain": chain}),
+                serde_json::json!({"to": withdraw_to, "amount": req.amount, "chain": chain}),
                 Some(&request_id.to_string()),
             )
             .await;
 
             // Webhook: approval_needed
             if let Some(ref url) = webhook_url {
-                let _ = webhooks::enqueue_webhook(
+                if let Err(e) = webhooks::enqueue_webhook(
                     &state.db,
                     &auth.wallet_id,
                     "approval_needed",
                     serde_json::json!({
                         "request_id": request_id.to_string(),
                         "approval_id": approval_id.to_string(),
-                        "type": "withdraw",
+                        "type": "intents_withdraw",
                         "request_data": request_data,
                         "required_approvals": required_approvals,
                     }),
                     url,
                 )
-                .await;
+                .await {
+                    tracing::warn!("Webhook enqueue failed: {}", e);
+                }
             }
 
             // Record usage even for pending requests (enforces rate limits)
@@ -530,7 +538,7 @@ pub async fn withdraw(
     // No solver-relay needed. The caller (wallet) must own the intents balance.
     let ft_withdraw_args = serde_json::json!({
         "token": token_for_withdraw,
-        "receiver_id": req.to,
+        "receiver_id": withdraw_to,
         "amount": req.amount,
     });
 
@@ -550,7 +558,7 @@ pub async fn withdraw(
     let request_id = Uuid::new_v4();
     let request_data = serde_json::json!({
         "chain": chain,
-        "to": req.to,
+        "to": withdraw_to,
         "amount": req.amount,
         "token": token_key,
     });
@@ -595,26 +603,28 @@ pub async fn withdraw(
         &auth.wallet_id,
         "withdraw",
         &auth.wallet_id,
-        serde_json::json!({"to": req.to, "amount": req.amount, "chain": chain, "status": status, "tx_hash": tx_hash}),
+        serde_json::json!({"to": withdraw_to, "amount": req.amount, "chain": chain, "status": status, "tx_hash": tx_hash}),
         Some(&request_id.to_string()),
     )
     .await;
 
     // Webhook: request_completed
     if let Some(ref url) = webhook_url {
-        let _ = webhooks::enqueue_webhook(
+        if let Err(e) = webhooks::enqueue_webhook(
             &state.db,
             &auth.wallet_id,
             "request_completed",
             serde_json::json!({
                 "request_id": request_id.to_string(),
-                "type": "withdraw",
+                "type": "intents_withdraw",
                 "status": status,
                 "result": result_data,
             }),
             url,
         )
-        .await;
+        .await {
+            tracing::warn!("Webhook enqueue failed: {}", e);
+        }
     }
 
     Ok(Json(WithdrawResponse {
@@ -644,21 +654,28 @@ pub async fn withdraw_dry_run(
 
     let token_key = req.token.as_deref().unwrap_or("native").to_string();
 
+    let wallet_pubkey = policy::resolve_wallet_pubkey(&state.db, &auth.wallet_id).await?;
+
+    // Default `to` = wallet's own implicit account
+    let withdraw_to = match req.to.as_deref() {
+        Some(to) if !to.is_empty() => to.to_string(),
+        _ => wallet_pubkey.strip_prefix("ed25519:").unwrap_or(&wallet_pubkey).to_string(),
+    };
+
     // Get current usage for velocity limit checks
     let current_usage = get_current_usage(&state.db, &auth.wallet_id).await.unwrap_or_default();
 
     // Check policy
     let action = serde_json::json!({
-        "type": "withdraw",
+        "type": "intents_withdraw",
         "chain": chain,
-        "to": req.to,
+        "to": withdraw_to,
         "amount": req.amount,
         "token": token_key,
         "dry_run": true,
         "current_usage": current_usage,
     });
 
-    let wallet_pubkey = policy::resolve_wallet_pubkey(&state.db, &auth.wallet_id).await?;
     let policy_output = policy::check_wallet_policy_with_overrides(
         &state.policy_cache,
         &state.near_rpc_url,
@@ -1327,21 +1344,18 @@ pub async fn approve(
         serde_json::json!({"type": "get_policy"}),
     )
     .await
-    .ok();
+    .map_err(|e| WalletError::InternalError(format!("Failed to fetch policy for approver verification: {:?}", e)))?;
 
-    if let Some(ref output) = policy_output {
-        // If policy exists and has approvers list, verify the caller is in it
-        if let Some(ref policy_json) = output.policy {
-            if let Some(approvers) = policy_json.pointer("/approval/approvers").and_then(|v| v.as_array()) {
-                let is_approver = approvers.iter().any(|a| {
-                    let id = a.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                    // Match by: account_id (NEAR account) or public_key
-                    id == approver_id || id == public_key
-                });
+    // Policy fetched — verify the caller is in the approvers list
+    if let Some(ref policy_json) = policy_output.policy {
+        if let Some(approvers) = policy_json.pointer("/approval/approvers").and_then(|v| v.as_array()) {
+            let is_approver = approvers.iter().any(|a| {
+                let id = a.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                id == approver_id || id == public_key
+            });
 
-                if !is_approver {
-                    return Err(WalletError::NotApprover);
-                }
+            if !is_approver {
+                return Err(WalletError::NotApprover);
             }
         }
     }
@@ -1401,7 +1415,7 @@ pub async fn approve(
 
     // Webhook: approval_received
     if let Some(ref url) = webhook_url {
-        let _ = webhooks::enqueue_webhook(
+        if let Err(e) = webhooks::enqueue_webhook(
             &state.db,
             &approval.1,
             "approval_received",
@@ -1413,7 +1427,9 @@ pub async fn approve(
             }),
             url,
         )
-        .await;
+        .await {
+            tracing::warn!("Webhook enqueue failed: {}", e);
+        }
     }
 
     // Check if threshold met
@@ -1423,7 +1439,7 @@ pub async fn approve(
             .bind(approval_id)
             .execute(&state.db)
             .await
-            .ok();
+            .map_err(|e| WalletError::InternalError(format!("DB error updating approval: {}", e)))?;
 
         // Mark the linked request as processing
         sqlx::query(
@@ -1432,7 +1448,7 @@ pub async fn approve(
         .bind(approval_id)
         .execute(&state.db)
         .await
-        .ok();
+        .map_err(|e| WalletError::InternalError(format!("DB error updating request: {}", e)))?;
 
         // Get linked request_id
         let linked_request = sqlx::query_scalar::<_, Uuid>(
@@ -1490,6 +1506,16 @@ pub async fn approve(
                     .await;
                 } else if request_type == "transfer" {
                     execute_approved_transfer(
+                        state_clone,
+                        wallet_id,
+                        request_id,
+                        request_data,
+                        wh_url,
+                        approval_info,
+                    )
+                    .await;
+                } else if request_type == "delete" {
+                    execute_approved_delete(
                         state_clone,
                         wallet_id,
                         request_id,
@@ -1579,30 +1605,27 @@ pub async fn reject(
         serde_json::json!({"type": "get_policy"}),
     )
     .await
-    .ok();
+    .map_err(|e| WalletError::InternalError(format!("Failed to fetch policy for approver verification: {:?}", e)))?;
 
-    if let Some(ref output) = policy_output {
-        if let Some(ref policy_json) = output.policy {
-            if let Some(approvers) = policy_json.pointer("/approval/approvers").and_then(|v| v.as_array()) {
-                let wallet_pubkey = sqlx::query_scalar::<_, String>(
-                    "SELECT near_pubkey FROM wallet_accounts WHERE wallet_id = $1",
-                )
-                .bind(&auth.wallet_id)
-                .fetch_optional(&state.db)
-                .await
-                .ok()
-                .flatten();
+    if let Some(ref policy_json) = policy_output.policy {
+        if let Some(approvers) = policy_json.pointer("/approval/approvers").and_then(|v| v.as_array()) {
+            let wallet_pubkey = sqlx::query_scalar::<_, String>(
+                "SELECT near_pubkey FROM wallet_accounts WHERE wallet_id = $1",
+            )
+            .bind(&auth.wallet_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| WalletError::InternalError(format!("DB error: {}", e)))?;
 
-                let is_approver = approvers.iter().any(|a| {
-                    let id = a.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                    id == approver_id
-                        || id == auth.wallet_id
-                        || wallet_pubkey.as_deref().is_some_and(|pk| id == pk)
-                });
+            let is_approver = approvers.iter().any(|a| {
+                let id = a.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                id == approver_id
+                    || id == auth.wallet_id
+                    || wallet_pubkey.as_deref().is_some_and(|pk| id == pk)
+            });
 
-                if !is_approver {
-                    return Err(WalletError::NotApprover);
-                }
+            if !is_approver {
+                return Err(WalletError::NotApprover);
             }
         }
     }
@@ -1621,15 +1644,18 @@ pub async fn reject(
     .bind(approval_id)
     .execute(&state.db)
     .await
-    .ok();
+    .map_err(|e| WalletError::InternalError(format!("DB error rejecting request: {}", e)))?;
 
-    // Audit log
+    // Audit log — covers both the approval rejection and the linked request rejection
     audit::record_audit_event(
         &state.db,
         &approval.1,
         "rejection",
         approver_id,
-        serde_json::json!({"approval_id": approval_id.to_string()}),
+        serde_json::json!({
+            "approval_id": approval_id.to_string(),
+            "request_type": approval.2,
+        }),
         None,
     )
     .await;
@@ -1757,19 +1783,21 @@ async fn execute_approved_withdraw(
 
             // Webhook: request_completed
             if let Some(ref url) = webhook_url {
-                let _ = webhooks::enqueue_webhook(
+                if let Err(e) = webhooks::enqueue_webhook(
                     &state.db,
                     &wallet_id,
                     "request_completed",
                     serde_json::json!({
                         "request_id": request_id.to_string(),
-                        "type": "withdraw",
+                        "type": "intents_withdraw",
                         "status": status,
                         "result": result_data,
                     }),
                     url,
                 )
-                .await;
+                .await {
+                    tracing::warn!("Webhook enqueue failed: {}", e);
+                }
             }
         }
         Err(e) => {
@@ -1799,6 +1827,20 @@ async fn keystore_sign_near_call(
     deposit: &str,
     approval_info: Option<&ApprovalInfo>,
 ) -> Result<KeystoreSignNearCallResponse, WalletError> {
+    keystore_sign_near_call_with_nonce(state, wallet_id, receiver_id, method_name, args_json, gas, deposit, approval_info, None).await
+}
+
+async fn keystore_sign_near_call_with_nonce(
+    state: &WalletState,
+    wallet_id: &str,
+    receiver_id: &str,
+    method_name: &str,
+    args_json: &str,
+    gas: u64,
+    deposit: &str,
+    approval_info: Option<&ApprovalInfo>,
+    override_nonce: Option<u64>,
+) -> Result<KeystoreSignNearCallResponse, WalletError> {
     let keystore_url = state.keystore_base_url.as_ref().ok_or_else(|| {
         WalletError::InternalError("Keystore URL not configured".to_string())
     })?;
@@ -1811,6 +1853,7 @@ async fn keystore_sign_near_call(
         gas,
         deposit: deposit.to_string(),
         approval_info: approval_info.cloned(),
+        override_nonce,
     };
 
     let mut request = state
@@ -2045,7 +2088,7 @@ pub async fn call(
             .await;
 
             if let Some(ref url) = webhook_url {
-                let _ = webhooks::enqueue_webhook(
+                if let Err(e) = webhooks::enqueue_webhook(
                     &state.db,
                     &auth.wallet_id,
                     "approval_needed",
@@ -2057,7 +2100,9 @@ pub async fn call(
                     }),
                     url,
                 )
-                .await;
+                .await {
+                    tracing::warn!("Webhook enqueue failed: {}", e);
+                }
             }
 
             // Record usage for pending approval requests too (enforces rate limits)
@@ -2142,7 +2187,7 @@ pub async fn call(
     .bind(&result_data)
     .execute(&state.db)
     .await
-    .ok();
+    .map_err(|e| WalletError::InternalError(format!("DB error updating request status: {}", e)))?;
 
     // Audit
     audit::record_audit_event(
@@ -2163,7 +2208,7 @@ pub async fn call(
 
     // Webhook
     if let Some(ref url) = webhook_url {
-        let _ = webhooks::enqueue_webhook(
+        if let Err(e) = webhooks::enqueue_webhook(
             &state.db,
             &auth.wallet_id,
             "request_completed",
@@ -2175,7 +2220,9 @@ pub async fn call(
             }),
             url,
         )
-        .await;
+        .await {
+            tracing::warn!("Webhook enqueue failed: {}", e);
+        }
     }
 
     Ok(Json(CallResponse {
@@ -2262,7 +2309,7 @@ async fn execute_approved_call(
                     .await;
 
                     if let Some(ref url) = webhook_url {
-                        let _ = webhooks::enqueue_webhook(
+                        if let Err(e) = webhooks::enqueue_webhook(
                             &state.db,
                             &wallet_id,
                             "request_completed",
@@ -2274,7 +2321,9 @@ async fn execute_approved_call(
                             }),
                             url,
                         )
-                        .await;
+                        .await {
+                            tracing::warn!("Webhook enqueue failed: {}", e);
+                        }
                     }
                 }
                 Err(e) => {
@@ -2471,7 +2520,7 @@ pub async fn transfer(
             .await;
 
             if let Some(ref url) = webhook_url {
-                let _ = webhooks::enqueue_webhook(
+                if let Err(e) = webhooks::enqueue_webhook(
                     &state.db,
                     &auth.wallet_id,
                     "approval_needed",
@@ -2483,7 +2532,9 @@ pub async fn transfer(
                     }),
                     url,
                 )
-                .await;
+                .await {
+                    tracing::warn!("Webhook enqueue failed: {}", e);
+                }
             }
 
             record_usage(&state.db, &auth.wallet_id, "native", &req.amount).await?;
@@ -2556,7 +2607,7 @@ pub async fn transfer(
     .bind(&result_data)
     .execute(&state.db)
     .await
-    .ok();
+    .map_err(|e| WalletError::InternalError(format!("DB error updating request status: {}", e)))?;
 
     // Audit
     audit::record_audit_event(
@@ -2576,7 +2627,7 @@ pub async fn transfer(
 
     // Webhook
     if let Some(ref url) = webhook_url {
-        let _ = webhooks::enqueue_webhook(
+        if let Err(e) = webhooks::enqueue_webhook(
             &state.db,
             &auth.wallet_id,
             "request_completed",
@@ -2588,7 +2639,9 @@ pub async fn transfer(
             }),
             url,
         )
-        .await;
+        .await {
+            tracing::warn!("Webhook enqueue failed: {}", e);
+        }
     }
 
     Ok(Json(CallResponse {
@@ -2667,7 +2720,7 @@ async fn execute_approved_transfer(
                     .await;
 
                     if let Some(ref url) = webhook_url {
-                        let _ = webhooks::enqueue_webhook(
+                        if let Err(e) = webhooks::enqueue_webhook(
                             &state.db,
                             &wallet_id,
                             "request_completed",
@@ -2679,7 +2732,9 @@ async fn execute_approved_transfer(
                             }),
                             url,
                         )
-                        .await;
+                        .await {
+                            tracing::warn!("Webhook enqueue failed: {}", e);
+                        }
                     }
                 }
                 Err(e) => {
@@ -2696,6 +2751,435 @@ async fn execute_approved_transfer(
         }
         Err(e) => {
             warn!("Auto-execute transfer signing failed for {}: {:?}", request_id, e);
+            let _ = sqlx::query(
+                "UPDATE wallet_requests SET status = 'failed', result_data = $2, updated_at = NOW() WHERE request_id = $1",
+            )
+            .bind(request_id)
+            .bind(serde_json::json!({"error": format!("{:?}", e)}))
+            .execute(&state.db)
+            .await;
+        }
+    }
+}
+
+// ============================================================================
+// POST /delete — deactivate wallet, send native tokens to beneficiary
+// ============================================================================
+
+pub async fn delete(
+    State(state): State<WalletState>,
+    headers: HeaderMap,
+    body: String,
+) -> Result<Json<DeleteResponse>, WalletError> {
+    let auth = authenticate(&headers, &state.allowed_worker_token_hashes, &state.db, &state.api_key_cache).await?;
+
+    // Idempotency key
+    let idempotency_key = if auth.is_internal {
+        auth.idempotency_key.clone()
+    } else {
+        Some(auth.idempotency_key.clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()))
+    };
+
+    if let Some(ref key) = idempotency_key {
+        if let Some(existing_id) = idempotency::check_idempotency(&state.db, &auth.wallet_id, key).await? {
+            return Err(WalletError::DuplicateIdempotencyKey {
+                request_id: existing_id,
+            });
+        }
+    }
+
+    let req: DeleteRequest = serde_json::from_str(&body).map_err(|e| {
+        WalletError::InternalError(format!("Invalid request: {}", e))
+    })?;
+
+    validate_chain(&req.chain)?;
+
+    // Validate beneficiary
+    if req.beneficiary.is_empty() {
+        return Err(WalletError::InternalError("beneficiary is required".to_string()));
+    }
+
+    // Beneficiary must not be the wallet's own account
+    let wallet_pubkey = policy::resolve_wallet_pubkey(&state.db, &auth.wallet_id).await?;
+    let own_account = wallet_pubkey.strip_prefix("ed25519:").unwrap_or(&wallet_pubkey);
+    if req.beneficiary == own_account {
+        return Err(WalletError::InternalError("beneficiary cannot be the wallet's own account".to_string()));
+    }
+
+    // Check wallet not already deleted
+    let deleted_at = sqlx::query_scalar::<_, Option<chrono::DateTime<chrono::Utc>>>(
+        "SELECT deleted_at FROM wallet_accounts WHERE wallet_id = $1",
+    )
+    .bind(&auth.wallet_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| WalletError::InternalError(format!("DB error: {}", e)))?
+    .flatten();
+
+    if deleted_at.is_some() {
+        return Err(WalletError::InternalError("Wallet is already deleted".to_string()));
+    }
+
+    // Policy check
+    let current_usage = get_current_usage(&state.db, &auth.wallet_id).await.unwrap_or_default();
+    let action = serde_json::json!({
+        "type": "delete",
+        "beneficiary": req.beneficiary,
+        "chain": req.chain,
+        "current_usage": current_usage,
+    });
+
+    let policy_output = policy::check_wallet_policy_with_overrides(
+        &state.policy_cache,
+        &state.near_rpc_url,
+        &state.contract_id,
+        state.keystore_base_url.as_deref().unwrap_or(""),
+        state.keystore_auth_token.as_deref().unwrap_or(""),
+        &auth.wallet_id,
+        &wallet_pubkey,
+        action,
+        Some(&state.policy_overrides),
+    )
+    .await?;
+
+    let webhook_url = policy_output.webhook_url.clone();
+    match policy_output.decision {
+        PolicyDecision::Frozen => return Err(WalletError::WalletFrozen),
+        PolicyDecision::Denied(reason) => return Err(WalletError::PolicyDenied(reason)),
+        PolicyDecision::RequiresApproval { required_approvals } => {
+            let request_id = Uuid::new_v4();
+            let approval_id = Uuid::new_v4();
+            let request_data = serde_json::json!({
+                "beneficiary": req.beneficiary,
+                "chain": req.chain,
+            });
+
+            let request_hash = sha256_hex(&serde_json::to_string(&request_data).unwrap_or_default());
+
+            sqlx::query(
+                r#"
+                INSERT INTO wallet_pending_approvals (id, wallet_id, request_type, request_data, request_hash, required_approvals, expires_at)
+                VALUES ($1, $2, 'delete', $3, $4, $5, NOW() + INTERVAL '24 hours')
+                "#,
+            )
+            .bind(approval_id)
+            .bind(&auth.wallet_id)
+            .bind(&request_data)
+            .bind(&request_hash)
+            .bind(required_approvals)
+            .execute(&state.db)
+            .await
+            .map_err(|e| WalletError::InternalError(format!("DB error: {}", e)))?;
+
+            sqlx::query(
+                r#"
+                INSERT INTO wallet_requests (request_id, wallet_id, request_type, chain, request_data, approval_id, status, idempotency_key)
+                VALUES ($1, $2, 'delete', $3, $4, $5, 'pending_approval', $6)
+                "#,
+            )
+            .bind(request_id)
+            .bind(&auth.wallet_id)
+            .bind(&req.chain)
+            .bind(&request_data)
+            .bind(approval_id)
+            .bind(idempotency_key.as_deref())
+            .execute(&state.db)
+            .await
+            .map_err(|e| WalletError::InternalError(format!("DB error: {}", e)))?;
+
+            audit::record_audit_event(
+                &state.db,
+                &auth.wallet_id,
+                "delete_pending_approval",
+                &auth.wallet_id,
+                serde_json::json!({"beneficiary": req.beneficiary, "chain": req.chain}),
+                Some(&request_id.to_string()),
+            )
+            .await;
+
+            if let Some(ref url) = webhook_url {
+                if let Err(e) = webhooks::enqueue_webhook(
+                    &state.db,
+                    &auth.wallet_id,
+                    "approval_needed",
+                    serde_json::json!({
+                        "request_id": request_id.to_string(),
+                        "approval_id": approval_id.to_string(),
+                        "type": "delete",
+                        "required": required_approvals,
+                    }),
+                    url,
+                )
+                .await {
+                    tracing::warn!("Webhook enqueue failed: {}", e);
+                }
+            }
+
+            return Ok(Json(DeleteResponse {
+                request_id: request_id.to_string(),
+                status: "pending_approval".to_string(),
+                tx_hash: None,
+                beneficiary: req.beneficiary,
+                approval_id: Some(approval_id.to_string()),
+                required: Some(required_approvals),
+                approved: Some(0),
+            }));
+        }
+        PolicyDecision::NoPolicyAllow | PolicyDecision::Allowed => {}
+    }
+
+    // Execute deletion: query balance, transfer if > 0, revoke keys
+    let (tx_hash, status) = execute_delete_inner(&state, &auth.wallet_id, &req.beneficiary, &req.chain, None).await?;
+
+    let request_id = Uuid::new_v4();
+    let request_data = serde_json::json!({
+        "beneficiary": req.beneficiary,
+        "chain": req.chain,
+        "tx_hash": tx_hash,
+    });
+
+    sqlx::query(
+        r#"
+        INSERT INTO wallet_requests (request_id, wallet_id, request_type, chain, request_data, status, idempotency_key)
+        VALUES ($1, $2, 'delete', $3, $4, $5, $6)
+        "#,
+    )
+    .bind(request_id)
+    .bind(&auth.wallet_id)
+    .bind(&req.chain)
+    .bind(&request_data)
+    .bind(&status)
+    .bind(idempotency_key.as_deref())
+    .execute(&state.db)
+    .await
+    .map_err(|e| WalletError::InternalError(format!("DB error: {}", e)))?;
+
+    // Webhook
+    if let Some(ref url) = webhook_url {
+        if let Err(e) = webhooks::enqueue_webhook(
+            &state.db,
+            &auth.wallet_id,
+            "request_completed",
+            serde_json::json!({
+                "request_id": request_id.to_string(),
+                "type": "delete",
+                "status": status,
+                "beneficiary": req.beneficiary,
+                "tx_hash": tx_hash,
+            }),
+            url,
+        )
+        .await {
+            tracing::warn!("Webhook enqueue failed: {}", e);
+        }
+    }
+
+    Ok(Json(DeleteResponse {
+        request_id: request_id.to_string(),
+        status,
+        tx_hash,
+        beneficiary: req.beneficiary,
+        approval_id: None,
+        required: None,
+        approved: None,
+    }))
+}
+
+/// Core delete logic shared between direct execution and approved execution.
+/// Uses NEAR's native DeleteAccount action to delete the on-chain account
+/// and send all remaining balance to the beneficiary.
+/// Returns (tx_hash, status).
+async fn execute_delete_inner(
+    state: &WalletState,
+    wallet_id: &str,
+    beneficiary: &str,
+    chain: &str,
+    approval_info: Option<&ApprovalInfo>,
+) -> Result<(Option<String>, String), WalletError> {
+    // Sign DeleteAccount transaction via keystore
+    let nonce_lock = state.nonce_locks.get_lock(wallet_id).await;
+    let _nonce_guard = nonce_lock.lock().await;
+
+    let sign_result = keystore_sign_near_delete_account(
+        state,
+        wallet_id,
+        beneficiary,
+        approval_info,
+    )
+    .await?;
+
+    // Broadcast — DeleteAccount sends all balance to beneficiary automatically
+    let (status, tx_hash, _) =
+        broadcast_near_tx(&state.http_client, &state.near_rpc_url, &sign_result.signed_tx_base64).await?;
+
+    if status == "failed" {
+        return Err(WalletError::InternalError(format!("DeleteAccount failed: tx={}", tx_hash)));
+    }
+
+    // Revoke all API keys
+    sqlx::query(
+        "UPDATE wallet_api_keys SET revoked_at = NOW() WHERE wallet_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(wallet_id)
+    .execute(&state.db)
+    .await
+    .map_err(|e| WalletError::InternalError(format!("DB error revoking keys: {}", e)))?;
+
+    // Mark wallet as deleted
+    sqlx::query(
+        "UPDATE wallet_accounts SET deleted_at = NOW() WHERE wallet_id = $1",
+    )
+    .bind(wallet_id)
+    .execute(&state.db)
+    .await
+    .map_err(|e| WalletError::InternalError(format!("DB error marking deleted: {}", e)))?;
+
+    // Invalidate caches
+    state.api_key_cache.invalidate_wallet(wallet_id).await;
+    state.policy_cache.invalidate(wallet_id).await;
+
+    // Audit
+    audit::record_audit_event(
+        &state.db,
+        wallet_id,
+        "wallet_deleted",
+        wallet_id,
+        serde_json::json!({
+            "beneficiary": beneficiary,
+            "chain": chain,
+            "tx_hash": tx_hash,
+        }),
+        None,
+    )
+    .await;
+
+    Ok((Some(tx_hash), "success".to_string()))
+}
+
+/// Helper: call keystore sign-near-delete-account endpoint
+async fn keystore_sign_near_delete_account(
+    state: &WalletState,
+    wallet_id: &str,
+    beneficiary_id: &str,
+    approval_info: Option<&ApprovalInfo>,
+) -> Result<KeystoreSignNearCallResponse, WalletError> {
+    let keystore_url = state.keystore_base_url.as_ref().ok_or_else(|| {
+        WalletError::InternalError("Keystore URL not configured".to_string())
+    })?;
+
+    let payload = KeystoreSignNearDeleteAccountRequest {
+        wallet_id: wallet_id.to_string(),
+        beneficiary_id: beneficiary_id.to_string(),
+        approval_info: approval_info.cloned(),
+    };
+
+    let mut request = state
+        .http_client
+        .post(format!("{}/wallet/sign-near-delete-account", keystore_url))
+        .json(&payload);
+
+    if let Some(ref token) = state.keystore_auth_token {
+        request = request.header("Authorization", format!("Bearer {}", token));
+    }
+
+    let response = request.send().await.map_err(|e| {
+        WalletError::KeystoreError(format!("Failed to connect to keystore: {}", e))
+    })?;
+
+    if !response.status().is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(WalletError::KeystoreError(format!(
+            "Keystore sign-near-delete-account failed: {}",
+            body
+        )));
+    }
+
+    response.json().await.map_err(|e| {
+        WalletError::KeystoreError(format!("Invalid keystore response: {}", e))
+    })
+}
+
+/// Execute an approved delete operation (called after multisig threshold met)
+async fn execute_approved_delete(
+    state: WalletState,
+    wallet_id: String,
+    request_id: Uuid,
+    request_data: serde_json::Value,
+    webhook_url: Option<String>,
+    approval_info: ApprovalInfo,
+) {
+    let still_valid = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM wallet_pending_approvals WHERE id = (SELECT approval_id FROM wallet_requests WHERE request_id = $1) AND status = 'approved' AND expires_at > NOW()",
+    )
+    .bind(request_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+
+    if still_valid == 0 {
+        warn!("Auto-execute delete aborted for {}: approval expired or invalid", request_id);
+        let _ = sqlx::query(
+            "UPDATE wallet_requests SET status = 'failed', result_data = $2, updated_at = NOW() WHERE request_id = $1",
+        )
+        .bind(request_id)
+        .bind(serde_json::json!({"error": "Approval expired before execution"}))
+        .execute(&state.db)
+        .await;
+        return;
+    }
+
+    let beneficiary = request_data["beneficiary"].as_str().unwrap_or("").to_string();
+    let chain = request_data["chain"].as_str().unwrap_or("near").to_string();
+
+    if beneficiary.is_empty() {
+        warn!("Auto-execute delete aborted for {}: missing beneficiary in request_data", request_id);
+        let _ = sqlx::query(
+            "UPDATE wallet_requests SET status = 'failed', result_data = $2, updated_at = NOW() WHERE request_id = $1",
+        )
+        .bind(request_id)
+        .bind(serde_json::json!({"error": "Missing beneficiary in stored request data"}))
+        .execute(&state.db)
+        .await;
+        return;
+    }
+
+    match execute_delete_inner(&state, &wallet_id, &beneficiary, &chain, Some(&approval_info)).await {
+        Ok((tx_hash, status)) => {
+            let result_data = serde_json::json!({
+                "beneficiary": beneficiary,
+                "tx_hash": tx_hash,
+            });
+
+            let _ = sqlx::query(
+                "UPDATE wallet_requests SET status = $2, result_data = $3, updated_at = NOW() WHERE request_id = $1",
+            )
+            .bind(request_id)
+            .bind(&status)
+            .bind(&result_data)
+            .execute(&state.db)
+            .await;
+
+            if let Some(ref url) = webhook_url {
+                if let Err(e) = webhooks::enqueue_webhook(
+                    &state.db,
+                    &wallet_id,
+                    "request_completed",
+                    serde_json::json!({
+                        "request_id": request_id.to_string(),
+                        "type": "delete",
+                        "status": status,
+                        "result": result_data,
+                    }),
+                    url,
+                )
+                .await {
+                    tracing::warn!("Webhook enqueue failed: {}", e);
+                }
+            }
+        }
+        Err(e) => {
+            warn!("Auto-execute delete failed for {}: {:?}", request_id, e);
             let _ = sqlx::query(
                 "UPDATE wallet_requests SET status = 'failed', result_data = $2, updated_at = NOW() WHERE request_id = $1",
             )
@@ -2853,7 +3337,7 @@ pub async fn get_balance(
 
 const INTENTS_CONTRACT: &str = "intents.near";
 const STORAGE_DEPOSIT_AMOUNT: &str = "1250000000000000000000"; // 0.00125 NEAR
-const FT_TRANSFER_CALL_GAS: u64 = 300_000_000_000_000; // 300 TGas
+const FT_TRANSFER_CALL_GAS: u64 = 150_000_000_000_000; // 150 TGas — ft_transfer_call invokes ft_on_transfer on receiver
 const STORAGE_DEPOSIT_GAS: u64 = 30_000_000_000_000; // 30 TGas
 
 /// RPC view call helper — calls a contract method and returns the raw JSON result.
@@ -2999,6 +3483,9 @@ pub async fn intents_deposit(
     )
     .await;
 
+    // Track nonce across sequential transactions to avoid InvalidNonce from RPC finality lag
+    let mut next_nonce: Option<u64> = None;
+
     if needs_intents_storage {
         debug!("Wallet {} needs storage deposit on intents.near", auth.wallet_id);
         let storage_args = serde_json::json!({"account_id": derived.address, "registration_only": true});
@@ -3013,6 +3500,7 @@ pub async fn intents_deposit(
             None,
         )
         .await?;
+        next_nonce = Some(storage_sign.nonce + 1);
 
         let (storage_status, _storage_tx, _) =
             broadcast_near_tx(&state.http_client, &state.near_rpc_url, &storage_sign.signed_tx_base64).await?;
@@ -3026,7 +3514,7 @@ pub async fn intents_deposit(
         "msg": "",
     });
 
-    let sign_result = keystore_sign_near_call(
+    let sign_result = keystore_sign_near_call_with_nonce(
         &state,
         &auth.wallet_id,
         &req.token,        // receiver = token contract
@@ -3035,6 +3523,7 @@ pub async fn intents_deposit(
         FT_TRANSFER_CALL_GAS,
         "1",               // 1 yoctoNEAR deposit
         None,
+        next_nonce,
     )
     .await?;
 
@@ -3078,7 +3567,7 @@ pub async fn intents_deposit(
     .bind(&result_data)
     .execute(&state.db)
     .await
-    .ok();
+    .map_err(|e| WalletError::InternalError(format!("DB error updating request status: {}", e)))?;
 
     // Audit
     audit::record_audit_event(
@@ -3098,7 +3587,7 @@ pub async fn intents_deposit(
 
     // Webhook
     if let Some(ref url) = policy_output.webhook_url {
-        let _ = webhooks::enqueue_webhook(
+        if let Err(e) = webhooks::enqueue_webhook(
             &state.db,
             &auth.wallet_id,
             "request_completed",
@@ -3110,7 +3599,9 @@ pub async fn intents_deposit(
             }),
             url,
         )
-        .await;
+        .await {
+            tracing::warn!("Webhook enqueue failed: {}", e);
+        }
     }
 
     Ok(Json(IntentsDepositResponse {
@@ -3157,7 +3648,7 @@ pub async fn swap(
     // Policy check
     let current_usage = get_current_usage(&state.db, &auth.wallet_id).await.unwrap_or_default();
     let action = serde_json::json!({
-        "type": "swap",
+        "type": "intents_swap",
         "token_in": req.token_in,
         "token_out": req.token_out,
         "amount_in": req.amount_in,
@@ -3258,14 +3749,15 @@ pub async fn swap(
                 "Quote amount_out ({}) is less than min_amount_out ({})",
                 amount_out, min_out
             );
-            sqlx::query(
+            if let Err(e) = sqlx::query(
                 "UPDATE wallet_requests SET status = 'failed', result_data = $2, updated_at = NOW() WHERE request_id = $1",
             )
             .bind(request_id)
             .bind(serde_json::json!({"error": err_msg}))
             .execute(&state.db)
-            .await
-            .ok();
+            .await {
+                tracing::warn!("Failed to mark swap request {} as failed: {}", request_id, e);
+            }
             return Err(WalletError::InternalError(err_msg));
         }
     }
@@ -3277,10 +3769,13 @@ pub async fn swap(
     let nonce_lock = state.nonce_locks.get_lock(&auth.wallet_id).await;
     let _nonce_guard = nonce_lock.lock().await;
 
+    // Track nonce across sequential transactions to avoid InvalidNonce from RPC finality lag
+    let mut next_nonce: Option<u64> = None;
+
     if !check_storage_registered(&state.http_client, &state.near_rpc_url, token_out_contract, &derived.address).await {
         debug!("Swap: auto-registering storage for output token {} on {}", token_out_contract, derived.address);
         let storage_args = serde_json::json!({"account_id": derived.address, "registration_only": true});
-        let storage_sign = keystore_sign_near_call(
+        let storage_sign = keystore_sign_near_call_with_nonce(
             &state,
             &auth.wallet_id,
             token_out_contract,
@@ -3289,8 +3784,10 @@ pub async fn swap(
             STORAGE_DEPOSIT_GAS,
             STORAGE_DEPOSIT_AMOUNT,
             None,
+            next_nonce,
         )
         .await?;
+        next_nonce = Some(storage_sign.nonce + 1);
         let _ = broadcast_near_tx(&state.http_client, &state.near_rpc_url, &storage_sign.signed_tx_base64).await?;
     }
 
@@ -3305,7 +3802,7 @@ pub async fn swap(
         "msg": "",
     });
 
-    let deposit_sign = keystore_sign_near_call(
+    let deposit_sign = keystore_sign_near_call_with_nonce(
         &state,
         &auth.wallet_id,
         token_in_contract,
@@ -3314,22 +3811,25 @@ pub async fn swap(
         FT_TRANSFER_CALL_GAS,
         "1",
         None,
+        next_nonce,
     )
     .await?;
+    next_nonce = Some(deposit_sign.nonce + 1);
 
     let (deposit_status, deposit_tx, _) =
         broadcast_near_tx(&state.http_client, &state.near_rpc_url, &deposit_sign.signed_tx_base64).await?;
 
     if deposit_status == "failed" {
         let err_msg = format!("Deposit tx failed: {}", deposit_tx);
-        sqlx::query(
+        if let Err(e) = sqlx::query(
             "UPDATE wallet_requests SET status = 'failed', result_data = $2, updated_at = NOW() WHERE request_id = $1",
         )
         .bind(request_id)
         .bind(serde_json::json!({"error": err_msg, "deposit_tx": deposit_tx}))
         .execute(&state.db)
-        .await
-        .ok();
+        .await {
+            tracing::warn!("Failed to mark swap request {} as failed: {}", request_id, e);
+        }
         return Err(WalletError::InternalError(err_msg));
     }
 
@@ -3344,7 +3844,7 @@ pub async fn swap(
         "amount": req.amount_in,
     });
 
-    let mt_sign = keystore_sign_near_call(
+    let mt_sign = keystore_sign_near_call_with_nonce(
         &state,
         &auth.wallet_id,
         "intents.near",
@@ -3353,6 +3853,7 @@ pub async fn swap(
         100_000_000_000_000, // 100 TGas — mt_transfer does internal balance accounting
         "1",
         None,
+        next_nonce,
     )
     .await?;
 
@@ -3361,14 +3862,15 @@ pub async fn swap(
 
     if mt_status == "failed" {
         let err_msg = format!("mt_transfer tx failed: {}", mt_tx);
-        sqlx::query(
+        if let Err(e) = sqlx::query(
             "UPDATE wallet_requests SET status = 'failed', result_data = $2, updated_at = NOW() WHERE request_id = $1",
         )
         .bind(request_id)
         .bind(serde_json::json!({"error": err_msg, "deposit_tx": deposit_tx, "mt_tx": mt_tx}))
         .execute(&state.db)
-        .await
-        .ok();
+        .await {
+            tracing::warn!("Failed to mark swap request {} as failed: {}", request_id, e);
+        }
         return Err(WalletError::InternalError(err_msg));
     }
 
@@ -3427,7 +3929,7 @@ pub async fn swap(
     .bind(deposit_address)
     .execute(&state.db)
     .await
-    .ok();
+    .map_err(|e| WalletError::InternalError(format!("DB error updating swap request status: {}", e)))?;
 
     // Audit
     audit::record_audit_event(
@@ -3451,19 +3953,21 @@ pub async fn swap(
 
     // Webhook
     if let Some(ref url) = policy_output.webhook_url {
-        let _ = webhooks::enqueue_webhook(
+        if let Err(e) = webhooks::enqueue_webhook(
             &state.db,
             &auth.wallet_id,
             "request_completed",
             serde_json::json!({
                 "request_id": request_id.to_string(),
-                "type": "swap",
+                "type": "intents_swap",
                 "status": final_status,
                 "result": result_data,
             }),
             url,
         )
-        .await;
+        .await {
+            tracing::warn!("Webhook enqueue failed: {}", e);
+        }
     }
 
     Ok(Json(SwapResponse {
@@ -4129,13 +4633,21 @@ fn extract_client_ip(headers: &HeaderMap) -> String {
     "unknown".to_string()
 }
 
+/// Validate that the requested chain is supported.
+///
+/// To enable a new chain:
+///   1. Add it to this match (e.g. "ethereum" | "base" => Ok(()))
+///   2. Add `wallet_chain_addresses` table (see docs/MULTI_CHAIN.md)
+///   3. Update `get_address` handler to persist the new chain's pubkey
+///   4. Implement chain-specific withdraw/transfer logic in handlers
+///   5. Keystore already supports secp256k1 derivation for EVM chains
 pub(crate) fn validate_chain(chain: &str) -> Result<(), WalletError> {
     match chain {
-        // v1: Only NEAR is supported. Ethereum derivation uses Ed25519 (incorrect —
-        // Ethereum requires secp256k1), and Solana via Intents is untested.
-        // Funds sent to derived Ethereum addresses would be permanently lost.
         "near" => Ok(()),
-        "ethereum" | "solana" => Err(WalletError::UnsupportedChain(format!(
+        // Keystore secp256k1 derivation is ready, but coordinator handlers
+        // (withdraw, transfer, call) only implement NEAR signing/broadcast.
+        // See docs/MULTI_CHAIN.md for the full integration checklist.
+        "ethereum" | "base" | "arbitrum" | "solana" => Err(WalletError::UnsupportedChain(format!(
             "{} chain is not yet supported in wallet v1. Only 'near' is available.",
             chain,
         ))),
@@ -4301,6 +4813,128 @@ pub async fn get_approval_detail(
             "created_at": a.3.to_rfc3339(),
         })).collect::<Vec<_>>(),
     })))
+}
+
+// ============================================================================
+// GET /wallet/v1/stats — public wallet statistics (no auth)
+// ============================================================================
+
+pub async fn wallet_stats(
+    State(state): State<WalletState>,
+) -> Result<Json<WalletStatsResponse>, WalletError> {
+    // Wallet counts
+    #[derive(sqlx::FromRow)]
+    struct WalletCountsRow {
+        total: i64,
+        active: i64,
+        deleted: i64,
+    }
+    let counts: WalletCountsRow = sqlx::query_as(
+        r#"
+        SELECT
+            COUNT(*)::BIGINT as total,
+            COUNT(*) FILTER (WHERE deleted_at IS NULL)::BIGINT as active,
+            COUNT(*) FILTER (WHERE deleted_at IS NOT NULL)::BIGINT as deleted
+        FROM wallet_accounts
+        "#,
+    )
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| WalletError::InternalError(format!("DB error: {}", e)))?;
+
+    // Transactions by type
+    let type_rows: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT request_type, COUNT(*)::BIGINT as cnt FROM wallet_requests GROUP BY request_type",
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| WalletError::InternalError(format!("DB error: {}", e)))?;
+
+    let mut by_type = std::collections::HashMap::new();
+    let mut tx_total: i64 = 0;
+    for (rt, cnt) in &type_rows {
+        by_type.insert(rt.clone(), *cnt);
+        tx_total += cnt;
+    }
+
+    // Transactions by status
+    let status_rows: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT status, COUNT(*)::BIGINT as cnt FROM wallet_requests GROUP BY status",
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| WalletError::InternalError(format!("DB error: {}", e)))?;
+
+    let mut by_status = std::collections::HashMap::new();
+    for (st, cnt) in &status_rows {
+        by_status.insert(st.clone(), *cnt);
+    }
+
+    // Pending approvals
+    let (pending_count,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*)::BIGINT FROM wallet_pending_approvals WHERE status = 'pending'",
+    )
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| WalletError::InternalError(format!("DB error: {}", e)))?;
+
+    // Registrations per day (last 30 days)
+    let reg_rows: Vec<(chrono::NaiveDate, i64)> = sqlx::query_as(
+        r#"
+        SELECT DATE(created_at) as day, COUNT(*)::BIGINT as cnt
+        FROM wallet_accounts
+        WHERE created_at > NOW() - INTERVAL '30 days'
+        GROUP BY day ORDER BY day
+        "#,
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| WalletError::InternalError(format!("DB error: {}", e)))?;
+
+    let registrations_per_day: Vec<DayCount> = reg_rows
+        .into_iter()
+        .map(|(d, c)| DayCount {
+            date: d.to_string(),
+            count: c,
+        })
+        .collect();
+
+    // Transactions per day (last 30 days)
+    let tx_rows: Vec<(chrono::NaiveDate, i64)> = sqlx::query_as(
+        r#"
+        SELECT DATE(created_at) as day, COUNT(*)::BIGINT as cnt
+        FROM wallet_requests
+        WHERE created_at > NOW() - INTERVAL '30 days'
+        GROUP BY day ORDER BY day
+        "#,
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| WalletError::InternalError(format!("DB error: {}", e)))?;
+
+    let transactions_per_day: Vec<DayCount> = tx_rows
+        .into_iter()
+        .map(|(d, c)| DayCount {
+            date: d.to_string(),
+            count: c,
+        })
+        .collect();
+
+    Ok(Json(WalletStatsResponse {
+        wallets: WalletCounts {
+            total: counts.total,
+            active: counts.active,
+            deleted: counts.deleted,
+        },
+        transactions: TransactionStats {
+            total: tx_total,
+            by_type,
+            by_status,
+        },
+        pending_approvals: pending_count,
+        registrations_per_day,
+        transactions_per_day,
+    }))
 }
 
 #[cfg(test)]

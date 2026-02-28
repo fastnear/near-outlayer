@@ -1,12 +1,13 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { fetchStats, ExecutionStats, fetchPopularRepos, PopularRepo, fetchPricing, PricingConfig } from '@/lib/api';
+import { fetchStats, ExecutionStats, fetchPopularRepos, PopularRepo, fetchPricing, PricingConfig, fetchWalletStats, WalletStats } from '@/lib/api';
 
 export default function StatsPage() {
   const [stats, setStats] = useState<ExecutionStats | null>(null);
   const [repos, setRepos] = useState<PopularRepo[]>([]);
   const [pricing, setPricing] = useState<PricingConfig | null>(null);
+  const [walletStats, setWalletStats] = useState<WalletStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -18,14 +19,16 @@ export default function StatsPage() {
 
   const loadData = async () => {
     try {
-      const [statsData, reposData, pricingData] = await Promise.all([
+      const [statsData, reposData, pricingData, walletData] = await Promise.all([
         fetchStats(),
         fetchPopularRepos(),
         fetchPricing(),
+        fetchWalletStats().catch(() => null),
       ]);
       setStats(statsData);
       setRepos(reposData);
       setPricing(pricingData);
+      setWalletStats(walletData);
       setError(null);
     } catch (err) {
       setError('Failed to load statistics');
@@ -511,6 +514,200 @@ export default function StatsPage() {
               </dl>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Agent Custody Wallet Stats */}
+      {walletStats && (
+        <div className="mt-8">
+          <h2 className="text-2xl font-bold text-gray-900 mb-4">Agent Custody</h2>
+
+          {/* Summary Cards */}
+          <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="bg-white overflow-hidden shadow rounded-lg">
+              <div className="p-5">
+                <div className="flex items-center">
+                  <div className="flex-shrink-0">
+                    <svg className="h-6 w-6 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
+                    </svg>
+                  </div>
+                  <div className="ml-5 w-0 flex-1">
+                    <dl>
+                      <dt className="text-sm font-medium text-gray-500 truncate">Total Wallets</dt>
+                      <dd className="text-2xl font-semibold text-gray-900">{walletStats.wallets.total}</dd>
+                    </dl>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white overflow-hidden shadow rounded-lg">
+              <div className="p-5">
+                <div className="flex items-center">
+                  <div className="flex-shrink-0">
+                    <svg className="h-6 w-6 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  </div>
+                  <div className="ml-5 w-0 flex-1">
+                    <dl>
+                      <dt className="text-sm font-medium text-gray-500 truncate">Active Wallets</dt>
+                      <dd className="text-2xl font-semibold text-gray-900">{walletStats.wallets.active}</dd>
+                    </dl>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white overflow-hidden shadow rounded-lg">
+              <div className="p-5">
+                <div className="flex items-center">
+                  <div className="flex-shrink-0">
+                    <svg className="h-6 w-6 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                  </div>
+                  <div className="ml-5 w-0 flex-1">
+                    <dl>
+                      <dt className="text-sm font-medium text-gray-500 truncate">Deleted</dt>
+                      <dd className="text-2xl font-semibold text-gray-900">{walletStats.wallets.deleted}</dd>
+                    </dl>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white overflow-hidden shadow rounded-lg">
+              <div className="p-5">
+                <div className="flex items-center">
+                  <div className="flex-shrink-0">
+                    <svg className="h-6 w-6 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                    </svg>
+                  </div>
+                  <div className="ml-5 w-0 flex-1">
+                    <dl>
+                      <dt className="text-sm font-medium text-gray-500 truncate">Total Transactions</dt>
+                      <dd className="flex items-baseline">
+                        <div className="text-2xl font-semibold text-gray-900">{walletStats.transactions.total}</div>
+                        {walletStats.pending_approvals > 0 && (
+                          <span className="ml-2 text-sm text-orange-600">{walletStats.pending_approvals} pending</span>
+                        )}
+                      </dd>
+                    </dl>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Transactions by Type */}
+          {Object.keys(walletStats.transactions.by_type).length > 0 && (
+            <div className="mt-6">
+              <h3 className="text-lg font-medium text-gray-900 mb-3">Transactions by Type</h3>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                {Object.entries(walletStats.transactions.by_type)
+                  .sort(([, a], [, b]) => b - a)
+                  .map(([type, count]) => {
+                    const colors: Record<string, string> = {
+                      transfer: 'bg-blue-50 border-blue-200 text-blue-800',
+                      call: 'bg-indigo-50 border-indigo-200 text-indigo-800',
+                      delete: 'bg-red-50 border-red-200 text-red-800',
+                      intents_withdraw: 'bg-orange-50 border-orange-200 text-orange-800',
+                      intents_deposit: 'bg-green-50 border-green-200 text-green-800',
+                      swap: 'bg-purple-50 border-purple-200 text-purple-800',
+                      deposit: 'bg-teal-50 border-teal-200 text-teal-800',
+                    };
+                    const colorClass = colors[type] || 'bg-gray-50 border-gray-200 text-gray-800';
+                    return (
+                      <div key={type} className={`border rounded-lg p-4 ${colorClass}`}>
+                        <p className="text-sm font-medium">{type.replace(/_/g, ' ')}</p>
+                        <p className="mt-1 text-2xl font-semibold">{count}</p>
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
+          )}
+
+          {/* Transactions by Status */}
+          {Object.keys(walletStats.transactions.by_status).length > 0 && (
+            <div className="mt-6">
+              <h3 className="text-lg font-medium text-gray-900 mb-3">Transactions by Status</h3>
+              <div className="flex flex-wrap gap-3">
+                {Object.entries(walletStats.transactions.by_status)
+                  .sort(([, a], [, b]) => b - a)
+                  .map(([status, count]) => {
+                    const dot: Record<string, string> = {
+                      completed: 'bg-green-500',
+                      failed: 'bg-red-500',
+                      processing: 'bg-yellow-500',
+                    };
+                    return (
+                      <div key={status} className="bg-white border border-gray-200 rounded-lg px-4 py-2 flex items-center gap-2">
+                        <span className={`w-2 h-2 rounded-full ${dot[status] || 'bg-gray-400'}`}></span>
+                        <span className="text-sm text-gray-700">{status}</span>
+                        <span className="text-sm font-semibold text-gray-900">{count}</span>
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
+          )}
+
+          {/* Activity Charts (last 30 days) */}
+          {(walletStats.registrations_per_day.length > 0 || walletStats.transactions_per_day.length > 0) && (
+            <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
+              {/* Registrations per day */}
+              {walletStats.registrations_per_day.length > 0 && (
+                <div className="bg-white shadow rounded-lg p-6">
+                  <h3 className="text-lg font-medium text-gray-900 mb-4">Registrations (last 30 days)</h3>
+                  <div className="space-y-1">
+                    {(() => {
+                      const maxCount = Math.max(...walletStats.registrations_per_day.map(d => d.count));
+                      return walletStats.registrations_per_day.map(({ date, count }) => (
+                        <div key={date} className="flex items-center gap-2 text-sm">
+                          <span className="w-20 text-gray-500 font-mono text-xs">{date.slice(5)}</span>
+                          <div className="flex-1 bg-gray-100 rounded-full h-4">
+                            <div
+                              className="bg-blue-500 h-4 rounded-full"
+                              style={{ width: `${maxCount > 0 ? (count / maxCount) * 100 : 0}%` }}
+                            ></div>
+                          </div>
+                          <span className="w-8 text-right text-gray-700 font-medium">{count}</span>
+                        </div>
+                      ));
+                    })()}
+                  </div>
+                </div>
+              )}
+
+              {/* Transactions per day */}
+              {walletStats.transactions_per_day.length > 0 && (
+                <div className="bg-white shadow rounded-lg p-6">
+                  <h3 className="text-lg font-medium text-gray-900 mb-4">Transactions (last 30 days)</h3>
+                  <div className="space-y-1">
+                    {(() => {
+                      const maxCount = Math.max(...walletStats.transactions_per_day.map(d => d.count));
+                      return walletStats.transactions_per_day.map(({ date, count }) => (
+                        <div key={date} className="flex items-center gap-2 text-sm">
+                          <span className="w-20 text-gray-500 font-mono text-xs">{date.slice(5)}</span>
+                          <div className="flex-1 bg-gray-100 rounded-full h-4">
+                            <div
+                              className="bg-purple-500 h-4 rounded-full"
+                              style={{ width: `${maxCount > 0 ? (count / maxCount) * 100 : 0}%` }}
+                            ></div>
+                          </div>
+                          <span className="w-8 text-right text-gray-700 font-medium">{count}</span>
+                        </div>
+                      ));
+                    })()}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

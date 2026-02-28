@@ -241,7 +241,7 @@ No blockchain transaction. Instant. API key shown once.
 Withdraws tokens from the wallet's intents.near balance to a receiver via direct `ft_withdraw` contract call. Single synchronous NEAR transaction — no solver-relay needed.
 
 ```
-Agent → POST /wallet/v1/withdraw { to, amount, chain, token }
+Agent → POST /wallet/v1/intents/withdraw { to, amount, chain, token }
     with Authorization: Bearer wk_...
 
     Coordinator:
@@ -300,7 +300,7 @@ No API gateway involvement needed. Owner can freeze directly on-chain. Latency: 
 ### Multisig Approval
 
 ```
-Agent → POST /wallet/v1/withdraw { amount > threshold }
+Agent → POST /wallet/v1/intents/withdraw { amount > threshold }
     Policy check → RequiresApproval(2 of 3)
     Create wallet_pending_approvals entry
     Return { status: "pending_approval", approval_id, required: 2 }
@@ -381,13 +381,13 @@ Base: `https://api.outlayer.fastnear.com`
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/wallet/v1/address?chain={chain}` | Derive address (near, ethereum, solana, bitcoin) |
-| POST | `/wallet/v1/withdraw` | Withdraw / cross-chain transfer |
-| POST | `/wallet/v1/withdraw/dry-run` | Simulate withdrawal (policy + balance check) |
+| POST | `/wallet/v1/intents/withdraw` | Withdraw / cross-chain transfer |
+| POST | `/wallet/v1/intents/withdraw/dry-run` | Simulate withdrawal (policy + balance check) |
 | POST | `/wallet/v1/call` | Native NEAR contract call |
 | POST | `/wallet/v1/transfer` | Chain-agnostic transfer (`chain` param, currently near) |
 | GET | `/wallet/v1/balance?chain={chain}&token={token}` | Chain-agnostic balance (defaults to near) |
 | POST | `/wallet/v1/intents/deposit` | Deposit FT into intents.near (for manual intents operations) |
-| POST | `/wallet/v1/swap` | Swap via 1Click: quote → deposit to intents.near → mt_transfer → poll |
+| POST | `/wallet/v1/intents/swap` | Swap via 1Click: quote → deposit to intents.near → mt_transfer → poll |
 | POST | `/wallet/v1/deposit` | Cross-chain deposit (Intents quote) |
 | GET | `/wallet/v1/requests/{id}` | Poll async operation status |
 | GET | `/wallet/v1/requests` | List operations (filter: type, status, limit) |
