@@ -31,3 +31,6 @@
 [submodule "wasi-examples/near-email"]
 	path = wasi-examples/near-email
 	url = git@github.com:zavodil/near-email/
+[submodule "self-hosted-scheduler"]
+	path = self-hosted-scheduler
+	url = https://github.com/out-layer/self-hosted-scheduler.git
