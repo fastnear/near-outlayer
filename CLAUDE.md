@@ -56,6 +56,8 @@ anyhow::bail!("Feature X is not supported. Please use Y instead.");
 | `register-contract/` | - | TEE worker registration contract |
 | `keystore-dao-contract/` | - | DAO contract for keystore governance |
 | `sdk/` | - | Client SDK for integration |
+| `self-hosted-scheduler/` | - | [Generic scheduler](https://github.com/out-layer/self-hosted-scheduler) for autonomous agents (submodule) |
+| [outlayer-cli](https://github.com/out-layer/cli) | - | CLI for deploying, running, and managing agents (separate repo) |
 | `wasi-examples/` | - | WASI container examples |
 | `docker/` | - | Docker configs (Phala deployment) |
 | `tests/` | - | Integration tests |
@@ -80,6 +82,9 @@ cd coordinator && SQLX_OFFLINE=true cargo check
 - [wasi-examples/WASI_TUTORIAL.md](wasi-examples/WASI_TUTORIAL.md) - WASI guide
 - [contract/README.md](contract/README.md) - Contract API
 - [worker/README.md](worker/README.md) - Worker config
+- [docs/SCHEDULER.md](docs/SCHEDULER.md) - Scheduler spec
+- [self-hosted-scheduler/README.md](self-hosted-scheduler/README.md) - Scheduler setup & config
+- [outlayer-cli README](https://github.com/out-layer/cli) - CLI usage & commands
 
 ## Key Database Tables (Coordinator)
 | Table | Description |

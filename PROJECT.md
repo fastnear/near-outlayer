@@ -30,6 +30,8 @@ Two integration modes:
 | `keystore-dao-contract/` | DAO governance contract for keystore worker registration |
 | `dashboard/` | Next.js UI — project management, secrets, executions, earnings, documentation |
 | `sdk/` | `outlayer` crate for WASM components (storage, env, RPC) — wasm32-wasip2 only |
+| `self-hosted-scheduler/` | [Generic scheduler](https://github.com/out-layer/self-hosted-scheduler) for autonomous agents — interval, storage-diff, webhook triggers |
+| [outlayer-cli](https://github.com/out-layer/outlayer-cli) | CLI for deploying, running, and managing agents (separate repo) |
 | `wasi-examples/` | Example WASI containers |
 
 ### Execution Flow (Blockchain)
@@ -722,6 +724,7 @@ Blockchain-native email for NEAR accounts. Every NEAR account has an email: `ali
 | Dashboard | Production — project management, secrets UI, executions view, earnings page, documentation |
 | SDK | Published — `outlayer` crate on crates.io, wasm32-wasip2, storage + env + RPC |
 | Agent Custody | Production — multi-chain wallets for AI agents, MPC+TEE key derivation, policy engine, multisig, NEAR Intents |
+| Scheduler | Production — [self-hosted-scheduler](https://github.com/out-layer/self-hosted-scheduler), config-driven (TOML), interval/storage-diff/webhook triggers, Telegram alerts |
 
 ---
 

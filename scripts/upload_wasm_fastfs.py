@@ -6,6 +6,17 @@ Usage: python3 upload_wasm_fastfs.py <wasm_file> [env_file]
 
 Example:
   python3 upload_wasm_fastfs.py ../wasi-examples/test-storage-ark/target/wasm32-wasip2/release/test-storage-ark.wasm
+
+Borsh schema matches the TypeScript reference (fastnear/fastdata-drag-and-drop):
+
+  enum FastfsData {
+    Simple(SimpleFastfs),     // variant 0
+    Partial(PartialFastfs),   // variant 1
+  }
+
+  SimpleFastfs { relative_path: String, content: Option<FastfsFileContent> }
+  FastfsFileContent { mime_type: String, content: Vec<u8> }
+  PartialFastfs { relative_path: String, offset: u32, full_size: u32, mime_type: String, content_chunk: Vec<u8>, nonce: u32 }
 """
 
 import sys
@@ -13,6 +24,10 @@ import os
 import hashlib
 import subprocess
 import struct
+import time
+
+CHUNK_SIZE = 1 << 20  # 1MB
+
 
 def load_env(env_file):
     """Load environment variables from file."""
@@ -25,24 +40,51 @@ def load_env(env_file):
                 env[key.strip()] = value.strip()
     return env
 
+
 def borsh_string(s):
-    """Borsh serialize a string (u32 length + bytes)."""
+    """Borsh serialize a string (u32 length + utf-8 bytes)."""
     encoded = s.encode('utf-8')
     return struct.pack('<I', len(encoded)) + encoded
 
+
 def borsh_bytes(b):
-    """Borsh serialize bytes (u32 length + bytes)."""
+    """Borsh serialize bytes/Vec<u8> (u32 length + bytes)."""
     return struct.pack('<I', len(b)) + b
 
-CHUNK_SIZE = 1 << 20  # 1MB
 
-def create_fastfs_partial_payload(relative_path, offset, full_size, content_chunk, mime_type, nonce):
-    """Create Borsh-serialized FastFS Partial payload for chunked uploads."""
-    # FastfsData::Partial variant (index 1)
-    # PartialFastfs { relative_path: String, offset: u32, full_size: u32, mime_type: String, content_chunk: Vec<u8>, nonce: u32 }
+def create_fastfs_simple_payload(relative_path, mime_type, content):
+    """
+    Create Borsh-serialized FastFS Simple payload (for files <= 1MB).
 
+    FastfsData::Simple (variant 0):
+      SimpleFastfs { relative_path: String, content: Option<FastfsFileContent> }
+      FastfsFileContent { mime_type: String, content: Vec<u8> }
+    """
     payload = b''
-    # Enum variant index (1 = Partial)
+    # Enum variant 0 (Simple)
+    payload += struct.pack('<B', 0)
+    # relative_path: String
+    payload += borsh_string(relative_path)
+    # content: Option<FastfsFileContent> = Some(...)
+    payload += struct.pack('<B', 1)  # Option::Some
+    # FastfsFileContent.mime_type: String
+    payload += borsh_string(mime_type)
+    # FastfsFileContent.content: Vec<u8>
+    payload += borsh_bytes(content)
+
+    return payload
+
+
+def create_fastfs_partial_payload(relative_path, offset, full_size, mime_type, content_chunk, nonce):
+    """
+    Create Borsh-serialized FastFS Partial payload (for chunked uploads).
+
+    FastfsData::Partial (variant 1):
+      PartialFastfs { relative_path: String, offset: u32, full_size: u32,
+                      mime_type: String, content_chunk: Vec<u8>, nonce: u32 }
+    """
+    payload = b''
+    # Enum variant 1 (Partial)
     payload += struct.pack('<B', 1)
     # relative_path: String
     payload += borsh_string(relative_path)
@@ -59,20 +101,27 @@ def create_fastfs_partial_payload(relative_path, offset, full_size, content_chun
 
     return payload
 
-def create_fastfs_payloads(relative_path, mime_type, content):
-    """Create FastFS payloads as chunks."""
-    payloads = []
-    nonce = int(__import__('time').time()) - 1769376240
-    full_size = len(content)
 
-    for offset in range(0, full_size, CHUNK_SIZE):
-        chunk = content[offset:min(offset + CHUNK_SIZE, full_size)]
-        payload = create_fastfs_partial_payload(
-            relative_path, offset, full_size, chunk, mime_type, nonce
-        )
-        payloads.append(payload)
+def create_fastfs_payloads(relative_path, mime_type, content):
+    """Create FastFS payloads: simple for <= 1MB, chunked for > 1MB."""
+    if len(content) <= CHUNK_SIZE:
+        return [create_fastfs_simple_payload(relative_path, mime_type, content)]
+
+    nonce = int(time.time()) - 1769376240
+    full_size = len(content)
+    payloads = []
+
+    offset = 0
+    while offset < full_size:
+        end = min(offset + CHUNK_SIZE, full_size)
+        chunk = content[offset:end]
+        payloads.append(create_fastfs_partial_payload(
+            relative_path, offset, full_size, mime_type, chunk, nonce
+        ))
+        offset = end
 
     return payloads
+
 
 def main():
     if len(sys.argv) < 2:
@@ -132,10 +181,13 @@ def main():
     print(f"  Network: {network}")
     print()
 
-    # Create Borsh payloads (chunked)
+    # Create Borsh payloads (simple or chunked)
     payloads = create_fastfs_payloads(relative_path, "application/wasm", wasm_content)
     num_chunks = len(payloads)
-    print(f"  Chunks: {num_chunks} x {CHUNK_SIZE // 1024}KB max")
+    if num_chunks > 1:
+        print(f"  Chunks: {num_chunks} x {CHUNK_SIZE // 1024}KB max")
+    else:
+        print(f"  Mode: simple (single transaction)")
     print()
 
     import tempfile
@@ -148,12 +200,13 @@ def main():
             payload_file = tmp.name
 
         try:
-            # Call near CLI
+            # Call near CLI — gas=1 intentionally fails execution,
+            # but data is still recorded on-chain and indexed by FastFS
             cmd = [
                 'near', 'contract', 'call-function', 'as-transaction',
                 receiver, '__fastdata_fastfs',
                 'file-args', payload_file,
-                'prepaid-gas', '300 Tgas',
+                'prepaid-gas', '1 gas',
                 'attached-deposit', '0 NEAR',
                 'sign-as', sender_account,
                 'network-config', network,
@@ -161,7 +214,10 @@ def main():
                 'send'
             ]
 
-            print(f"Uploading chunk {i + 1}/{num_chunks}...")
+            if num_chunks > 1:
+                print(f"Uploading chunk {i + 1}/{num_chunks}...")
+            else:
+                print("Uploading...")
             result = subprocess.run(cmd, capture_output=True, text=True)
 
             # Try to extract transaction hash from output
@@ -174,20 +230,23 @@ def main():
                     tx_hash = line.split(':')[1].strip().split()[0]
                     break
 
-            # FastFS doesn't have actual contract code - the indexer picks up the transaction
-            # So "CodeDoesNotExist" error is expected and means success
+            # With gas=1, execution always fails — that's expected.
+            # The indexer picks up the data from the transaction args regardless.
             if result.returncode != 0:
                 stderr = result.stderr or ''
                 stdout = result.stdout or ''
                 output = stderr + stdout
 
-                if 'CodeDoesNotExist' not in output:
-                    print(f"ERROR: Chunk {i + 1} failed!")
-                    if stdout:
-                        print("STDOUT:", stdout)
-                    if stderr:
-                        print("STDERR:", stderr)
-                    sys.exit(1)
+                # Known expected failures
+                if 'CodeDoesNotExist' not in output and 'NotEnoughBalance' not in output:
+                    # Check if we at least got a tx hash (means it was submitted)
+                    if not tx_hash:
+                        print(f"ERROR: Chunk {i + 1} failed!")
+                        if stdout:
+                            print("STDOUT:", stdout)
+                        if stderr:
+                            print("STDERR:", stderr)
+                        sys.exit(1)
 
             if tx_hash:
                 tx_hashes.append(tx_hash)
@@ -201,7 +260,7 @@ def main():
     print()
     print(f"FastFS URL: https://{sender_account}.fastfs.io/{receiver}/{relative_path}")
     print()
-    print(f"code_source: {{ \"fastfs\": \"{wasm_hash}\" }}")
+    print(f'code_source: {{ "fastfs": "{wasm_hash}" }}')
 
 if __name__ == '__main__':
     main()
