@@ -49,7 +49,6 @@ anyhow::bail!("Feature X is not supported. Please use Y instead.");
 | Component | Port | Description |
 |-----------|------|-------------|
 | `contract/` | - | Main NEAR contract (outlayer.near) |
-| `coordinator/` | 8080 | Task queue, WASM cache (PostgreSQL + Redis) |
 | `worker/` | - | Polls tasks, compiles GitHub repos, executes WASM |
 | `keystore-worker/` | 8081 | Secrets decryption with TEE (via coordinator proxy) |
 | `dashboard/` | 3000 | Next.js UI + docs |
@@ -58,6 +57,8 @@ anyhow::bail!("Feature X is not supported. Please use Y instead.");
 | `sdk/` | - | Client SDK for integration |
 | `self-hosted-scheduler/` | - | [Generic scheduler](https://github.com/out-layer/self-hosted-scheduler) for autonomous agents (submodule) |
 | [outlayer-cli](https://github.com/out-layer/cli) | - | CLI for deploying, running, and managing agents (separate repo) |
+| [outlayer-coordinator](https://github.com/out-layer/outlayer-coordinator) | 8080 | Task queue, WASM cache, PostgreSQL + Redis (private repo) |
+| [shared-tee-helpers](https://github.com/out-layer/shared-tee-helpers) | - | TEE challenge-response auth (private repo) |
 | `wasi-examples/` | - | WASI container examples |
 | `docker/` | - | Docker configs (Phala deployment) |
 | `tests/` | - | Integration tests |
@@ -66,14 +67,12 @@ anyhow::bail!("Feature X is not supported. Please use Y instead.");
 ## Commands
 ```bash
 cd contract && ./build.sh                # Build contract
-cd coordinator && cargo run              # Run coordinator
+# Coordinator is in separate private repo: outlayer-coordinator
 cd worker && cargo run                   # Run worker
 cd dashboard && npm run dev              # Run dashboard
 cd keystore-worker && cargo run          # Run keystore
 
-# Coordinator uses sqlx compile-time query validation.
-# Without DB connection, use offline mode:
-cd coordinator && SQLX_OFFLINE=true cargo check
+# Coordinator (separate repo): SQLX_OFFLINE=true cargo check
 ```
 
 ## Docs

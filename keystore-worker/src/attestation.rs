@@ -1,7 +1,7 @@
 //! TEE attestation verification
 //!
 //! In OutLayer TEE mode, workers are authenticated via challenge-response TEE sessions
-//! (see tee-auth crate). Per-request attestation is a no-op since the session middleware
+//! (see shared-tee-helpers crate). Per-request attestation is a no-op since the session middleware
 //! already guarantees the worker holds a TEE-registered private key.
 //!
 //! In None mode (dev), all attestations are accepted.

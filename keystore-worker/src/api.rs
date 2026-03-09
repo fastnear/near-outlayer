@@ -2152,7 +2152,7 @@ fn verify_near_signature(
 async fn tee_challenge_handler(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let challenge = tee_auth::generate_challenge();
+    let challenge = shared_tee_helpers::generate_challenge();
 
     // Store challenge in memory with timestamp
     {
@@ -2203,7 +2203,7 @@ async fn register_tee_handler(
     }
 
     // 2. Verify signature
-    tee_auth::verify_signature(&req.public_key, &req.challenge, &req.signature)
+    shared_tee_helpers::verify_signature(&req.public_key, &req.challenge, &req.signature)
         .map_err(|e| ApiError::BadRequest(format!("Signature verification failed: {}", e)))?;
 
     // 3. Check key on operator account via NEAR RPC (with retry for finality lag)
@@ -2211,7 +2211,7 @@ async fn register_tee_handler(
         ApiError::InternalError("OPERATOR_ACCOUNT_ID not configured on keystore".to_string())
     })?;
 
-    let key_exists = tee_auth::check_access_key_with_retry(
+    let key_exists = shared_tee_helpers::check_access_key_with_retry(
         &state.config.near_rpc_url,
         operator_account_id,
         &req.public_key,

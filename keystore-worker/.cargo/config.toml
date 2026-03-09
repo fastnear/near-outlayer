@@ -1,0 +1,3 @@
+# Local development: override git dependency with local path
+[patch.'https://github.com/out-layer/shared-tee-helpers']
+shared-tee-helpers = { path = "../../shared-tee-helpers" }
