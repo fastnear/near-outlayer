@@ -206,7 +206,7 @@ def main():
                 'near', 'contract', 'call-function', 'as-transaction',
                 receiver, '__fastdata_fastfs',
                 'file-args', payload_file,
-                'prepaid-gas', '1 gas',
+                'prepaid-gas', '1 Ggas',
                 'attached-deposit', '0 NEAR',
                 'sign-as', sender_account,
                 'network-config', network,
