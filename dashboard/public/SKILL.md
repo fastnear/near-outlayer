@@ -16,7 +16,10 @@ You are an AI agent that needs a custody wallet for multi-chain operations (tran
 
 | You need... | Action |
 |-------------|--------|
-| A crypto wallet for your agent | Register via `POST /register` |
+| A crypto wallet for your agent | Register via `POST /register` — includes 100 free WASI calls |
+| Run a WASI module for free | Use `POST /call/{owner}/{project}` with `Authorization: Bearer wk_...` (trial quota) |
+| Check remaining free calls | Use `GET /trial/status` |
+| Upgrade to paid execution | Use `POST /wallet/v1/create-payment-key` (USDC or NEAR) |
 | Send NEAR to someone | Use `POST /wallet/v1/transfer` with `chain: "near"` |
 | Send FT tokens (USDT, wNEAR) to someone | Use `POST /wallet/v1/call` with `ft_transfer` (see FT transfer section) |
 | Send tokens cross-chain (gasless) | Use `POST /wallet/v1/intents/withdraw` — no gas tokens needed on destination chain |
@@ -57,9 +60,52 @@ Response:
 
 The `near_account_id` is the NEAR implicit account (hex public key). Cross-chain transfers (Ethereum, Bitcoin, Solana, etc.) are handled via NEAR Intents — no gas tokens needed on other chains.
 
+The response also includes a `trial` field with your free compute quota:
+```json
+{
+  "api_key": "wk_...",
+  "near_account_id": "36842e...",
+  "handoff_url": "https://outlayer.fastnear.com/wallet?key=wk_...",
+  "trial": {
+    "calls_remaining": 100,
+    "expires_at": "2026-04-10T00:00:00Z",
+    "limits": { "max_instructions": 100000000, "max_execution_seconds": 30, "max_memory_mb": 64 }
+  }
+}
+```
+
+## Free Trial: Run WASI Without Payment
+
+Every registered wallet gets **100 free WASI execution calls** (30-day expiry). Use your `wk_...` API key directly on the execution endpoint — no payment key or NEAR balance required.
+
+```bash
+# Execute a WASI module for free (trial quota)
+curl -s -X POST -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $API_KEY" \
+  -d '{"input": "hello"}' \
+  "https://api.outlayer.fastnear.com/call/{owner}/{project}"
+```
+
+**Trial limits:**
+- 100 calls total, 30-day expiry
+- 10 requests/minute, 3-second cooldown between calls
+- Resource caps: 30s execution, 100M instructions, 64MB RAM
+- No `X-Attached-Deposit` (trial calls cannot attach stablecoin deposits to WASI)
+
+**Check remaining quota:**
+```bash
+curl -s -H "Authorization: Bearer $API_KEY" \
+  "https://api.outlayer.fastnear.com/trial/status"
+```
+Response: `{"calls_remaining": 95, "calls_used": 5, "calls_total": 100, "expires_at": "..."}`
+
+When trial quota is exhausted (HTTP 402) or you need `X-Attached-Deposit`, upgrade to a payment key (see "Upgrade to Paid" below).
+
 ## Step 2: Request Funding from User
 
 NEAR balance is needed for on-chain operations (`/wallet/v1/call`, `/wallet/v1/intents/swap`, `/wallet/v1/transfer`). Cross-chain operations via Intents (`/wallet/v1/intents/withdraw`) are gasless — no NEAR balance required.
+
+**Note:** Free trial WASI execution does NOT require NEAR balance. You only need funding for wallet operations and paid WASI calls.
 
 Ask the user to send at least 0.1 NEAR.
 
@@ -129,11 +175,59 @@ Then persist the key to storage so you don't lose it again.
 
 In these cases, register a new wallet with `POST /register`. The funds in the old wallet are not lost — the user can still access it by adding a new API key via the on-chain policy's `authorized_key_hashes` field.
 
+## Upgrade to Paid (Payment Key via Custody Wallet)
+
+When your trial quota runs out, upgrade to a payment key. Your custody wallet handles the entire process — no external NEAR wallet needed.
+
+**Prerequisites:** Your wallet must have either USDC or NEAR balance. Fund it first via transfer or `POST /wallet/v1/intents/deposit`.
+
+### Option A: Pay with USDC
+```bash
+curl -s -X POST -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $API_KEY" \
+  -d '{"initial_deposit_usdc": "2.00"}' \
+  "https://api.outlayer.fastnear.com/wallet/v1/create-payment-key"
+```
+
+### Option B: Pay with NEAR (swapped to USDC on-chain)
+```bash
+curl -s -X POST -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $API_KEY" \
+  -d '{"initial_deposit_near": "1.0"}' \
+  "https://api.outlayer.fastnear.com/wallet/v1/create-payment-key"
+```
+
+Optional fields: `"project_ids": ["owner.near/project1"]`, `"max_per_call": "10.00"`
+
+Response:
+```json
+{
+  "payment_key": "36842e...:1:a1b2c3...",
+  "nonce": 1,
+  "owner": "36842e...",
+  "store_secrets_tx": "Hx...",
+  "top_up_tx": "Fy..."
+}
+```
+
+**Save `payment_key` securely.** Use it for paid WASI calls via `X-Payment-Key` header:
+```bash
+curl -s -X POST -H "Content-Type: application/json" \
+  -H "X-Payment-Key: $PAYMENT_KEY" \
+  -d '{"input": "hello"}' \
+  "https://api.outlayer.fastnear.com/call/{owner}/{project}"
+```
+
+Paid calls have no quota limit — they deduct from your payment key balance. You can check balance on the dashboard.
+
 ## Quick Reference
 
 | Action | Method | Endpoint |
 |--------|--------|----------|
 | Register | POST | `https://api.outlayer.fastnear.com/register` |
+| Execute WASI (trial) | POST | `https://api.outlayer.fastnear.com/call/{owner}/{project}` |
+| Trial status | GET | `https://api.outlayer.fastnear.com/trial/status` |
+| Create payment key | POST | `https://api.outlayer.fastnear.com/wallet/v1/create-payment-key` |
 | Get address | GET | `https://api.outlayer.fastnear.com/wallet/v1/address?chain={chain}` |
 | Get balance | GET | `https://api.outlayer.fastnear.com/wallet/v1/balance?chain={chain}&token={token}` |
 | Transfer NEAR | POST | `https://api.outlayer.fastnear.com/wallet/v1/transfer` |
@@ -148,6 +242,10 @@ In these cases, register a new wallet with `POST /register`. The funds in the ol
 | Audit log | GET | `https://api.outlayer.fastnear.com/wallet/v1/audit?limit=50` |
 
 All endpoints except `/register` require `Authorization: Bearer <api_key>` header.
+
+WASI execution (`/call/{owner}/{project}`) accepts either:
+- `Authorization: Bearer wk_...` — trial (free, uses quota)
+- `X-Payment-Key: owner:nonce:secret` — paid (deducts from payment key balance)
 
 ## After Setup
 
