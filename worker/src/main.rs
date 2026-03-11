@@ -1519,11 +1519,17 @@ async fn handle_execute_job(
     // For compile_only=true: send as result, for compile_only=false: use in compilation_note
     let published_url_from_compile_result = compile_result.cloned();
 
-    // Check if this is a result-only task (compile_only=true)
-    // Compiler passed the result (e.g., FastFS URL or wasm_hash) for executor to send to contract
-    if compile_only && compile_result.is_some() {
-        let result_to_send = compile_result.unwrap();
-        info!("📤 Result-only execute task: sending compile_result to contract: {}", result_to_send);
+    // Check if this is a compile-only task
+    // Return compile_result (FastFS URL) if available, otherwise return WASM checksum
+    if compile_only {
+        let result_to_send = if let Some(cr) = compile_result {
+            cr.clone()
+        } else if let Some((checksum, _, _, _, _)) = compiled_wasm {
+            checksum.clone()
+        } else {
+            anyhow::bail!("compile_only=true but no compile result or WASM checksum available");
+        };
+        info!("📤 Compile-only task: sending result: {}", result_to_send);
 
         // Use consistent "Published to" format for URLs
         let compilation_note = if result_to_send.starts_with("http") {
@@ -1543,58 +1549,117 @@ async fn handle_execute_job(
             refund_usd: None,
         };
 
-        match near_client.submit_execution_result(request_id, &result).await {
-            Ok((tx_hash, outcome)) => {
-                info!("✅ Compile result submitted to NEAR successfully: tx_hash={}", tx_hash);
+        if is_https_call {
+            // HTTPS calls: report compile result to coordinator
+            let call_id_str = call_id.as_ref()
+                .ok_or_else(|| anyhow::anyhow!("HTTPS call missing call_id for compile_only result"))?;
+            let output_json = Some(serde_json::Value::String(result_to_send.clone()));
+            match api_client.complete_https_call(
+                call_id_str,
+                true,
+                output_json,
+                None,
+                0, // No instructions
+                0, // No execution time
+                Some(job.job_id),
+            ).await {
+                Ok(()) => {
+                    info!("✅ Compile result submitted to coordinator successfully");
 
-                // Extract actual cost from contract logs
-                let actual_cost = NearClient::extract_payment_from_logs(&outcome);
-                if actual_cost > 0 {
-                    info!("💰 Extracted cost from contract: {} yoctoNEAR ({:.6} NEAR)",
-                        actual_cost, actual_cost as f64 / 1e24);
+                    if let Err(e) = api_client
+                        .complete_job(
+                            job.job_id,
+                            true,
+                            Some(api_client::ExecutionOutput::Text(result_to_send.clone())),
+                            None,
+                            0,
+                            0,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                        )
+                        .await
+                    {
+                        warn!("⚠️ Failed to report execute job completion: {}", e);
+                    }
                 }
+                Err(e) => {
+                    error!("❌ Failed to submit compile result to coordinator: {}", e);
 
-                // Report success to coordinator
-                if let Err(e) = api_client
-                    .complete_job(
-                        job.job_id,
-                        true,
-                        Some(api_client::ExecutionOutput::Text(result_to_send.clone())),
-                        None,
-                        0, // No execution time
-                        0, // No instructions
-                        None,
-                        if actual_cost > 0 { Some(actual_cost.to_string()) } else { None },
-                        None, // compile_cost already reported by compile job
-                        None, // No error category for success
-                        None, // No compile_result to pass on
-                    )
-                    .await
-                {
-                    warn!("⚠️ Failed to report execute job completion: {}", e);
+                    if let Err(report_err) = api_client
+                        .complete_job(
+                            job.job_id,
+                            false,
+                            None,
+                            Some(format!("Failed to submit result: {}", e)),
+                            0,
+                            0,
+                            None,
+                            None,
+                            None,
+                            Some(api_client::JobStatus::Failed),
+                            None,
+                        )
+                        .await
+                    {
+                        warn!("⚠️ Failed to report execute job failure: {}", report_err);
+                    }
                 }
             }
-            Err(e) => {
-                error!("❌ Failed to submit compile result to contract: {}", e);
+        } else {
+            // Blockchain calls: submit to NEAR contract
+            match near_client.submit_execution_result(request_id, &result).await {
+                Ok((tx_hash, outcome)) => {
+                    info!("✅ Compile result submitted to NEAR successfully: tx_hash={}", tx_hash);
 
-                // Report failure to coordinator
-                if let Err(report_err) = api_client
-                    .complete_job(
-                        job.job_id,
-                        false,
-                        None,
-                        Some(format!("Failed to submit result to contract: {}", e)),
-                        0,
-                        0,
-                        None,
-                        None,
-                        None,
-                        Some(api_client::JobStatus::Failed),
-                        None,
-                    )
-                    .await
-                {
-                    warn!("⚠️ Failed to report execute job failure: {}", report_err);
+                    let actual_cost = NearClient::extract_payment_from_logs(&outcome);
+                    if actual_cost > 0 {
+                        info!("💰 Extracted cost from contract: {} yoctoNEAR ({:.6} NEAR)",
+                            actual_cost, actual_cost as f64 / 1e24);
+                    }
+
+                    if let Err(e) = api_client
+                        .complete_job(
+                            job.job_id,
+                            true,
+                            Some(api_client::ExecutionOutput::Text(result_to_send.clone())),
+                            None,
+                            0,
+                            0,
+                            None,
+                            if actual_cost > 0 { Some(actual_cost.to_string()) } else { None },
+                            None,
+                            None,
+                            None,
+                        )
+                        .await
+                    {
+                        warn!("⚠️ Failed to report execute job completion: {}", e);
+                    }
+                }
+                Err(e) => {
+                    error!("❌ Failed to submit compile result to contract: {}", e);
+
+                    if let Err(report_err) = api_client
+                        .complete_job(
+                            job.job_id,
+                            false,
+                            None,
+                            Some(format!("Failed to submit result to contract: {}", e)),
+                            0,
+                            0,
+                            None,
+                            None,
+                            None,
+                            Some(api_client::JobStatus::Failed),
+                            None,
+                        )
+                        .await
+                    {
+                        warn!("⚠️ Failed to report execute job failure: {}", report_err);
+                    }
                 }
             }
         }

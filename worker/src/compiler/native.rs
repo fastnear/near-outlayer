@@ -98,52 +98,125 @@ fn create_temp_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// Maximum time for a git clone operation (shallow clone with --branch)
+const GIT_SHALLOW_CLONE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// Maximum time for a full git clone (fallback for commit hashes)
+const GIT_FULL_CLONE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+/// Maximum time for a git checkout operation
+const GIT_CHECKOUT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Run a git command with a timeout, killing the process if it exceeds the limit
+async fn run_git_with_timeout(
+    args: &[&str],
+    work_dir: &Path,
+    timeout: std::time::Duration,
+    operation: &str,
+) -> Result<std::process::Output> {
+    let fut = tokio::process::Command::new("git")
+        .args(args)
+        .current_dir(work_dir)
+        .kill_on_drop(true)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output();
+
+    match tokio::time::timeout(timeout, fut).await {
+        Ok(result) => result.with_context(|| format!("git {} failed", operation)),
+        Err(_) => {
+            anyhow::bail!(
+                "Git {} timed out after {}s. The repository may be too large or the ref is invalid.",
+                operation, timeout.as_secs()
+            );
+        }
+    }
+}
+
 /// Clone Git repository
 async fn clone_repo(repo: &str, commit: &str, work_dir: &Path) -> Result<()> {
     info!("📥 Cloning {} @ {}", repo, commit);
 
-    // Clone repository
-    let output = tokio::process::Command::new("git")
-        .args(&["clone", "--depth", "1", "--single-branch", repo, "."])
-        .current_dir(work_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .context("Failed to spawn git clone")?;
+    // Try shallow clone at the specific ref first (works for branches and tags)
+    let output = run_git_with_timeout(
+        &["clone", "--depth", "1", "--branch", commit, repo, "."],
+        work_dir,
+        GIT_SHALLOW_CLONE_TIMEOUT,
+        "clone --branch",
+    ).await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
 
-        // Classify error for user-friendly message
-        if stderr.contains("Repository not found") || stderr.contains("not found") {
-            anyhow::bail!("Repository not found: {}. Please check the URL is correct and the repository is public.", repo);
-        } else if stderr.contains("could not read Username") || stderr.contains("authentication") {
-            anyhow::bail!("Cannot access repository: {}. Only public repositories are supported.", repo);
+        // If --branch failed (e.g. commit hash), fall back to shallow fetch by hash
+        // Uses git init + fetch --depth 1 to avoid cloning entire history (DoS protection)
+        if stderr.contains("not found in upstream") || stderr.contains("Remote branch") {
+            let output = run_git_with_timeout(
+                &["init"],
+                work_dir,
+                GIT_CHECKOUT_TIMEOUT,
+                "init",
+            ).await?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                anyhow::bail!("Git init failed: {}", stderr);
+            }
+
+            let output = run_git_with_timeout(
+                &["remote", "add", "origin", repo],
+                work_dir,
+                GIT_CHECKOUT_TIMEOUT,
+                "remote add",
+            ).await?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                anyhow::bail!("Git remote add failed: {}", stderr);
+            }
+
+            let output = run_git_with_timeout(
+                &["fetch", "--depth", "1", "origin", commit],
+                work_dir,
+                GIT_FULL_CLONE_TIMEOUT,
+                "fetch",
+            ).await?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if stderr.contains("Repository not found") || stderr.contains("not found") {
+                    classify_clone_error(&stderr, repo)?;
+                }
+                anyhow::bail!("Git fetch failed for '{}': {}. Make sure the commit hash exists.", commit, stderr);
+            }
+
+            let output = run_git_with_timeout(
+                &["checkout", "FETCH_HEAD"],
+                work_dir,
+                GIT_CHECKOUT_TIMEOUT,
+                "checkout",
+            ).await?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                anyhow::bail!("Git checkout failed for '{}': {}", commit, stderr);
+            }
         } else {
-            anyhow::bail!("Git clone failed: {}", stderr);
-        }
-    }
-
-    // Checkout specific commit if needed
-    if commit != "main" && commit != "master" {
-        let output = tokio::process::Command::new("git")
-            .args(&["checkout", commit])
-            .current_dir(work_dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await
-            .context("Failed to spawn git checkout")?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("Git checkout failed for commit '{}': {}", commit, stderr);
+            classify_clone_error(&stderr, repo)?;
         }
     }
 
     info!("✅ Repository cloned");
     Ok(())
+}
+
+/// Classify git clone errors into user-friendly messages
+fn classify_clone_error(stderr: &str, repo: &str) -> Result<()> {
+    if stderr.contains("Repository not found") || stderr.contains("not found") {
+        anyhow::bail!("Repository not found: {}. Please check the URL is correct and the repository is public.", repo);
+    } else if stderr.contains("could not read Username") || stderr.contains("authentication") {
+        anyhow::bail!("Cannot access repository: {}. Only public repositories are supported.", repo);
+    } else {
+        anyhow::bail!("Git clone failed: {}", stderr);
+    }
 }
 
 /// Validate that project doesn't use build.rs or git dependencies (security requirement)
