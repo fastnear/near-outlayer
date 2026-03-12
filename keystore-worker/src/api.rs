@@ -638,6 +638,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/wallet/sign-policy", post(wallet_sign_policy_handler))
         .route("/wallet/check-policy", post(wallet_check_policy_handler))
         .route("/wallet/encrypt-policy", post(wallet_encrypt_policy_handler))
+        // Ephemeral keys — separate module, returns private keys (see ephemeral_keys.rs)
+        .merge(crate::ephemeral_keys::ephemeral_key_routes())
         .layer(middleware::from_fn_with_state(
             state.clone(),
             coordinator_auth_middleware,

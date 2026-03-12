@@ -471,4 +471,40 @@ mod tests {
 
         assert_eq!(pubkey1, pubkey2, "Same master secret should produce same derived keys");
     }
+
+    // ======================= Wallet subkey derivation tests ====================
+    // Convention: "wallet:{id}:{chain}:{sub_path}" for sub-keys under a wallet
+
+    #[test]
+    fn test_wallet_subkey_deterministic() {
+        let ks = Keystore::generate();
+        let seed = "wallet:abc:near:check:0";
+        let (sk1, vk1) = ks.derive_keypair(seed).unwrap();
+        let (sk2, vk2) = ks.derive_keypair(seed).unwrap();
+        assert_eq!(sk1.to_bytes(), sk2.to_bytes());
+        assert_eq!(vk1.as_bytes(), vk2.as_bytes());
+    }
+
+    #[test]
+    fn test_wallet_subkey_differs_by_sub_path() {
+        let ks = Keystore::generate();
+        let (_, vk0) = ks.derive_keypair("wallet:abc:near:check:0").unwrap();
+        let (_, vk1) = ks.derive_keypair("wallet:abc:near:check:1").unwrap();
+        assert_ne!(vk0.as_bytes(), vk1.as_bytes());
+    }
+
+    #[test]
+    fn test_wallet_subkey_differs_from_main_key() {
+        let ks = Keystore::generate();
+        let (_, wallet_vk) = ks.derive_keypair("wallet:test-id:near").unwrap();
+        let (_, sub_vk) = ks.derive_keypair("wallet:test-id:near:check:0").unwrap();
+        assert_ne!(wallet_vk.as_bytes(), sub_vk.as_bytes());
+    }
+
+    #[test]
+    fn test_wallet_subkey_implicit_account_is_64_hex() {
+        let ks = Keystore::generate();
+        let (_, vk) = ks.derive_keypair("wallet:abc:near:check:42").unwrap();
+        assert_eq!(hex::encode(vk.as_bytes()).len(), 64);
+    }
 }
