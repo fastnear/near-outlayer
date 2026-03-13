@@ -62,3 +62,14 @@ curl -s -X POST -H "Content-Type: application/json" \
 
 All endpoints except `/register` require `Authorization: Bearer <api_key>` header.
 Base URL: `https://api.outlayer.fastnear.com`
+
+## Fund Link
+
+Ask the user to fund your wallet via a link:
+```
+https://outlayer.fastnear.com/wallet/fund?to={near_account_id}&amount={amount}&token={token}&msg={message}&dest=intents
+```
+
+- `dest=intents` — deposit directly to Intents balance (for swaps, payment checks, cross-chain). FT tokens only.
+- Without `dest` — direct transfer to wallet account.
+- The page has a toggle so the user can switch between modes.

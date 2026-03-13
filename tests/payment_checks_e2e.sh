@@ -52,7 +52,7 @@ if [ -z "${SENDER_API_KEY:-}" ] || [ -z "${RECEIVER_API_KEY:-}" ]; then
     echo "  SENDER_API_KEY=wk_... RECEIVER_API_KEY=wk_... ./tests/payment_checks_e2e.sh"
     echo ""
     echo "Both wallets need USDC balance (at least $TOTAL_AMOUNT units = $(echo "scale=6; $TOTAL_AMOUNT / 1000000" | bc) USDC for sender)."
-    echo "Sender also needs ~0.01 NEAR for gas (mt_transfer)."
+    echo "All operations are gasless — no NEAR required."
     exit 1
 fi
 
@@ -137,9 +137,7 @@ receiver_get() {
 echo -e "${CYAN}[0] Checking balances...${NC}"
 
 SENDER_BALANCE=$(sender_get "/wallet/v1/balance?token=$TOKEN&source=intents" | jq -r '.balance // "0"')
-SENDER_NEAR=$(sender_get "/wallet/v1/balance?chain=near" | jq -r '.balance // "0"')
 echo -e "  Sender intents USDC: $SENDER_BALANCE (need $TOTAL_AMOUNT)"
-echo -e "  Sender NEAR: $SENDER_NEAR (need gas for mt_transfer)"
 
 RECEIVER_BALANCE_BEFORE=$(receiver_get "/wallet/v1/balance?token=$TOKEN&source=intents" | jq -r '.balance // "0"')
 echo -e "  Receiver intents USDC before: $RECEIVER_BALANCE_BEFORE"

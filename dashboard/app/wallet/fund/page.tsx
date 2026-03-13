@@ -69,6 +69,7 @@ function FundContent() {
   const amount = searchParams.get('amount');
   const tokenParam = searchParams.get('token') || 'near';
   const msg = searchParams.get('msg');
+  const destParam = searchParams.get('dest'); // "intents" = deposit to intents balance
   const isNative = !tokenParam || tokenParam === 'near';
 
   const [showWalletModal, setShowWalletModal] = useState(false);
@@ -79,6 +80,8 @@ function FundContent() {
   const [txHash, setTxHash] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  // Intents deposit toggle — only for FT tokens
+  const [depositToIntents, setDepositToIntents] = useState(destParam === 'intents' && !isNative);
 
   // Validate params
   if (!to || !amount) {
@@ -156,11 +159,13 @@ function FundContent() {
         }) as string;
         setUserBalance(bal || '0');
 
-        // Check if agent needs storage registration
+        // Check if receiver needs storage registration on token contract
+        // When depositing to intents, the receiver is intents.near (not the agent)
+        const storageTarget = depositToIntents ? 'intents.near' : to;
         const storage = await viewMethod({
           contractId: tokenParam,
           method: 'storage_balance_of',
-          args: { account_id: to },
+          args: { account_id: storageTarget },
         });
         setNeedsStorage(!storage);
       }
@@ -168,7 +173,7 @@ function FundContent() {
       const errMsg = e instanceof Error ? e.message : String(e);
       setError(`Failed to check balances: ${errMsg}`);
     }
-  }, [isConnected, accountId, isNative, rpcUrl, tokenParam, to, viewMethod]);
+  }, [isConnected, accountId, isNative, rpcUrl, tokenParam, to, viewMethod, depositToIntents]);
 
   // eslint-disable-next-line react-hooks/rules-of-hooks
   useEffect(() => {
@@ -213,25 +218,50 @@ function FundContent() {
         const minimalUnits = toMinimalUnits(amount, decimals);
         const actions = [];
 
-        if (needsStorage) {
+        if (depositToIntents) {
+          // Deposit to agent's intents balance via ft_transfer_call to intents.near
+          // msg = agent account ID → intents.near credits the agent
+          if (needsStorage) {
+            actions.push(
+              actionCreators.functionCall(
+                'storage_deposit',
+                { account_id: 'intents.near', registration_only: true },
+                BigInt('30000000000000'), // 30 TGas
+                BigInt('1250000000000000000000'), // 0.00125 NEAR
+              ),
+            );
+          }
+
           actions.push(
             actionCreators.functionCall(
-              'storage_deposit',
-              { account_id: to, registration_only: true },
+              'ft_transfer_call',
+              { receiver_id: 'intents.near', amount: minimalUnits, msg: to },
+              BigInt('100000000000000'), // 100 TGas
+              BigInt('1'), // 1 yoctoNEAR
+            ),
+          );
+        } else {
+          // Direct FT transfer to agent account
+          if (needsStorage) {
+            actions.push(
+              actionCreators.functionCall(
+                'storage_deposit',
+                { account_id: to, registration_only: true },
+                BigInt('30000000000000'), // 30 TGas
+                BigInt('1250000000000000000000'), // 0.00125 NEAR
+              ),
+            );
+          }
+
+          actions.push(
+            actionCreators.functionCall(
+              'ft_transfer',
+              { receiver_id: to, amount: minimalUnits, memo: null },
               BigInt('30000000000000'), // 30 TGas
-              BigInt('1250000000000000000000'), // 0.00125 NEAR
+              BigInt('1'), // 1 yoctoNEAR
             ),
           );
         }
-
-        actions.push(
-          actionCreators.functionCall(
-            'ft_transfer',
-            { receiver_id: to, amount: minimalUnits, memo: null },
-            BigInt('30000000000000'), // 30 TGas
-            BigInt('1'), // 1 yoctoNEAR
-          ),
-        );
 
         result = await signAndSendTransaction({
           receiverId: tokenParam,
@@ -276,7 +306,7 @@ function FundContent() {
           </div>
           <h2 className="text-xl font-semibold text-gray-900 mb-2">Transfer Complete</h2>
           <p className="text-gray-600 mb-4">
-            Sent {amount} {symbol} to agent
+            Sent {amount} {symbol} {depositToIntents ? 'to agent\u2019s Intents balance' : 'to agent'}
           </p>
           {txHash !== 'submitted' && (
             <a
@@ -340,6 +370,37 @@ function FundContent() {
             </button>
           </div>
         </div>
+
+        {/* Intents deposit toggle — FT tokens only */}
+        {!isNative && (
+          <div className="mb-4">
+            <label className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2.5 cursor-pointer">
+              <div>
+                <span className="text-sm font-medium text-gray-700">Deposit to Intents balance</span>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  {depositToIntents
+                    ? 'Funds go to agent\u2019s trading balance (swaps, payments)'
+                    : 'Funds go directly to agent\u2019s token account'}
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={depositToIntents}
+                onClick={() => setDepositToIntents(!depositToIntents)}
+                className={`relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                  depositToIntents ? 'bg-[#cc6600]' : 'bg-gray-300'
+                }`}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transform transition duration-200 ease-in-out ${
+                    depositToIntents ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </label>
+          </div>
+        )}
 
         {/* Storage deposit notice */}
         {!isNative && needsStorage && (
