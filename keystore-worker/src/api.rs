@@ -536,6 +536,10 @@ pub struct WalletSignNearCallRequest {
     pub receiver_id: String,
     pub method_name: String,
     pub args_json: String,
+    /// Raw args as base64 — when present, used instead of args_json.into_bytes().
+    /// For Borsh-encoded payloads (e.g. FastFS) that can't be represented as JSON.
+    #[serde(default)]
+    pub args_base64: Option<String>,
     pub gas: u64,
     pub deposit: String,
     #[serde(default)]
@@ -2834,7 +2838,14 @@ async fn wallet_sign_near_call_handler(
         ApiError::BadRequest(format!("Invalid deposit: {}", e))
     })?;
 
-    let args = req.args_json.into_bytes();
+    let args = if let Some(ref b64) = req.args_base64 {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.decode(b64).map_err(|e| {
+            ApiError::BadRequest(format!("Invalid args_base64: {}", e))
+        })?
+    } else {
+        req.args_json.into_bytes()
+    };
 
     // 5. Build Transaction::V0
     let transaction = Transaction::V0(TransactionV0 {
