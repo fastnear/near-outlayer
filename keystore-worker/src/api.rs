@@ -529,25 +529,29 @@ pub struct WalletSignNearDeleteAccountRequest {
     pub approval_info: Option<ApprovalInfo>,
 }
 
-/// Transaction arguments: either a JSON string or raw Borsh-encoded bytes (base64).
-/// Exactly one must be provided.
+/// Transaction arguments: Borsh base64, JSON string, or empty (no args).
+/// Variants are tried in order by serde — Base64 and Json first (have required fields),
+/// Empty last (matches anything, used as fallback for no-arg calls).
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum CallArgs {
-    Json { args_json: String },
     /// For Borsh-encoded payloads (e.g. FastFS) that can't be represented as JSON.
     Base64 { args_base64: String },
+    Json { args_json: String },
+    /// No arguments — produces empty bytes (valid NEAR call with no params).
+    Empty {},
 }
 
 impl CallArgs {
     pub fn into_bytes(self) -> Result<Vec<u8>, ApiError> {
         match self {
-            CallArgs::Json { args_json } => Ok(args_json.into_bytes()),
             CallArgs::Base64 { args_base64 } => {
                 base64::decode(&args_base64).map_err(|e| {
                     ApiError::BadRequest(format!("Invalid args_base64: {}", e))
                 })
             }
+            CallArgs::Json { args_json } => Ok(args_json.into_bytes()),
+            CallArgs::Empty {} => Ok(vec![]),
         }
     }
 }
