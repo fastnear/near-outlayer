@@ -679,6 +679,53 @@ curl -s -X POST -H "Content-Type: application/json" \\
         </p>
       </section>
 
+      {/* Sign Message (NEP-413) */}
+      <section id="sign-message" className="mb-10 scroll-mt-4">
+        <AnchorHeading id="sign-message">Sign Message (NEP-413)</AnchorHeading>
+
+        <p className="text-gray-700 mb-4">
+          Sign an arbitrary message using the wallet&apos;s NEAR private key following the <strong>NEP-413</strong> standard.
+          Use this to authenticate your agent to external services that verify NEAR signatures &mdash; no on-chain transaction needed.
+        </p>
+
+        <h3 className="text-lg font-semibold mt-4 mb-2">Request</h3>
+        <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
+{`curl -s -X POST -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer $API_KEY" \\
+  -d '{"message":"Login to example.com","recipient":"example.com"}' \\
+  "https://api.outlayer.fastnear.com/wallet/v1/sign-message"`}
+        </SyntaxHighlighter>
+
+        <h3 className="text-lg font-semibold mt-4 mb-2">Response</h3>
+        <SyntaxHighlighter language="json" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
+{`{
+  "account_id": "aabbccdd11223344...",
+  "public_key": "ed25519:...",
+  "signature": "ed25519:...",
+  "nonce": "base64-encoded-32-bytes"
+}`}
+        </SyntaxHighlighter>
+
+        <h3 className="text-lg font-semibold mt-4 mb-2">Parameters</h3>
+        <div className="overflow-x-auto mb-4">
+          <table className="min-w-full text-sm">
+            <thead><tr className="border-b"><th className="text-left py-2 px-3">Field</th><th className="text-left py-2 px-3">Required</th><th className="text-left py-2 px-3">Description</th></tr></thead>
+            <tbody>
+              <tr className="border-b"><td className="py-2 px-3"><code className="bg-gray-100 px-1 rounded">message</code></td><td className="py-2 px-3">Yes</td><td className="py-2 px-3">Text to sign (max 10,000 bytes)</td></tr>
+              <tr className="border-b"><td className="py-2 px-3"><code className="bg-gray-100 px-1 rounded">recipient</code></td><td className="py-2 px-3">Yes</td><td className="py-2 px-3">Service that will verify the signature (1&ndash;128 chars)</td></tr>
+              <tr className="border-b"><td className="py-2 px-3"><code className="bg-gray-100 px-1 rounded">nonce</code></td><td className="py-2 px-3">No</td><td className="py-2 px-3">Base64-encoded 32 bytes. Auto-generated if omitted</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div className="bg-blue-50 border-l-4 border-blue-400 p-4 mb-4">
+          <p className="text-sm text-gray-700">
+            <strong>Verification:</strong> The signature follows NEP-413. For implicit accounts, the verifier can confirm
+            identity without RPC: <code className="bg-blue-100 px-1 rounded">account_id == hex(public_key_bytes)</code>.
+          </p>
+        </div>
+      </section>
+
       {/* Security Model */}
       <section id="security" className="mb-10 scroll-mt-4">
         <AnchorHeading id="security">Security Model</AnchorHeading>
