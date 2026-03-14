@@ -529,17 +529,37 @@ pub struct WalletSignNearDeleteAccountRequest {
     pub approval_info: Option<ApprovalInfo>,
 }
 
+/// Transaction arguments: either a JSON string or raw Borsh-encoded bytes (base64).
+/// Exactly one must be provided.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum CallArgs {
+    Json { args_json: String },
+    /// For Borsh-encoded payloads (e.g. FastFS) that can't be represented as JSON.
+    Base64 { args_base64: String },
+}
+
+impl CallArgs {
+    pub fn into_bytes(self) -> Result<Vec<u8>, ApiError> {
+        match self {
+            CallArgs::Json { args_json } => Ok(args_json.into_bytes()),
+            CallArgs::Base64 { args_base64 } => {
+                base64::decode(&args_base64).map_err(|e| {
+                    ApiError::BadRequest(format!("Invalid args_base64: {}", e))
+                })
+            }
+        }
+    }
+}
+
 /// Request to build and sign a NEAR function call transaction
 #[derive(Debug, Deserialize)]
 pub struct WalletSignNearCallRequest {
     pub wallet_id: String,
     pub receiver_id: String,
     pub method_name: String,
-    pub args_json: String,
-    /// Raw args as base64 — when present, used instead of args_json.into_bytes().
-    /// For Borsh-encoded payloads (e.g. FastFS) that can't be represented as JSON.
-    #[serde(default)]
-    pub args_base64: Option<String>,
+    #[serde(flatten)]
+    pub args: CallArgs,
     pub gas: u64,
     pub deposit: String,
     #[serde(default)]
@@ -2838,14 +2858,7 @@ async fn wallet_sign_near_call_handler(
         ApiError::BadRequest(format!("Invalid deposit: {}", e))
     })?;
 
-    let args = if let Some(ref b64) = req.args_base64 {
-        use base64::Engine;
-        base64::engine::general_purpose::STANDARD.decode(b64).map_err(|e| {
-            ApiError::BadRequest(format!("Invalid args_base64: {}", e))
-        })?
-    } else {
-        req.args_json.into_bytes()
-    };
+    let args = req.args.into_bytes()?;
 
     // 5. Build Transaction::V0
     let transaction = Transaction::V0(TransactionV0 {
