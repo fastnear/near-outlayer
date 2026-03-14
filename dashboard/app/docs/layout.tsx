@@ -23,6 +23,7 @@ const pageStructure = {
     { id: 'sign-message', title: 'Sign Message (NEP-413)' },
     { id: 'security', title: 'Security Model' },
     { id: 'ai-skill', title: 'AI Agent Skill File' },
+    { id: 'cli-integration', title: 'CLI Integration' },
     { id: 'comparison', title: 'Comparison' },
     { id: 'dashboard', title: 'Dashboard' },
   ],

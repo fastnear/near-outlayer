@@ -188,7 +188,7 @@ dashboard/app/docs/
 | Dashboard Page | Primary Source | Secondary Sources | Key Topics |
 |----------------|---------------|-------------------|------------|
 | `/docs` | `dashboard/app/docs/page.tsx` | - | Overview, getting started |
-| `/docs/agent-custody` | `dashboard/app/docs/agent-custody/page.tsx` | `.ignore/FIREBLOCKS.md`, `dashboard/public/SKILL.md` | **Agent Custody: multi-chain wallet, policy engine, gasless transfers, MPC security, NEP-413 message signing** |
+| `/docs/agent-custody` | `dashboard/app/docs/agent-custody/page.tsx` | `.ignore/FIREBLOCKS.md`, `dashboard/public/SKILL.md` | **Agent Custody: multi-chain wallet, policy engine, gasless transfers, MPC security, NEP-413 message signing, CLI integration (wallet-key login)** |
 | `/docs/getting-started` | `dashboard/app/docs/sections/GettingStarted.tsx` | - | **TEE attestation, two integration modes (HTTPS & Blockchain), quick start** |
 | `/docs/web2-integration` | `dashboard/app/docs/web2-integration/page.tsx` | - | HTTPS integration overview, TEE attestation |
 | `/docs/https-api` | `dashboard/app/docs/https-api/page.tsx` | `DESIGN_HTTPS_API.md` | **Full HTTPS API reference, headers, responses** |

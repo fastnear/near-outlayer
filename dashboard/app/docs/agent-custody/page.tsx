@@ -803,6 +803,52 @@ curl -s https://outlayer.fastnear.com/SKILL.md`}
         </div>
       </section>
 
+      {/* CLI Integration */}
+      <section id="cli-integration" className="mb-10 scroll-mt-4">
+        <AnchorHeading id="cli-integration">OutLayer CLI Integration</AnchorHeading>
+
+        <p className="text-gray-700 mb-4">
+          Agents with custody wallets can use the <strong>OutLayer CLI</strong> directly &mdash; no NEAR private key needed.
+          Login with the wallet API key and all commands route signing through the coordinator&apos;s wallet API transparently.
+        </p>
+
+        <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
+{`# Login with wallet key (instead of NEAR private key)
+outlayer login --wallet-key wk_15807dbda492636df5280629d7617c3ea80f915ba960389b621e420ca275e545
+
+# All commands work transparently
+outlayer deploy my-agent
+outlayer keys create
+outlayer run alice.near/my-agent '{"test": true}'
+outlayer secrets set '{"API_KEY":"sk-..."}' --project alice.near/my-agent
+outlayer earnings`}
+        </SyntaxHighlighter>
+
+        <div className="bg-blue-50 border-l-4 border-blue-400 p-4 mt-4 mb-4">
+          <p className="text-sm text-gray-700">
+            <strong>How it works:</strong> When logged in with <code className="bg-blue-100 px-1 rounded">--wallet-key</code>, the CLI stores the auth type as <code className="bg-blue-100 px-1 rounded">wallet_key</code>.
+            All contract operations are routed through <code className="bg-blue-100 px-1 rounded">POST /wallet/v1/call</code> instead of local transaction signing.
+            NEP-413 signatures (used by <code className="bg-blue-100 px-1 rounded">secrets update</code>) go through <code className="bg-blue-100 px-1 rounded">POST /wallet/v1/sign-message</code>.
+          </p>
+        </div>
+
+        <h4 className="font-semibold text-gray-900 mb-2">Supported commands</h4>
+        <div className="overflow-x-auto mb-4">
+          <table className="min-w-full text-sm border border-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-2 text-left font-semibold border-b">Command</th>
+                <th className="px-4 py-2 text-left font-semibold border-b">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr className="border-b"><td className="px-4 py-2 font-mono">deploy, run, keys, secrets, earnings, versions</td><td className="px-4 py-2 text-green-700">Supported</td></tr>
+              <tr><td className="px-4 py-2 font-mono">upload (FastFS)</td><td className="px-4 py-2 text-yellow-700">Not yet &mdash; requires raw Borsh args</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       {/* Comparison */}
       <section id="comparison" className="mb-10 scroll-mt-4">
         <AnchorHeading id="comparison">Comparison with Traditional Custody</AnchorHeading>
