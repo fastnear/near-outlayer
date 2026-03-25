@@ -17,14 +17,17 @@
     "@near-wallet-selector/modal-ui": "^10.0.0",
     "@near-wallet-selector/my-near-wallet": "^10.0.0",
     "@stablelib/chacha20poly1305": "^2.0.1",
+    "@stablelib/hkdf": "^2.0.1",
     "@stablelib/random": "^2.0.1",
+    "@stablelib/sha256": "^2.0.1",
+    "@stablelib/x25519": "^2.0.1",
     "@types/react-syntax-highlighter": "^15.5.13",
     "axios": "^1.12.2",
     "next": "16.0.7",
     "react": "19.1.0",
-    "zod": "^3.24.1",
     "react-dom": "19.1.0",
-    "react-syntax-highlighter": "^16.1.0"
+    "react-syntax-highlighter": "^16.1.0",
+    "zod": "^3.24.1"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",

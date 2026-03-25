@@ -2,8 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { actionCreators } from '@near-js/transactions';
-import { ChaCha20Poly1305 } from '@stablelib/chacha20poly1305';
-import { randomBytes } from '@stablelib/random';
+import { eciesEncrypt } from '@/lib/ecies';
 import { StablecoinConfig } from '@/contexts/NearWalletContext';
 import { CreationState, parseUsdToMinimalUnits, PaymentKeySecret } from './types';
 
@@ -229,26 +228,8 @@ export function CreateKeyForm({
     }
   };
 
-  // Convert hex string to bytes (same as SecretsForm)
-  const hexToBytes = (hex: string): Uint8Array => {
-    const bytes = new Uint8Array(hex.length / 2);
-    for (let i = 0; i < hex.length; i += 2) {
-      bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
-    }
-    return bytes;
-  };
-
-  // Encrypt with ChaCha20-Poly1305 (same as SecretsForm)
   const encryptWithPubkey = (pubkeyHex: string, plaintext: string): Uint8Array => {
-    const keyMaterial = hexToBytes(pubkeyHex);
-    const plaintextBytes = new TextEncoder().encode(plaintext);
-    const cipher = new ChaCha20Poly1305(keyMaterial);
-    const nonce = randomBytes(12);
-    const ciphertextWithTag = cipher.seal(nonce, plaintextBytes);
-    const encrypted = new Uint8Array(12 + ciphertextWithTag.length);
-    encrypted.set(nonce, 0);
-    encrypted.set(ciphertextWithTag, 12);
-    return encrypted;
+    return eciesEncrypt(pubkeyHex, new TextEncoder().encode(plaintext));
   };
 
   const isSubmitting = creationState.step !== 'form' && creationState.step !== 'error';

@@ -4,10 +4,10 @@
 //! Each repository (with owner) gets a unique keypair derived from the same master secret.
 //! All operations are designed to be TEE-safe (no key material leaves secure enclave).
 //!
-//! Encryption: ChaCha20-Poly1305 AEAD (RFC 7539)
-//! - Symmetric encryption with authentication
-//! - 12-byte random nonce per encryption
-//! - Format: [nonce (12 bytes) | ciphertext | auth_tag (16 bytes)]
+//! Encryption: ECIES with X25519 ECDH + HKDF-SHA256 + ChaCha20-Poly1305
+//! - Asymmetric: encrypt with public key, only TEE can decrypt with private key
+//! - Format v1: [0x01 | ephemeral_x25519_pubkey (32) | nonce (12) | ciphertext | auth_tag (16)]
+//! - Legacy format: [nonce (12) | ciphertext | auth_tag (16)] (symmetric, being phased out)
 
 use anyhow::{Context, Result};
 use k256::elliptic_curve::sec1::ToEncodedPoint;
@@ -17,10 +17,12 @@ use chacha20poly1305::{
 };
 use ed25519_dalek::{SigningKey, VerifyingKey, Signature, Signer, Verifier};
 use hmac::{Hmac, Mac};
+use hkdf::Hkdf;
 use rand::{rngs::OsRng, RngCore};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::RwLock;
+use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey, StaticSecret};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -143,35 +145,65 @@ impl Keystore {
         Ok((signing_key, verifying_key))
     }
 
-    /// Get public key for a specific seed
+    /// Get Ed25519 public key for a specific seed (used for signing/verification/VRF)
     pub fn get_public_key_for_seed(&self, seed: &str) -> Result<VerifyingKey> {
         let (_signing_key, verifying_key) = self.derive_keypair(seed)?;
         Ok(verifying_key)
     }
 
-    /// Get public key as hex string for a specific seed
-    pub fn public_key_hex(&self, seed: &str) -> Result<String> {
-        let verifying_key = self.get_public_key_for_seed(seed)?;
-        Ok(hex::encode(verifying_key.as_bytes()))
+    /// Derive X25519 keypair from seed (for ECIES encryption/decryption)
+    ///
+    /// Uses domain-separated HMAC: HMAC-SHA256(master_secret, "ecies:" || seed)
+    /// so that encryption keys are independent from Ed25519 signing keys.
+    /// The X25519 public key is safe to expose — it cannot decrypt without the private key.
+    fn derive_x25519_keypair(&self, seed: &str) -> Result<(StaticSecret, X25519PublicKey)> {
+        let mut mac = <HmacSha256 as Mac>::new_from_slice(&self.master_secret)
+            .expect("HMAC can take key of any size");
+        mac.update(b"ecies:");
+        mac.update(seed.as_bytes());
+        let derived_bytes = mac.finalize().into_bytes();
+
+        let mut secret_bytes = [0u8; 32];
+        secret_bytes.copy_from_slice(&derived_bytes[..32]);
+
+        let static_secret = StaticSecret::from(secret_bytes);
+        let public_key = X25519PublicKey::from(&static_secret);
+        Ok((static_secret, public_key))
     }
 
-    /// Get public key as base58 string (NEAR format) for a specific seed
+    /// Get X25519 public key as hex string for a specific seed (for encryption)
+    ///
+    /// This is the key returned by `/pubkey` endpoint. Safe to expose publicly —
+    /// it can only be used to encrypt, not decrypt. Only the TEE holds the private key.
+    pub fn public_key_hex(&self, seed: &str) -> Result<String> {
+        let (_, x25519_pub) = self.derive_x25519_keypair(seed)?;
+        Ok(hex::encode(x25519_pub.as_bytes()))
+    }
+
+    /// Get Ed25519 public key as base58 string (NEAR format) for a specific seed
     #[allow(dead_code)]
     pub fn public_key_base58(&self, seed: &str) -> Result<String> {
         let verifying_key = self.get_public_key_for_seed(seed)?;
         Ok(bs58::encode(verifying_key.as_bytes()).into_string())
     }
 
+    /// HKDF info string — must be identical across all implementations (Rust, TypeScript)
+    const HKDF_INFO: &'static [u8] = b"outlayer-keystore-v1";
+
+    /// Version byte for ECIES format
+    const ECIES_VERSION: u8 = 0x01;
+
     /// Decrypt data that was encrypted for a specific seed
     ///
-    /// Uses ChaCha20-Poly1305 AEAD encryption.
-    /// Format: [nonce (12 bytes) | ciphertext | auth_tag (16 bytes)]
+    /// Supports both formats:
+    /// - ECIES v1: [0x01 | ephemeral_x25519_pubkey (32) | nonce (12) | ciphertext | tag (16)]
+    /// - Legacy:   [nonce (12) | ciphertext | tag (16)] (symmetric, pubkey as ChaCha20 key)
     pub fn decrypt(&self, seed: &str, encrypted_data: &[u8]) -> Result<Vec<u8>> {
         if encrypted_data.len() > MAX_ENCRYPTED_SIZE {
             anyhow::bail!("Encrypted data too large: {} bytes", encrypted_data.len());
         }
 
-        // Minimum size: 12 (nonce) + 16 (tag) = 28 bytes
+        // Minimum legacy size: 12 (nonce) + 16 (tag) = 28 bytes
         if encrypted_data.len() < 28 {
             anyhow::bail!(
                 "Encrypted data too short: {} bytes (minimum 28)",
@@ -179,55 +211,110 @@ impl Keystore {
             );
         }
 
-        let (_signing_key, verifying_key) = self.derive_keypair(seed)?;
+        // Try ECIES v1 format: [0x01 | ephemeral_pub(32) | nonce(12) | ciphertext | tag(16)]
+        // Minimum ECIES size: 1 + 32 + 12 + 16 = 61 bytes
+        if encrypted_data[0] == Self::ECIES_VERSION && encrypted_data.len() >= 61 {
+            match self.decrypt_ecies(seed, encrypted_data) {
+                Ok(plaintext) => return Ok(plaintext),
+                Err(e) => {
+                    // AEAD failure could mean this is legacy data that happens to start with 0x01
+                    tracing::debug!("ECIES decrypt failed, trying legacy format: {}", e);
+                }
+            }
+        }
 
-        // Use Ed25519 public key as ChaCha20 key (32 bytes)
-        let key_bytes = verifying_key.to_bytes();
-        let cipher = ChaCha20Poly1305::new((&key_bytes).into());
+        // Legacy format: [nonce(12) | ciphertext | tag(16)]
+        self.decrypt_legacy(seed, encrypted_data)
+    }
 
-        // Extract nonce (first 12 bytes)
-        let nonce = Nonce::from_slice(&encrypted_data[0..12]);
+    /// Decrypt ECIES v1 format
+    fn decrypt_ecies(&self, seed: &str, encrypted_data: &[u8]) -> Result<Vec<u8>> {
+        let ephemeral_pub_bytes: [u8; 32] = encrypted_data[1..33]
+            .try_into()
+            .context("Invalid ephemeral public key")?;
+        let ephemeral_pub = X25519PublicKey::from(ephemeral_pub_bytes);
 
-        // Extract ciphertext + tag (remaining bytes)
-        let ciphertext_with_tag = &encrypted_data[12..];
+        let (x25519_secret, _) = self.derive_x25519_keypair(seed)?;
+        let shared_secret = x25519_secret.diffie_hellman(&ephemeral_pub);
 
-        // Decrypt and verify auth tag
+        let sym_key = Self::hkdf_derive_key(shared_secret.as_bytes())?;
+        let cipher = ChaCha20Poly1305::new((&sym_key).into());
+
+        let nonce = Nonce::from_slice(&encrypted_data[33..45]);
+        let ciphertext_with_tag = &encrypted_data[45..];
+
         let plaintext = cipher
             .decrypt(nonce, ciphertext_with_tag)
-            .map_err(|e| anyhow::anyhow!("Decryption failed (data tampered or wrong key): {}", e))?;
+            .map_err(|e| anyhow::anyhow!("ECIES decryption failed: {}", e))?;
 
         Ok(plaintext)
     }
 
-    /// Encrypt plaintext data for a specific seed (server-side encryption)
+    /// Decrypt legacy format (symmetric, Ed25519 pubkey as ChaCha20 key)
+    /// TODO: Remove after migration of all secrets to ECIES format
+    fn decrypt_legacy(&self, seed: &str, encrypted_data: &[u8]) -> Result<Vec<u8>> {
+        let (_signing_key, verifying_key) = self.derive_keypair(seed)?;
+
+        let key_bytes = verifying_key.to_bytes();
+        let cipher = ChaCha20Poly1305::new((&key_bytes).into());
+
+        let nonce = Nonce::from_slice(&encrypted_data[0..12]);
+        let ciphertext_with_tag = &encrypted_data[12..];
+
+        let plaintext = cipher
+            .decrypt(nonce, ciphertext_with_tag)
+            .map_err(|e| anyhow::anyhow!("Legacy decryption failed (data tampered or wrong key): {}", e))?;
+
+        Ok(plaintext)
+    }
+
+    /// Encrypt plaintext data for a specific seed using ECIES
     ///
-    /// Uses ChaCha20-Poly1305 AEAD with random nonce.
-    /// Returns: [nonce (12 bytes) | ciphertext | auth_tag (16 bytes)]
+    /// Uses ephemeral X25519 keypair + ECDH + HKDF-SHA256 + ChaCha20-Poly1305.
+    /// Returns: [0x01 | ephemeral_x25519_pubkey (32) | nonce (12) | ciphertext | auth_tag (16)]
     pub fn encrypt(&self, seed: &str, plaintext: &[u8]) -> Result<Vec<u8>> {
         if plaintext.len() > MAX_ENCRYPTED_SIZE {
             anyhow::bail!("Plaintext too large: {} bytes", plaintext.len());
         }
 
-        let (_signing_key, verifying_key) = self.derive_keypair(seed)?;
+        let (_, recipient_pub) = self.derive_x25519_keypair(seed)?;
 
-        // Use Ed25519 public key as ChaCha20 key
-        let key_bytes = verifying_key.to_bytes();
-        let cipher = ChaCha20Poly1305::new((&key_bytes).into());
+        // Generate ephemeral X25519 keypair
+        let ephemeral_secret = EphemeralSecret::random_from_rng(OsRng);
+        let ephemeral_pub = X25519PublicKey::from(&ephemeral_secret);
+
+        // ECDH shared secret
+        let shared_secret = ephemeral_secret.diffie_hellman(&recipient_pub);
+
+        // Derive symmetric key via HKDF-SHA256
+        let sym_key = Self::hkdf_derive_key(shared_secret.as_bytes())?;
+        let cipher = ChaCha20Poly1305::new((&sym_key).into());
 
         // Generate random 12-byte nonce
         let nonce = ChaCha20Poly1305::generate_nonce(&mut AeadOsRng);
 
-        // Encrypt and append auth tag
+        // Encrypt
         let ciphertext_with_tag = cipher
             .encrypt(&nonce, plaintext)
             .map_err(|e| anyhow::anyhow!("Encryption failed: {}", e))?;
 
-        // Combine: [nonce | ciphertext | tag]
-        let mut result = Vec::with_capacity(12 + ciphertext_with_tag.len());
+        // Format: [0x01 | ephemeral_pub(32) | nonce(12) | ciphertext | tag(16)]
+        let mut result = Vec::with_capacity(1 + 32 + 12 + ciphertext_with_tag.len());
+        result.push(Self::ECIES_VERSION);
+        result.extend_from_slice(ephemeral_pub.as_bytes());
         result.extend_from_slice(&nonce);
         result.extend_from_slice(&ciphertext_with_tag);
 
         Ok(result)
+    }
+
+    /// Derive 32-byte symmetric key from ECDH shared secret using HKDF-SHA256
+    fn hkdf_derive_key(shared_secret: &[u8]) -> Result<[u8; 32]> {
+        let hkdf = Hkdf::<Sha256>::new(None, shared_secret);
+        let mut key = [0u8; 32];
+        hkdf.expand(Self::HKDF_INFO, &mut key)
+            .map_err(|e| anyhow::anyhow!("HKDF expand failed: {}", e))?;
+        Ok(key)
     }
 
     /// Sign a message with the Ed25519 private key for a specific seed
@@ -372,16 +459,86 @@ mod tests {
     }
 
     #[test]
-    fn test_encrypt_decrypt() {
+    fn test_encrypt_decrypt_ecies() {
         let keystore = Keystore::generate();
         let seed = "github.com/alice/project:alice.near";
         let plaintext = b"my secret API key: sk-1234567890";
 
-        // Use keystore.encrypt (ChaCha20) instead of encrypt_for_keystore (XOR)
         let encrypted = keystore.encrypt(seed, plaintext).unwrap();
-        let decrypted = keystore.decrypt(seed, &encrypted).unwrap();
 
+        // Verify ECIES format: starts with version byte
+        assert_eq!(encrypted[0], Keystore::ECIES_VERSION);
+        // Minimum size: 1 + 32 + 12 + 16 = 61 (+ plaintext)
+        assert!(encrypted.len() >= 61);
+
+        let decrypted = keystore.decrypt(seed, &encrypted).unwrap();
         assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn test_decrypt_legacy_format() {
+        let keystore = Keystore::generate();
+        let seed = "github.com/alice/project:alice.near";
+        let plaintext = b"legacy secret data";
+
+        // Manually create legacy format: [nonce(12) | ciphertext | tag(16)]
+        let (_, verifying_key) = keystore.derive_keypair(seed).unwrap();
+        let key_bytes = verifying_key.to_bytes();
+        let cipher = ChaCha20Poly1305::new((&key_bytes).into());
+        let nonce = ChaCha20Poly1305::generate_nonce(&mut AeadOsRng);
+        let ciphertext_with_tag = cipher.encrypt(&nonce, &plaintext[..]).unwrap();
+        let mut legacy_encrypted = Vec::new();
+        legacy_encrypted.extend_from_slice(&nonce);
+        legacy_encrypted.extend_from_slice(&ciphertext_with_tag);
+
+        // decrypt() should handle legacy format via fallback
+        let decrypted = keystore.decrypt(seed, &legacy_encrypted).unwrap();
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn test_ecies_pubkey_cannot_decrypt() {
+        let keystore = Keystore::generate();
+        let seed = "github.com/alice/project:alice.near";
+        let plaintext = b"secret";
+
+        let encrypted = keystore.encrypt(seed, plaintext).unwrap();
+        let pubkey_hex = keystore.public_key_hex(seed).unwrap();
+        let pubkey_bytes = hex::decode(&pubkey_hex).unwrap();
+
+        // Try using the public key as a ChaCha20 symmetric key (the old vulnerable way)
+        let cipher = ChaCha20Poly1305::new_from_slice(&pubkey_bytes).unwrap();
+        // With ECIES format, nonce starts at byte 33
+        let nonce = Nonce::from_slice(&encrypted[33..45]);
+        let result = cipher.decrypt(nonce, &encrypted[45..]);
+
+        // Must fail — public key is not the encryption key anymore
+        assert!(result.is_err(), "Public key must NOT be able to decrypt ECIES data");
+    }
+
+    #[test]
+    fn test_ecies_different_ciphertext_each_time() {
+        let keystore = Keystore::generate();
+        let seed = "test-seed";
+        let plaintext = b"same plaintext";
+
+        let enc1 = keystore.encrypt(seed, plaintext).unwrap();
+        let enc2 = keystore.encrypt(seed, plaintext).unwrap();
+
+        // Ephemeral keypair is random, so ciphertexts must differ
+        assert_ne!(enc1, enc2);
+
+        // But both decrypt to same plaintext
+        assert_eq!(keystore.decrypt(seed, &enc1).unwrap(), plaintext);
+        assert_eq!(keystore.decrypt(seed, &enc2).unwrap(), plaintext);
+    }
+
+    #[test]
+    fn test_wrong_seed_cannot_decrypt() {
+        let keystore = Keystore::generate();
+        let encrypted = keystore.encrypt("seed-a", b"secret").unwrap();
+        let result = keystore.decrypt("seed-b", &encrypted);
+        assert!(result.is_err());
     }
 
     #[test]

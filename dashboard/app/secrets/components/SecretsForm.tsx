@@ -1,8 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { ChaCha20Poly1305 } from '@stablelib/chacha20poly1305';
-import { randomBytes } from '@stablelib/random';
+import { eciesEncrypt } from '@/lib/ecies';
 import { AccessConditionBuilder } from './AccessConditionBuilder';
 import { AccessCondition, FormData, SecretSourceType } from './types';
 import { convertAccessToContractFormat } from './utils';
@@ -316,16 +315,9 @@ export function SecretsForm({
           const pubkeyData = await pubkeyResp.json();
           const pubkeyHex = pubkeyData.pubkey;
 
-          // Encrypt with ChaCha20-Poly1305
-          const keyMaterial = hexToBytes(pubkeyHex);
-          const encoder = new TextEncoder();
-          const plaintextBytes = encoder.encode(plaintextSecrets);
-          const cipher = new ChaCha20Poly1305(keyMaterial);
-          const nonce = randomBytes(12);
-          const ciphertextWithTag = cipher.seal(nonce, plaintextBytes);
-          const encrypted = new Uint8Array(12 + ciphertextWithTag.length);
-          encrypted.set(nonce, 0);
-          encrypted.set(ciphertextWithTag, 12);
+          // Encrypt with ECIES (X25519 ECDH + HKDF + ChaCha20-Poly1305)
+          const plaintextBytes = new TextEncoder().encode(plaintextSecrets);
+          const encrypted = eciesEncrypt(pubkeyHex, plaintextBytes);
 
           // Convert to base64
           encryptedSecretsBase64 = btoa(String.fromCharCode(...Array.from(encrypted)));
@@ -447,15 +439,8 @@ export function SecretsForm({
         // Extract normalized values from response accessor
         const repoNormalized = pubkeyData.accessor?.repo_normalized || repo.trim();
 
-        const keyMaterial = hexToBytes(pubkeyHex);
-        const encoder = new TextEncoder();
-        const plaintextBytes = encoder.encode(plaintextSecrets);
-        const cipher = new ChaCha20Poly1305(keyMaterial);
-        const nonce = randomBytes(12);
-        const ciphertextWithTag = cipher.seal(nonce, plaintextBytes);
-        const encrypted = new Uint8Array(12 + ciphertextWithTag.length);
-        encrypted.set(nonce, 0);
-        encrypted.set(ciphertextWithTag, 12);
+        const plaintextBytes = new TextEncoder().encode(plaintextSecrets);
+        const encrypted = eciesEncrypt(pubkeyHex, plaintextBytes);
         const encryptedArray = Array.from(encrypted);
 
         const contractAccess = convertAccessToContractFormat(accessCondition);
@@ -698,14 +683,6 @@ export function SecretsForm({
     } finally {
       setEncrypting(false);
     }
-  };
-
-  const hexToBytes = (hex: string): Uint8Array => {
-    const bytes = new Uint8Array(hex.length / 2);
-    for (let i = 0; i < hex.length; i += 2) {
-      bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
-    }
-    return bytes;
   };
 
   return (
