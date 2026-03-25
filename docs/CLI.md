@@ -196,6 +196,8 @@ outlayer upload ./target/wasm32-wasip2/release/my-agent.wasm
 
 Files >1MB are automatically chunked.
 
+> **Note:** FastFS upload transactions are **expected to fail** with "Exceeded the prepaid gas" — this is by design. Gas is intentionally set to 1 to minimize costs. No contract execution is needed — the NEAR indexer picks up the file data from the transaction arguments regardless of execution status. The file will be available at its FastFS URL after indexing, which takes 1–2 minutes. Chunked uploads (files >1MB) may take longer since all chunks must be indexed before the file is assembled.
+
 ### Versions
 
 | Command | Description |
