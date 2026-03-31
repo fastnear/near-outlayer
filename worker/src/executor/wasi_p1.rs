@@ -124,7 +124,24 @@ pub async fn execute(
              Make sure you're using [[bin]] format with fn main(), not [lib] with cdylib",
         )?;
 
-    let call_result = start.call_async(&mut store, ()).await;
+    let timeout_secs = limits.max_execution_seconds.max(5).min(180);
+    let timeout_duration = std::time::Duration::from_secs(timeout_secs);
+    let call_result = match tokio::time::timeout(
+        timeout_duration,
+        start.call_async(&mut store, ()),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            let fuel_consumed = limits.max_instructions - store.get_fuel().unwrap_or(0);
+            anyhow::bail!(
+                "WASM execution timed out after {} seconds (consumed {} instructions)",
+                timeout_secs,
+                fuel_consumed
+            );
+        }
+    };
 
     if let Err(e) = call_result {
         let error_str = e.to_string();

@@ -34,6 +34,12 @@ impl NearClient {
         })
     }
 
+    /// RPC call timeout to prevent hanging on unresponsive RPC nodes
+    const RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+    /// Broadcast tx with timeout (longer timeout since tx confirmation can take time)
+    const TX_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
     /// Extract cost from transaction logs (parses [[yNEAR charged: "..."]] or estimated_cost)
     /// Parses the "Resolving execution" log from contract which contains estimated_cost
     /// Returns 0 if not found (will show as 0 NEAR in dashboard)
@@ -480,10 +486,9 @@ impl NearClient {
 
         debug!("Broadcasting transaction with commit: {:?}", hash);
 
-        let outcome = self
-            .client
-            .call(tx_request)
+        let outcome = tokio::time::timeout(Self::TX_TIMEOUT, self.client.call(tx_request))
             .await
+            .context("NEAR RPC broadcast timed out")?
             .context("Failed to broadcast transaction and wait for commit")?;
 
         debug!("Transaction committed: {:?}", hash);
@@ -542,10 +547,9 @@ impl NearClient {
             },
         };
 
-        let access_key_response = self
-            .client
-            .call(access_key_query)
+        let access_key_response = tokio::time::timeout(Self::RPC_TIMEOUT, self.client.call(access_key_query))
             .await
+            .context("NEAR RPC access key query timed out")?
             .context("Failed to query access key")?;
 
         let current_nonce = match access_key_response.kind {
@@ -560,10 +564,9 @@ impl NearClient {
             block_reference: BlockReference::Finality(Finality::Final),
         };
 
-        let block = self
-            .client
-            .call(block_query)
+        let block = tokio::time::timeout(Self::RPC_TIMEOUT, self.client.call(block_query))
             .await
+            .context("NEAR RPC block query timed out")?
             .context("Failed to query block")?;
 
         let block_hash = block.header.hash;
@@ -600,10 +603,9 @@ impl NearClient {
 
         debug!("Broadcasting transaction with commit: {:?}", hash);
 
-        let outcome = self
-            .client
-            .call(tx_request)
+        let outcome = tokio::time::timeout(Self::TX_TIMEOUT, self.client.call(tx_request))
             .await
+            .context("NEAR RPC broadcast timed out")?
             .context("Failed to broadcast transaction and wait for commit")?;
 
         debug!("Transaction committed: {:?}", hash);
@@ -802,10 +804,9 @@ impl NearClient {
             },
         };
 
-        let response = self
-            .client
-            .call(request)
+        let response = tokio::time::timeout(Self::RPC_TIMEOUT, self.client.call(request))
             .await
+            .context("NEAR RPC get_project timed out")?
             .context("Failed to call get_project")?;
 
         if let near_jsonrpc_primitives::types::query::QueryResponseKind::CallResult(result) = response.kind {
@@ -840,10 +841,9 @@ impl NearClient {
             },
         };
 
-        let response = self
-            .client
-            .call(request)
+        let response = tokio::time::timeout(Self::RPC_TIMEOUT, self.client.call(request))
             .await
+            .context("NEAR RPC get_version timed out")?
             .context("Failed to call get_version")?;
 
         if let near_jsonrpc_primitives::types::query::QueryResponseKind::CallResult(result) = response.kind {

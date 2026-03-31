@@ -269,13 +269,28 @@ impl Executor {
                 })
             }
             Err(e) => {
-                info!("WASM execution failed: {}", e);
+                let error_str = e.to_string();
+                info!("WASM execution failed: {}", error_str);
+
+                // Parse instructions from timeout error message ("consumed N instructions")
+                // so billing charges for actual resource usage
+                let instructions = if error_str.contains("timed out") {
+                    error_str
+                        .split("consumed ")
+                        .nth(1)
+                        .and_then(|s| s.split(' ').next())
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+
                 Ok(ExecutionResult {
                     success: false,
                     output: None,
-                    error: Some(e.to_string()),
+                    error: Some(error_str),
                     execution_time_ms,
-                    instructions: 0,
+                    instructions,
                     compile_time_ms: None, // Compilation not tracked in executor
                     compilation_note: None,
                     refund_usd: None, // No refund on failure

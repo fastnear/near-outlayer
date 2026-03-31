@@ -70,7 +70,11 @@ impl KeystoreClient {
         Self {
             base_url,
             auth_token,
-            http_client: reqwest::Client::new(),
+            http_client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .build()
+                .expect("Failed to build keystore HTTP client"),
             tee_mode,
             tee_session_id: std::sync::Arc::new(std::sync::Mutex::new(None)),
             tee_signing_info: None,

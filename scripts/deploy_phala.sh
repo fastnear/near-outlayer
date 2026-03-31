@@ -10,6 +10,7 @@
 #   --version     Use specific version from Docker Hub (fetches digest automatically)
 #   --no-build    Skip local Docker build (use image from docker-compose)
 #   --dry-run     Only show digest and verification command, don't deploy
+#   --region      Deploy to specific region (e.g., us-west, eu-central)
 #
 # Examples:
 #   ./scripts/deploy_phala.sh worker testnet --version v0.1.1              # deploy specific version
@@ -35,6 +36,7 @@ DOCKERHUB_ORG="outlayer"
 SKIP_BUILD=false
 DEPLOY_VERSION=""
 DRY_RUN=false
+REGION=""
 POSITIONAL_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -51,6 +53,10 @@ while [[ $# -gt 0 ]]; do
         --dry-run|--info)
             DRY_RUN=true
             shift
+            ;;
+        --region)
+            REGION="$2"
+            shift 2
             ;;
         *)
             POSITIONAL_ARGS+=("$1")
@@ -240,7 +246,7 @@ fi
 echo -e "${YELLOW}[4/7] Deploying to Phala Cloud...${NC}"
 cd docker
 
-phala deploy \
+DEPLOY_CMD=(phala deploy \
     --name "$CVM_NAME" \
     --compose "$COMPOSE_FILE" \
     -e "$ENV_FILE" \
@@ -248,7 +254,13 @@ phala deploy \
     --memory 2G \
     --disk-size 1G \
     --image dstack-0.5.4 \
-    --kms-id phala-prod10
+    --kms-id phala-prod10)
+
+if [ -n "$REGION" ]; then
+    DEPLOY_CMD+=(--region "$REGION")
+fi
+
+"${DEPLOY_CMD[@]}"
 
 cd ..
 echo -e "${GREEN}✓ Deployment initiated${NC}"

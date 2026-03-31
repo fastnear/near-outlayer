@@ -433,10 +433,24 @@ pub async fn execute(
         .context("Failed to instantiate component")?;
 
     debug!("Running wasi:cli/run");
-    let execution_result = command
-        .wasi_cli_run()
-        .call_run(&mut store)
-        .await;
+    let timeout_secs = limits.max_execution_seconds.max(5).min(180);
+    let timeout_duration = std::time::Duration::from_secs(timeout_secs);
+    let execution_result = match tokio::time::timeout(
+        timeout_duration,
+        command.wasi_cli_run().call_run(&mut store),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            let fuel_consumed = limits.max_instructions - store.get_fuel().unwrap_or(0);
+            anyhow::bail!(
+                "WASM execution timed out after {} seconds (consumed {} instructions)",
+                timeout_secs,
+                fuel_consumed
+            );
+        }
+    };
 
     // Get fuel consumed before checking result
     let fuel_consumed = limits.max_instructions - store.get_fuel().unwrap_or(0);

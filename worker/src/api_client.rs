@@ -396,6 +396,9 @@ impl ApiClient {
     pub fn new(base_url: String, auth_token: String) -> Result<Self> {
         let client = Client::builder()
             .timeout(Duration::from_secs(120)) // 2 minutes default timeout
+            .connect_timeout(Duration::from_secs(10)) // Fast fail on connection issues
+            .tcp_keepalive(Duration::from_secs(30)) // Detect dead connections
+            .pool_idle_timeout(Duration::from_secs(60)) // Don't reuse stale connections
             .build()
             .context("Failed to build HTTP client")?;
 
