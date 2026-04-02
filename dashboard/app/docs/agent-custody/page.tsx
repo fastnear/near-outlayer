@@ -758,6 +758,13 @@ curl -s -X POST -H "Content-Type: application/json" \\
           </p>
         </div>
 
+        <div className="bg-yellow-50 border-l-4 border-yellow-500 p-4 mb-6">
+          <p className="text-sm text-gray-700">
+            <strong>Requires a NEAR private key.</strong> Deterministic wallets are for integrators who have their own NEAR account key (bots, servers).
+            If your agent only has a <code className="bg-gray-100 px-1 rounded">wk_</code> API key (custody wallet), create sub-agents by calling <code className="bg-gray-100 px-1 rounded">POST /register</code> again &mdash; each gets its own key, no NEAR signatures needed.
+          </p>
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
           <div className="border border-gray-200 rounded-lg p-4">
             <h4 className="font-semibold text-gray-900 mb-1">Telegram / Discord Bot</h4>
@@ -798,9 +805,38 @@ curl -s -X POST -H "Content-Type: application/json" \\
           </table>
         </div>
 
+        <h3 className="text-lg font-semibold mt-6 mb-2">Signature format</h3>
+        <p className="text-gray-700 mb-2">
+          All signatures are <strong>raw ed25519</strong> &mdash; sign the message string bytes directly with your NEAR key, then base58-encode the 64-byte result.
+          This is <strong>NOT</strong> NEP-413 (the <code className="bg-gray-100 px-1 rounded">/sign-message</code> endpoint returns NEP-413 signatures, which are a different format and won&apos;t work here).
+        </p>
+        <div className="overflow-x-auto mb-4">
+          <table className="min-w-full text-sm border border-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-2 text-left font-semibold border-b">Field</th>
+                <th className="px-4 py-2 text-left font-semibold border-b">Format</th>
+                <th className="px-4 py-2 text-left font-semibold border-b">Example</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr className="border-b">
+                <td className="px-4 py-2 font-mono text-xs">pubkey</td>
+                <td className="px-4 py-2">With <code className="bg-gray-100 px-1 rounded">ed25519:</code> prefix</td>
+                <td className="px-4 py-2 font-mono text-xs">ed25519:6E8sCc...</td>
+              </tr>
+              <tr>
+                <td className="px-4 py-2 font-mono text-xs">signature</td>
+                <td className="px-4 py-2">Base58, <strong>no</strong> prefix</td>
+                <td className="px-4 py-2 font-mono text-xs">4dJh2r...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
         <h3 className="text-lg font-semibold mt-6 mb-2">Register a deterministic wallet</h3>
         <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
-{`# Sign "register:<seed>:<timestamp>" with your NEAR ed25519 key
+{`# Sign "register:<seed>:<timestamp>" with your NEAR ed25519 key (raw, not NEP-413)
 curl -s -X POST -H "Content-Type: application/json" \\
   -d '{
     "account_id": "my-bot.near",
@@ -811,6 +847,7 @@ curl -s -X POST -H "Content-Type: application/json" \\
   }' \\
   "https://api.outlayer.fastnear.com/register"
 
+# Timestamp window: ±5 minutes for registration
 # Response: { "wallet_id": "...", "near_account_id": "..." }
 # No api_key — use Bearer near:... for all requests`}
         </SyntaxHighlighter>
