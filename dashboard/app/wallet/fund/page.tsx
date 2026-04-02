@@ -116,19 +116,9 @@ function FundContent() {
     );
   }
 
-  // via contract only works with native NEAR
-  if (viaContract && !isNative) {
-    return (
-      <div className="max-w-lg mx-auto mt-12">
-        <div className="bg-red-50 border border-red-200 rounded-lg p-6 text-center">
-          <h2 className="text-lg font-semibold text-red-800 mb-2">Invalid Fund Link</h2>
-          <p className="text-red-700 text-sm">
-            The <code className="bg-red-100 px-1 rounded">via</code> parameter is only supported for native NEAR transfers.
-          </p>
-        </div>
-      </div>
-    );
-  }
+  const viaError = viaContract && !isNative
+    ? 'The "via" parameter is only supported for native NEAR transfers.'
+    : null;
 
   // Fetch token metadata for FT tokens
   // eslint-disable-next-line react-hooks/rules-of-hooks
@@ -342,7 +332,11 @@ function FundContent() {
           </div>
           <h2 className="text-xl font-semibold text-gray-900 mb-2">Transfer Complete</h2>
           <p className="text-gray-600 mb-4">
-            Sent {amount} {symbol} {depositToIntents ? 'to Intents balance' : 'to recipient'}
+            Sent {amount} {symbol} {depositNearViaContract
+              ? `via ${viaContract}`
+              : depositToIntents
+                ? 'to Intents balance'
+                : 'to recipient'}
           </p>
           {txHash !== 'submitted' && (
             <a
@@ -407,8 +401,15 @@ function FundContent() {
           </div>
         </div>
 
-        {/* Intents deposit toggle — FT tokens only, hidden when via is used */}
-        {!isNative && !depositNearViaContract && (
+        {/* via error */}
+        {viaError && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4">
+            <p className="text-red-800 text-sm">{viaError}</p>
+          </div>
+        )}
+
+        {/* Intents deposit toggle — FT tokens only */}
+        {!isNative && (
           <div className="mb-4">
             <label className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2.5 cursor-pointer">
               <div>
@@ -416,9 +417,7 @@ function FundContent() {
                 <p className="text-xs text-gray-500 mt-0.5">
                   {depositToIntents
                     ? 'Funds go to Intents balance (swaps, payments)'
-                    : (isNative
-                        ? 'Send NEAR directly to the recipient'
-                        : 'Funds go directly to recipient\u2019s token account')}
+                    : 'Funds go directly to recipient\u2019s token account'}
                 </p>
               </div>
               <button
@@ -522,7 +521,7 @@ function FundContent() {
 
             <button
               onClick={handleSend}
-              disabled={sending || !hasEnough || !tokenMeta}
+              disabled={sending || !hasEnough || !tokenMeta || !!viaError}
               className="w-full px-4 py-3 bg-gradient-to-r from-[#cc6600] to-[#d4a017] text-white rounded-lg font-medium hover:from-[#b35900] hover:to-[#c49016] transition-colors shadow-sm hover:shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {sending ? (
