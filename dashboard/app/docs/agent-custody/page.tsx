@@ -618,10 +618,25 @@ curl -s -X POST -H "Content-Type: application/json" \\
                 <td className="px-4 py-2 font-mono">GET</td>
                 <td className="px-4 py-2 font-mono text-xs">/wallet/v1/policy</td>
               </tr>
-              <tr>
+              <tr className="border-b">
                 <td className="px-4 py-2">Audit log</td>
                 <td className="px-4 py-2 font-mono">GET</td>
                 <td className="px-4 py-2 font-mono text-xs">/wallet/v1/audit</td>
+              </tr>
+              <tr className="border-b bg-blue-50/30">
+                <td className="px-4 py-2">Register (deterministic)</td>
+                <td className="px-4 py-2 font-mono">POST</td>
+                <td className="px-4 py-2 font-mono text-xs">/register (with NEAR sig body)</td>
+              </tr>
+              <tr className="border-b bg-blue-50/30">
+                <td className="px-4 py-2">Register delegate key</td>
+                <td className="px-4 py-2 font-mono">PUT</td>
+                <td className="px-4 py-2 font-mono text-xs">/wallet/v1/api-key</td>
+              </tr>
+              <tr className="bg-blue-50/30">
+                <td className="px-4 py-2">Revoke delegate key</td>
+                <td className="px-4 py-2 font-mono">DELETE</td>
+                <td className="px-4 py-2 font-mono text-xs">/wallet/v1/api-key/&#123;key_hash&#125;</td>
               </tr>
             </tbody>
           </table>
@@ -724,6 +739,125 @@ curl -s -X POST -H "Content-Type: application/json" \\
             identity without RPC: <code className="bg-blue-100 px-1 rounded">account_id == hex(public_key_bytes)</code>.
           </p>
         </div>
+      </section>
+
+      {/* Deterministic Wallets */}
+      <section id="deterministic-wallets" className="mb-10 scroll-mt-4">
+        <AnchorHeading id="deterministic-wallets">Deterministic Wallets</AnchorHeading>
+
+        <p className="text-gray-700 mb-4">
+          For servers, bots, and agents with a NEAR account: create wallets that require <strong>zero per-user key storage</strong>.
+          The wallet ID is derived from <code className="bg-gray-100 px-1 rounded">(account_id, seed)</code> &mdash; same inputs always produce the same wallet.
+          Auth uses NEAR ed25519 signatures on every request instead of stored API keys.
+        </p>
+
+        <div className="bg-blue-50 border-l-4 border-blue-500 p-4 mb-6">
+          <p className="text-sm text-gray-700">
+            <strong>Zero stored secrets.</strong> The coordinator stores no auth credentials for deterministic wallets. Key revocation = remove the key from your NEAR account.
+            Access is revoked within 60 seconds (cache TTL). No coordinator action needed.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          <div className="border border-gray-200 rounded-lg p-4">
+            <h4 className="font-semibold text-gray-900 mb-1">Telegram / Discord Bot</h4>
+            <p className="text-xs text-gray-600">One NEAR key in env. <code className="bg-gray-100 px-0.5 rounded text-xs">seed = SHA256(user_id)</code>. Creates wallets for thousands of users. Zero per-user DB.</p>
+          </div>
+          <div className="border border-gray-200 rounded-lg p-4">
+            <h4 className="font-semibold text-gray-900 mb-1">Web App (OAuth)</h4>
+            <p className="text-xs text-gray-600">Server has one NEAR key. <code className="bg-gray-100 px-0.5 rounded text-xs">seed = SHA256(provider:user_id)</code>. Google login &rarr; instant wallet.</p>
+          </div>
+          <div className="border border-gray-200 rounded-lg p-4">
+            <h4 className="font-semibold text-gray-900 mb-1">Sub-agents</h4>
+            <p className="text-xs text-gray-600">Parent derives <code className="bg-gray-100 px-0.5 rounded text-xs">wk_</code> keys from NEAR key + seed. Sub-agent uses simple Bearer token &mdash; no crypto.</p>
+          </div>
+        </div>
+
+        <h3 className="text-lg font-semibold mt-6 mb-2">Two auth methods</h3>
+        <div className="overflow-x-auto mb-4">
+          <table className="min-w-full text-sm border border-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-2 text-left font-semibold border-b">Header</th>
+                <th className="px-4 py-2 text-left font-semibold border-b">For</th>
+                <th className="px-4 py-2 text-left font-semibold border-b">Stored secrets</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr className="border-b">
+                <td className="px-4 py-2 font-mono text-xs">Bearer wk_...</td>
+                <td className="px-4 py-2">Random wallets, sub-agents</td>
+                <td className="px-4 py-2">API key hash in DB</td>
+              </tr>
+              <tr>
+                <td className="px-4 py-2 font-mono text-xs">Bearer near:&lt;base64url&gt;</td>
+                <td className="px-4 py-2">Deterministic wallets</td>
+                <td className="px-4 py-2">Nothing &mdash; verified via NEAR RPC</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3 className="text-lg font-semibold mt-6 mb-2">Register a deterministic wallet</h3>
+        <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
+{`# Sign "register:<seed>:<timestamp>" with your NEAR ed25519 key
+curl -s -X POST -H "Content-Type: application/json" \\
+  -d '{
+    "account_id": "my-bot.near",
+    "seed": "user-42",
+    "pubkey": "ed25519:<base58_pubkey>",
+    "message": "register:user-42:1712000000",
+    "signature": "<base58_signature>"
+  }' \\
+  "https://api.outlayer.fastnear.com/register"
+
+# Response: { "wallet_id": "...", "near_account_id": "..." }
+# No api_key — use Bearer near:... for all requests`}
+        </SyntaxHighlighter>
+
+        <h3 className="text-lg font-semibold mt-6 mb-2">Bearer near: token format</h3>
+        <p className="text-gray-700 mb-2">
+          Base64url-encode a JSON object. The signed message is <code className="bg-gray-100 px-1 rounded">auth:&lt;seed&gt;:&lt;timestamp&gt;</code> (±30s window).
+        </p>
+        <SyntaxHighlighter language="json" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
+{`{
+  "account_id": "my-bot.near",
+  "seed": "user-42",
+  "pubkey": "ed25519:<base58>",
+  "timestamp": 1712000000,
+  "signature": "<base58>"
+}`}
+        </SyntaxHighlighter>
+
+        <h3 className="text-lg font-semibold mt-6 mb-2">Delegate keys for sub-agents</h3>
+        <p className="text-gray-700 mb-2">
+          Register a <code className="bg-gray-100 px-1 rounded">wk_</code> key hash so a sub-agent can use simple Bearer auth without crypto libraries:
+        </p>
+        <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
+{`# Parent: derive key = "wk_" + hex(HMAC-SHA256(near_key, "seed:index"))
+# Parent: register hash
+curl -s -X PUT -H "Content-Type: application/json" \\
+  -d '{
+    "account_id": "parent.near", "seed": "sub-task",
+    "key_hash": "<sha256_hex_of_wk_key>",
+    "pubkey": "ed25519:...", "message": "api-key:sub-task:1712000000",
+    "signature": "..."
+  }' \\
+  "https://api.outlayer.fastnear.com/wallet/v1/api-key"
+
+# Sub-agent: simple Bearer token, no crypto
+curl -H "Authorization: Bearer wk_derived_key_here" \\
+  "https://api.outlayer.fastnear.com/wallet/v1/balance?chain=near"
+
+# Revoke: DELETE /wallet/v1/api-key/{key_hash} (Bearer near:... auth)
+# Returns 409 if last active key for the wallet`}
+        </SyntaxHighlighter>
+
+        <h3 className="text-lg font-semibold mt-6 mb-2">Key rotation</h3>
+        <p className="text-gray-700 mb-4">
+          No endpoint needed. Add a new key to your NEAR account, start signing with it, remove the old key.
+          Old key access is revoked within 60 seconds (cache TTL). Wallet identity is tied to <code className="bg-gray-100 px-1 rounded">(account_id, seed)</code>, not to which key signs.
+        </p>
       </section>
 
       {/* Security Model */}
