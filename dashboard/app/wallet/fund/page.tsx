@@ -70,7 +70,14 @@ function FundContent() {
   const tokenParam = searchParams.get('token') || 'near';
   const msg = searchParams.get('msg');
   const destParam = searchParams.get('dest'); // "intents" = deposit to intents balance
+  // via/method/args — custom contract call, native NEAR only
+  const viaContract = searchParams.get('via');
+  const viaMethod = searchParams.get('method') || 'deposit';
+  const viaArgs = searchParams.get('args');
+  const gasParam = searchParams.get('gas'); // TGas, default 30
+  const gasTGas = BigInt(gasParam ? parseInt(gasParam, 10) : 30) * BigInt(1e12);
   const isNative = !tokenParam || tokenParam === 'near';
+  const depositNearViaContract = isNative && !!viaContract;
 
   const [showWalletModal, setShowWalletModal] = useState(false);
   const [tokenMeta, setTokenMeta] = useState<TokenMeta | null>(null);
@@ -80,8 +87,8 @@ function FundContent() {
   const [txHash, setTxHash] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  // Intents deposit toggle — only for FT tokens
-  const [depositToIntents, setDepositToIntents] = useState(destParam === 'intents' && !isNative);
+  // Intents deposit toggle — for FT tokens, or native NEAR with a deposit helper contract
+  const [depositToIntents, setDepositToIntents] = useState(destParam === 'intents');
 
   // Validate params
   if (!to || !amount) {
@@ -104,6 +111,20 @@ function FundContent() {
         <div className="bg-red-50 border border-red-200 rounded-lg p-6 text-center">
           <h2 className="text-lg font-semibold text-red-800 mb-2">Invalid Amount</h2>
           <p className="text-red-700 text-sm">Amount must be a positive number.</p>
+        </div>
+      </div>
+    );
+  }
+
+  // via contract only works with native NEAR
+  if (viaContract && !isNative) {
+    return (
+      <div className="max-w-lg mx-auto mt-12">
+        <div className="bg-red-50 border border-red-200 rounded-lg p-6 text-center">
+          <h2 className="text-lg font-semibold text-red-800 mb-2">Invalid Fund Link</h2>
+          <p className="text-red-700 text-sm">
+            The <code className="bg-red-100 px-1 rounded">via</code> parameter is only supported for native NEAR transfers.
+          </p>
         </div>
       </div>
     );
@@ -208,7 +229,22 @@ function FundContent() {
     try {
       let result;
 
-      if (isNative) {
+      if (depositNearViaContract) {
+        // Native NEAR via custom contract call (e.g. wrap + deposit)
+        const parsedArgs = viaArgs ? JSON.parse(viaArgs) : {};
+        result = await signAndSendTransaction({
+          receiverId: viaContract!,
+          actions: [
+            actionCreators.functionCall(
+              viaMethod,
+              parsedArgs,
+              gasTGas,
+              BigInt(nearToYocto(amount)),
+            ),
+          ],
+        });
+      } else if (isNative) {
+        // Direct NEAR transfer
         const yoctoAmount = nearToYocto(amount);
         result = await signAndSendTransaction({
           receiverId: to,
@@ -306,7 +342,7 @@ function FundContent() {
           </div>
           <h2 className="text-xl font-semibold text-gray-900 mb-2">Transfer Complete</h2>
           <p className="text-gray-600 mb-4">
-            Sent {amount} {symbol} {depositToIntents ? 'to agent\u2019s Intents balance' : 'to agent'}
+            Sent {amount} {symbol} {depositToIntents ? 'to Intents balance' : 'to recipient'}
           </p>
           {txHash !== 'submitted' && (
             <a
@@ -337,8 +373,8 @@ function FundContent() {
               </svg>
             )}
           </div>
-          <h1 className="text-xl font-semibold text-gray-900">Agent Fund Request</h1>
-          <p className="text-gray-500 text-sm mt-1">An AI agent is requesting a transfer</p>
+          <h1 className="text-xl font-semibold text-gray-900">Fund Request</h1>
+          <p className="text-gray-500 text-sm mt-1">You are requested to top up a wallet balance</p>
         </div>
 
         {/* Amount display */}
@@ -371,16 +407,18 @@ function FundContent() {
           </div>
         </div>
 
-        {/* Intents deposit toggle — FT tokens only */}
-        {!isNative && (
+        {/* Intents deposit toggle — FT tokens only, hidden when via is used */}
+        {!isNative && !depositNearViaContract && (
           <div className="mb-4">
             <label className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2.5 cursor-pointer">
               <div>
                 <span className="text-sm font-medium text-gray-700">Deposit to Intents balance</span>
                 <p className="text-xs text-gray-500 mt-0.5">
                   {depositToIntents
-                    ? 'Funds go to agent\u2019s trading balance (swaps, payments)'
-                    : 'Funds go directly to agent\u2019s token account'}
+                    ? 'Funds go to Intents balance (swaps, payments)'
+                    : (isNative
+                        ? 'Send NEAR directly to the recipient'
+                        : 'Funds go directly to recipient\u2019s token account')}
                 </p>
               </div>
               <button
@@ -401,6 +439,43 @@ function FundContent() {
             </label>
           </div>
         )}
+
+        {/* Transaction details — show exactly what will be signed */}
+        <div className="mb-4">
+          <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Transaction details</label>
+          <div className="bg-gray-50 rounded-lg p-3 space-y-1.5 text-xs font-mono text-gray-600">
+            {depositNearViaContract ? (
+              <>
+                <div><span className="text-gray-400">Contract:</span> {viaContract}</div>
+                <div><span className="text-gray-400">Method:</span> {viaMethod}</div>
+                {viaArgs && <div className="break-all"><span className="text-gray-400">Args:</span> {viaArgs}</div>}
+                <div><span className="text-gray-400">Deposit:</span> {amount} NEAR</div>
+                <div><span className="text-gray-400">Gas:</span> {gasParam || '30'} TGas</div>
+              </>
+            ) : isNative ? (
+              <>
+                <div><span className="text-gray-400">Action:</span> Transfer</div>
+                <div><span className="text-gray-400">To:</span> {truncateAccount(to)}</div>
+                <div><span className="text-gray-400">Amount:</span> {amount} NEAR</div>
+              </>
+            ) : depositToIntents ? (
+              <>
+                <div><span className="text-gray-400">Contract:</span> {tokenParam}</div>
+                <div><span className="text-gray-400">Method:</span> ft_transfer_call</div>
+                <div><span className="text-gray-400">Receiver:</span> intents.near</div>
+                <div><span className="text-gray-400">Amount:</span> {amount} {symbol}</div>
+                <div><span className="text-gray-400">Msg:</span> {truncateAccount(to)}</div>
+              </>
+            ) : (
+              <>
+                <div><span className="text-gray-400">Contract:</span> {tokenParam}</div>
+                <div><span className="text-gray-400">Method:</span> ft_transfer</div>
+                <div><span className="text-gray-400">To:</span> {truncateAccount(to)}</div>
+                <div><span className="text-gray-400">Amount:</span> {amount} {symbol}</div>
+              </>
+            )}
+          </div>
+        </div>
 
         {/* Storage deposit notice */}
         {!isNative && needsStorage && (
@@ -456,7 +531,11 @@ function FundContent() {
                   Sending...
                 </span>
               ) : (
-                `Send ${amount} ${symbol}`
+                depositNearViaContract
+                  ? `Send ${amount} NEAR via ${viaContract}`
+                  : depositToIntents
+                    ? `Deposit ${amount} ${symbol} to Intents`
+                    : `Send ${amount} ${symbol}`
               )}
             </button>
 
