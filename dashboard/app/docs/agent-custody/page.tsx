@@ -868,25 +868,31 @@ curl -s -X POST -H "Content-Type: application/json" \\
 
         <h3 className="text-lg font-semibold mt-6 mb-2">Delegate keys for sub-agents</h3>
         <p className="text-gray-700 mb-2">
-          Register a <code className="bg-gray-100 px-1 rounded">wk_</code> key hash so a sub-agent can use simple Bearer auth without crypto libraries:
+          Register a <code className="bg-gray-100 px-1 rounded">wk_</code> key hash so a sub-agent can use simple Bearer auth without crypto libraries.
+          Works with both external NEAR keys and custody wallets (via <code className="bg-gray-100 px-1 rounded">sign-message</code> with <code className="bg-gray-100 px-1 rounded">format: &quot;raw&quot;</code>):
         </p>
         <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
-{`# Parent: derive key = "wk_" + hex(HMAC-SHA256(near_key, "seed:index"))
-# Parent: register hash
+{`# 1. Get raw signature (custody wallet can use sign-message with format: "raw")
+curl -s -X POST -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \\
+  -d '{"message":"api-key:sub-task:1712000000","recipient":"outlayer.near","format":"raw"}' \\
+  "https://api.outlayer.fastnear.com/wallet/v1/sign-message"
+
+# 2. Register the key hash
 curl -s -X PUT -H "Content-Type: application/json" \\
   -d '{
-    "account_id": "parent.near", "seed": "sub-task",
+    "account_id": "<account_id>", "seed": "sub-task",
     "key_hash": "<sha256_hex_of_wk_key>",
-    "pubkey": "ed25519:...", "message": "api-key:sub-task:1712000000",
-    "signature": "..."
+    "pubkey": "<public_key_from_step_1>",
+    "message": "api-key:sub-task:1712000000",
+    "signature": "<signature_from_step_1>"
   }' \\
   "https://api.outlayer.fastnear.com/wallet/v1/api-key"
 
-# Sub-agent: simple Bearer token, no crypto
+# 3. Sub-agent: simple Bearer token, no crypto
 curl -H "Authorization: Bearer wk_derived_key_here" \\
   "https://api.outlayer.fastnear.com/wallet/v1/balance?chain=near"
 
-# Revoke: DELETE /wallet/v1/api-key/{key_hash} (Bearer near:... auth)
+# Revoke: DELETE /wallet/v1/api-key/{key_hash}
 # Returns 409 if last active key for the wallet`}
         </SyntaxHighlighter>
 
