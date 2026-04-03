@@ -93,22 +93,26 @@ The base64url payload is a JSON object:
 ## Auth middleware flow
 
 ```
-1. Extract Bearer token from Authorization header
-2. If starts with "wk_" → existing api_key auth (unchanged)
-3. If starts with "near:" → NEAR signature auth:
+1. Try X-Internal-Wallet-Auth (trusted worker, no DB query)
+2. Try Bearer near:... → NEAR signature auth:
    a. base64url-decode → parse JSON
-   b. Verify timestamp ±30 sec (MAX_TIMESTAMP_SKEW)
+   b. Verify timestamp ±30 sec (MAX_TIMESTAMP_SKEW = 30)
    c. Parse pubkey "ed25519:<base58>" → raw 32 bytes
-   d. Verify ed25519 signature of "auth:<seed>:<timestamp>" against pubkey
-   e. Access key cache check: (account_id, pubkey) → valid?
+   d. Verify raw ed25519 signature of "auth:<seed>:<timestamp>" against pubkey
+   e. Access key cache check: "account_id\0pubkey" → valid?
       - Cache hit → use cached result
-      - Cache miss → NEAR RPC check_access_key_exists()
+      - Cache miss → NEAR RPC view_access_key (single call, no retry)
       - Cache result for 60s (both positive and negative)
    f. Derive wallet_id = deterministic(account_id, seed)
    g. Verify wallet_id exists in wallet_accounts
    h. Return WalletAuth { wallet_id, ... }
-4. No Bearer header → existing fallback (internal auth, etc.)
+3. Try Bearer wk_... → existing api_key auth (unchanged)
+4. No auth → Err(MissingAuth)
 ```
+
+**Two timestamp windows:**
+- `MAX_TIMESTAMP_SKEW = 30` sec — Bearer near: auth (every request, tight)
+- `MAX_REGISTRATION_SKEW = 300` sec (5 min) — POST /register, PUT /api-key with NEAR sig in body (setup steps)
 
 All wallet/v1/* endpoints receive `WalletAuth` — they don't know or care how it was obtained.
 
@@ -116,13 +120,14 @@ All wallet/v1/* endpoints receive `WalletAuth` — they don't know or care how i
 
 ```rust
 struct AccessKeyCache {
-    // (account_id, pubkey) → (valid, expires_at)
-    cache: DashMap<(String, String), (bool, Instant)>,
+    // "account_id\0pubkey" → (valid, cached_at)
+    // NUL-separated composite key avoids tuple allocation on lookup
+    entries: Arc<RwLock<HashMap<String, (bool, Instant)>>>,
 }
 ```
 
 - TTL: 60 seconds
-- Max entries: 10K (lazy cleanup, same pattern as existing ApiKeyCache)
+- Max entries: 10K (lazy cleanup on write, same pattern as ApiKeyCache)
 - Negative caching: invalid keys cached for 60s to prevent RPC spam
 - Security tradeoff: 60s window after key deletion before access revoked
 
@@ -145,11 +150,12 @@ All 5 fields present = deterministic path. All absent = current behavior (random
 ### Validation
 
 1. All 5 fields must be present together, else 400
-2. Parse `message` — extract seed and timestamp, verify seed matches `seed` field
-3. Timestamp ±30 sec (`MAX_TIMESTAMP_SKEW`, already exists in auth.rs)
-4. Parse `pubkey` "ed25519:\<base58\>" → raw 32 bytes (`bs58` already in deps)
-5. Verify ed25519 signature (`verify_ed25519()` in auth.rs — already exists)
-6. NEAR RPC: `check_access_key_exists(rpc_url, account_id, pubkey)` — **only for new wallets**
+2. `seed` must not be empty
+3. Parse `message` via `rsplit_once(':')` — extract seed and timestamp, verify seed matches `seed` field. Seeds may contain `:`.
+4. Timestamp ±5 min (`MAX_REGISTRATION_SKEW = 300` — longer window for setup operations)
+5. Parse `pubkey` "ed25519:\<base58\>" → raw 32 bytes
+6. Verify **raw ed25519** signature (NOT NEP-413) of `message` against `pubkey`
+7. NEAR RPC: `check_access_key_exists(rpc_url, account_id, pubkey)` — **only for new wallets** (cached 60s)
 
 ### Wallet creation
 
@@ -233,21 +239,29 @@ What's NOT stored anywhere: auth credentials. Coordinator DB has zero secrets fo
 
 ## PUT /wallet/v1/api-key — delegate key for sub-agents
 
-Registers a client-derived `wk_` key hash for a deterministic wallet. Creates wallet if not exists. Idempotent.
+Registers a client-derived `wk_` key hash. Creates sub-wallet if not exists. Idempotent.
 
-**Auth: NEAR signature in request body** (not Bearer header). This endpoint may create new wallets, so it cannot go through the auth middleware (which requires wallet to already exist). It validates the signature itself, same as POST /register deterministic path.
+**Two auth modes:**
 
-The caller derives the key themselves — coordinator never sees the plaintext:
+### Mode 1: Bearer header (custody wallets)
 
+Custody wallet (`Bearer wk_...`) or deterministic wallet (`Bearer near:...`) creates a sub-wallet. No NEAR signatures needed — parent is already authenticated.
+
+Sends `Authorization: Bearer wk_...` header + minimal body:
+```json
+{
+  "seed": "sub-task-42",
+  "key_hash": "sha256hex64chars..."
+}
 ```
-api_key = "wk_" + hex(HMAC-SHA256(near_private_key, seed + ":" + index))
-key_hash = SHA256(api_key)
-```
 
-Index (`:0`, `:1`, `:2`, ...) allows multiple keys per wallet. Caller can re-derive any key anytime from (near_key, seed, index) — nothing to store.
+Sub-wallet_id = `deterministic(parent_wallet_id, seed)`. No RPC check.
 
-### Request
+**Ambiguity guard:** If both Bearer header AND signature fields (account_id, pubkey, message, signature) are present in body → 400 error. Prevents silent fallthrough bugs.
 
+### Mode 2: NEAR signature in body (external NEAR accounts)
+
+No Bearer header. All 6 fields required:
 ```json
 {
   "account_id": "parent-agent.near",
@@ -259,7 +273,9 @@ Index (`:0`, `:1`, `:2`, ...) allows multiple keys per wallet. Caller can re-der
 }
 ```
 
-### Response
+Timestamp window: ±5 min. Raw ed25519 signature. RPC check for new wallets.
+
+### Response (both modes)
 
 ```json
 {
@@ -268,14 +284,21 @@ Index (`:0`, `:1`, `:2`, ...) allows multiple keys per wallet. Caller can re-der
 }
 ```
 
-No `api_key` in response — caller already knows it.
+### Flow (Mode 1 — Bearer)
 
-### Flow
+1. Authenticate via Bearer header (existing `authenticate()`)
+2. Reject if signature fields also present (ambiguous auth)
+3. Derive wallet_id = `deterministic(parent_wallet_id, seed)`
+4. Create wallet if not exists (no RPC check — parent is authenticated)
+5. Store key_hash in wallet_api_keys (INSERT ON CONFLICT DO NOTHING — idempotent)
+6. Return wallet info
 
-1. Validate signature + timestamp (same as register)
+### Flow (Mode 2 — NEAR sig)
+
+1. Validate signature + timestamp (±5 min)
 2. NEAR RPC: check pubkey is on account (cached 60s, skip if wallet already exists)
-3. Derive wallet_id = deterministic(account_id, seed)
-4. Create wallet if not exists (INSERT ON CONFLICT DO NOTHING + trial_quotas — same as register)
+3. Derive wallet_id = `deterministic(account_id, seed)`
+4. Create wallet if not exists (INSERT ON CONFLICT DO NOTHING + trial_quotas)
 5. Store key_hash in wallet_api_keys (INSERT ON CONFLICT DO NOTHING — idempotent)
 6. Return wallet info
 
@@ -320,8 +343,19 @@ api_key = f"wk_{hmac_sha256(near_private_key, f'{seed}:0').hex()}"
 |----------|------|----------------|-----------------|----------|
 | `POST /register` (no body) | None | Yes (random) | Yes (`wk_`) | Quick start, testing |
 | `POST /register` (with signature) | NEAR sig in body | Yes (deterministic) | No | Server/bot, uses `Bearer near:...` |
-| `PUT /wallet/v1/api-key` | NEAR sig in body | Yes if needed | No (caller knows it) | Register delegate key for sub-agent |
-| `DELETE /wallet/v1/api-key/:key_hash` | `Bearer near:...` | No | — | Revoke delegate key (last key protected) |
+| `PUT /wallet/v1/api-key` | Bearer header OR NEAR sig in body | Yes if needed | No (caller knows it) | Register delegate key for sub-agent |
+| `DELETE /wallet/v1/api-key/:key_hash` | `Bearer near:...` or `Bearer wk_...` | No | — | Revoke delegate key (last key protected) |
+
+## POST /wallet/v1/sign-message — format: "raw"
+
+Existing endpoint, new optional parameter: `"format": "raw"`.
+
+When `format` is omitted or `"nep413"` — current behavior (NEP-413 envelope).
+When `format` is `"raw"` — signs message bytes directly with ed25519 (no NEP-413 wrapping).
+
+Uses keystore `/wallet/sign-transaction` endpoint (already exists). Returns `signature` as base58 without prefix.
+
+Use cases: custom authentication protocols, off-chain proofs, any integration needing a plain ed25519 signature from the wallet's key.
 
 ## What to write new
 
@@ -497,7 +531,36 @@ def on_github_login(github_user_id: str) -> dict:
 
 ---
 
-### Flow 4: AI agent creating sub-agents (deterministic + delegate wk_ key)
+### Flow 4a: Custody wallet creating sub-agents (Bearer auth, no crypto)
+
+Parent agent has a `wk_` API key (custody wallet). No NEAR key needed.
+
+```python
+import hashlib, requests
+
+API = "https://api.outlayer.fastnear.com"
+PARENT_KEY = "wk_..."
+HEADERS = {"Authorization": f"Bearer {PARENT_KEY}", "Content-Type": "application/json"}
+
+def create_sub_agent_wallet(task_id: str) -> tuple[str, str]:
+    seed = f"sub-agent:{task_id}"
+    sub_key = f"wk_{hashlib.sha256(f'{seed}:0:{PARENT_KEY}'.encode()).hexdigest()}"
+    key_hash = hashlib.sha256(sub_key.encode()).hexdigest()
+
+    resp = requests.put(f"{API}/wallet/v1/api-key",
+        headers=HEADERS,
+        json={"seed": seed, "key_hash": key_hash},
+    ).json()
+    return resp["near_account_id"], sub_key
+
+# Create and hand key to sub-agent
+account, key = create_sub_agent_wallet("task-42")
+# Sub-agent uses: Authorization: Bearer wk_...
+```
+
+---
+
+### Flow 4b: External NEAR account creating sub-agents (NEAR signature)
 
 Parent agent has a NEAR key. Creates wallets for sub-agents. Sub-agents use simple Bearer tokens — no crypto libraries needed.
 

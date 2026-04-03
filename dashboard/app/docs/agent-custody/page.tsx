@@ -760,8 +760,8 @@ curl -s -X POST -H "Content-Type: application/json" \\
 
         <div className="bg-yellow-50 border-l-4 border-yellow-500 p-4 mb-6">
           <p className="text-sm text-gray-700">
-            <strong>Requires a NEAR private key.</strong> Deterministic wallets are for integrators who have their own NEAR account key (bots, servers).
-            If your agent only has a <code className="bg-gray-100 px-1 rounded">wk_</code> API key (custody wallet), create sub-agents by calling <code className="bg-gray-100 px-1 rounded">POST /register</code> again &mdash; each gets its own key, no NEAR signatures needed.
+            <strong>NEAR signature auth</strong> is for integrators who have their own NEAR account key (bots, servers).
+            Custody wallets (<code className="bg-gray-100 px-1 rounded">wk_</code> API key) can also create sub-agents &mdash; just pass your Bearer header to <code className="bg-gray-100 px-1 rounded">PUT /wallet/v1/api-key</code> with <code className="bg-gray-100 px-1 rounded">seed</code> and <code className="bg-gray-100 px-1 rounded">key_hash</code> in body, no NEAR signatures needed.
           </p>
         </div>
 
