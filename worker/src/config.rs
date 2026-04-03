@@ -48,6 +48,10 @@ pub struct Config {
     pub default_max_memory_mb: u32,
     #[allow(dead_code)]
     pub default_max_execution_seconds: u64,
+    /// Hard cap on WASM execution time regardless of request (seconds)
+    pub max_execution_seconds_cap: u64,
+    /// Extra time budget for RPC calls, WASM download, result upload etc. (seconds)
+    pub iteration_overhead_seconds: u64,
 
     // Keystore worker (optional - for secret decryption)
     pub keystore_base_url: Option<String>,
@@ -298,6 +302,16 @@ impl Config {
             .parse::<u64>()
             .context("DEFAULT_MAX_EXECUTION_SECONDS must be a valid number")?;
 
+        let max_execution_seconds_cap = env::var("MAX_EXECUTION_SECONDS_CAP")
+            .unwrap_or_else(|_| "180".to_string())
+            .parse::<u64>()
+            .context("MAX_EXECUTION_SECONDS_CAP must be a valid number")?;
+
+        let iteration_overhead_seconds = env::var("ITERATION_OVERHEAD_SECONDS")
+            .unwrap_or_else(|_| "60".to_string())
+            .parse::<u64>()
+            .context("ITERATION_OVERHEAD_SECONDS must be a valid number")?;
+
         // Keystore configuration (optional)
         let keystore_base_url = env::var("KEYSTORE_BASE_URL").ok();
         let keystore_auth_token = env::var("KEYSTORE_AUTH_TOKEN").ok();
@@ -463,6 +477,8 @@ impl Config {
             default_max_instructions,
             default_max_memory_mb,
             default_max_execution_seconds,
+            max_execution_seconds_cap,
+            iteration_overhead_seconds,
             keystore_base_url,
             keystore_auth_token,
             tee_mode,
@@ -657,6 +673,8 @@ mod tests {
             default_max_instructions: 10_000_000_000,
             default_max_memory_mb: 128,
             default_max_execution_seconds: 60,
+            max_execution_seconds_cap: 180,
+            iteration_overhead_seconds: 60,
             keystore_base_url: None,
             keystore_auth_token: None,
             tee_mode: "none".to_string(),

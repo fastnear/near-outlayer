@@ -124,7 +124,7 @@ pub async fn execute(
              Make sure you're using [[bin]] format with fn main(), not [lib] with cdylib",
         )?;
 
-    let timeout_secs = limits.max_execution_seconds.max(5).min(180);
+    let timeout_secs = limits.max_execution_seconds.max(5);
     let timeout_duration = std::time::Duration::from_secs(timeout_secs);
     let call_result = match tokio::time::timeout(
         timeout_duration,

@@ -433,7 +433,7 @@ pub async fn execute(
         .context("Failed to instantiate component")?;
 
     debug!("Running wasi:cli/run");
-    let timeout_secs = limits.max_execution_seconds.max(5).min(180);
+    let timeout_secs = limits.max_execution_seconds.max(5);
     let timeout_duration = std::time::Duration::from_secs(timeout_secs);
     let execution_result = match tokio::time::timeout(
         timeout_duration,

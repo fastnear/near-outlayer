@@ -472,25 +472,43 @@ async fn main() -> Result<()> {
     // Shared event monitor block height for heartbeat reporting
     let shared_block_height = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 
+    // Shared timestamp of last successful poll (epoch seconds)
+    let shared_last_poll_at = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+
     // Start heartbeat task
     let heartbeat_api_client = api_client.clone();
     let heartbeat_worker_id = config.worker_id.clone();
     // Worker name = worker_id (already descriptive: mainnet-executor-75ab6ac2)
     let heartbeat_worker_name = config.worker_id.clone();
     let heartbeat_block_height = shared_block_height.clone();
+    let heartbeat_last_poll_at = shared_last_poll_at.clone();
+    let stale_threshold_secs = config.poll_timeout_seconds + config.max_execution_seconds_cap + config.iteration_overhead_seconds;
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
         loop {
             interval.tick().await;
             let block = heartbeat_block_height.load(std::sync::atomic::Ordering::Relaxed);
             let event_monitor_block_height = if block > 0 { Some(block) } else { None };
+            let last_poll = heartbeat_last_poll_at.load(std::sync::atomic::Ordering::Relaxed);
+            let last_poll_at = if last_poll > 0 { Some(last_poll) } else { None };
+            // If last_poll_at hasn't updated within iteration_timeout, main loop is likely stuck
+            let now_epoch = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let status = if last_poll > 0 && now_epoch.saturating_sub(last_poll) > stale_threshold_secs {
+                "stale"
+            } else {
+                "online"
+            };
             if let Err(e) = heartbeat_api_client
                 .send_heartbeat(
                     heartbeat_worker_id.clone(),
                     heartbeat_worker_name.clone(),
-                    "online",
+                    status,
                     None,
                     event_monitor_block_height,
+                    last_poll_at,
                 )
                 .await
             {
@@ -567,30 +585,50 @@ async fn main() -> Result<()> {
 
     // Main worker loop
     info!("Starting worker loop...");
+    // Hard timeout: poll_timeout + max_execution_cap + overhead for RPC/download/upload
+    let iteration_timeout = tokio::time::Duration::from_secs(
+        config.poll_timeout_seconds + config.max_execution_seconds_cap + config.iteration_overhead_seconds,
+    );
     loop {
-        match worker_iteration(
-            &api_client,
-            compiler.as_ref(),
-            &executor,
-            &near_client,
-            keystore_client.as_ref(),
-            &tdx_client,
-            &config,
-            wasm_cache.as_ref(),
-            compiled_cache.as_ref(),
+        match tokio::time::timeout(
+            iteration_timeout,
+            worker_iteration(
+                &api_client,
+                compiler.as_ref(),
+                &executor,
+                &near_client,
+                keystore_client.as_ref(),
+                &tdx_client,
+                &config,
+                wasm_cache.as_ref(),
+                compiled_cache.as_ref(),
+            ),
         )
         .await
         {
-            Ok(processed) => {
-                if !processed {
-                    // No task available, short sleep before next poll
-                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            Ok(result) => {
+                // Update last poll timestamp — iteration returned, poll is alive
+                shared_last_poll_at.store(
+                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                match result {
+                    Ok(processed) => {
+                        if !processed {
+                            // No task available, short sleep before next poll
+                            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                        }
+                    }
+                    Err(e) => {
+                        error!("Worker iteration failed: {}", e);
+                        // Sleep before retry to avoid tight error loop
+                        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                    }
                 }
             }
-            Err(e) => {
-                error!("Worker iteration failed: {}", e);
-                // Sleep before retry to avoid tight error loop
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            Err(_) => {
+                error!("⏰ Worker iteration timed out after {}s — reconnecting", iteration_timeout.as_secs());
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
             }
         }
     }
@@ -628,7 +666,9 @@ async fn worker_iteration(
     // Extract request details
     let request_id = execution_request.request_id;
     let data_id = execution_request.data_id.clone();
-    let resource_limits = execution_request.resource_limits.clone();
+    let mut resource_limits = execution_request.resource_limits.clone();
+    // Apply worker-level cap on execution time
+    resource_limits.max_execution_seconds = resource_limits.max_execution_seconds.min(config.max_execution_seconds_cap);
     let input_data = execution_request.input_data.clone();
     let secrets_ref = execution_request.secrets_ref.clone();
     let response_format = execution_request.response_format.clone();

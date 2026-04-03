@@ -1836,6 +1836,7 @@ impl ApiClient {
         status: &str,
         current_task_id: Option<i64>,
         event_monitor_block_height: Option<u64>,
+        last_poll_at: Option<u64>,
     ) -> Result<()> {
         let url = format!("{}/workers/heartbeat", self.base_url);
 
@@ -1847,6 +1848,8 @@ impl ApiClient {
             current_task_id: Option<i64>,
             #[serde(skip_serializing_if = "Option::is_none")]
             event_monitor_block_height: Option<u64>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            last_poll_at: Option<u64>,
         }
 
         let request = HeartbeatRequest {
@@ -1855,6 +1858,7 @@ impl ApiClient {
             status: status.to_string(),
             current_task_id,
             event_monitor_block_height,
+            last_poll_at,
         };
 
         let response = self.add_auth_headers(self.client.post(&url))
