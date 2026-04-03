@@ -386,10 +386,14 @@ impl StorageClient {
         for key_info in resp.keys {
             if started.elapsed() > LIST_KEYS_TIMEOUT {
                 warn!(
-                    "list_keys timed out after {}s ({}/{} keys) — returning empty list",
+                    "list_keys timed out after {}s ({}/{} keys)",
                     LIST_KEYS_TIMEOUT.as_secs(), decrypted_keys.len(), total_keys
                 );
-                return Ok("[]".to_string());
+                anyhow::bail!(
+                    "list_keys timed out after {}s: too many keys ({} total). \
+                    Consider using prefix filter or reducing stored keys.",
+                    LIST_KEYS_TIMEOUT.as_secs(), total_keys
+                );
             }
             match self.decrypt_via_keystore(&key_info.encrypted_key, &key_info.encrypted_value, &self.config.account_id) {
                 Ok(decrypted) => {

@@ -590,10 +590,21 @@ pub async fn execute(
             }
 
             // Component exited with error or trapped
+            let trap_msg = match &execution_result {
+                Err(e) => Some(e.to_string()),
+                _ => None,
+            };
             let error_msg = if !stderr_contents.is_empty() {
-                String::from_utf8_lossy(&stderr_contents).to_string()
+                let stderr_str = String::from_utf8_lossy(&stderr_contents).to_string();
+                if let Some(trap) = &trap_msg {
+                    format!("{}\nTrap: {}", stderr_str, trap)
+                } else {
+                    stderr_str
+                }
+            } else if let Some(trap) = trap_msg {
+                format!("Component execution failed: {}", trap)
             } else {
-                "Component execution failed (no error message in stderr)".to_string()
+                "Component exited with error (no details in stderr)".to_string()
             };
 
             debug!("Component execution failed: {}", error_msg);
