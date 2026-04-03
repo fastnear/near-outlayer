@@ -3736,6 +3736,7 @@ dependencies = [
  "ed25519-dalek",
  "futures-util",
  "hex",
+ "hyper 1.8.1",
  "log",
  "near-crypto",
  "near-jsonrpc-client",

@@ -54,6 +54,10 @@ fn get_p2_engine() -> &'static Engine {
 use wasmtime_wasi::{DirPerms, FilePerms, ResourceTable, WasiCtx, WasiCtxBuilder, WasiView};
 use wasmtime_wasi::bindings::Command;
 use wasmtime_wasi_http::{WasiHttpCtx, WasiHttpView};
+use wasmtime_wasi_http::body::HyperOutgoingBody;
+use wasmtime_wasi_http::types::{
+    default_send_request_handler, HostFutureIncomingResponse, OutgoingRequestConfig,
+};
 
 use crate::api_client::ResourceLimits;
 use crate::compiled_cache::CompiledCache;
@@ -64,6 +68,11 @@ use crate::outlayer_vrf::{VrfHostState, add_vrf_to_linker};
 use crate::outlayer_wallet::{WalletHostState, add_wallet_to_linker};
 
 use super::ExecutionContext;
+
+/// Max time for a single outbound HTTP request from WASI (seconds)
+const HTTP_REQUEST_TIMEOUT_SECS: u64 = 30;
+/// After this many timed-out HTTP requests, WASI execution is aborted
+const HTTP_TIMEOUT_ABORT_THRESHOLD: u32 = 2;
 
 /// Host state for WASI P2 execution
 ///
@@ -82,6 +91,10 @@ struct HostState {
     vrf_state: Option<VrfHostState>,
     /// Wallet state (only present if wallet_id in execution request)
     wallet_state: Option<WalletHostState>,
+    /// Counter for timed-out HTTP requests (shared with spawned tasks)
+    http_timeout_count: Arc<std::sync::atomic::AtomicU32>,
+    /// Engine handle to force epoch interrupt when aborting due to HTTP abuse (Engine::clone is Arc)
+    engine_handle: &'static Engine,
 }
 
 impl WasiView for HostState {
@@ -113,6 +126,58 @@ impl WasiHttpView for HostState {
     fn outgoing_body_chunk_size(&mut self) -> usize {
         tracing::trace!("outgoing_body_chunk_size: 16MB");
         16 * 1024 * 1024 // 16MB max per write (default might be too small)
+    }
+
+    fn send_request(
+        &mut self,
+        request: hyper::Request<HyperOutgoingBody>,
+        config: OutgoingRequestConfig,
+    ) -> wasmtime_wasi_http::HttpResult<HostFutureIncomingResponse> {
+        let timeout_count = self.http_timeout_count.clone();
+        let engine = self.engine_handle; // &'static Engine
+
+        // Check if already exceeded threshold before sending
+        let current = timeout_count.load(std::sync::atomic::Ordering::Relaxed);
+        if current >= HTTP_TIMEOUT_ABORT_THRESHOLD {
+            tracing::warn!("WASI HTTP aborted: {} requests timed out, refusing new requests", current);
+            return Ok(HostFutureIncomingResponse::ready(Ok(Err(
+                wasmtime_wasi_http::bindings::http::types::ErrorCode::InternalError(
+                    Some(format!("Execution aborted: {} HTTP requests exceeded {}s timeout", current, HTTP_REQUEST_TIMEOUT_SECS))
+                )
+            ))));
+        }
+
+        let url = request.uri().to_string();
+        let timeout_duration = std::time::Duration::from_secs(HTTP_REQUEST_TIMEOUT_SECS);
+
+        let handle = wasmtime_wasi::runtime::spawn(async move {
+            match tokio::time::timeout(
+                timeout_duration,
+                default_send_request_handler(request, config),
+            )
+            .await
+            {
+                Ok(result) => Ok(result),
+                Err(_) => {
+                    let count = timeout_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    tracing::warn!(
+                        "WASI HTTP request timed out after {}s: {} (timeout count: {}/{})",
+                        HTTP_REQUEST_TIMEOUT_SECS, url, count, HTTP_TIMEOUT_ABORT_THRESHOLD
+                    );
+                    if count >= HTTP_TIMEOUT_ABORT_THRESHOLD {
+                        tracing::error!("HTTP abuse detected: forcing WASI termination via epoch interrupt");
+                        // Advance epoch well past any possible deadline to trigger trap.
+                        // max_execution_seconds is at most ~180, +100 for safety margin.
+                        for _ in 0..300 {
+                            engine.increment_epoch();
+                        }
+                    }
+                    Ok(Err(wasmtime_wasi_http::bindings::http::types::ErrorCode::ConnectionTimeout))
+                }
+            }
+        });
+
+        Ok(HostFutureIncomingResponse::pending(handle))
     }
 }
 
@@ -416,6 +481,8 @@ pub async fn execute(
         payment_state,
         vrf_state,
         wallet_state,
+        http_timeout_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+        engine_handle: engine,
     };
 
     // Create store with fuel limit + epoch deadline
@@ -485,6 +552,18 @@ pub async fn execute(
         tracing::info!("📝 WASM stderr output:\n{}", stderr_str);
     }
 
+    // Check if execution was killed due to HTTP abuse (before checking result)
+    let http_timeouts = store.data().http_timeout_count.load(std::sync::atomic::Ordering::Relaxed);
+    if http_timeouts >= HTTP_TIMEOUT_ABORT_THRESHOLD {
+        anyhow::bail!(
+            "Execution terminated: {} HTTP requests exceeded {}s timeout limit (penalty). \
+            Full execution cost is charged with no refund (consumed {} instructions)",
+            http_timeouts,
+            HTTP_REQUEST_TIMEOUT_SECS,
+            fuel_consumed
+        );
+    }
+
     match execution_result {
         Ok(Ok(())) => {
             debug!("Component execution completed successfully");
@@ -503,7 +582,8 @@ pub async fn execute(
 
             if is_epoch_timeout {
                 anyhow::bail!(
-                    "WASM execution timed out after {} seconds (consumed {} instructions)",
+                    "WASM execution timed out after {} seconds (penalty). \
+                    Full execution cost is charged with no refund (consumed {} instructions)",
                     timeout_secs,
                     fuel_consumed
                 );

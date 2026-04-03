@@ -380,7 +380,17 @@ impl StorageClient {
 
         // Decrypt all keys via keystore and filter by prefix
         let mut decrypted_keys: Vec<String> = Vec::new();
+        let started = std::time::Instant::now();
+        const LIST_KEYS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
+        let total_keys = resp.keys.len();
         for key_info in resp.keys {
+            if started.elapsed() > LIST_KEYS_TIMEOUT {
+                warn!(
+                    "list_keys timed out after {}s ({}/{} keys) — returning empty list",
+                    LIST_KEYS_TIMEOUT.as_secs(), decrypted_keys.len(), total_keys
+                );
+                return Ok("[]".to_string());
+            }
             match self.decrypt_via_keystore(&key_info.encrypted_key, &key_info.encrypted_value, &self.config.account_id) {
                 Ok(decrypted) => {
                     // Apply prefix filter after decryption

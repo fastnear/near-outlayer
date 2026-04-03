@@ -272,17 +272,19 @@ impl Executor {
                 let error_str = e.to_string();
                 info!("WASM execution failed: {}", error_str);
 
-                // Parse instructions from timeout error message ("consumed N instructions")
-                // so billing charges for actual resource usage
-                let instructions = if error_str.contains("timed out") {
+                let is_penalty = error_str.contains("(penalty)");
+
+                // Penalty (timeout/HTTP abuse): charge max_instructions so full compute_limit is spent.
+                // Normal errors: parse actual instructions from error message.
+                let instructions = if is_penalty {
+                    limits.max_instructions
+                } else {
                     error_str
                         .split("consumed ")
                         .nth(1)
                         .and_then(|s| s.split(' ').next())
                         .and_then(|s| s.parse::<u64>().ok())
                         .unwrap_or(0)
-                } else {
-                    0
                 };
 
                 Ok(ExecutionResult {

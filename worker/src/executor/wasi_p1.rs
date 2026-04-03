@@ -146,7 +146,8 @@ pub async fn execute(
         if e.to_string().contains("interrupt") {
             let fuel_consumed = limits.max_instructions - store.get_fuel().unwrap_or(0);
             anyhow::bail!(
-                "WASM execution timed out after {} seconds (consumed {} instructions)",
+                "WASM execution timed out after {} seconds (penalty). \
+                Full execution cost is charged with no refund (consumed {} instructions)",
                 timeout_secs,
                 fuel_consumed
             );

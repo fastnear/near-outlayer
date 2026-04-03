@@ -34,6 +34,7 @@ near-jsonrpc-primitives = "0.26"
 wasmtime = { version = "28", features = ["component-model", "async"] }
 wasmtime-wasi = "28"
 wasmtime-wasi-http = "28"
+hyper = "1.8"
 wasmparser = "0.220"
 
 # WASM execution (wasmi for WASI Preview 1 support)
