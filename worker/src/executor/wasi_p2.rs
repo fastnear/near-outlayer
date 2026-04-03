@@ -46,6 +46,7 @@ fn get_p2_engine() -> &'static Engine {
         config.wasm_component_model(true); // P2 ONLY: component model
         config.async_support(true);        // Required for wasi-http
         config.consume_fuel(true);         // Instruction metering
+        config.epoch_interruption(true);   // Allow interrupting host calls (wasi-http)
         tracing::info!("⚡ Initialized global WASM engine for P2 (component model)");
         Engine::new(&config).expect("Failed to create P2 WASM engine")
     })
@@ -417,9 +418,24 @@ pub async fn execute(
         wallet_state,
     };
 
-    // Create store with fuel limit
+    // Create store with fuel limit + epoch deadline
     let mut store = Store::new(&engine, host_state);
     store.set_fuel(limits.max_instructions)?;
+    let timeout_secs = limits.max_execution_seconds.max(5);
+    // Epoch interruption: engine ticks every second, deadline = timeout_secs ticks.
+    // This interrupts even during host calls (wasi-http) unlike tokio::time::timeout.
+    store.set_epoch_deadline(timeout_secs);
+    store.epoch_deadline_trap();
+    // Note: Engine::clone() is Arc clone — epoch counter is shared across all executions.
+    // This is fine because main loop executes tasks sequentially (one at a time).
+    let epoch_engine = engine.clone();
+    let epoch_handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+        for _ in 0..timeout_secs + 5 {
+            interval.tick().await;
+            epoch_engine.increment_epoch();
+        }
+    });
 
     // Instantiate and execute component
     debug!("Instantiating component");
@@ -433,24 +449,12 @@ pub async fn execute(
         .context("Failed to instantiate component")?;
 
     debug!("Running wasi:cli/run");
-    let timeout_secs = limits.max_execution_seconds.max(5);
-    let timeout_duration = std::time::Duration::from_secs(timeout_secs);
-    let execution_result = match tokio::time::timeout(
-        timeout_duration,
-        command.wasi_cli_run().call_run(&mut store),
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(_) => {
-            let fuel_consumed = limits.max_instructions - store.get_fuel().unwrap_or(0);
-            anyhow::bail!(
-                "WASM execution timed out after {} seconds (consumed {} instructions)",
-                timeout_secs,
-                fuel_consumed
-            );
-        }
-    };
+    let execution_result = command
+        .wasi_cli_run()
+        .call_run(&mut store)
+        .await;
+    // Stop epoch ticker
+    epoch_handle.abort();
 
     // Get fuel consumed before checking result
     let fuel_consumed = limits.max_instructions - store.get_fuel().unwrap_or(0);
@@ -488,6 +492,23 @@ pub async fn execute(
             Ok((output, fuel_consumed, refund_usd))
         }
         Ok(Err(_)) | Err(_) => {
+            // Check if this was an epoch interruption (timeout)
+            let err_ref = match &execution_result {
+                Err(e) => Some(e),
+                _ => None,
+            };
+            let is_epoch_timeout = err_ref
+                .map(|e| e.to_string().contains("interrupt"))
+                .unwrap_or(false);
+
+            if is_epoch_timeout {
+                anyhow::bail!(
+                    "WASM execution timed out after {} seconds (consumed {} instructions)",
+                    timeout_secs,
+                    fuel_consumed
+                );
+            }
+
             // Component exited with error or trapped
             let error_msg = if !stderr_contents.is_empty() {
                 String::from_utf8_lossy(&stderr_contents).to_string()

@@ -527,10 +527,19 @@ impl ApiClient {
 
         tracing::debug!("🔍 Polling for execution request: {}", url);
 
+        // Use a fresh HTTP client for poll to avoid stale TCP connections.
+        // Poll is long-lived (60s BRPOP) and reusing pooled connections
+        // can cause hangs when the coordinator restarts.
+        let poll_client = Client::builder()
+            .timeout(Duration::from_secs(timeout + 10))
+            .connect_timeout(Duration::from_secs(10))
+            .pool_max_idle_per_host(0) // No connection reuse
+            .build()
+            .context("Failed to build poll HTTP client")?;
+
         let response = self.add_auth_headers(
-            self.client
-                .get(&url)
-                .timeout(Duration::from_secs(timeout + 10)),
+            poll_client
+                .get(&url),
             )
             .send()
             .await

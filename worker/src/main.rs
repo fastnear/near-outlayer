@@ -589,6 +589,8 @@ async fn main() -> Result<()> {
     let iteration_timeout = tokio::time::Duration::from_secs(
         config.poll_timeout_seconds + config.max_execution_seconds_cap + config.iteration_overhead_seconds,
     );
+    info!("⏱️ Iteration timeout: {}s (poll={}s + cap={}s + overhead={}s)",
+        iteration_timeout.as_secs(), config.poll_timeout_seconds, config.max_execution_seconds_cap, config.iteration_overhead_seconds);
     loop {
         match tokio::time::timeout(
             iteration_timeout,
@@ -650,10 +652,12 @@ async fn worker_iteration(
 ) -> Result<bool> {
     // Poll for a task (with long-polling) - specify capabilities to poll correct queue
     let capabilities = config.capabilities.to_array();
+    debug!("🔄 Polling for task (timeout={}s)...", config.poll_timeout_seconds);
     let task = api_client
         .poll_task(config.poll_timeout_seconds, &capabilities)
         .await
         .context("Failed to poll for task")?;
+    debug!("🔄 Poll returned: {}", if task.is_some() { "task received" } else { "no task" });
 
     let Some(execution_request) = task else {
         // No execution request available

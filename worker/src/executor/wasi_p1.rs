@@ -42,8 +42,9 @@ fn get_p1_engine() -> &'static Engine {
     WASM_ENGINE_P1.get_or_init(|| {
         let mut config = Config::new();
         // NO component_model - P1 uses core modules
-        config.async_support(true);   // Async execution
-        config.consume_fuel(true);    // Instruction metering
+        config.async_support(true);        // Async execution
+        config.consume_fuel(true);         // Instruction metering
+        config.epoch_interruption(true);   // Allow interrupting host calls
         tracing::info!("⚡ Initialized global WASM engine for P1 (core modules)");
         Engine::new(&config).expect("Failed to create P1 WASM engine")
     })
@@ -107,6 +108,19 @@ pub async fn execute(
     // Create store with fuel limit
     let mut store = Store::new(&engine, wasi_p1_ctx);
     store.set_fuel(limits.max_instructions)?;
+    let timeout_secs = limits.max_execution_seconds.max(5);
+    store.set_epoch_deadline(timeout_secs);
+    store.epoch_deadline_trap();
+    // Note: Engine::clone() is Arc clone — epoch counter is shared across all executions.
+    // This is fine because main loop executes tasks sequentially (one at a time).
+    let epoch_engine = engine.clone();
+    let epoch_handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+        for _ in 0..timeout_secs + 5 {
+            interval.tick().await;
+            epoch_engine.increment_epoch();
+        }
+    });
 
     // Instantiate module
     debug!("Instantiating WASI P1 module");
@@ -124,16 +138,12 @@ pub async fn execute(
              Make sure you're using [[bin]] format with fn main(), not [lib] with cdylib",
         )?;
 
-    let timeout_secs = limits.max_execution_seconds.max(5);
-    let timeout_duration = std::time::Duration::from_secs(timeout_secs);
-    let call_result = match tokio::time::timeout(
-        timeout_duration,
-        start.call_async(&mut store, ()),
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(_) => {
+    let call_result = start.call_async(&mut store, ()).await;
+    epoch_handle.abort();
+
+    if let Err(e) = &call_result {
+        // Check if this was an epoch interruption (timeout)
+        if e.to_string().contains("interrupt") {
             let fuel_consumed = limits.max_instructions - store.get_fuel().unwrap_or(0);
             anyhow::bail!(
                 "WASM execution timed out after {} seconds (consumed {} instructions)",
@@ -141,7 +151,7 @@ pub async fn execute(
                 fuel_consumed
             );
         }
-    };
+    }
 
     if let Err(e) = call_result {
         let error_str = e.to_string();
