@@ -10,6 +10,7 @@
 
 # Rust
 target/
+**/.cargo/config.toml
 # Cargo.lock is committed for binary crates (reproducible builds)
 **/*.rs.bk
 
