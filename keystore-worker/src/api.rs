@@ -2625,13 +2625,15 @@ async fn wallet_sign_policy_handler(
         ApiError::InternalError(format!("Signing failed: {}", e))
     })?;
 
-    let public_key_hex = keystore.public_key_hex(&seed).map_err(|e| {
+    // Return Ed25519 pubkey (not X25519 from public_key_hex) — must match
+    // the key used for on-chain ed25519_verify in store_wallet_policy.
+    let ed25519_vk = keystore.get_public_key_for_seed(&seed).map_err(|e| {
         ApiError::InternalError(format!("Failed to derive public key: {}", e))
     })?;
 
     Ok(Json(WalletSignPolicyResponse {
         signature_hex: hex::encode(signature.to_bytes()),
-        public_key_hex,
+        public_key_hex: hex::encode(ed25519_vk.as_bytes()),
     }))
 }
 
@@ -3117,12 +3119,14 @@ async fn wallet_check_policy_handler(
         inline_data.clone()
     } else {
         // Production path: fetch from NEAR contract
-        // Derive ed25519 pubkey from wallet_id (on-chain key is "ed25519:<hex>")
+        // Use Ed25519 pubkey (not X25519 from public_key_hex) — must match the key
+        // stored on-chain by store_wallet_policy.
         let near_seed = format!("wallet:{}:near", req.wallet_id);
         let keystore_read = state.keystore.read().await;
-        let wallet_pubkey_hex = keystore_read.public_key_hex(&near_seed).map_err(|e| {
+        let ed25519_vk = keystore_read.get_public_key_for_seed(&near_seed).map_err(|e| {
             ApiError::InternalError(format!("Failed to derive wallet pubkey: {}", e))
         })?;
+        let wallet_pubkey_hex = hex::encode(ed25519_vk.as_bytes());
         drop(keystore_read);
         let wallet_pubkey = format!("ed25519:{}", wallet_pubkey_hex);
 

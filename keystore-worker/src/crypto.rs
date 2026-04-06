@@ -430,6 +430,7 @@ impl Keystore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
 
     #[test]
     fn test_keystore_generation() {
@@ -663,5 +664,113 @@ mod tests {
         let ks = Keystore::generate();
         let (_, vk) = ks.derive_keypair("wallet:abc:near:check:42").unwrap();
         assert_eq!(hex::encode(vk.as_bytes()).len(), 64);
+    }
+
+    // ======================= Policy signing key tests ==========================
+    // After ECIES migration, public_key_hex() returns X25519 (encryption) key,
+    // while get_public_key_for_seed() returns Ed25519 (signing) key.
+    // The contract's store_wallet_policy needs Ed25519 for ed25519_verify.
+
+    #[test]
+    fn test_public_key_hex_and_ed25519_are_different_keys() {
+        let ks = Keystore::generate();
+        let seed = "wallet:test-id:near";
+
+        // public_key_hex returns X25519 (encryption key)
+        let x25519_hex = ks.public_key_hex(seed).unwrap();
+
+        // get_public_key_for_seed returns Ed25519 (signing key)
+        let ed25519_vk = ks.get_public_key_for_seed(seed).unwrap();
+        let ed25519_hex = hex::encode(ed25519_vk.as_bytes());
+
+        // Both are 32 bytes (64 hex chars) but different keys
+        assert_eq!(x25519_hex.len(), 64);
+        assert_eq!(ed25519_hex.len(), 64);
+        assert_ne!(
+            x25519_hex, ed25519_hex,
+            "X25519 and Ed25519 keys must differ for the same seed"
+        );
+    }
+
+    #[test]
+    fn test_sign_verify_with_ed25519_pubkey() {
+        let ks = Keystore::generate();
+        let seed = "wallet:test-id:near";
+        let message = b"test message for policy";
+
+        let signature = ks.sign(seed, message).unwrap();
+        let ed25519_vk = ks.get_public_key_for_seed(seed).unwrap();
+
+        // Verification with correct Ed25519 key must succeed
+        ed25519_vk
+            .verify(message, &signature)
+            .expect("Ed25519 verify must succeed with matching key");
+    }
+
+    #[test]
+    fn test_ed25519_verify_fails_with_x25519_pubkey() {
+        let ks = Keystore::generate();
+        let seed = "wallet:test-id:near";
+        let message = b"test message for policy";
+
+        // Sign with Ed25519 key
+        let signature = ks.sign(seed, message).unwrap();
+
+        // Get X25519 key (what public_key_hex returns after ECIES migration)
+        let x25519_hex = ks.public_key_hex(seed).unwrap();
+        let x25519_bytes: [u8; 32] = hex::decode(&x25519_hex)
+            .unwrap()
+            .try_into()
+            .unwrap();
+
+        // Try to use X25519 bytes as Ed25519 verifying key — this is what the
+        // contract does when sign-policy returns the wrong public_key_hex.
+        // It must fail: either VerifyingKey::from_bytes rejects the point,
+        // or verify() returns an error.
+        let result = VerifyingKey::from_bytes(&x25519_bytes)
+            .and_then(|vk| vk.verify(message, &signature));
+        assert!(
+            result.is_err(),
+            "Verification with X25519 key as Ed25519 must fail"
+        );
+    }
+
+    #[test]
+    fn test_sign_policy_flow_end_to_end() {
+        let ks = Keystore::generate();
+        let wallet_seed = "wallet:test-id:near";
+        let policy_seed = "wallet-policy:test-id";
+
+        // Step 1: Encrypt policy (uses separate policy seed)
+        let policy_json = br#"{"version":1,"frozen":false,"rules":{}}"#;
+        let encrypted = ks.encrypt(policy_seed, policy_json).unwrap();
+        let encrypted_base64 = base64::engine::general_purpose::STANDARD.encode(&encrypted);
+
+        // Step 2: SHA256 of encrypted_data string (what contract does)
+        let mut hasher = Sha256::new();
+        hasher.update(encrypted_base64.as_bytes());
+        let hash: [u8; 32] = hasher.finalize().into();
+
+        // Step 3: Sign hash with wallet key
+        let signature = ks.sign(wallet_seed, &hash).unwrap();
+
+        // Step 4: Verify with Ed25519 key — must succeed
+        let ed25519_vk = ks.get_public_key_for_seed(wallet_seed).unwrap();
+        ed25519_vk
+            .verify(&hash, &signature)
+            .expect("Verify with Ed25519 key must succeed");
+
+        // Step 5: Verify with X25519 key — must fail (reproduces the bug)
+        let x25519_hex = ks.public_key_hex(wallet_seed).unwrap();
+        let x25519_bytes: [u8; 32] = hex::decode(&x25519_hex)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let result = VerifyingKey::from_bytes(&x25519_bytes)
+            .and_then(|vk| vk.verify(&hash, &signature));
+        assert!(
+            result.is_err(),
+            "Verify with X25519 key must fail — this is the bug"
+        );
     }
 }
