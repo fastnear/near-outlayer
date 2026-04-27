@@ -57,7 +57,7 @@ anyhow::bail!("Feature X is not supported. Please use Y instead.");
 | `sdk/` | - | Client SDK for integration |
 | `self-hosted-scheduler/` | - | [Generic scheduler](https://github.com/out-layer/self-hosted-scheduler) for autonomous agents (submodule) |
 | [outlayer-cli](https://github.com/out-layer/cli) | - | CLI for deploying, running, and managing agents (separate repo) |
-| [outlayer-coordinator](https://github.com/out-layer/outlayer-coordinator) | 8080 | Task queue, WASM cache, PostgreSQL + Redis (private repo) |
+| `outlayer-coordinator` | 8080 | Private coordinator checkout at `/Users/mikepurvis/other/outlayer-coordinator`; gate-first branch pushed to `git@github.com:fastnear/outlayer-coordinator.git` |
 | [shared-tee-helpers](https://github.com/out-layer/shared-tee-helpers) | - | TEE challenge-response auth (private repo) |
 | `wasi-examples/` | - | WASI container examples |
 | `docker/` | - | Docker configs (Phala deployment) |
@@ -72,7 +72,8 @@ cd worker && cargo run                   # Run worker
 cd dashboard && npm run dev              # Run dashboard
 cd keystore-worker && cargo run          # Run keystore
 
-# Coordinator (separate repo): SQLX_OFFLINE=true cargo check
+# Coordinator (separate repo)
+cd ../outlayer-coordinator && SQLX_OFFLINE=true cargo check
 ```
 
 ## Docs
@@ -81,6 +82,8 @@ cd keystore-worker && cargo run          # Run keystore
 - [wasi-examples/WASI_TUTORIAL.md](wasi-examples/WASI_TUTORIAL.md) - WASI guide
 - [contract/README.md](contract/README.md) - Contract API
 - [worker/README.md](worker/README.md) - Worker config
+- [docs/SEQUENTIAL_INTENTS_SPIKE.md](docs/SEQUENTIAL_INTENTS_SPIKE.md) - Sequential NEAR Intents and wallet workflow planner spike
+- [NEXT_STEPS.md](NEXT_STEPS.md) - Mainnet dust-run readiness checklist
 - [docs/SCHEDULER.md](docs/SCHEDULER.md) - Scheduler spec
 - [self-hosted-scheduler/README.md](self-hosted-scheduler/README.md) - Scheduler setup & config
 - [outlayer-cli README](https://github.com/out-layer/cli) - CLI usage & commands
@@ -93,6 +96,7 @@ cd keystore-worker && cargo run          # Run keystore
 | `earnings_history` | Unified earnings log for blockchain + HTTPS calls |
 | `project_owner_earnings` | HTTPS earnings balance per project owner |
 | `wasm_cache` | Compiled WASM binaries metadata |
+| `wallet_workflow_records` | Gate-first sequential wallet workflow idempotency and evidence records |
 
 ## Developer Payments Flow
 1. **Blockchain**: User deposits stablecoins → calls `request_execution(attached_usd)` → project owner earns

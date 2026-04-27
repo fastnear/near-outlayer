@@ -23,7 +23,7 @@ Two integration modes:
 | Component | Description |
 |-----------|-------------|
 | `contract/` | Main NEAR contract (`outlayer.near`) — execution requests, secrets, projects, payments |
-| `coordinator/` | HTTP API server — task queue (PostgreSQL + Redis), WASM cache, HTTPS API gateway |
+| `outlayer-coordinator` | Private HTTP API server — task queue, wallet workflow coordination, PostgreSQL, WASM cache, HTTPS API gateway |
 | `worker/` | Polls tasks, compiles GitHub repos, executes WASM in TEE (Intel TDX via Phala Cloud) |
 | `keystore-worker/` | Secrets decryption service running in TEE, accessed directly by worker (not via coordinator) |
 | `register-contract/` | NEAR contract for TEE worker key registration with TDX quote verification (deployed to `worker.outlayer.near`) |
@@ -724,6 +724,8 @@ Blockchain-native email for NEAR accounts. Every NEAR account has an email: `ali
 | Dashboard | Production — project management, secrets UI, executions view, earnings page, documentation |
 | SDK | Published — `outlayer` crate on crates.io, wasm32-wasip2, storage + env + RPC |
 | Agent Custody | Production — multi-chain wallets for AI agents, MPC+TEE key derivation, policy engine, multisig, NEAR Intents |
+| Sequential Intents Gate Lane | Spike implemented — worker/WIT + keystore support in this repo, gate-first coordinator branch in `/Users/mikepurvis/other/outlayer-coordinator`; not deployed or mainnet-tested |
+| Direct-User Counter Proof | Spike implemented — scoped FunctionCall key for `mike.near` -> `count.mike.near::increase`; human key install and mainnet broadcast still pending |
 | Scheduler | Production — [self-hosted-scheduler](https://github.com/out-layer/self-hosted-scheduler), config-driven (TOML), interval/storage-diff/webhook triggers, Telegram alerts |
 
 ---
@@ -734,7 +736,7 @@ Multi-chain custody wallets for AI agents. Agent gets an API key, private keys l
 
 ### Architecture
 
-- **Coordinator** (`coordinator/src/wallet/`) — stateless proxy. Auth API key, forward to keystore, track usage in PostgreSQL
+- **Coordinator** (`/Users/mikepurvis/other/outlayer-coordinator`) — wallet auth, workflow planning, policy-before-signing, idempotency, keystore calls, relayer submission, NEAR RPC polling
 - **Keystore TEE** (`keystore-worker/src/api.rs` wallet routes) — key derivation (`HMAC-SHA256(MPC_master, "wallet:{id}:{chain}")`), tx signing, policy evaluation. All inside Intel TDX
 - **Contract** (`contract/src/wallet.rs`) — encrypted policy storage, freeze/unfreeze, on-chain signature verification
 - **Worker WASI** (`worker/src/outlayer_wallet/`) — `outlayer:wallet/api@0.1.0` host functions for WASI containers
@@ -744,14 +746,18 @@ Multi-chain custody wallets for AI agents. Agent gets an API key, private keys l
 
 | File | Description |
 |------|-------------|
-| `coordinator/src/wallet/handlers.rs` | HTTP handlers: register, withdraw, call, approve, policy |
-| `coordinator/src/wallet/auth.rs` | API key auth (SHA-256 hash lookup) |
-| `coordinator/src/wallet/policy.rs` | Negative cache, NEAR RPC `has_wallet_policy()` |
-| `coordinator/src/wallet/backend/intents.rs` | NEAR Intents integration |
+| `/Users/mikepurvis/other/outlayer-coordinator/src/handlers.rs` | Gate-first wallet workflow and sequential batch handlers |
+| `/Users/mikepurvis/other/outlayer-coordinator/src/planner.rs` | Workflow lane planner: `gate_proxy`, `funding_setup`, `direct_user`, `reject` |
+| `/Users/mikepurvis/other/outlayer-coordinator/src/policy.rs` | Policy-before-signing checks for Intents transfer/swap and raw gate calls |
+| `/Users/mikepurvis/other/outlayer-coordinator/src/gate.rs` | Sequential gate log parsing |
+| `/Users/mikepurvis/other/outlayer-coordinator/src/rpc.rs` | NEAR RPC broadcast, outer-receipt polling, and dispatch outcome helpers |
 | `keystore-worker/src/api.rs:2439-2843` | Wallet endpoints: derive-address, sign-tx, check-policy |
 | `keystore-worker/src/crypto.rs:108` | `derive_keypair()` — HMAC-SHA256 from MPC master secret |
+| `keystore-worker/src/nep366.rs` | NEP-366/NEP-461 delegate signing support for the sequential gate |
 | `contract/src/wallet.rs` | `WalletPolicyEntry`, store/freeze/unfreeze/has/get methods |
 | `worker/wit/deps/wallet.wit` | WASI WIT interface |
+| `docs/SEQUENTIAL_INTENTS_SPIKE.md` | Current sequential Intents and direct-user lane design |
+| `NEXT_STEPS.md` | Mainnet dust-run readiness checklist |
 | `dashboard/app/wallet/` | 5 pages: handoff, manage, approvals, approval detail, audit |
 | `dashboard/app/docs/agent-custody/page.tsx` | User-facing documentation |
 
@@ -771,6 +777,21 @@ Base: `https://api.outlayer.fastnear.com`
 | POST | `/wallet/v1/encrypt-policy` | Bearer | Encrypt policy for on-chain storage |
 | POST | `/wallet/v1/approve/{id}` | Bearer | Multisig approval (NEP-413 sig) |
 | GET | `/wallet/v1/audit` | Bearer | Full event history |
+
+Sequential wallet workflow endpoints are implemented in the gate-first
+coordinator branch and remain pre-deployment until the dust run is dry-run:
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/wallet/v1/sequential-batch` | Internal wallet headers or Bearer | Submit 1-3 proxy-safe gate calls |
+| GET | `/wallet/v1/sequential-batch/{request_id}` | Internal wallet headers or Bearer | Poll sequential batch evidence |
+| POST | `/wallet/v1/workflows/plan` | Internal wallet headers or Bearer | Classify wallet workflow steps into lanes |
+| POST | `/wallet/v1/workflows/execute` | Internal wallet headers or Bearer | Execute gate-safe Intents workflow steps |
+| GET | `/wallet/v1/workflows/{request_id}` | Internal wallet headers or Bearer | Poll workflow evidence |
+| POST | `/wallet/v1/direct-user/function-call-key/prepare` | Internal wallet headers or Bearer | Prepare scoped `mike.near` FunctionCall key for counter proof |
+| GET | `/wallet/v1/direct-user/function-call-key/status` | Internal wallet headers or Bearer | Verify installed FunctionCall key scope by RPC |
+| POST | `/wallet/v1/direct-user/function-call/execute` | Internal wallet headers or Bearer | Execute idempotent `count.mike.near::increase` proof |
+| GET | `/wallet/v1/direct-user/function-call/{request_id}` | Internal wallet headers or Bearer | Poll direct-user counter evidence |
 
 ### Database Tables
 

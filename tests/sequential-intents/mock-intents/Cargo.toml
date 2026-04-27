@@ -1,0 +1,23 @@
+[package]
+name = "sequential-mock-intents"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk = { version = "=5.9.0", features = ["legacy"] }
+schemars = "0.8"
+borsh = { version = "1.5", features = ["derive"] }
+
+[dev-dependencies]
+near-sdk = { version = "=5.9.0", features = ["legacy", "unit-testing"] }
+
+[profile.release]
+codegen-units = 1
+opt-level = "s"
+lto = true
+debug = false
+panic = "abort"
+overflow-checks = true

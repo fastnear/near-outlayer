@@ -64,6 +64,68 @@ interface api {
     /// - error: empty on success
     get-request-status: func(request-id: string) -> tuple<string, string>;
 
+    /// Submit a sequential batch of NEAR FunctionCall actions through a gate contract
+    ///
+    /// gate-id: sequential gate account ID
+    /// calls-json: JSON array of 1-3 call objects:
+    ///   [{"receiver_id":"...", "method_name":"...", "gas":"30000000000000", "deposit":"0",
+    ///     "args_base64":"..." | "args_json":"..." | "near_intents":{...}}]
+    ///
+    /// Exactly one payload mode is required for each call:
+    /// - args_base64: raw contract args encoded as base64
+    /// - args_json: raw contract args encoded as a JSON string
+    /// - near_intents: helper mode for intents.near.execute_intents; coordinator signs NEP-413,
+    ///   wraps the signed payload as execute_intents args, then signs the NEP-366 delegate
+    /// idempotency-key: optional caller-provided key, empty string to omit
+    ///
+    /// Returns (result_json, error):
+    /// - result_json: {"request_id":"...", "status":"processing"|"success"|"failed", "proxy_predecessor":true, ...}
+    /// - error: empty on success, or policy / signing / broadcast failure
+    sequence-calls: func(gate-id: string, calls-json: string, idempotency-key: string) -> tuple<string, string>;
+
+    /// Get sequential batch status
+    ///
+    /// request-id: UUID returned by sequence-calls
+    ///
+    /// Returns (status_json, error):
+    /// - status_json: sequential batch status and receipt evidence
+    /// - error: empty on success
+    get-sequence-status: func(request-id: string) -> tuple<string, string>;
+
+    /// Plan a high-level wallet workflow without signing or broadcasting
+    ///
+    /// workflow-json: JSON object with "steps"; each step uses one of:
+    /// - intents.transfer, intents.swap, intents.execute_raw
+    /// - funding.wrap_near, funding.intents_deposit, funding.balance_check, funding.storage_deposit
+    /// - near.function_call with predecessor_requirement "user_required"
+    ///
+    /// Returns (plan_json, error):
+    /// - plan_json: lane evidence, setup requirements, and rejection reasons
+    /// - error: empty on success
+    plan-wallet-workflow: func(workflow-json: string) -> tuple<string, string>;
+
+    /// Execute a high-level wallet workflow
+    ///
+    /// The coordinator plans first, policy-checks every step, routes each step
+    /// through the correct lane, persists idempotency state, and returns workflow
+    /// evidence. Raw signing payloads and private keys are never accepted here.
+    ///
+    /// idempotency-key: optional caller-provided key, empty string to omit
+    ///
+    /// Returns (result_json, error):
+    /// - result_json: {"request_id":"...", "status":"processing"|"success"|"failed", ...}
+    /// - error: empty on success, or policy / signing / broadcast failure
+    execute-wallet-workflow: func(workflow-json: string, idempotency-key: string) -> tuple<string, string>;
+
+    /// Get high-level wallet workflow status
+    ///
+    /// request-id: UUID returned by execute-wallet-workflow
+    ///
+    /// Returns (status_json, error):
+    /// - status_json: workflow status and ordered lane evidence
+    /// - error: empty on success
+    get-wallet-workflow-status: func(request-id: string) -> tuple<string, string>;
+
     /// List available tokens
     ///
     /// Returns (tokens_json, error):

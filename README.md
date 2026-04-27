@@ -24,7 +24,6 @@ near-outlayer/
 ├── contract/              # Main NEAR contract (outlayer.near)
 ├── register-contract/     # TEE worker registration contract (5-measurement TDX verification)
 ├── keystore-dao-contract/ # DAO governance for keystore worker registration
-├── coordinator/           # Task queue & API server (Rust + Axum, PostgreSQL + Redis)
 ├── worker/                # Execution workers (Rust + Tokio, wasmi runtime)
 ├── keystore-worker/       # Secrets decryption service (Rust, runs in TEE)
 ├── dashboard/             # Web UI + documentation (Next.js + React)
@@ -35,6 +34,9 @@ near-outlayer/
 ├── tee-auth/              # TEE authentication utilities
 └── tests/                 # Integration tests
 ```
+
+The coordinator is a separate private checkout at
+`/Users/mikepurvis/other/outlayer-coordinator`.
 
 ## Two Integration Modes
 
@@ -90,8 +92,8 @@ curl -X POST https://api.outlayer.fastnear.com/call/alice.near/my-project \
 # Contract
 cd contract && ./build.sh
 
-# Coordinator (requires PostgreSQL + Redis)
-cd coordinator && cargo run
+# Coordinator (separate private checkout; requires PostgreSQL)
+cd ../outlayer-coordinator && cargo run
 
 # Worker
 cd worker && cargo run
@@ -116,6 +118,8 @@ See [QUICK_START.md](QUICK_START.md) for full setup instructions including datab
 | [Onepager.md](Onepager.md) | Project overview one-pager |
 | [contract/README.md](contract/README.md) | Contract API reference |
 | [worker/README.md](worker/README.md) | Worker configuration |
+| [docs/SEQUENTIAL_INTENTS_SPIKE.md](docs/SEQUENTIAL_INTENTS_SPIKE.md) | Sequential NEAR Intents and wallet workflow planner spike |
+| [NEXT_STEPS.md](NEXT_STEPS.md) | Mainnet dust-run readiness checklist |
 | [wasi-examples/WASI_TUTORIAL.md](wasi-examples/WASI_TUTORIAL.md) | WASI development tutorial |
 | [wasi-examples/BEST_PRACTICES_OUTLAYER_NEAR.md](wasi-examples/BEST_PRACTICES_OUTLAYER_NEAR.md) | Best practices guide |
 | [dashboard/DOCS_INDEX.md](dashboard/DOCS_INDEX.md) | Dashboard documentation index |

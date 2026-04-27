@@ -37,7 +37,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use tower_http::trace::TraceLayer;
 
 use crate::attestation::Attestation;
@@ -65,9 +65,11 @@ pub struct AppState {
     pub near_client: Option<std::sync::Arc<crate::near::NearClient>>,
     pub is_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// In-memory TEE challenge store: challenge_hex -> TeeChallenge
-    tee_challenges: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, TeeChallenge>>>,
+    tee_challenges:
+        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, TeeChallenge>>>,
     /// In-memory TEE session store: session_id -> TeeSession
-    tee_sessions: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<uuid::Uuid, TeeSession>>>,
+    tee_sessions:
+        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<uuid::Uuid, TeeSession>>>,
 }
 
 impl AppState {
@@ -92,13 +94,18 @@ impl AppState {
             expected_measurements: crate::attestation::ExpectedMeasurements::default(),
             near_client: near_client.map(std::sync::Arc::new),
             is_ready: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(is_ready)),
-            tee_challenges: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-            tee_sessions: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            tee_challenges: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
+            tee_sessions: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
         }
     }
 
     pub fn mark_ready(&self) {
-        self.is_ready.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.is_ready
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn is_ready(&self) -> bool {
@@ -152,17 +159,11 @@ pub enum SecretAccessor {
         branch: Option<String>,
     },
     /// Secrets bound to a specific WASM hash
-    WasmHash {
-        hash: String,
-    },
+    WasmHash { hash: String },
     /// Secrets bound to a project (available to all versions)
-    Project {
-        project_id: String,
-    },
+    Project { project_id: String },
     /// System secrets (Payment Keys for HTTPS API)
-    System {
-        secret_type: SystemSecretType,
-    },
+    System { secret_type: SystemSecretType },
 }
 
 /// System secret types
@@ -532,24 +533,61 @@ pub struct WalletSignNearDeleteAccountRequest {
 /// Transaction arguments: Borsh base64, JSON string, or empty (no args).
 /// Variants are tried in order by serde — Base64 and Json first (have required fields),
 /// Empty last (matches anything, used as fallback for no-arg calls).
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
+#[derive(Debug)]
 pub enum CallArgs {
     /// For Borsh-encoded payloads (e.g. FastFS) that can't be represented as JSON.
-    Base64 { args_base64: String },
-    Json { args_json: String },
+    Base64 {
+        args_base64: String,
+    },
+    Json {
+        args_json: String,
+    },
     /// No arguments — produces empty bytes (valid NEAR call with no params).
     Empty {},
+}
+
+impl<'de> Deserialize<'de> for CallArgs {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawCallArgs {
+            args_base64: Option<serde_json::Value>,
+            args_json: Option<serde_json::Value>,
+        }
+
+        let raw = RawCallArgs::deserialize(deserializer)?;
+        match (raw.args_base64, raw.args_json) {
+            (Some(_), Some(_)) => Err(serde::de::Error::custom(
+                "provide exactly one of args_base64 or args_json",
+            )),
+            (Some(value), None) => {
+                let args_base64 = value
+                    .as_str()
+                    .ok_or_else(|| serde::de::Error::custom("args_base64 must be a string"))?;
+                Ok(Self::Base64 {
+                    args_base64: args_base64.to_string(),
+                })
+            }
+            (None, Some(value)) => {
+                let args_json = value
+                    .as_str()
+                    .ok_or_else(|| serde::de::Error::custom("args_json must be a string"))?;
+                Ok(Self::Json {
+                    args_json: args_json.to_string(),
+                })
+            }
+            (None, None) => Ok(Self::Empty {}),
+        }
+    }
 }
 
 impl CallArgs {
     pub fn into_bytes(self) -> Result<Vec<u8>, ApiError> {
         match self {
-            CallArgs::Base64 { args_base64 } => {
-                base64::decode(&args_base64).map_err(|e| {
-                    ApiError::BadRequest(format!("Invalid args_base64: {}", e))
-                })
-            }
+            CallArgs::Base64 { args_base64 } => base64::decode(&args_base64)
+                .map_err(|e| ApiError::BadRequest(format!("Invalid args_base64: {}", e))),
             CallArgs::Json { args_json } => Ok(args_json.into_bytes()),
             CallArgs::Empty {} => Ok(vec![]),
         }
@@ -575,6 +613,138 @@ pub struct WalletSignNearCallRequest {
     pub override_nonce: Option<u64>,
 }
 
+/// Request to derive the direct-user FullAccess public key for a wallet/user pair.
+#[derive(Debug, Deserialize)]
+pub struct WalletDirectUserPrepareKeyRequest {
+    pub wallet_id: String,
+    pub user_id: String,
+    #[serde(default)]
+    pub key_label: Option<String>,
+}
+
+/// Response containing the public key the human should add to the user account.
+#[derive(Debug, Serialize)]
+pub struct WalletDirectUserPrepareKeyResponse {
+    pub user_id: String,
+    pub public_key: String,
+    pub key_label: String,
+}
+
+/// Request to derive a scoped direct-user FunctionCall public key.
+#[derive(Debug, Deserialize)]
+pub struct WalletDirectUserPrepareFunctionCallKeyRequest {
+    pub wallet_id: String,
+    pub user_id: String,
+    pub registry_id: String,
+    pub receiver_id: String,
+    pub method_names: Vec<String>,
+    #[serde(default)]
+    pub key_label: Option<String>,
+}
+
+/// Response containing the scoped FunctionCall public key and scope evidence.
+#[derive(Debug, Serialize)]
+pub struct WalletDirectUserPrepareFunctionCallKeyResponse {
+    pub user_id: String,
+    pub registry_id: String,
+    pub receiver_id: String,
+    pub method_names: Vec<String>,
+    pub method_names_hash: String,
+    pub public_key: String,
+    pub key_label: String,
+}
+
+/// Request to sign the 1 yoctoNEAR direct-user proof call.
+#[derive(Debug, Deserialize)]
+pub struct WalletDirectUserSignProofRequest {
+    pub wallet_id: String,
+    pub user_id: String,
+    pub registry_id: String,
+    pub challenge: String,
+    #[serde(default)]
+    pub key_label: Option<String>,
+    #[serde(default)]
+    pub gas: Option<u64>,
+    #[serde(default)]
+    pub approval_info: Option<ApprovalInfo>,
+    #[serde(default)]
+    pub override_nonce: Option<u64>,
+}
+
+/// FunctionCall action for a top-level direct-user transaction.
+#[derive(Debug, Deserialize)]
+pub struct DirectUserFunctionCallAction {
+    pub method_name: String,
+    #[serde(flatten)]
+    pub args: CallArgs,
+    pub gas: u64,
+    pub deposit: String,
+}
+
+/// Request to sign same-receiver direct-user FunctionCall actions.
+#[derive(Debug, Deserialize)]
+pub struct WalletDirectUserSignFunctionCallsRequest {
+    pub wallet_id: String,
+    pub user_id: String,
+    pub receiver_id: String,
+    pub actions: Vec<DirectUserFunctionCallAction>,
+    #[serde(default)]
+    pub key_label: Option<String>,
+    #[serde(default)]
+    pub approval_info: Option<ApprovalInfo>,
+    #[serde(default)]
+    pub override_nonce: Option<u64>,
+}
+
+/// Request to sign same-receiver FunctionCall actions with a scoped direct-user key.
+#[derive(Debug, Deserialize)]
+pub struct WalletDirectUserSignScopedFunctionCallsRequest {
+    pub wallet_id: String,
+    pub user_id: String,
+    pub registry_id: String,
+    pub receiver_id: String,
+    pub method_names: Vec<String>,
+    pub actions: Vec<DirectUserFunctionCallAction>,
+    #[serde(default)]
+    pub key_label: Option<String>,
+    #[serde(default)]
+    pub approval_info: Option<ApprovalInfo>,
+    #[serde(default)]
+    pub override_nonce: Option<u64>,
+}
+
+/// Request to build and sign a NEP-366 delegate containing one FunctionCall.
+#[derive(Debug, Deserialize)]
+pub struct WalletSignNep366DelegateRequest {
+    pub wallet_id: String,
+    /// Must equal the wallet's derived implicit NEAR account.
+    pub sender_id: String,
+    pub receiver_id: String,
+    pub method_name: String,
+    #[serde(flatten)]
+    pub args: CallArgs,
+    pub gas: u64,
+    pub deposit: String,
+    pub nonce: u64,
+    pub max_block_height: u64,
+    /// Optional coordinator-supplied reference height for local expiry rejection.
+    #[serde(default)]
+    pub current_block_height: Option<u64>,
+    #[serde(default)]
+    pub approval_info: Option<ApprovalInfo>,
+}
+
+/// Response with a base64 Borsh-encoded SignedDelegateAction.
+#[derive(Debug, Serialize)]
+pub struct WalletSignNep366DelegateResponse {
+    pub signed_delegate_base64: String,
+    pub delegate_hash: String,
+    pub sender_id: String,
+    pub public_key: String,
+    pub nonce: u64,
+    pub max_block_height: u64,
+}
+
 /// Response with signed NEAR transaction
 #[derive(Debug, Serialize)]
 pub struct WalletSignNearCallResponse {
@@ -583,6 +753,17 @@ pub struct WalletSignNearCallResponse {
     pub signer_id: String,
     pub public_key: String,
     /// The nonce used in this transaction (callers can pass nonce+1 as override_nonce for the next tx)
+    pub nonce: u64,
+}
+
+/// Response with a direct-user signed NEAR transaction and proof metadata.
+#[derive(Debug, Serialize)]
+pub struct WalletDirectUserSignTransactionResponse {
+    pub signed_tx_base64: String,
+    pub tx_hash: String,
+    pub signer_id: String,
+    pub public_key: String,
+    pub key_label: String,
     pub nonce: u64,
 }
 
@@ -657,15 +838,57 @@ pub fn create_router(state: AppState) -> Router {
         .route("/add_generated_secret", post(add_generated_secret_handler))
         .route("/update_user_secrets", post(update_user_secrets_handler)) // + NEP-413 signature
         // Wallet endpoints (coordinator-only)
-        .route("/wallet/derive-address", post(wallet_derive_address_handler))
-        .route("/wallet/sign-transaction", post(wallet_sign_transaction_handler))
+        .route(
+            "/wallet/derive-address",
+            post(wallet_derive_address_handler),
+        )
+        .route(
+            "/wallet/sign-transaction",
+            post(wallet_sign_transaction_handler),
+        )
         .route("/wallet/sign-nep413", post(wallet_sign_nep413_handler))
-        .route("/wallet/sign-near-call", post(wallet_sign_near_call_handler))
-        .route("/wallet/sign-near-transfer", post(wallet_sign_near_transfer_handler))
-        .route("/wallet/sign-near-delete-account", post(wallet_sign_near_delete_account_handler))
+        .route(
+            "/wallet/sign-nep366-delegate",
+            post(wallet_sign_nep366_delegate_handler),
+        )
+        .route(
+            "/wallet/sign-near-call",
+            post(wallet_sign_near_call_handler),
+        )
+        .route(
+            "/wallet/sign-near-transfer",
+            post(wallet_sign_near_transfer_handler),
+        )
+        .route(
+            "/wallet/sign-near-delete-account",
+            post(wallet_sign_near_delete_account_handler),
+        )
+        .route(
+            "/wallet/direct-user/prepare-key",
+            post(wallet_direct_user_prepare_key_handler),
+        )
+        .route(
+            "/wallet/direct-user/prepare-function-call-key",
+            post(wallet_direct_user_prepare_function_call_key_handler),
+        )
+        .route(
+            "/wallet/direct-user/sign-proof",
+            post(wallet_direct_user_sign_proof_handler),
+        )
+        .route(
+            "/wallet/direct-user/sign-function-calls",
+            post(wallet_direct_user_sign_function_calls_handler),
+        )
+        .route(
+            "/wallet/direct-user/sign-scoped-function-calls",
+            post(wallet_direct_user_sign_scoped_function_calls_handler),
+        )
         .route("/wallet/sign-policy", post(wallet_sign_policy_handler))
         .route("/wallet/check-policy", post(wallet_check_policy_handler))
-        .route("/wallet/encrypt-policy", post(wallet_encrypt_policy_handler))
+        .route(
+            "/wallet/encrypt-policy",
+            post(wallet_encrypt_policy_handler),
+        )
         // Ephemeral keys — separate module, returns private keys (see ephemeral_keys.rs)
         .merge(crate::ephemeral_keys::ephemeral_key_routes())
         .layer(middleware::from_fn_with_state(
@@ -711,15 +934,18 @@ async fn pubkey_handler(
 ) -> Result<Json<PubkeyResponse>, ApiError> {
     // Check if keystore is ready (has master key from MPC)
     if !state.is_ready() {
-        tracing::warn!("Pubkey request rejected - keystore not ready (waiting for DAO approval and MPC key)");
+        tracing::warn!(
+            "Pubkey request rejected - keystore not ready (waiting for DAO approval and MPC key)"
+        );
         return Err(ApiError::Unauthorized(
-            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string()
+            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string(),
         ));
     }
 
     // 1. Validate secrets JSON first (check for reserved keywords)
-    let secrets_map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&req.secrets_json)
-        .map_err(|e| ApiError::BadRequest(format!("Invalid JSON format: {}", e)))?;
+    let secrets_map: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&req.secrets_json)
+            .map_err(|e| ApiError::BadRequest(format!("Invalid JSON format: {}", e)))?;
 
     // Reserved keywords that should not be overridden by user secrets
     const RESERVED_KEYWORDS: &[&str] = &[
@@ -744,7 +970,8 @@ async fn pubkey_handler(
     ];
 
     // Check for reserved keywords
-    let reserved_found: Vec<&str> = secrets_map.keys()
+    let reserved_found: Vec<&str> = secrets_map
+        .keys()
         .filter(|k| RESERVED_KEYWORDS.contains(&k.as_str()))
         .map(|k| k.as_str())
         .collect();
@@ -763,7 +990,8 @@ async fn pubkey_handler(
     }
 
     // Check for PROTECTED_ prefix in manual secrets (reserved for generated secrets)
-    let protected_manual_keys: Vec<&str> = secrets_map.keys()
+    let protected_manual_keys: Vec<&str> = secrets_map
+        .keys()
         .filter(|k| k.starts_with("PROTECTED_"))
         .map(|k| k.as_str())
         .collect();
@@ -802,9 +1030,11 @@ async fn decrypt_handler(
 ) -> Result<Json<DecryptResponse>, ApiError> {
     // Check if keystore is ready (has master key from MPC)
     if !state.is_ready() {
-        tracing::warn!("Decrypt request rejected - keystore not ready (waiting for DAO approval and MPC key)");
+        tracing::warn!(
+            "Decrypt request rejected - keystore not ready (waiting for DAO approval and MPC key)"
+        );
         return Err(ApiError::Unauthorized(
-            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string()
+            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string(),
         ));
     }
 
@@ -869,7 +1099,9 @@ async fn decrypt_handler(
     })?;
 
     // 2. Read secrets from NEAR contract
-    let near_client = state.near_client.as_ref()
+    let near_client = state
+        .near_client
+        .as_ref()
         .ok_or_else(|| ApiError::InternalError("NEAR client not configured".to_string()))?;
 
     let secret_profile = match &req.accessor {
@@ -958,8 +1190,8 @@ async fn decrypt_handler(
     tracing::debug!(task_id = %task_id_str, "Successfully read secrets from contract");
 
     // 3. Validate access conditions
-    let access_condition: crate::types::AccessCondition = serde_json::from_value(secret_profile["access"].clone())
-        .map_err(|e| {
+    let access_condition: crate::types::AccessCondition =
+        serde_json::from_value(secret_profile["access"].clone()).map_err(|e| {
             tracing::error!(task_id = %task_id_str, error = %e, "Failed to parse access condition");
             ApiError::InternalError(format!("Failed to parse access condition: {}", e))
         })?;
@@ -967,7 +1199,9 @@ async fn decrypt_handler(
     // Use user_account_id (who requested execution) as caller for access control
     let caller = &req.user_account_id;
 
-    let access_granted = access_condition.validate(caller, state.near_client.as_ref().map(|c| c.as_ref())).await
+    let access_granted = access_condition
+        .validate(caller, state.near_client.as_ref().map(|c| c.as_ref()))
+        .await
         .map_err(|e| {
             tracing::error!(task_id = %task_id_str, error = %e, "Access validation failed");
             ApiError::InternalError(format!("Access validation failed: {}", e))
@@ -979,7 +1213,9 @@ async fn decrypt_handler(
             caller = %caller,
             "Access denied by access condition"
         );
-        return Err(ApiError::Unauthorized("Access denied by access condition".to_string()));
+        return Err(ApiError::Unauthorized(
+            "Access denied by access condition".to_string(),
+        ));
     }
 
     tracing::info!(task_id = %task_id_str, caller = %caller, "Access granted");
@@ -991,7 +1227,10 @@ async fn decrypt_handler(
     // - Access control already validated above (only owner can decrypt their secrets)
     // - Contract already returned the correct secrets based on request parameters
     let seed = match &req.accessor {
-        SecretAccessor::Repo { repo, branch: request_branch } => {
+        SecretAccessor::Repo {
+            repo,
+            branch: request_branch,
+        } => {
             let normalized_repo = crate::utils::normalize_repo_url(repo);
             let secret_branch = secret_profile["branch"].as_str();
 
@@ -1001,7 +1240,10 @@ async fn decrypt_handler(
                     tracing::debug!("Branch match: {} (exact)", req_b);
                 }
                 (Some(req_b), None) => {
-                    tracing::debug!("Branch fallback: requested '{}', using wildcard secrets (branch=null)", req_b);
+                    tracing::debug!(
+                        "Branch fallback: requested '{}', using wildcard secrets (branch=null)",
+                        req_b
+                    );
                 }
                 (None, None) => {
                     tracing::debug!("Branch match: both null (wildcard)");
@@ -1089,8 +1331,9 @@ async fn decrypt_handler(
         .as_str()
         .ok_or_else(|| ApiError::InternalError("Missing encrypted_secrets field".to_string()))?;
 
-    let encrypted_bytes = base64::decode(encrypted_secrets_base64)
-        .map_err(|e| ApiError::InternalError(format!("Invalid base64 in encrypted_secrets: {}", e)))?;
+    let encrypted_bytes = base64::decode(encrypted_secrets_base64).map_err(|e| {
+        ApiError::InternalError(format!("Invalid base64 in encrypted_secrets: {}", e))
+    })?;
 
     let keystore = state.keystore.read().await;
     let plaintext_bytes = keystore.decrypt(&seed, &encrypted_bytes).map_err(|e| {
@@ -1119,7 +1362,7 @@ async fn vrf_generate_handler(
 ) -> Result<Json<VrfGenerateResponse>, ApiError> {
     if !state.is_ready() {
         return Err(ApiError::Unauthorized(
-            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string()
+            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string(),
         ));
     }
 
@@ -1144,7 +1387,10 @@ async fn vrf_generate_handler(
 
     tracing::info!(alpha = %req.alpha, "VRF generated");
 
-    Ok(Json(VrfGenerateResponse { output_hex, signature_hex }))
+    Ok(Json(VrfGenerateResponse {
+        output_hex,
+        signature_hex,
+    }))
 }
 
 /// GET /vrf/pubkey — Get VRF public key (public, no auth)
@@ -1153,7 +1399,7 @@ async fn vrf_pubkey_handler(
 ) -> Result<Json<VrfPublicKeyResponse>, ApiError> {
     if !state.is_ready() {
         return Err(ApiError::Unauthorized(
-            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string()
+            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string(),
         ));
     }
 
@@ -1180,7 +1426,7 @@ async fn encrypt_handler(
     if !state.is_ready() {
         tracing::warn!("Encrypt request rejected - keystore not ready");
         return Err(ApiError::Unauthorized(
-            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string()
+            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string(),
         ));
     }
 
@@ -1255,7 +1501,7 @@ async fn decrypt_raw_handler(
     if !state.is_ready() {
         tracing::warn!("Decrypt-raw request rejected - keystore not ready");
         return Err(ApiError::Unauthorized(
-            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string()
+            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string(),
         ));
     }
 
@@ -1313,7 +1559,7 @@ async fn add_generated_secret_handler(
     if !state.is_ready() {
         tracing::warn!("Add generated secret request rejected - keystore not ready (waiting for DAO approval and MPC key)");
         return Err(ApiError::Unauthorized(
-            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string()
+            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string(),
         ));
     }
 
@@ -1325,28 +1571,32 @@ async fn add_generated_secret_handler(
     );
 
     // 1. Decrypt existing secrets (if any)
-    let mut secrets_map: serde_json::Map<String, serde_json::Value> = if let Some(ref encrypted_b64) = req.encrypted_secrets_base64 {
-        // Decode base64
-        let encrypted_bytes = base64::decode(encrypted_b64)
-            .map_err(|e| ApiError::BadRequest(format!("Invalid base64 in encrypted_secrets: {}", e)))?;
+    let mut secrets_map: serde_json::Map<String, serde_json::Value> =
+        if let Some(ref encrypted_b64) = req.encrypted_secrets_base64 {
+            // Decode base64
+            let encrypted_bytes = base64::decode(encrypted_b64).map_err(|e| {
+                ApiError::BadRequest(format!("Invalid base64 in encrypted_secrets: {}", e))
+            })?;
 
-        // Decrypt
-        let keystore = state.keystore.read().await;
-        let plaintext_bytes = keystore
-            .decrypt(&req.seed, &encrypted_bytes)
-            .map_err(|e| ApiError::InternalError(format!("Failed to decrypt existing secrets: {}", e)))?;
-        drop(keystore); // Release read lock early
+            // Decrypt
+            let keystore = state.keystore.read().await;
+            let plaintext_bytes = keystore.decrypt(&req.seed, &encrypted_bytes).map_err(|e| {
+                ApiError::InternalError(format!("Failed to decrypt existing secrets: {}", e))
+            })?;
+            drop(keystore); // Release read lock early
 
-        // Parse JSON
-        let plaintext_str = String::from_utf8(plaintext_bytes)
-            .map_err(|e| ApiError::InternalError(format!("Decrypted data is not valid UTF-8: {}", e)))?;
+            // Parse JSON
+            let plaintext_str = String::from_utf8(plaintext_bytes).map_err(|e| {
+                ApiError::InternalError(format!("Decrypted data is not valid UTF-8: {}", e))
+            })?;
 
-        serde_json::from_str(&plaintext_str)
-            .map_err(|e| ApiError::InternalError(format!("Decrypted data is not valid JSON: {}", e)))?
-    } else {
-        // Start with empty secrets
-        serde_json::Map::new()
-    };
+            serde_json::from_str(&plaintext_str).map_err(|e| {
+                ApiError::InternalError(format!("Decrypted data is not valid JSON: {}", e))
+            })?
+        } else {
+            // Start with empty secrets
+            serde_json::Map::new()
+        };
 
     tracing::debug!(
         existing_keys = secrets_map.len(),
@@ -1354,7 +1604,8 @@ async fn add_generated_secret_handler(
     );
 
     // Validate that manual secrets don't use PROTECTED_ prefix
-    let protected_manual_keys: Vec<&String> = secrets_map.keys()
+    let protected_manual_keys: Vec<&String> = secrets_map
+        .keys()
         .filter(|k| k.starts_with("PROTECTED_"))
         .collect();
 
@@ -1366,7 +1617,9 @@ async fn add_generated_secret_handler(
     }
 
     // Validate generated secret names MUST start with PROTECTED_
-    let missing_prefix: Vec<&String> = req.new_secrets.iter()
+    let missing_prefix: Vec<&String> = req
+        .new_secrets
+        .iter()
         .map(|s| &s.name)
         .filter(|name| !name.starts_with("PROTECTED_"))
         .collect();
@@ -1375,7 +1628,11 @@ async fn add_generated_secret_handler(
         return Err(ApiError::BadRequest(format!(
             "Generated secrets must start with 'PROTECTED_' prefix: {}. \
             This prefix proves that secrets were generated in TEE and never seen by anyone.",
-            missing_prefix.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(", ")
+            missing_prefix
+                .iter()
+                .map(|k| k.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         )));
     }
 
@@ -1401,11 +1658,13 @@ async fn add_generated_secret_handler(
         let directive = format!("generate_outlayer_secret:{}", spec.generation_type);
 
         // Generate
-        let generated_value = crate::secret_generation::generate_secret(&directive)
-            .map_err(|e| ApiError::BadRequest(format!(
-                "Failed to generate secret '{}' with type '{}': {}",
-                spec.name, spec.generation_type, e
-            )))?;
+        let generated_value =
+            crate::secret_generation::generate_secret(&directive).map_err(|e| {
+                ApiError::BadRequest(format!(
+                    "Failed to generate secret '{}' with type '{}': {}",
+                    spec.name, spec.generation_type, e
+                ))
+            })?;
 
         tracing::info!(
             key = %spec.name,
@@ -1414,7 +1673,10 @@ async fn add_generated_secret_handler(
         );
 
         // Add to secrets map
-        secrets_map.insert(spec.name.clone(), serde_json::Value::String(generated_value));
+        secrets_map.insert(
+            spec.name.clone(),
+            serde_json::Value::String(generated_value),
+        );
         generated_keys.push(spec.name.clone());
     }
 
@@ -1440,7 +1702,8 @@ async fn add_generated_secret_handler(
         "OUTLAYER_PROJECT_UUID",
     ];
 
-    let reserved_found: Vec<&str> = secrets_map.keys()
+    let reserved_found: Vec<&str> = secrets_map
+        .keys()
         .filter(|k| RESERVED_KEYWORDS.contains(&k.as_str()))
         .map(|k| k.as_str())
         .collect();
@@ -1491,7 +1754,7 @@ async fn update_user_secrets_handler(
     if !state.is_ready() {
         tracing::warn!("Update secrets request rejected - keystore not ready");
         return Err(ApiError::Unauthorized(
-            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string()
+            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string(),
         ));
     }
 
@@ -1512,7 +1775,13 @@ async fn update_user_secrets_handler(
     secret_keys.sort();
     if !secret_keys.is_empty() {
         expected_message.push_str("\nkeys:");
-        expected_message.push_str(&secret_keys.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(","));
+        expected_message.push_str(
+            &secret_keys
+                .iter()
+                .map(|k| k.as_str())
+                .collect::<Vec<_>>()
+                .join(","),
+        );
     }
 
     // Add sorted PROTECTED_ names to message
@@ -1547,7 +1816,13 @@ async fn update_user_secrets_handler(
         "Verifying NEP-413 signature"
     );
 
-    match verify_near_signature(&req.signed_message, &req.signature, &req.public_key, &req.nonce, &req.recipient) {
+    match verify_near_signature(
+        &req.signed_message,
+        &req.signature,
+        &req.public_key,
+        &req.nonce,
+        &req.recipient,
+    ) {
         Ok(()) => {
             tracing::info!(
                 owner = %req.owner,
@@ -1571,7 +1846,10 @@ async fn update_user_secrets_handler(
     // 3. Verify public key belongs to owner via NEAR RPC
     let near_client = state.near_client.as_ref();
     if let Some(client) = near_client {
-        match client.verify_access_key_owner(&req.owner, &req.public_key).await {
+        match client
+            .verify_access_key_owner(&req.owner, &req.public_key)
+            .await
+        {
             Ok(()) => {
                 tracing::info!(
                     owner = %req.owner,
@@ -1600,14 +1878,20 @@ async fn update_user_secrets_handler(
     }
 
     // 4. Validate user secrets don't contain PROTECTED_ prefix
-    let protected_in_user_secrets: Vec<&String> = req.secrets.keys()
+    let protected_in_user_secrets: Vec<&String> = req
+        .secrets
+        .keys()
         .filter(|k| k.starts_with("PROTECTED_"))
         .collect();
 
     if !protected_in_user_secrets.is_empty() {
         return Err(ApiError::BadRequest(format!(
             "User secrets cannot use 'PROTECTED_' prefix: {}",
-            protected_in_user_secrets.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(", ")
+            protected_in_user_secrets
+                .iter()
+                .map(|k| k.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         )));
     }
 
@@ -1623,37 +1907,33 @@ async fn update_user_secrets_handler(
 
     // 6. Get current encrypted secrets from contract using OLD accessor
     // (new_accessor is only for encryption target, not for fetching)
-    let near_client = state.near_client.as_ref()
+    let near_client = state
+        .near_client
+        .as_ref()
         .ok_or_else(|| ApiError::InternalError("NEAR client not configured".to_string()))?;
 
     let secret_profile = match &req.accessor {
-        SecretAccessor::Repo { repo, branch } => {
-            near_client
-                .get_secrets(repo, branch.as_deref(), &req.profile, &req.owner)
-                .await
-                .map_err(|e| {
-                    tracing::warn!(error = %e, "Failed to fetch secrets from contract");
-                    ApiError::InternalError(format!("Failed to fetch secrets: {}", e))
-                })?
-        }
-        SecretAccessor::WasmHash { hash } => {
-            near_client
-                .get_secrets_by_wasm_hash(hash, &req.profile, &req.owner)
-                .await
-                .map_err(|e| {
-                    tracing::warn!(error = %e, "Failed to fetch secrets from contract");
-                    ApiError::InternalError(format!("Failed to fetch secrets: {}", e))
-                })?
-        }
-        SecretAccessor::Project { project_id } => {
-            near_client
-                .get_secrets_by_project(project_id, &req.profile, &req.owner)
-                .await
-                .map_err(|e| {
-                    tracing::warn!(error = %e, "Failed to fetch secrets from contract");
-                    ApiError::InternalError(format!("Failed to fetch secrets: {}", e))
-                })?
-        }
+        SecretAccessor::Repo { repo, branch } => near_client
+            .get_secrets(repo, branch.as_deref(), &req.profile, &req.owner)
+            .await
+            .map_err(|e| {
+                tracing::warn!(error = %e, "Failed to fetch secrets from contract");
+                ApiError::InternalError(format!("Failed to fetch secrets: {}", e))
+            })?,
+        SecretAccessor::WasmHash { hash } => near_client
+            .get_secrets_by_wasm_hash(hash, &req.profile, &req.owner)
+            .await
+            .map_err(|e| {
+                tracing::warn!(error = %e, "Failed to fetch secrets from contract");
+                ApiError::InternalError(format!("Failed to fetch secrets: {}", e))
+            })?,
+        SecretAccessor::Project { project_id } => near_client
+            .get_secrets_by_project(project_id, &req.profile, &req.owner)
+            .await
+            .map_err(|e| {
+                tracing::warn!(error = %e, "Failed to fetch secrets from contract");
+                ApiError::InternalError(format!("Failed to fetch secrets: {}", e))
+            })?,
         SecretAccessor::System { secret_type } => {
             let secret_type_str = match secret_type {
                 SystemSecretType::PaymentKey => "PaymentKey",
@@ -1669,7 +1949,9 @@ async fn update_user_secrets_handler(
     };
 
     // 7. Decrypt existing secrets (if any) using OLD accessor seed
-    let mut current_secrets: serde_json::Map<String, serde_json::Value> = if let Some(profile) = secret_profile {
+    let mut current_secrets: serde_json::Map<String, serde_json::Value> = if let Some(profile) =
+        secret_profile
+    {
         tracing::info!(
             profile_data = ?profile,
             "Found existing secrets in contract, attempting to decrypt"
@@ -1685,11 +1967,10 @@ async fn update_user_secrets_handler(
             })?;
 
         // Decode from base64
-        let encrypted_bytes = base64::decode(encrypted_secrets_str)
-            .map_err(|e| {
-                tracing::error!(error = %e, "Invalid base64 in stored secrets");
-                ApiError::BadRequest(format!("Invalid base64 in stored secrets: {}", e))
-            })?;
+        let encrypted_bytes = base64::decode(encrypted_secrets_str).map_err(|e| {
+            tracing::error!(error = %e, "Invalid base64 in stored secrets");
+            ApiError::BadRequest(format!("Invalid base64 in stored secrets: {}", e))
+        })?;
 
         // Generate seed for decryption (must match format used during encryption)
         // Format: normalized_repo:owner[:branch] - same as /pubkey endpoint
@@ -1737,14 +2018,13 @@ async fn update_user_secrets_handler(
         drop(keystore);
 
         // Parse JSON
-        let plaintext_str = String::from_utf8(plaintext_bytes)
-            .map_err(|e| {
-                tracing::error!(error = %e, "Decrypted data is not valid UTF-8");
-                ApiError::InternalError(format!("Decrypted data is not valid UTF-8: {}", e))
-            })?;
+        let plaintext_str = String::from_utf8(plaintext_bytes).map_err(|e| {
+            tracing::error!(error = %e, "Decrypted data is not valid UTF-8");
+            ApiError::InternalError(format!("Decrypted data is not valid UTF-8: {}", e))
+        })?;
 
-        let secrets: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&plaintext_str)
-            .map_err(|e| {
+        let secrets: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(&plaintext_str).map_err(|e| {
                 tracing::error!(error = %e, "Decrypted data is not valid JSON");
                 ApiError::InternalError(format!("Decrypted data is not valid JSON: {}", e))
             })?;
@@ -1770,7 +2050,8 @@ async fn update_user_secrets_handler(
     match req.mode {
         UpdateMode::Reset => {
             // Remove all non-PROTECTED keys
-            let keys_to_remove: Vec<String> = current_secrets.keys()
+            let keys_to_remove: Vec<String> = current_secrets
+                .keys()
                 .filter(|k| !k.starts_with("PROTECTED_"))
                 .cloned()
                 .collect();
@@ -1824,11 +2105,13 @@ async fn update_user_secrets_handler(
 
             // Generate secret
             let directive = format!("generate_outlayer_secret:{}", spec.generation_type);
-            let generated_value = crate::secret_generation::generate_secret(&directive)
-                .map_err(|e| ApiError::BadRequest(format!(
-                    "Failed to generate secret '{}' with type '{}': {}",
-                    spec.name, spec.generation_type, e
-                )))?;
+            let generated_value =
+                crate::secret_generation::generate_secret(&directive).map_err(|e| {
+                    ApiError::BadRequest(format!(
+                        "Failed to generate secret '{}' with type '{}': {}",
+                        spec.name, spec.generation_type, e
+                    ))
+                })?;
 
             tracing::info!(
                 key = %spec.name,
@@ -1836,7 +2119,10 @@ async fn update_user_secrets_handler(
                 "Generated PROTECTED_ secret"
             );
 
-            current_secrets.insert(spec.name.clone(), serde_json::Value::String(generated_value));
+            current_secrets.insert(
+                spec.name.clone(),
+                serde_json::Value::String(generated_value),
+            );
             updated_keys.push(spec.name);
         }
     }
@@ -1923,7 +2209,7 @@ async fn storage_encrypt_handler(
     // Check if keystore is ready
     if !state.is_ready() {
         return Err(ApiError::Unauthorized(
-            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string()
+            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string(),
         ));
     }
 
@@ -1972,7 +2258,7 @@ async fn storage_encrypt_handler(
         .map_err(|e| ApiError::InternalError(format!("Failed to encrypt value: {}", e)))?;
 
     // Calculate key hash for unique constraint
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     let key_hash = hex::encode(Sha256::digest(req.key.as_bytes()));
 
     tracing::info!(
@@ -2000,7 +2286,7 @@ async fn storage_decrypt_handler(
     // Check if keystore is ready
     if !state.is_ready() {
         return Err(ApiError::Unauthorized(
-            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string()
+            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string(),
         ));
     }
 
@@ -2086,7 +2372,7 @@ fn verify_near_signature(
     nonce: &str,
     recipient: &str,
 ) -> Result<(), anyhow::Error> {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
 
     // Parse public key (format: "ed25519:base58...")
     let pubkey_parts: Vec<&str> = public_key.split(':').collect();
@@ -2111,15 +2397,16 @@ fn verify_near_signature(
     }
 
     // Decode nonce (base64) - must be exactly 32 bytes
-    let nonce_bytes = base64::decode(nonce)
-        .map_err(|e| anyhow::anyhow!("Failed to decode nonce: {}", e))?;
+    let nonce_bytes =
+        base64::decode(nonce).map_err(|e| anyhow::anyhow!("Failed to decode nonce: {}", e))?;
 
     let nonce_len = nonce_bytes.len();
     if nonce_len != 32 {
         anyhow::bail!("Invalid nonce length: {} (expected 32)", nonce_len);
     }
 
-    let nonce_array: [u8; 32] = nonce_bytes.try_into()
+    let nonce_array: [u8; 32] = nonce_bytes
+        .try_into()
         .map_err(|_| anyhow::anyhow!("Failed to convert nonce to array"))?;
 
     // Build NEP-413 payload
@@ -2152,16 +2439,17 @@ fn verify_near_signature(
     );
 
     // Verify using ed25519
-    use ed25519_dalek::{Signature, VerifyingKey, Verifier};
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
     let verifying_key = VerifyingKey::from_bytes(
         &<[u8; 32]>::try_from(pubkey_bytes.as_slice())
-            .map_err(|_| anyhow::anyhow!("Invalid public key bytes"))?
-    ).map_err(|e| anyhow::anyhow!("Invalid public key: {}", e))?;
+            .map_err(|_| anyhow::anyhow!("Invalid public key bytes"))?,
+    )
+    .map_err(|e| anyhow::anyhow!("Invalid public key: {}", e))?;
 
     let signature = Signature::from_bytes(
         &<[u8; 64]>::try_from(signature_bytes.as_slice())
-            .map_err(|_| anyhow::anyhow!("Invalid signature bytes"))?
+            .map_err(|_| anyhow::anyhow!("Invalid signature bytes"))?,
     );
 
     // Verify signature against the hash
@@ -2191,9 +2479,12 @@ async fn tee_challenge_handler(
         // Clean up expired challenges (>60 seconds old)
         challenges.retain(|_, c| c.created_at.elapsed().as_secs() < 60);
 
-        challenges.insert(challenge.clone(), TeeChallenge {
-            created_at: std::time::Instant::now(),
-        });
+        challenges.insert(
+            challenge.clone(),
+            TeeChallenge {
+                created_at: std::time::Instant::now(),
+            },
+        );
     }
 
     tracing::debug!("TEE challenge generated: {}...", &challenge[..16]);
@@ -2222,9 +2513,9 @@ async fn register_tee_handler(
     // 1. Find and remove challenge (one-time use)
     {
         let mut challenges = state.tee_challenges.lock().unwrap();
-        let challenge = challenges.remove(&req.challenge).ok_or_else(|| {
-            ApiError::BadRequest("Invalid or expired challenge".to_string())
-        })?;
+        let challenge = challenges
+            .remove(&req.challenge)
+            .ok_or_else(|| ApiError::BadRequest("Invalid or expired challenge".to_string()))?;
 
         // Check expiration (60 seconds)
         if challenge.created_at.elapsed().as_secs() > 60 {
@@ -2260,10 +2551,13 @@ async fn register_tee_handler(
     let session_id = uuid::Uuid::new_v4();
     {
         let mut sessions = state.tee_sessions.lock().unwrap();
-        sessions.insert(session_id, TeeSession {
-            worker_public_key: req.public_key.clone(),
-            created_at: std::time::Instant::now(),
-        });
+        sessions.insert(
+            session_id,
+            TeeSession {
+                worker_public_key: req.public_key.clone(),
+                created_at: std::time::Instant::now(),
+            },
+        );
     }
 
     tracing::info!(
@@ -2272,7 +2566,9 @@ async fn register_tee_handler(
         "TEE session registered on keystore"
     );
 
-    Ok(Json(serde_json::json!({ "session_id": session_id.to_string() })))
+    Ok(Json(
+        serde_json::json!({ "session_id": session_id.to_string() }),
+    ))
 }
 
 /// Validate X-TEE-Session header against in-memory sessions.
@@ -2287,7 +2583,9 @@ fn validate_tee_session(state: &AppState, headers: &axum::http::HeaderMap) -> Re
         .get("X-TEE-Session")
         .and_then(|h| h.to_str().ok())
         .ok_or_else(|| {
-            ApiError::Forbidden("TEE session required. Register via /tee-challenge + /register-tee".to_string())
+            ApiError::Forbidden(
+                "TEE session required. Register via /tee-challenge + /register-tee".to_string(),
+            )
         })?;
 
     let session_id = uuid::Uuid::parse_str(session_header)
@@ -2295,7 +2593,9 @@ fn validate_tee_session(state: &AppState, headers: &axum::http::HeaderMap) -> Re
 
     let sessions = state.tee_sessions.lock().unwrap();
     if !sessions.contains_key(&session_id) {
-        return Err(ApiError::Forbidden("TEE session not found or expired".to_string()));
+        return Err(ApiError::Forbidden(
+            "TEE session not found or expired".to_string(),
+        ));
     }
 
     Ok(())
@@ -2335,12 +2635,10 @@ async fn worker_auth_middleware(
         })?;
 
     // Extract Bearer token
-    let token = auth_header
-        .strip_prefix("Bearer ")
-        .ok_or_else(|| {
-            tracing::warn!("Invalid Authorization format (expected 'Bearer <token>')");
-            ApiError::Unauthorized("Invalid Authorization format".to_string())
-        })?;
+    let token = auth_header.strip_prefix("Bearer ").ok_or_else(|| {
+        tracing::warn!("Invalid Authorization format (expected 'Bearer <token>')");
+        ApiError::Unauthorized("Invalid Authorization format".to_string())
+    })?;
 
     // Hash token with SHA256
     use sha2::{Digest, Sha256};
@@ -2349,7 +2647,11 @@ async fn worker_auth_middleware(
     let token_hash = hex::encode(hasher.finalize());
 
     // Check if hash is in allowed WORKER list
-    if !state.config.allowed_worker_token_hashes.contains(&token_hash) {
+    if !state
+        .config
+        .allowed_worker_token_hashes
+        .contains(&token_hash)
+    {
         tracing::warn!(
             token_hash = %token_hash,
             "Unauthorized: token hash not in worker allowed list"
@@ -2358,7 +2660,9 @@ async fn worker_auth_middleware(
     }
 
     // Find which worker this token belongs to (for logging)
-    let worker_index = state.config.allowed_worker_token_hashes
+    let worker_index = state
+        .config
+        .allowed_worker_token_hashes
         .iter()
         .position(|h| h == &token_hash)
         .unwrap_or(0);
@@ -2392,12 +2696,10 @@ async fn coordinator_auth_middleware(
         })?;
 
     // Extract Bearer token
-    let token = auth_header
-        .strip_prefix("Bearer ")
-        .ok_or_else(|| {
-            tracing::warn!("Invalid Authorization format (expected 'Bearer <token>')");
-            ApiError::Unauthorized("Invalid Authorization format".to_string())
-        })?;
+    let token = auth_header.strip_prefix("Bearer ").ok_or_else(|| {
+        tracing::warn!("Invalid Authorization format (expected 'Bearer <token>')");
+        ApiError::Unauthorized("Invalid Authorization format".to_string())
+    })?;
 
     // Hash token with SHA256
     use sha2::{Digest, Sha256};
@@ -2406,12 +2708,18 @@ async fn coordinator_auth_middleware(
     let token_hash = hex::encode(hasher.finalize());
 
     // Check if hash is in allowed COORDINATOR list
-    if !state.config.allowed_coordinator_token_hashes.contains(&token_hash) {
+    if !state
+        .config
+        .allowed_coordinator_token_hashes
+        .contains(&token_hash)
+    {
         tracing::warn!(
             token_hash = %token_hash,
             "Unauthorized: token hash not in coordinator allowed list"
         );
-        return Err(ApiError::Unauthorized("Invalid coordinator token".to_string()));
+        return Err(ApiError::Unauthorized(
+            "Invalid coordinator token".to_string(),
+        ));
     }
 
     tracing::debug!(
@@ -2440,20 +2748,24 @@ async fn tee_registration_auth_middleware(
             ApiError::Unauthorized("Missing Authorization header".to_string())
         })?;
 
-    let token = auth_header
-        .strip_prefix("Bearer ")
-        .ok_or_else(|| {
-            tracing::warn!("Invalid Authorization format (expected 'Bearer <token>')");
-            ApiError::Unauthorized("Invalid Authorization format".to_string())
-        })?;
+    let token = auth_header.strip_prefix("Bearer ").ok_or_else(|| {
+        tracing::warn!("Invalid Authorization format (expected 'Bearer <token>')");
+        ApiError::Unauthorized("Invalid Authorization format".to_string())
+    })?;
 
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(token.as_bytes());
     let token_hash = hex::encode(hasher.finalize());
 
-    let is_coordinator = state.config.allowed_coordinator_token_hashes.contains(&token_hash);
-    let is_worker = state.config.allowed_worker_token_hashes.contains(&token_hash);
+    let is_coordinator = state
+        .config
+        .allowed_coordinator_token_hashes
+        .contains(&token_hash);
+    let is_worker = state
+        .config
+        .allowed_worker_token_hashes
+        .contains(&token_hash);
 
     if !is_coordinator && !is_worker {
         tracing::warn!(
@@ -2463,7 +2775,11 @@ async fn tee_registration_auth_middleware(
         return Err(ApiError::Unauthorized("Invalid token".to_string()));
     }
 
-    let source = if is_coordinator { "coordinator" } else { "worker" };
+    let source = if is_coordinator {
+        "coordinator"
+    } else {
+        "worker"
+    };
     tracing::debug!(
         token_hash = %token_hash,
         source = source,
@@ -2475,8 +2791,8 @@ async fn tee_registration_auth_middleware(
 
 // Base64 encoding/decoding helpers
 mod base64 {
-    use ::base64::Engine;
     use ::base64::engine::general_purpose::STANDARD;
+    use ::base64::Engine;
 
     pub fn encode<T: AsRef<[u8]>>(input: T) -> String {
         STANDARD.encode(input)
@@ -2511,9 +2827,9 @@ async fn wallet_derive_address_handler(
 
     match chain.as_str() {
         "near" => {
-            let (_, verifying_key) = keystore.derive_keypair(&seed).map_err(|e| {
-                ApiError::InternalError(format!("Key derivation failed: {}", e))
-            })?;
+            let (_, verifying_key) = keystore
+                .derive_keypair(&seed)
+                .map_err(|e| ApiError::InternalError(format!("Key derivation failed: {}", e)))?;
             let pubkey_hex = hex::encode(verifying_key.as_bytes());
             // NEAR implicit account = hex-encoded Ed25519 public key
             Ok(Json(WalletDeriveAddressResponse {
@@ -2522,9 +2838,9 @@ async fn wallet_derive_address_handler(
             }))
         }
         "solana" => {
-            let (_, verifying_key) = keystore.derive_keypair(&seed).map_err(|e| {
-                ApiError::InternalError(format!("Key derivation failed: {}", e))
-            })?;
+            let (_, verifying_key) = keystore
+                .derive_keypair(&seed)
+                .map_err(|e| ApiError::InternalError(format!("Key derivation failed: {}", e)))?;
             let pubkey_bytes = verifying_key.as_bytes();
             let address = bs58::encode(pubkey_bytes).into_string();
             Ok(Json(WalletDeriveAddressResponse {
@@ -2535,9 +2851,9 @@ async fn wallet_derive_address_handler(
         // EVM chains (Ethereum, Base, Arbitrum, etc.) — secp256k1
         // See: docs/MULTI_CHAIN.md
         "ethereum" | "base" | "arbitrum" => {
-            let (address, pubkey_hex) = keystore.derive_eth_address(&seed).map_err(|e| {
-                ApiError::InternalError(format!("Key derivation failed: {}", e))
-            })?;
+            let (address, pubkey_hex) = keystore
+                .derive_eth_address(&seed)
+                .map_err(|e| ApiError::InternalError(format!("Key derivation failed: {}", e)))?;
             Ok(Json(WalletDeriveAddressResponse {
                 address,
                 public_key: format!("secp256k1:{}", pubkey_hex),
@@ -2559,35 +2875,32 @@ async fn wallet_sign_transaction_handler(
     Json(req): Json<WalletSignTransactionRequest>,
 ) -> Result<Json<WalletSignTransactionResponse>, ApiError> {
     if !state.is_ready() {
-        return Err(ApiError::Unauthorized(
-            "Keystore not ready.".to_string(),
-        ));
+        return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
     }
 
     let chain = req.chain.to_lowercase();
     let seed = format!("wallet:{}:{}", req.wallet_id, chain);
 
-    let tx_bytes = base64::decode(&req.tx_bytes_base64).map_err(|e| {
-        ApiError::BadRequest(format!("Invalid base64 in tx_bytes_base64: {}", e))
-    })?;
+    let tx_bytes = base64::decode(&req.tx_bytes_base64)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid base64 in tx_bytes_base64: {}", e)))?;
 
     let keystore = state.keystore.read().await;
 
     match chain.as_str() {
         // EVM chains — secp256k1 ECDSA
         "ethereum" | "base" | "arbitrum" => {
-            let sig_bytes = keystore.sign_secp256k1(&seed, &tx_bytes).map_err(|e| {
-                ApiError::InternalError(format!("Signing failed: {}", e))
-            })?;
+            let sig_bytes = keystore
+                .sign_secp256k1(&seed, &tx_bytes)
+                .map_err(|e| ApiError::InternalError(format!("Signing failed: {}", e)))?;
             Ok(Json(WalletSignTransactionResponse {
                 signature_base64: base64::encode(&sig_bytes),
             }))
         }
         // NEAR, Solana, etc. — Ed25519
         _ => {
-            let signature = keystore.sign(&seed, &tx_bytes).map_err(|e| {
-                ApiError::InternalError(format!("Signing failed: {}", e))
-            })?;
+            let signature = keystore
+                .sign(&seed, &tx_bytes)
+                .map_err(|e| ApiError::InternalError(format!("Signing failed: {}", e)))?;
             Ok(Json(WalletSignTransactionResponse {
                 signature_base64: base64::encode(signature.to_bytes()),
             }))
@@ -2607,9 +2920,8 @@ async fn wallet_sign_policy_handler(
         return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
     }
 
-    let hash_bytes = hex::decode(&req.encrypted_data_hash).map_err(|e| {
-        ApiError::BadRequest(format!("Invalid hex in encrypted_data_hash: {}", e))
-    })?;
+    let hash_bytes = hex::decode(&req.encrypted_data_hash)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid hex in encrypted_data_hash: {}", e)))?;
 
     if hash_bytes.len() != 32 {
         return Err(ApiError::BadRequest(format!(
@@ -2621,15 +2933,15 @@ async fn wallet_sign_policy_handler(
     let seed = format!("wallet:{}:near", req.wallet_id);
     let keystore = state.keystore.read().await;
 
-    let signature = keystore.sign(&seed, &hash_bytes).map_err(|e| {
-        ApiError::InternalError(format!("Signing failed: {}", e))
-    })?;
+    let signature = keystore
+        .sign(&seed, &hash_bytes)
+        .map_err(|e| ApiError::InternalError(format!("Signing failed: {}", e)))?;
 
     // Return Ed25519 pubkey (not X25519 from public_key_hex) — must match
     // the key used for on-chain ed25519_verify in store_wallet_policy.
-    let ed25519_vk = keystore.get_public_key_for_seed(&seed).map_err(|e| {
-        ApiError::InternalError(format!("Failed to derive public key: {}", e))
-    })?;
+    let ed25519_vk = keystore
+        .get_public_key_for_seed(&seed)
+        .map_err(|e| ApiError::InternalError(format!("Failed to derive public key: {}", e)))?;
 
     Ok(Json(WalletSignPolicyResponse {
         signature_hex: hex::encode(signature.to_bytes()),
@@ -2646,9 +2958,10 @@ async fn verify_approvals(
     wallet_id: &str,
     approval_info: &ApprovalInfo,
 ) -> Result<(), ApiError> {
-    let near_client = state.near_client.as_ref().ok_or_else(|| {
-        ApiError::InternalError("NEAR client not configured".to_string())
-    })?;
+    let near_client = state
+        .near_client
+        .as_ref()
+        .ok_or_else(|| ApiError::InternalError("NEAR client not configured".to_string()))?;
 
     let policy_view = near_client
         .get_wallet_policy(wallet_id)
@@ -2673,7 +2986,8 @@ async fn verify_approvals(
     let keystore = state.keystore.read().await;
     let encrypted_bytes = base64::decode(encrypted_data_b64)
         .map_err(|e| ApiError::InternalError(format!("Invalid base64: {}", e)))?;
-    let decrypted = keystore.decrypt(&seed, &encrypted_bytes)
+    let decrypted = keystore
+        .decrypt(&seed, &encrypted_bytes)
         .map_err(|e| ApiError::InternalError(format!("Policy decryption failed: {}", e)))?;
     let policy: serde_json::Value = serde_json::from_slice(&decrypted)
         .map_err(|e| ApiError::InternalError(format!("Policy parse failed: {}", e)))?;
@@ -2732,12 +3046,10 @@ async fn wallet_sign_nep413_handler(
     State(state): State<AppState>,
     Json(req): Json<WalletSignNep413Request>,
 ) -> Result<Json<WalletSignNep413Response>, ApiError> {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
 
     if !state.is_ready() {
-        return Err(ApiError::Unauthorized(
-            "Keystore not ready.".to_string(),
-        ));
+        return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
     }
 
     // Verify approval signatures if this is an approved operation
@@ -2749,9 +3061,8 @@ async fn wallet_sign_nep413_handler(
     let seed = format!("wallet:{}:{}", req.wallet_id, chain);
 
     // Decode nonce from base64 (must be exactly 32 bytes)
-    let nonce_bytes = base64::decode(&req.nonce_base64).map_err(|e| {
-        ApiError::BadRequest(format!("Invalid base64 in nonce_base64: {}", e))
-    })?;
+    let nonce_bytes = base64::decode(&req.nonce_base64)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid base64 in nonce_base64: {}", e)))?;
 
     if nonce_bytes.len() != 32 {
         return Err(ApiError::BadRequest(format!(
@@ -2784,9 +3095,9 @@ async fn wallet_sign_nep413_handler(
     // Derive keypair and sign the hash
     use ed25519_dalek::Signer;
     let keystore = state.keystore.read().await;
-    let (signing_key, verifying_key) = keystore.derive_keypair(&seed).map_err(|e| {
-        ApiError::InternalError(format!("Key derivation failed: {}", e))
-    })?;
+    let (signing_key, verifying_key) = keystore
+        .derive_keypair(&seed)
+        .map_err(|e| ApiError::InternalError(format!("Key derivation failed: {}", e)))?;
 
     let signature = signing_key.sign(&hash);
 
@@ -2797,6 +3108,108 @@ async fn wallet_sign_nep413_handler(
     Ok(Json(WalletSignNep413Response {
         signature_base58: format!("ed25519:{}", signature_base58),
         public_key: format!("ed25519:{}", public_key_base58),
+    }))
+}
+
+fn validate_nep366_delegate_request(req: &WalletSignNep366DelegateRequest) -> Result<(), ApiError> {
+    if req.method_name.is_empty() {
+        return Err(ApiError::BadRequest("method_name is required".to_string()));
+    }
+    if req.gas == 0 {
+        return Err(ApiError::BadRequest(
+            "gas must be greater than zero".to_string(),
+        ));
+    }
+    if req.max_block_height == 0 {
+        return Err(ApiError::BadRequest(
+            "max_block_height must be greater than zero".to_string(),
+        ));
+    }
+    if let Some(current_block_height) = req.current_block_height {
+        if req.max_block_height <= current_block_height {
+            return Err(ApiError::BadRequest(
+                "max_block_height must be greater than current_block_height".to_string(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Build and sign a NEP-366 delegate for one NEAR FunctionCall.
+///
+/// The returned payload is base64(Borsh(SignedDelegateAction)) and is ready for
+/// the sequential gate's `submit_intent` method.
+async fn wallet_sign_nep366_delegate_handler(
+    State(state): State<AppState>,
+    Json(req): Json<WalletSignNep366DelegateRequest>,
+) -> Result<Json<WalletSignNep366DelegateResponse>, ApiError> {
+    use near_primitives::types::AccountId;
+    use std::str::FromStr;
+
+    if !state.is_ready() {
+        return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
+    }
+
+    if let Some(ref info) = req.approval_info {
+        verify_approvals(&state, &req.wallet_id, info).await?;
+    }
+
+    validate_nep366_delegate_request(&req)?;
+
+    let seed = format!("wallet:{}:near", req.wallet_id);
+    let keystore = state.keystore.read().await;
+    let (signing_key, verifying_key) = keystore
+        .derive_keypair(&seed)
+        .map_err(|e| ApiError::InternalError(format!("Key derivation failed: {}", e)))?;
+    drop(keystore);
+
+    let public_key_bytes = verifying_key.to_bytes();
+    let derived_sender_id = hex::encode(public_key_bytes);
+    if req.sender_id != derived_sender_id {
+        return Err(ApiError::BadRequest(format!(
+            "sender_id must match derived wallet account {}",
+            derived_sender_id
+        )));
+    }
+
+    let sender_id = AccountId::from_str(&req.sender_id)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid sender_id: {}", e)))?;
+    let receiver_id = AccountId::from_str(&req.receiver_id)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid receiver_id: {}", e)))?;
+    let deposit: u128 = req
+        .deposit
+        .parse()
+        .map_err(|e| ApiError::BadRequest(format!("Invalid deposit: {}", e)))?;
+    let args = req.args.into_bytes()?;
+
+    let (signed_delegate, delegate_hash) = crate::nep366::sign_function_call_delegate(
+        crate::nep366::FunctionCallDelegateParams {
+            sender_id,
+            receiver_id,
+            method_name: req.method_name,
+            args,
+            gas: req.gas,
+            deposit,
+            nonce: req.nonce,
+            max_block_height: req.max_block_height,
+            public_key: public_key_bytes,
+        },
+        &signing_key,
+    )
+    .map_err(|e| ApiError::InternalError(format!("Failed to sign NEP-366 delegate: {}", e)))?;
+
+    let signed_delegate_bytes = borsh::to_vec(&signed_delegate).map_err(|e| {
+        ApiError::InternalError(format!("Failed to serialize signed delegate: {}", e))
+    })?;
+
+    Ok(Json(WalletSignNep366DelegateResponse {
+        signed_delegate_base64: base64::encode(&signed_delegate_bytes),
+        delegate_hash: bs58::encode(delegate_hash).into_string(),
+        sender_id: derived_sender_id,
+        public_key: format!("ed25519:{}", bs58::encode(public_key_bytes).into_string()),
+        nonce: req.nonce,
+        max_block_height: req.max_block_height,
     }))
 }
 
@@ -2822,47 +3235,45 @@ async fn wallet_sign_near_call_handler(
         verify_approvals(&state, &req.wallet_id, info).await?;
     }
 
-    let near_client = state.near_client.as_ref().ok_or_else(|| {
-        ApiError::InternalError("NEAR client not configured".to_string())
-    })?;
+    let near_client = state
+        .near_client
+        .as_ref()
+        .ok_or_else(|| ApiError::InternalError("NEAR client not configured".to_string()))?;
 
     // 1. Derive wallet keypair
     let seed = format!("wallet:{}:near", req.wallet_id);
     let keystore = state.keystore.read().await;
-    let (signing_key, verifying_key) = keystore.derive_keypair(&seed).map_err(|e| {
-        ApiError::InternalError(format!("Key derivation failed: {}", e))
-    })?;
+    let (signing_key, verifying_key) = keystore
+        .derive_keypair(&seed)
+        .map_err(|e| ApiError::InternalError(format!("Key derivation failed: {}", e)))?;
     drop(keystore);
 
     // 2. Compute implicit account ID and public key
     let pubkey_bytes = verifying_key.to_bytes();
     let signer_id_str = hex::encode(pubkey_bytes);
-    let signer_id = AccountId::from_str(&signer_id_str).map_err(|e| {
-        ApiError::InternalError(format!("Invalid implicit account ID: {}", e))
-    })?;
+    let signer_id = AccountId::from_str(&signer_id_str)
+        .map_err(|e| ApiError::InternalError(format!("Invalid implicit account ID: {}", e)))?;
     let public_key_str = format!("ed25519:{}", bs58::encode(&pubkey_bytes).into_string());
-    let public_key: near_crypto::PublicKey = public_key_str.parse().map_err(|e| {
-        ApiError::InternalError(format!("Invalid public key: {}", e))
-    })?;
+    let public_key: near_crypto::PublicKey = public_key_str
+        .parse()
+        .map_err(|e| ApiError::InternalError(format!("Invalid public key: {}", e)))?;
 
     // 3. Query access key nonce and block hash (or use override)
     let (rpc_nonce, block_hash) = near_client
         .query_access_key(&signer_id_str, &public_key)
         .await
-        .map_err(|e| {
-            ApiError::InternalError(format!("Failed to query access key: {}", e))
-        })?;
+        .map_err(|e| ApiError::InternalError(format!("Failed to query access key: {}", e)))?;
     // Use override_nonce if provided (for sequential tx chains), otherwise rpc_nonce + 1
     let tx_nonce = req.override_nonce.unwrap_or(rpc_nonce + 1);
 
     // 4. Parse request parameters
-    let receiver_id = AccountId::from_str(&req.receiver_id).map_err(|e| {
-        ApiError::BadRequest(format!("Invalid receiver_id: {}", e))
-    })?;
+    let receiver_id = AccountId::from_str(&req.receiver_id)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid receiver_id: {}", e)))?;
 
-    let deposit: u128 = req.deposit.parse().map_err(|e| {
-        ApiError::BadRequest(format!("Invalid deposit: {}", e))
-    })?;
+    let deposit: u128 = req
+        .deposit
+        .parse()
+        .map_err(|e| ApiError::BadRequest(format!("Invalid deposit: {}", e)))?;
 
     let args = req.args.into_bytes()?;
 
@@ -2888,9 +3299,9 @@ async fn wallet_sign_near_call_handler(
     let sig = signing_key.sign(tx_hash.as_ref());
 
     let sig_str = format!("ed25519:{}", bs58::encode(sig.to_bytes()).into_string());
-    let signature: near_crypto::Signature = sig_str.parse().map_err(|e| {
-        ApiError::InternalError(format!("Failed to construct signature: {}", e))
-    })?;
+    let signature: near_crypto::Signature = sig_str
+        .parse()
+        .map_err(|e| ApiError::InternalError(format!("Failed to construct signature: {}", e)))?;
 
     // 7. Assemble SignedTransaction
     let signed_tx = near_primitives::transaction::SignedTransaction::new(signature, transaction);
@@ -2907,6 +3318,532 @@ async fn wallet_sign_near_call_handler(
     }))
 }
 
+const DIRECT_USER_KEY_VERSION: &str = "v1";
+const DEFAULT_DIRECT_USER_PROOF_GAS: u64 = 30_000_000_000_000;
+
+fn direct_user_seed(wallet_id: &str, user_id: &str) -> Result<String, ApiError> {
+    if wallet_id.is_empty() {
+        return Err(ApiError::BadRequest("wallet_id is required".to_string()));
+    }
+    if user_id.is_empty() {
+        return Err(ApiError::BadRequest("user_id is required".to_string()));
+    }
+
+    Ok(format!(
+        "wallet:{}:near:direct-user-fa:{}:{}",
+        wallet_id, user_id, DIRECT_USER_KEY_VERSION
+    ))
+}
+
+fn direct_user_key_label(wallet_id: &str, key_label: Option<&str>) -> Result<String, ApiError> {
+    if let Some(key_label) = key_label {
+        if key_label.is_empty() {
+            return Err(ApiError::BadRequest(
+                "key_label must not be empty".to_string(),
+            ));
+        }
+        return Ok(key_label.to_string());
+    }
+
+    if wallet_id.is_empty() {
+        return Err(ApiError::BadRequest("wallet_id is required".to_string()));
+    }
+
+    Ok(format!(
+        "outlayer:{}:direct-user-fa:{}",
+        wallet_id, DIRECT_USER_KEY_VERSION
+    ))
+}
+
+fn normalize_direct_user_methods(method_names: &[String]) -> Result<Vec<String>, ApiError> {
+    let mut normalized = method_names
+        .iter()
+        .map(|method| method.trim())
+        .map(|method| {
+            if method.is_empty() {
+                Err(ApiError::BadRequest(
+                    "method_names must not contain empty methods".to_string(),
+                ))
+            } else {
+                Ok(method.to_string())
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    normalized.sort();
+    normalized.dedup();
+    if normalized.is_empty() {
+        return Err(ApiError::BadRequest(
+            "direct-user FunctionCall key requires at least one method name".to_string(),
+        ));
+    }
+    Ok(normalized)
+}
+
+fn direct_user_method_names_hash(method_names: &[String]) -> Result<String, ApiError> {
+    use sha2::{Digest, Sha256};
+
+    let normalized = normalize_direct_user_methods(method_names)?;
+    let joined = normalized.join("\n");
+    Ok(hex::encode(Sha256::digest(joined.as_bytes())))
+}
+
+fn direct_user_function_call_seed(
+    wallet_id: &str,
+    user_id: &str,
+    registry_id: &str,
+    receiver_id: &str,
+    method_names: &[String],
+) -> Result<String, ApiError> {
+    if wallet_id.is_empty() {
+        return Err(ApiError::BadRequest("wallet_id is required".to_string()));
+    }
+    parse_near_account("user_id", user_id)?;
+    parse_near_account("registry_id", registry_id)?;
+    parse_near_account("receiver_id", receiver_id)?;
+    let method_hash = direct_user_method_names_hash(method_names)?;
+
+    Ok(format!(
+        "wallet:{}:near:direct-user-fc:{}:{}:{}:{}:{}",
+        wallet_id, user_id, registry_id, receiver_id, method_hash, DIRECT_USER_KEY_VERSION
+    ))
+}
+
+fn direct_user_function_call_key_label(
+    wallet_id: &str,
+    registry_id: &str,
+    receiver_id: &str,
+    key_label: Option<&str>,
+) -> Result<String, ApiError> {
+    if let Some(key_label) = key_label {
+        if key_label.is_empty() {
+            return Err(ApiError::BadRequest(
+                "key_label must not be empty".to_string(),
+            ));
+        }
+        return Ok(key_label.to_string());
+    }
+
+    if wallet_id.is_empty() {
+        return Err(ApiError::BadRequest("wallet_id is required".to_string()));
+    }
+    parse_near_account("registry_id", registry_id)?;
+    parse_near_account("receiver_id", receiver_id)?;
+
+    Ok(format!(
+        "outlayer:{}:direct-user-fc:{}:{}:{}",
+        wallet_id, registry_id, receiver_id, DIRECT_USER_KEY_VERSION
+    ))
+}
+
+fn near_public_key_from_bytes(
+    public_key_bytes: &[u8; 32],
+) -> Result<near_crypto::PublicKey, ApiError> {
+    let public_key_str = format!("ed25519:{}", bs58::encode(public_key_bytes).into_string());
+    public_key_str
+        .parse()
+        .map_err(|e| ApiError::InternalError(format!("Invalid public key: {}", e)))
+}
+
+fn direct_user_public_key_string(public_key_bytes: &[u8; 32]) -> String {
+    format!("ed25519:{}", bs58::encode(public_key_bytes).into_string())
+}
+
+fn parse_near_account(
+    field: &str,
+    value: &str,
+) -> Result<near_primitives::types::AccountId, ApiError> {
+    use std::str::FromStr;
+
+    near_primitives::types::AccountId::from_str(value)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid {}: {}", field, e)))
+}
+
+fn function_call_action_from_request(
+    action: DirectUserFunctionCallAction,
+) -> Result<near_primitives::transaction::Action, ApiError> {
+    use near_primitives::transaction::{Action, FunctionCallAction};
+
+    if action.method_name.is_empty() {
+        return Err(ApiError::BadRequest("method_name is required".to_string()));
+    }
+    if action.gas == 0 {
+        return Err(ApiError::BadRequest(
+            "gas must be greater than zero".to_string(),
+        ));
+    }
+
+    let deposit: u128 = action
+        .deposit
+        .parse()
+        .map_err(|e| ApiError::BadRequest(format!("Invalid deposit: {}", e)))?;
+    let args = action.args.into_bytes()?;
+
+    Ok(Action::FunctionCall(Box::new(FunctionCallAction {
+        method_name: action.method_name,
+        args,
+        gas: action.gas,
+        deposit,
+    })))
+}
+
+fn direct_user_actions_from_request(
+    actions: Vec<DirectUserFunctionCallAction>,
+) -> Result<Vec<near_primitives::transaction::Action>, ApiError> {
+    if actions.is_empty() {
+        return Err(ApiError::BadRequest(
+            "direct-user transaction requires at least one action".to_string(),
+        ));
+    }
+
+    actions
+        .into_iter()
+        .map(function_call_action_from_request)
+        .collect()
+}
+
+fn scoped_direct_user_actions_from_request(
+    actions: Vec<DirectUserFunctionCallAction>,
+    method_names: &[String],
+) -> Result<Vec<near_primitives::transaction::Action>, ApiError> {
+    let scope = normalize_direct_user_methods(method_names)?;
+    if actions.is_empty() {
+        return Err(ApiError::BadRequest(
+            "direct-user scoped FunctionCall transaction requires at least one action".to_string(),
+        ));
+    }
+
+    actions
+        .into_iter()
+        .map(|mut action| {
+            action.method_name = action.method_name.trim().to_string();
+            if !scope.iter().any(|method| method == &action.method_name) {
+                return Err(ApiError::BadRequest(format!(
+                    "method {} is not allowed by the scoped FunctionCall key",
+                    action.method_name
+                )));
+            }
+            let deposit: u128 = action
+                .deposit
+                .parse()
+                .map_err(|e| ApiError::BadRequest(format!("Invalid deposit: {}", e)))?;
+            if deposit != 0 {
+                return Err(ApiError::BadRequest(
+                    "scoped direct-user FunctionCall keys cannot attach deposit".to_string(),
+                ));
+            }
+            function_call_action_from_request(action)
+        })
+        .collect()
+}
+
+fn sign_direct_user_transaction(
+    signing_key: &ed25519_dalek::SigningKey,
+    public_key_bytes: [u8; 32],
+    signer_id: near_primitives::types::AccountId,
+    receiver_id: near_primitives::types::AccountId,
+    actions: Vec<near_primitives::transaction::Action>,
+    nonce: u64,
+    block_hash: near_primitives::hash::CryptoHash,
+    key_label: String,
+) -> Result<WalletDirectUserSignTransactionResponse, ApiError> {
+    use near_primitives::transaction::{Transaction, TransactionV0};
+
+    if actions.is_empty() {
+        return Err(ApiError::BadRequest(
+            "direct-user transaction requires at least one action".to_string(),
+        ));
+    }
+
+    let public_key = near_public_key_from_bytes(&public_key_bytes)?;
+    let transaction = Transaction::V0(TransactionV0 {
+        signer_id: signer_id.clone(),
+        public_key: public_key.clone(),
+        nonce,
+        receiver_id,
+        block_hash,
+        actions,
+    });
+
+    let (tx_hash, _) = transaction.get_hash_and_size();
+
+    use ed25519_dalek::Signer;
+    let sig = signing_key.sign(tx_hash.as_ref());
+    let sig_str = format!("ed25519:{}", bs58::encode(sig.to_bytes()).into_string());
+    let signature: near_crypto::Signature = sig_str
+        .parse()
+        .map_err(|e| ApiError::InternalError(format!("Failed to construct signature: {}", e)))?;
+
+    let signed_tx = near_primitives::transaction::SignedTransaction::new(signature, transaction);
+    let signed_tx_bytes = borsh::to_vec(&signed_tx).map_err(|e| {
+        ApiError::InternalError(format!("Failed to serialize signed transaction: {}", e))
+    })?;
+
+    Ok(WalletDirectUserSignTransactionResponse {
+        signed_tx_base64: base64::encode(&signed_tx_bytes),
+        tx_hash: bs58::encode(tx_hash.as_ref()).into_string(),
+        signer_id: signer_id.to_string(),
+        public_key: public_key.to_string(),
+        key_label,
+        nonce,
+    })
+}
+
+async fn wallet_direct_user_prepare_key_handler(
+    State(state): State<AppState>,
+    Json(req): Json<WalletDirectUserPrepareKeyRequest>,
+) -> Result<Json<WalletDirectUserPrepareKeyResponse>, ApiError> {
+    if !state.is_ready() {
+        return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
+    }
+
+    parse_near_account("user_id", &req.user_id)?;
+    let seed = direct_user_seed(&req.wallet_id, &req.user_id)?;
+    let key_label = direct_user_key_label(&req.wallet_id, req.key_label.as_deref())?;
+
+    let keystore = state.keystore.read().await;
+    let verifying_key = keystore
+        .get_public_key_for_seed(&seed)
+        .map_err(|e| ApiError::InternalError(format!("Key derivation failed: {}", e)))?;
+    let public_key_bytes = verifying_key.to_bytes();
+
+    Ok(Json(WalletDirectUserPrepareKeyResponse {
+        user_id: req.user_id,
+        public_key: direct_user_public_key_string(&public_key_bytes),
+        key_label,
+    }))
+}
+
+async fn wallet_direct_user_prepare_function_call_key_handler(
+    State(state): State<AppState>,
+    Json(req): Json<WalletDirectUserPrepareFunctionCallKeyRequest>,
+) -> Result<Json<WalletDirectUserPrepareFunctionCallKeyResponse>, ApiError> {
+    if !state.is_ready() {
+        return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
+    }
+
+    parse_near_account("user_id", &req.user_id)?;
+    parse_near_account("registry_id", &req.registry_id)?;
+    parse_near_account("receiver_id", &req.receiver_id)?;
+    let method_names = normalize_direct_user_methods(&req.method_names)?;
+    let method_names_hash = direct_user_method_names_hash(&method_names)?;
+    let seed = direct_user_function_call_seed(
+        &req.wallet_id,
+        &req.user_id,
+        &req.registry_id,
+        &req.receiver_id,
+        &method_names,
+    )?;
+    let key_label = direct_user_function_call_key_label(
+        &req.wallet_id,
+        &req.registry_id,
+        &req.receiver_id,
+        req.key_label.as_deref(),
+    )?;
+
+    let keystore = state.keystore.read().await;
+    let verifying_key = keystore
+        .get_public_key_for_seed(&seed)
+        .map_err(|e| ApiError::InternalError(format!("Key derivation failed: {}", e)))?;
+    let public_key_bytes = verifying_key.to_bytes();
+
+    Ok(Json(WalletDirectUserPrepareFunctionCallKeyResponse {
+        user_id: req.user_id,
+        registry_id: req.registry_id,
+        receiver_id: req.receiver_id,
+        method_names,
+        method_names_hash,
+        public_key: direct_user_public_key_string(&public_key_bytes),
+        key_label,
+    }))
+}
+
+async fn wallet_direct_user_sign_proof_handler(
+    State(state): State<AppState>,
+    Json(req): Json<WalletDirectUserSignProofRequest>,
+) -> Result<Json<WalletDirectUserSignTransactionResponse>, ApiError> {
+    if !state.is_ready() {
+        return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
+    }
+    if req.challenge.trim().is_empty() {
+        return Err(ApiError::BadRequest("challenge is required".to_string()));
+    }
+
+    if let Some(ref info) = req.approval_info {
+        verify_approvals(&state, &req.wallet_id, info).await?;
+    }
+
+    let near_client = state
+        .near_client
+        .as_ref()
+        .ok_or_else(|| ApiError::InternalError("NEAR client not configured".to_string()))?;
+
+    let signer_id = parse_near_account("user_id", &req.user_id)?;
+    let receiver_id = parse_near_account("registry_id", &req.registry_id)?;
+    let seed = direct_user_seed(&req.wallet_id, &req.user_id)?;
+    let key_label = direct_user_key_label(&req.wallet_id, req.key_label.as_deref())?;
+
+    let keystore = state.keystore.read().await;
+    let (signing_key, verifying_key) = keystore
+        .derive_keypair(&seed)
+        .map_err(|e| ApiError::InternalError(format!("Key derivation failed: {}", e)))?;
+    drop(keystore);
+
+    let public_key_bytes = verifying_key.to_bytes();
+    let public_key = near_public_key_from_bytes(&public_key_bytes)?;
+    let (rpc_nonce, block_hash) = near_client
+        .query_access_key(&req.user_id, &public_key)
+        .await
+        .map_err(|e| {
+            ApiError::InternalError(format!("Failed to query direct-user access key: {}", e))
+        })?;
+    let nonce = req.override_nonce.unwrap_or(rpc_nonce + 1);
+
+    let args_json = serde_json::json!({
+        "user_id": req.user_id,
+        "key_label": key_label,
+        "challenge": req.challenge,
+    })
+    .to_string();
+    let actions = direct_user_actions_from_request(vec![DirectUserFunctionCallAction {
+        method_name: "prove_full_access".to_string(),
+        args: CallArgs::Json { args_json },
+        gas: req.gas.unwrap_or(DEFAULT_DIRECT_USER_PROOF_GAS),
+        deposit: "1".to_string(),
+    }])?;
+
+    let response = sign_direct_user_transaction(
+        &signing_key,
+        public_key_bytes,
+        signer_id,
+        receiver_id,
+        actions,
+        nonce,
+        block_hash,
+        key_label,
+    )?;
+    Ok(Json(response))
+}
+
+async fn wallet_direct_user_sign_function_calls_handler(
+    State(state): State<AppState>,
+    Json(req): Json<WalletDirectUserSignFunctionCallsRequest>,
+) -> Result<Json<WalletDirectUserSignTransactionResponse>, ApiError> {
+    if !state.is_ready() {
+        return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
+    }
+
+    if let Some(ref info) = req.approval_info {
+        verify_approvals(&state, &req.wallet_id, info).await?;
+    }
+
+    let near_client = state
+        .near_client
+        .as_ref()
+        .ok_or_else(|| ApiError::InternalError("NEAR client not configured".to_string()))?;
+
+    let signer_id = parse_near_account("user_id", &req.user_id)?;
+    let receiver_id = parse_near_account("receiver_id", &req.receiver_id)?;
+    let seed = direct_user_seed(&req.wallet_id, &req.user_id)?;
+    let key_label = direct_user_key_label(&req.wallet_id, req.key_label.as_deref())?;
+    let actions = direct_user_actions_from_request(req.actions)?;
+
+    let keystore = state.keystore.read().await;
+    let (signing_key, verifying_key) = keystore
+        .derive_keypair(&seed)
+        .map_err(|e| ApiError::InternalError(format!("Key derivation failed: {}", e)))?;
+    drop(keystore);
+
+    let public_key_bytes = verifying_key.to_bytes();
+    let public_key = near_public_key_from_bytes(&public_key_bytes)?;
+    let (rpc_nonce, block_hash) = near_client
+        .query_access_key(&req.user_id, &public_key)
+        .await
+        .map_err(|e| {
+            ApiError::InternalError(format!("Failed to query direct-user access key: {}", e))
+        })?;
+    let nonce = req.override_nonce.unwrap_or(rpc_nonce + 1);
+
+    let response = sign_direct_user_transaction(
+        &signing_key,
+        public_key_bytes,
+        signer_id,
+        receiver_id,
+        actions,
+        nonce,
+        block_hash,
+        key_label,
+    )?;
+    Ok(Json(response))
+}
+
+async fn wallet_direct_user_sign_scoped_function_calls_handler(
+    State(state): State<AppState>,
+    Json(req): Json<WalletDirectUserSignScopedFunctionCallsRequest>,
+) -> Result<Json<WalletDirectUserSignTransactionResponse>, ApiError> {
+    if !state.is_ready() {
+        return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
+    }
+
+    if let Some(ref info) = req.approval_info {
+        verify_approvals(&state, &req.wallet_id, info).await?;
+    }
+
+    let near_client = state
+        .near_client
+        .as_ref()
+        .ok_or_else(|| ApiError::InternalError("NEAR client not configured".to_string()))?;
+
+    let signer_id = parse_near_account("user_id", &req.user_id)?;
+    parse_near_account("registry_id", &req.registry_id)?;
+    let receiver_id = parse_near_account("receiver_id", &req.receiver_id)?;
+    let method_names = normalize_direct_user_methods(&req.method_names)?;
+    let seed = direct_user_function_call_seed(
+        &req.wallet_id,
+        &req.user_id,
+        &req.registry_id,
+        &req.receiver_id,
+        &method_names,
+    )?;
+    let key_label = direct_user_function_call_key_label(
+        &req.wallet_id,
+        &req.registry_id,
+        &req.receiver_id,
+        req.key_label.as_deref(),
+    )?;
+    let actions = scoped_direct_user_actions_from_request(req.actions, &method_names)?;
+
+    let keystore = state.keystore.read().await;
+    let (signing_key, verifying_key) = keystore
+        .derive_keypair(&seed)
+        .map_err(|e| ApiError::InternalError(format!("Key derivation failed: {}", e)))?;
+    drop(keystore);
+
+    let public_key_bytes = verifying_key.to_bytes();
+    let public_key = near_public_key_from_bytes(&public_key_bytes)?;
+    let (rpc_nonce, block_hash) = near_client
+        .query_access_key(&req.user_id, &public_key)
+        .await
+        .map_err(|e| {
+            ApiError::InternalError(format!(
+                "Failed to query scoped direct-user access key: {}",
+                e
+            ))
+        })?;
+    let nonce = req.override_nonce.unwrap_or(rpc_nonce + 1);
+
+    let response = sign_direct_user_transaction(
+        &signing_key,
+        public_key_bytes,
+        signer_id,
+        receiver_id,
+        actions,
+        nonce,
+        block_hash,
+        key_label,
+    )?;
+    Ok(Json(response))
+}
+
 /// Build and sign a native NEAR transfer transaction.
 ///
 /// Similar to `wallet_sign_near_call_handler` but uses `Action::Transfer`
@@ -2915,7 +3852,7 @@ async fn wallet_sign_near_transfer_handler(
     State(state): State<AppState>,
     Json(req): Json<WalletSignNearTransferRequest>,
 ) -> Result<Json<WalletSignNearCallResponse>, ApiError> {
-    use near_primitives::transaction::{Action, TransferAction, Transaction, TransactionV0};
+    use near_primitives::transaction::{Action, Transaction, TransactionV0, TransferAction};
     use near_primitives::types::AccountId;
     use std::str::FromStr;
 
@@ -2928,45 +3865,43 @@ async fn wallet_sign_near_transfer_handler(
         verify_approvals(&state, &req.wallet_id, info).await?;
     }
 
-    let near_client = state.near_client.as_ref().ok_or_else(|| {
-        ApiError::InternalError("NEAR client not configured".to_string())
-    })?;
+    let near_client = state
+        .near_client
+        .as_ref()
+        .ok_or_else(|| ApiError::InternalError("NEAR client not configured".to_string()))?;
 
     // 1. Derive wallet keypair
     let seed = format!("wallet:{}:near", req.wallet_id);
     let keystore = state.keystore.read().await;
-    let (signing_key, verifying_key) = keystore.derive_keypair(&seed).map_err(|e| {
-        ApiError::InternalError(format!("Key derivation failed: {}", e))
-    })?;
+    let (signing_key, verifying_key) = keystore
+        .derive_keypair(&seed)
+        .map_err(|e| ApiError::InternalError(format!("Key derivation failed: {}", e)))?;
     drop(keystore);
 
     // 2. Compute implicit account ID and public key
     let pubkey_bytes = verifying_key.to_bytes();
     let signer_id_str = hex::encode(pubkey_bytes);
-    let signer_id = AccountId::from_str(&signer_id_str).map_err(|e| {
-        ApiError::InternalError(format!("Invalid implicit account ID: {}", e))
-    })?;
+    let signer_id = AccountId::from_str(&signer_id_str)
+        .map_err(|e| ApiError::InternalError(format!("Invalid implicit account ID: {}", e)))?;
     let public_key_str = format!("ed25519:{}", bs58::encode(&pubkey_bytes).into_string());
-    let public_key: near_crypto::PublicKey = public_key_str.parse().map_err(|e| {
-        ApiError::InternalError(format!("Invalid public key: {}", e))
-    })?;
+    let public_key: near_crypto::PublicKey = public_key_str
+        .parse()
+        .map_err(|e| ApiError::InternalError(format!("Invalid public key: {}", e)))?;
 
     // 3. Query access key nonce and block hash
     let (nonce, block_hash) = near_client
         .query_access_key(&signer_id_str, &public_key)
         .await
-        .map_err(|e| {
-            ApiError::InternalError(format!("Failed to query access key: {}", e))
-        })?;
+        .map_err(|e| ApiError::InternalError(format!("Failed to query access key: {}", e)))?;
 
     // 4. Parse request parameters
-    let receiver_id = AccountId::from_str(&req.receiver_id).map_err(|e| {
-        ApiError::BadRequest(format!("Invalid receiver_id: {}", e))
-    })?;
+    let receiver_id = AccountId::from_str(&req.receiver_id)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid receiver_id: {}", e)))?;
 
-    let deposit: u128 = req.amount.parse().map_err(|e| {
-        ApiError::BadRequest(format!("Invalid amount: {}", e))
-    })?;
+    let deposit: u128 = req
+        .amount
+        .parse()
+        .map_err(|e| ApiError::BadRequest(format!("Invalid amount: {}", e)))?;
 
     // 5. Build Transaction::V0 with Transfer action
     let transaction = Transaction::V0(TransactionV0 {
@@ -2985,9 +3920,9 @@ async fn wallet_sign_near_transfer_handler(
     let sig = signing_key.sign(tx_hash.as_ref());
 
     let sig_str = format!("ed25519:{}", bs58::encode(sig.to_bytes()).into_string());
-    let signature: near_crypto::Signature = sig_str.parse().map_err(|e| {
-        ApiError::InternalError(format!("Failed to construct signature: {}", e))
-    })?;
+    let signature: near_crypto::Signature = sig_str
+        .parse()
+        .map_err(|e| ApiError::InternalError(format!("Failed to construct signature: {}", e)))?;
 
     // 7. Assemble SignedTransaction
     let signed_tx = near_primitives::transaction::SignedTransaction::new(signature, transaction);
@@ -3024,41 +3959,38 @@ async fn wallet_sign_near_delete_account_handler(
         verify_approvals(&state, &req.wallet_id, info).await?;
     }
 
-    let near_client = state.near_client.as_ref().ok_or_else(|| {
-        ApiError::InternalError("NEAR client not configured".to_string())
-    })?;
+    let near_client = state
+        .near_client
+        .as_ref()
+        .ok_or_else(|| ApiError::InternalError("NEAR client not configured".to_string()))?;
 
     // 1. Derive wallet keypair
     let seed = format!("wallet:{}:near", req.wallet_id);
     let keystore = state.keystore.read().await;
-    let (signing_key, verifying_key) = keystore.derive_keypair(&seed).map_err(|e| {
-        ApiError::InternalError(format!("Key derivation failed: {}", e))
-    })?;
+    let (signing_key, verifying_key) = keystore
+        .derive_keypair(&seed)
+        .map_err(|e| ApiError::InternalError(format!("Key derivation failed: {}", e)))?;
     drop(keystore);
 
     // 2. Compute implicit account ID and public key
     let pubkey_bytes = verifying_key.to_bytes();
     let signer_id_str = hex::encode(pubkey_bytes);
-    let signer_id = AccountId::from_str(&signer_id_str).map_err(|e| {
-        ApiError::InternalError(format!("Invalid implicit account ID: {}", e))
-    })?;
+    let signer_id = AccountId::from_str(&signer_id_str)
+        .map_err(|e| ApiError::InternalError(format!("Invalid implicit account ID: {}", e)))?;
     let public_key_str = format!("ed25519:{}", bs58::encode(&pubkey_bytes).into_string());
-    let public_key: near_crypto::PublicKey = public_key_str.parse().map_err(|e| {
-        ApiError::InternalError(format!("Invalid public key: {}", e))
-    })?;
+    let public_key: near_crypto::PublicKey = public_key_str
+        .parse()
+        .map_err(|e| ApiError::InternalError(format!("Invalid public key: {}", e)))?;
 
     // 3. Query access key nonce and block hash
     let (nonce, block_hash) = near_client
         .query_access_key(&signer_id_str, &public_key)
         .await
-        .map_err(|e| {
-            ApiError::InternalError(format!("Failed to query access key: {}", e))
-        })?;
+        .map_err(|e| ApiError::InternalError(format!("Failed to query access key: {}", e)))?;
 
     // 4. Parse beneficiary
-    let beneficiary_id = AccountId::from_str(&req.beneficiary_id).map_err(|e| {
-        ApiError::BadRequest(format!("Invalid beneficiary_id: {}", e))
-    })?;
+    let beneficiary_id = AccountId::from_str(&req.beneficiary_id)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid beneficiary_id: {}", e)))?;
 
     // 5. Build Transaction::V0 with DeleteAccount action
     // receiver_id = signer_id (deleting own account)
@@ -3080,9 +4012,9 @@ async fn wallet_sign_near_delete_account_handler(
     let sig = signing_key.sign(tx_hash.as_ref());
 
     let sig_str = format!("ed25519:{}", bs58::encode(sig.to_bytes()).into_string());
-    let signature: near_crypto::Signature = sig_str.parse().map_err(|e| {
-        ApiError::InternalError(format!("Failed to construct signature: {}", e))
-    })?;
+    let signature: near_crypto::Signature = sig_str
+        .parse()
+        .map_err(|e| ApiError::InternalError(format!("Failed to construct signature: {}", e)))?;
 
     // 7. Assemble SignedTransaction
     let signed_tx = near_primitives::transaction::SignedTransaction::new(signature, transaction);
@@ -3108,9 +4040,7 @@ async fn wallet_check_policy_handler(
     Json(req): Json<WalletCheckPolicyRequest>,
 ) -> Result<Json<WalletCheckPolicyResponse>, ApiError> {
     if !state.is_ready() {
-        return Err(ApiError::Unauthorized(
-            "Keystore not ready.".to_string(),
-        ));
+        return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
     }
 
     // Get encrypted policy data: either from inline request or from NEAR contract
@@ -3123,16 +4053,19 @@ async fn wallet_check_policy_handler(
         // stored on-chain by store_wallet_policy.
         let near_seed = format!("wallet:{}:near", req.wallet_id);
         let keystore_read = state.keystore.read().await;
-        let ed25519_vk = keystore_read.get_public_key_for_seed(&near_seed).map_err(|e| {
-            ApiError::InternalError(format!("Failed to derive wallet pubkey: {}", e))
-        })?;
+        let ed25519_vk = keystore_read
+            .get_public_key_for_seed(&near_seed)
+            .map_err(|e| {
+                ApiError::InternalError(format!("Failed to derive wallet pubkey: {}", e))
+            })?;
         let wallet_pubkey_hex = hex::encode(ed25519_vk.as_bytes());
         drop(keystore_read);
         let wallet_pubkey = format!("ed25519:{}", wallet_pubkey_hex);
 
-        let near_client = state.near_client.as_ref().ok_or_else(|| {
-            ApiError::InternalError("NEAR client not configured".to_string())
-        })?;
+        let near_client = state
+            .near_client
+            .as_ref()
+            .ok_or_else(|| ApiError::InternalError("NEAR client not configured".to_string()))?;
 
         let policy_view = near_client
             .get_wallet_policy(&wallet_pubkey)
@@ -3157,7 +4090,11 @@ async fn wallet_check_policy_handler(
         };
 
         // Check frozen flag (visible without decryption)
-        if policy_view.get("frozen").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if policy_view
+            .get("frozen")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             return Ok(Json(WalletCheckPolicyResponse {
                 allowed: false,
                 frozen: true,
@@ -3171,7 +4108,9 @@ async fn wallet_check_policy_handler(
         policy_view
             .get("encrypted_data")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ApiError::InternalError("Missing encrypted_data field in policy".to_string()))?
+            .ok_or_else(|| {
+                ApiError::InternalError("Missing encrypted_data field in policy".to_string())
+            })?
             .to_string()
     };
 
@@ -3179,18 +4118,15 @@ async fn wallet_check_policy_handler(
     let seed = format!("wallet-policy:{}", req.wallet_id);
     let keystore = state.keystore.read().await;
 
-    let encrypted_bytes = base64::decode(&encrypted_data_b64).map_err(|e| {
-        ApiError::InternalError(format!("Invalid base64 in encrypted_data: {}", e))
-    })?;
+    let encrypted_bytes = base64::decode(&encrypted_data_b64)
+        .map_err(|e| ApiError::InternalError(format!("Invalid base64 in encrypted_data: {}", e)))?;
 
-    let decrypted = keystore.decrypt(&seed, &encrypted_bytes).map_err(|e| {
-        ApiError::InternalError(format!("Policy decryption failed: {}", e))
-    })?;
+    let decrypted = keystore
+        .decrypt(&seed, &encrypted_bytes)
+        .map_err(|e| ApiError::InternalError(format!("Policy decryption failed: {}", e)))?;
 
-    let policy: serde_json::Value =
-        serde_json::from_slice(&decrypted).map_err(|e| {
-            ApiError::InternalError(format!("Policy JSON parse failed: {}", e))
-        })?;
+    let policy: serde_json::Value = serde_json::from_slice(&decrypted)
+        .map_err(|e| ApiError::InternalError(format!("Policy JSON parse failed: {}", e)))?;
 
     // Evaluate policy rules against the action
     let decision = evaluate_policy(&policy, &req.action);
@@ -3204,7 +4140,11 @@ pub(crate) fn evaluate_policy(
     action: &serde_json::Value,
 ) -> WalletCheckPolicyResponse {
     // Check if frozen (in policy JSON)
-    if policy.get("frozen").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if policy
+        .get("frozen")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         return WalletCheckPolicyResponse {
             allowed: false,
             frozen: true,
@@ -3253,20 +4193,18 @@ pub(crate) fn evaluate_policy(
 
     // Check allowed_tokens restriction
     if let Some(allowed_tokens) = rules.get("allowed_tokens").and_then(|v| v.as_array()) {
-        let token = action.get("token").and_then(|v| v.as_str()).unwrap_or("native");
-        let token_allowed = allowed_tokens
-            .iter()
-            .any(|t| t.as_str() == Some(token));
+        let token = action
+            .get("token")
+            .and_then(|v| v.as_str())
+            .unwrap_or("native");
+        let token_allowed = allowed_tokens.iter().any(|t| t.as_str() == Some(token));
         if !token_allowed {
             return WalletCheckPolicyResponse {
                 allowed: false,
                 frozen: false,
                 requires_approval: None,
                 required_approvals: None,
-                reason: Some(format!(
-                    "Token '{}' is not allowed by policy",
-                    token
-                )),
+                reason: Some(format!("Token '{}' is not allowed by policy", token)),
                 policy: Some(policy.clone()),
             };
         }
@@ -3274,15 +4212,14 @@ pub(crate) fn evaluate_policy(
 
     // Check address whitelist/blacklist
     if let Some(addresses) = rules.get("addresses") {
-        let mode = addresses.get("mode").and_then(|v| v.as_str()).unwrap_or("whitelist");
+        let mode = addresses
+            .get("mode")
+            .and_then(|v| v.as_str())
+            .unwrap_or("whitelist");
         let list = addresses
             .get("list")
             .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .collect::<Vec<_>>()
-            })
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
             .unwrap_or_default();
 
         let to = action.get("to").and_then(|v| v.as_str()).unwrap_or("");
@@ -3296,10 +4233,7 @@ pub(crate) fn evaluate_policy(
                             frozen: false,
                             requires_approval: None,
                             required_approvals: None,
-                            reason: Some(format!(
-                                "Address '{}' is not in whitelist",
-                                to
-                            )),
+                            reason: Some(format!("Address '{}' is not in whitelist", to)),
                             policy: Some(policy.clone()),
                         };
                     }
@@ -3311,10 +4245,7 @@ pub(crate) fn evaluate_policy(
                             frozen: false,
                             requires_approval: None,
                             required_approvals: None,
-                            reason: Some(format!(
-                                "Address '{}' is blacklisted",
-                                to
-                            )),
+                            reason: Some(format!("Address '{}' is blacklisted", to)),
                             policy: Some(policy.clone()),
                         };
                     }
@@ -3326,7 +4257,10 @@ pub(crate) fn evaluate_policy(
 
     // Check per-transaction limits and velocity limits (per-token, in raw units)
     if let Some(limits) = rules.get("limits") {
-        let token = action.get("token").and_then(|v| v.as_str()).unwrap_or("native");
+        let token = action
+            .get("token")
+            .and_then(|v| v.as_str())
+            .unwrap_or("native");
         let amount_str = action.get("amount").and_then(|v| v.as_str()).unwrap_or("0");
         let amount: u128 = match amount_str.parse() {
             Ok(v) => v,
@@ -3336,7 +4270,10 @@ pub(crate) fn evaluate_policy(
                     frozen: false,
                     requires_approval: None,
                     required_approvals: None,
-                    reason: Some(format!("Invalid amount '{}': must be a valid integer", amount_str)),
+                    reason: Some(format!(
+                        "Invalid amount '{}': must be a valid integer",
+                        amount_str
+                    )),
                     policy: Some(policy.clone()),
                 };
             }
@@ -3369,7 +4306,10 @@ pub(crate) fn evaluate_policy(
 
         // Check daily velocity limit
         if let Some(daily) = limits.get("daily") {
-            let limit_str = daily.get(token).or_else(|| daily.get("*")).and_then(|v| v.as_str());
+            let limit_str = daily
+                .get(token)
+                .or_else(|| daily.get("*"))
+                .and_then(|v| v.as_str());
             if let Some(limit) = limit_str {
                 let limit_val: u128 = limit.parse().unwrap_or(u128::MAX);
                 let current: u128 = action
@@ -3396,7 +4336,10 @@ pub(crate) fn evaluate_policy(
 
         // Check hourly velocity limit
         if let Some(hourly) = limits.get("hourly") {
-            let limit_str = hourly.get(token).or_else(|| hourly.get("*")).and_then(|v| v.as_str());
+            let limit_str = hourly
+                .get(token)
+                .or_else(|| hourly.get("*"))
+                .and_then(|v| v.as_str());
             if let Some(limit) = limit_str {
                 let limit_val: u128 = limit.parse().unwrap_or(u128::MAX);
                 let current: u128 = action
@@ -3423,7 +4366,10 @@ pub(crate) fn evaluate_policy(
 
         // Check monthly velocity limit
         if let Some(monthly) = limits.get("monthly") {
-            let limit_str = monthly.get(token).or_else(|| monthly.get("*")).and_then(|v| v.as_str());
+            let limit_str = monthly
+                .get(token)
+                .or_else(|| monthly.get("*"))
+                .and_then(|v| v.as_str());
             if let Some(limit) = limit_str {
                 let limit_val: u128 = limit.parse().unwrap_or(u128::MAX);
                 let current: u128 = action
@@ -3507,7 +4453,10 @@ pub(crate) fn evaluate_policy(
         let day_index = ((secs_since_epoch / 86400) + 3) % 7 + 1; // +3 because Thu=4, (0+3)%7+1 = 4
         let weekday = day_index as u32;
 
-        if let Some(allowed_hours) = time_restrictions.get("allowed_hours").and_then(|v| v.as_array()) {
+        if let Some(allowed_hours) = time_restrictions
+            .get("allowed_hours")
+            .and_then(|v| v.as_array())
+        {
             if allowed_hours.len() == 2 {
                 let start = allowed_hours[0].as_u64().unwrap_or(0) as u32;
                 let end = allowed_hours[1].as_u64().unwrap_or(24) as u32;
@@ -3535,7 +4484,10 @@ pub(crate) fn evaluate_policy(
             }
         }
 
-        if let Some(allowed_days) = time_restrictions.get("allowed_days").and_then(|v| v.as_array()) {
+        if let Some(allowed_days) = time_restrictions
+            .get("allowed_days")
+            .and_then(|v| v.as_array())
+        {
             let day_allowed = allowed_days
                 .iter()
                 .any(|d| d.as_u64() == Some(weekday as u64));
@@ -3545,10 +4497,7 @@ pub(crate) fn evaluate_policy(
                     frozen: false,
                     requires_approval: None,
                     required_approvals: None,
-                    reason: Some(format!(
-                        "Operation not allowed on weekday {}",
-                        weekday
-                    )),
+                    reason: Some(format!("Operation not allowed on weekday {}", weekday)),
                     policy: Some(policy.clone()),
                 };
             }
@@ -3571,7 +4520,10 @@ pub(crate) fn evaluate_policy(
             // Per-amount USD threshold will be added later.
             let threshold = approval.get("threshold");
             if let Some(threshold) = threshold {
-                let required = threshold.get("required").and_then(|v| v.as_i64()).unwrap_or(2) as i32;
+                let required = threshold
+                    .get("required")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(2) as i32;
 
                 return WalletCheckPolicyResponse {
                     allowed: true,
@@ -3602,9 +4554,7 @@ async fn wallet_encrypt_policy_handler(
     Json(req): Json<WalletEncryptPolicyRequest>,
 ) -> Result<Json<WalletEncryptPolicyResponse>, ApiError> {
     if !state.is_ready() {
-        return Err(ApiError::Unauthorized(
-            "Keystore not ready.".to_string(),
-        ));
+        return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
     }
 
     let seed = format!("wallet-policy:{}", req.wallet_id);
@@ -3623,6 +4573,480 @@ async fn wallet_encrypt_policy_handler(
 mod tests {
     use super::*;
     use crate::types::{AccessCondition, LogicOperator};
+
+    #[derive(Debug, Deserialize)]
+    struct ArgsOnlyRequest {
+        #[serde(flatten)]
+        args: CallArgs,
+    }
+
+    #[test]
+    fn test_call_args_accepts_args_json() {
+        let req: ArgsOnlyRequest = serde_json::from_value(serde_json::json!({
+            "args_json": "{\"a\":1}"
+        }))
+        .unwrap();
+
+        match req.args {
+            CallArgs::Json { args_json } => assert_eq!(args_json, "{\"a\":1}"),
+            _ => panic!("expected json call args"),
+        }
+    }
+
+    #[test]
+    fn test_call_args_accepts_args_base64() {
+        let req: ArgsOnlyRequest = serde_json::from_value(serde_json::json!({
+            "args_base64": "e30="
+        }))
+        .unwrap();
+
+        match req.args {
+            CallArgs::Base64 { args_base64 } => assert_eq!(args_base64, "e30="),
+            _ => panic!("expected base64 call args"),
+        }
+    }
+
+    #[test]
+    fn test_call_args_rejects_conflicting_encodings() {
+        let err = serde_json::from_value::<ArgsOnlyRequest>(serde_json::json!({
+            "args_json": "{}",
+            "args_base64": "e30="
+        }))
+        .unwrap_err();
+
+        assert!(err.to_string().contains("exactly one"));
+    }
+
+    #[test]
+    fn test_call_args_rejects_non_string_encoding() {
+        let err = serde_json::from_value::<ArgsOnlyRequest>(serde_json::json!({
+            "args_json": {}
+        }))
+        .unwrap_err();
+
+        assert!(err.to_string().contains("args_json must be a string"));
+    }
+
+    fn valid_nep366_request() -> WalletSignNep366DelegateRequest {
+        WalletSignNep366DelegateRequest {
+            wallet_id: "wallet-1".to_string(),
+            sender_id: "1111111111111111111111111111111111111111111111111111111111111111"
+                .to_string(),
+            receiver_id: "intents.near".to_string(),
+            method_name: "execute_intents".to_string(),
+            args: CallArgs::Json {
+                args_json: "{}".to_string(),
+            },
+            gas: 100_000_000_000_000,
+            deposit: "0".to_string(),
+            nonce: 1,
+            max_block_height: 101,
+            current_block_height: Some(100),
+            approval_info: None,
+        }
+    }
+
+    #[test]
+    fn test_nep366_delegate_request_rejects_expired_height() {
+        let mut req = valid_nep366_request();
+        req.max_block_height = 100;
+
+        let err = validate_nep366_delegate_request(&req).unwrap_err();
+        match err {
+            ApiError::BadRequest(message) => {
+                assert!(message.contains("current_block_height"));
+            }
+            _ => panic!("expected BadRequest"),
+        }
+    }
+
+    #[test]
+    fn test_nep366_delegate_request_rejects_zero_gas() {
+        let mut req = valid_nep366_request();
+        req.gas = 0;
+
+        let err = validate_nep366_delegate_request(&req).unwrap_err();
+        match err {
+            ApiError::BadRequest(message) => assert!(message.contains("gas")),
+            _ => panic!("expected BadRequest"),
+        }
+    }
+
+    fn decode_direct_user_signed_tx(
+        response: &WalletDirectUserSignTransactionResponse,
+    ) -> near_primitives::transaction::SignedTransaction {
+        let signed_tx_bytes = base64::decode(&response.signed_tx_base64).unwrap();
+        borsh::BorshDeserialize::try_from_slice(&signed_tx_bytes).unwrap()
+    }
+
+    fn test_block_hash() -> near_primitives::hash::CryptoHash {
+        near_primitives::hash::CryptoHash::default()
+    }
+
+    #[test]
+    fn test_direct_user_key_derivation_is_deterministic_and_separate() {
+        let keystore = crate::crypto::Keystore::generate();
+        let direct_seed = direct_user_seed("wallet-1", "mike.near").unwrap();
+        let direct_seed_again = direct_user_seed("wallet-1", "mike.near").unwrap();
+        let implicit_seed = "wallet:wallet-1:near";
+
+        let direct_key = keystore.get_public_key_for_seed(&direct_seed).unwrap();
+        let direct_key_again = keystore
+            .get_public_key_for_seed(&direct_seed_again)
+            .unwrap();
+        let implicit_key = keystore.get_public_key_for_seed(implicit_seed).unwrap();
+
+        assert_eq!(direct_key.as_bytes(), direct_key_again.as_bytes());
+        assert_ne!(direct_key.as_bytes(), implicit_key.as_bytes());
+        assert_eq!(
+            direct_user_key_label("wallet-1", None).unwrap(),
+            "outlayer:wallet-1:direct-user-fa:v1"
+        );
+    }
+
+    #[test]
+    fn test_scoped_function_call_key_derivation_is_deterministic_and_separate() {
+        let keystore = crate::crypto::Keystore::generate();
+        let methods = vec!["increase".to_string()];
+        let scoped_seed = direct_user_function_call_seed(
+            "wallet-1",
+            "mike.near",
+            "mike.sequential.near",
+            "count.mike.near",
+            &methods,
+        )
+        .unwrap();
+        let scoped_seed_again = direct_user_function_call_seed(
+            "wallet-1",
+            "mike.near",
+            "mike.sequential.near",
+            "count.mike.near",
+            &methods,
+        )
+        .unwrap();
+        let other_registry_seed = direct_user_function_call_seed(
+            "wallet-1",
+            "mike.near",
+            "other.sequential.near",
+            "count.mike.near",
+            &methods,
+        )
+        .unwrap();
+        let other_receiver_seed = direct_user_function_call_seed(
+            "wallet-1",
+            "mike.near",
+            "mike.sequential.near",
+            "other-count.mike.near",
+            &methods,
+        )
+        .unwrap();
+        let other_methods_seed = direct_user_function_call_seed(
+            "wallet-1",
+            "mike.near",
+            "mike.sequential.near",
+            "count.mike.near",
+            &["decrease".to_string()],
+        )
+        .unwrap();
+        let full_access_seed = direct_user_seed("wallet-1", "mike.near").unwrap();
+
+        let scoped_key = keystore.get_public_key_for_seed(&scoped_seed).unwrap();
+        let scoped_key_again = keystore
+            .get_public_key_for_seed(&scoped_seed_again)
+            .unwrap();
+        let other_registry_key = keystore
+            .get_public_key_for_seed(&other_registry_seed)
+            .unwrap();
+        let other_receiver_key = keystore
+            .get_public_key_for_seed(&other_receiver_seed)
+            .unwrap();
+        let other_methods_key = keystore
+            .get_public_key_for_seed(&other_methods_seed)
+            .unwrap();
+        let full_access_key = keystore.get_public_key_for_seed(&full_access_seed).unwrap();
+
+        assert_eq!(scoped_key.as_bytes(), scoped_key_again.as_bytes());
+        assert_ne!(scoped_key.as_bytes(), other_registry_key.as_bytes());
+        assert_ne!(scoped_key.as_bytes(), other_receiver_key.as_bytes());
+        assert_ne!(scoped_key.as_bytes(), other_methods_key.as_bytes());
+        assert_ne!(scoped_key.as_bytes(), full_access_key.as_bytes());
+        assert_eq!(
+            direct_user_function_call_key_label(
+                "wallet-1",
+                "mike.sequential.near",
+                "count.mike.near",
+                None
+            )
+            .unwrap(),
+            "outlayer:wallet-1:direct-user-fc:mike.sequential.near:count.mike.near:v1"
+        );
+    }
+
+    #[test]
+    fn test_scoped_function_call_transaction_uses_user_signer_and_zero_deposit() {
+        let keystore = crate::crypto::Keystore::generate();
+        let methods = vec!["increase".to_string()];
+        let seed = direct_user_function_call_seed(
+            "wallet-1",
+            "mike.near",
+            "mike.sequential.near",
+            "count.mike.near",
+            &methods,
+        )
+        .unwrap();
+        let (signing_key, verifying_key) = keystore.derive_keypair(&seed).unwrap();
+        let actions = scoped_direct_user_actions_from_request(
+            vec![DirectUserFunctionCallAction {
+                method_name: "increase".to_string(),
+                args: CallArgs::Json {
+                    args_json: "{}".to_string(),
+                },
+                gas: 30_000_000_000_000,
+                deposit: "0".to_string(),
+            }],
+            &methods,
+        )
+        .unwrap();
+
+        let response = sign_direct_user_transaction(
+            &signing_key,
+            verifying_key.to_bytes(),
+            "mike.near".parse().unwrap(),
+            "count.mike.near".parse().unwrap(),
+            actions,
+            9,
+            test_block_hash(),
+            direct_user_function_call_key_label(
+                "wallet-1",
+                "mike.sequential.near",
+                "count.mike.near",
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let signed_tx = decode_direct_user_signed_tx(&response);
+        match signed_tx.transaction {
+            near_primitives::transaction::Transaction::V0(tx) => {
+                assert_eq!(tx.signer_id.to_string(), "mike.near");
+                assert_eq!(tx.receiver_id.to_string(), "count.mike.near");
+                assert_eq!(tx.actions.len(), 1);
+                match &tx.actions[0] {
+                    near_primitives::transaction::Action::FunctionCall(action) => {
+                        assert_eq!(action.method_name, "increase");
+                        assert_eq!(action.deposit, 0);
+                        assert_eq!(action.gas, 30_000_000_000_000);
+                    }
+                    _ => panic!("expected FunctionCall action"),
+                }
+            }
+            _ => panic!("expected Transaction::V0"),
+        }
+        assert_eq!(response.signer_id, "mike.near");
+        assert_eq!(
+            response.public_key,
+            direct_user_public_key_string(verifying_key.as_bytes())
+        );
+    }
+
+    #[test]
+    fn test_scoped_function_call_rejects_wrong_method_and_deposit() {
+        let methods = vec!["increase".to_string()];
+        let err = scoped_direct_user_actions_from_request(vec![], &methods).unwrap_err();
+        match err {
+            ApiError::BadRequest(message) => assert!(message.contains("at least one action")),
+            _ => panic!("expected BadRequest"),
+        }
+
+        let err = scoped_direct_user_actions_from_request(
+            vec![DirectUserFunctionCallAction {
+                method_name: "reset".to_string(),
+                args: CallArgs::Json {
+                    args_json: "{}".to_string(),
+                },
+                gas: 30_000_000_000_000,
+                deposit: "0".to_string(),
+            }],
+            &methods,
+        )
+        .unwrap_err();
+        match err {
+            ApiError::BadRequest(message) => assert!(message.contains("not allowed")),
+            _ => panic!("expected BadRequest"),
+        }
+
+        let err = scoped_direct_user_actions_from_request(
+            vec![DirectUserFunctionCallAction {
+                method_name: "increase".to_string(),
+                args: CallArgs::Json {
+                    args_json: "{}".to_string(),
+                },
+                gas: 30_000_000_000_000,
+                deposit: "1".to_string(),
+            }],
+            &methods,
+        )
+        .unwrap_err();
+        match err {
+            ApiError::BadRequest(message) => assert!(message.contains("cannot attach deposit")),
+            _ => panic!("expected BadRequest"),
+        }
+    }
+
+    #[test]
+    fn test_direct_user_proof_transaction_uses_user_signer_and_one_yocto() {
+        let keystore = crate::crypto::Keystore::generate();
+        let seed = direct_user_seed("wallet-1", "mike.near").unwrap();
+        let (signing_key, verifying_key) = keystore.derive_keypair(&seed).unwrap();
+        let key_label = direct_user_key_label("wallet-1", None).unwrap();
+        let args_json = serde_json::json!({
+            "user_id": "mike.near",
+            "key_label": key_label,
+            "challenge": "direct-user-proof",
+        })
+        .to_string();
+        let actions = direct_user_actions_from_request(vec![DirectUserFunctionCallAction {
+            method_name: "prove_full_access".to_string(),
+            args: CallArgs::Json { args_json },
+            gas: DEFAULT_DIRECT_USER_PROOF_GAS,
+            deposit: "1".to_string(),
+        }])
+        .unwrap();
+
+        let response = sign_direct_user_transaction(
+            &signing_key,
+            verifying_key.to_bytes(),
+            "mike.near".parse().unwrap(),
+            "mike.sequential.near".parse().unwrap(),
+            actions,
+            7,
+            test_block_hash(),
+            key_label.clone(),
+        )
+        .unwrap();
+
+        let signed_tx = decode_direct_user_signed_tx(&response);
+        match signed_tx.transaction {
+            near_primitives::transaction::Transaction::V0(tx) => {
+                assert_eq!(tx.signer_id.to_string(), "mike.near");
+                assert_eq!(tx.receiver_id.to_string(), "mike.sequential.near");
+                assert_eq!(tx.nonce, 7);
+                assert_eq!(tx.actions.len(), 1);
+                match &tx.actions[0] {
+                    near_primitives::transaction::Action::FunctionCall(action) => {
+                        assert_eq!(action.method_name, "prove_full_access");
+                        assert_eq!(action.deposit, 1);
+                        assert_eq!(action.gas, DEFAULT_DIRECT_USER_PROOF_GAS);
+                    }
+                    _ => panic!("expected FunctionCall action"),
+                }
+            }
+            _ => panic!("expected Transaction::V0"),
+        }
+        assert_eq!(response.signer_id, "mike.near");
+        assert_eq!(response.key_label, key_label);
+    }
+
+    #[test]
+    fn test_direct_user_multi_action_transaction_uses_one_receiver() {
+        let keystore = crate::crypto::Keystore::generate();
+        let seed = direct_user_seed("wallet-1", "mike.near").unwrap();
+        let (signing_key, verifying_key) = keystore.derive_keypair(&seed).unwrap();
+        let actions = direct_user_actions_from_request(vec![
+            DirectUserFunctionCallAction {
+                method_name: "withdraw_reward".to_string(),
+                args: CallArgs::Json {
+                    args_json: "{}".to_string(),
+                },
+                gas: 30_000_000_000_000,
+                deposit: "0".to_string(),
+            },
+            DirectUserFunctionCallAction {
+                method_name: "deposit_and_stake".to_string(),
+                args: CallArgs::Json {
+                    args_json: "{}".to_string(),
+                },
+                gas: 100_000_000_000_000,
+                deposit: "1".to_string(),
+            },
+        ])
+        .unwrap();
+
+        let response = sign_direct_user_transaction(
+            &signing_key,
+            verifying_key.to_bytes(),
+            "mike.near".parse().unwrap(),
+            "staking.pool.near".parse().unwrap(),
+            actions,
+            8,
+            test_block_hash(),
+            direct_user_key_label("wallet-1", None).unwrap(),
+        )
+        .unwrap();
+
+        let signed_tx = decode_direct_user_signed_tx(&response);
+        match signed_tx.transaction {
+            near_primitives::transaction::Transaction::V0(tx) => {
+                assert_eq!(tx.signer_id.to_string(), "mike.near");
+                assert_eq!(tx.receiver_id.to_string(), "staking.pool.near");
+                assert_eq!(tx.actions.len(), 2);
+            }
+            _ => panic!("expected Transaction::V0"),
+        }
+    }
+
+    #[test]
+    fn test_direct_user_actions_reject_invalid_requests() {
+        let err = direct_user_actions_from_request(vec![]).unwrap_err();
+        match err {
+            ApiError::BadRequest(message) => assert!(message.contains("at least one action")),
+            _ => panic!("expected BadRequest"),
+        }
+
+        let err = direct_user_actions_from_request(vec![DirectUserFunctionCallAction {
+            method_name: "withdraw_reward".to_string(),
+            args: CallArgs::Json {
+                args_json: "{}".to_string(),
+            },
+            gas: 0,
+            deposit: "0".to_string(),
+        }])
+        .unwrap_err();
+        match err {
+            ApiError::BadRequest(message) => assert!(message.contains("gas")),
+            _ => panic!("expected BadRequest"),
+        }
+
+        let err = direct_user_actions_from_request(vec![DirectUserFunctionCallAction {
+            method_name: "withdraw_reward".to_string(),
+            args: CallArgs::Json {
+                args_json: "{}".to_string(),
+            },
+            gas: 1,
+            deposit: "not-a-number".to_string(),
+        }])
+        .unwrap_err();
+        match err {
+            ApiError::BadRequest(message) => assert!(message.contains("Invalid deposit")),
+            _ => panic!("expected BadRequest"),
+        }
+    }
+
+    #[test]
+    fn test_direct_user_rejects_invalid_user_and_empty_label() {
+        let err = parse_near_account("user_id", "bad account").unwrap_err();
+        match err {
+            ApiError::BadRequest(message) => assert!(message.contains("Invalid user_id")),
+            _ => panic!("expected BadRequest"),
+        }
+
+        let err = direct_user_key_label("wallet-1", Some("")).unwrap_err();
+        match err {
+            ApiError::BadRequest(message) => assert!(message.contains("key_label")),
+            _ => panic!("expected BadRequest"),
+        }
+    }
 
     /// Test that DecryptRequest correctly includes user_account_id field
     #[test]
@@ -3666,10 +5090,7 @@ mod tests {
     async fn test_access_control_with_different_user() {
         // Test Whitelist: owner not in list, but user_account_id is
         let whitelist = AccessCondition::Whitelist {
-            accounts: vec![
-                "caller.testnet".to_string(),
-                "other.testnet".to_string(),
-            ],
+            accounts: vec!["caller.testnet".to_string(), "other.testnet".to_string()],
         };
 
         // Should grant access to caller (even though owner is different)
@@ -3718,10 +5139,7 @@ mod tests {
                     pattern: r".*\.testnet$".to_string(),
                 },
                 AccessCondition::Whitelist {
-                    accounts: vec![
-                        "alice.testnet".to_string(),
-                        "bob.testnet".to_string(),
-                    ],
+                    accounts: vec!["alice.testnet".to_string(), "bob.testnet".to_string()],
                 },
             ],
         };
@@ -4004,7 +5422,8 @@ mod tests {
         let policy = serde_json::json!({
             "rules": { "limits": { "per_transaction": { "native": "100" } } }
         });
-        let action = serde_json::json!({ "type": "intents_withdraw", "amount": "50", "token": "native" });
+        let action =
+            serde_json::json!({ "type": "intents_withdraw", "amount": "50", "token": "native" });
         let result = evaluate_policy(&policy, &action);
         assert!(result.allowed);
     }
@@ -4014,7 +5433,8 @@ mod tests {
         let policy = serde_json::json!({
             "rules": { "limits": { "per_transaction": { "native": "100" } } }
         });
-        let action = serde_json::json!({ "type": "intents_withdraw", "amount": "150", "token": "native" });
+        let action =
+            serde_json::json!({ "type": "intents_withdraw", "amount": "150", "token": "native" });
         let result = evaluate_policy(&policy, &action);
         assert!(!result.allowed);
         assert!(result.reason.unwrap().contains("Per-transaction limit"));
@@ -4025,7 +5445,8 @@ mod tests {
         let policy = serde_json::json!({
             "rules": { "limits": { "per_transaction": { "*": "100" } } }
         });
-        let action = serde_json::json!({ "type": "intents_withdraw", "amount": "150", "token": "usdc" });
+        let action =
+            serde_json::json!({ "type": "intents_withdraw", "amount": "150", "token": "usdc" });
         let result = evaluate_policy(&policy, &action);
         assert!(!result.allowed);
         assert!(result.reason.unwrap().contains("Per-transaction limit"));
@@ -4222,7 +5643,8 @@ mod tests {
         });
 
         // native — allowed
-        let action = serde_json::json!({ "type": "intents_withdraw", "amount": "100", "token": "native" });
+        let action =
+            serde_json::json!({ "type": "intents_withdraw", "amount": "100", "token": "native" });
         let result = evaluate_policy(&policy, &action);
         assert!(result.allowed);
 

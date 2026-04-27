@@ -24,13 +24,14 @@ mod attestation;
 mod config;
 mod crypto;
 mod ephemeral_keys;
+mod mpc_ckd;
 mod near;
+mod nep366;
 mod secret_generation;
+mod tdx_attestation;
+mod tee_registration;
 mod types;
 mod utils;
-mod mpc_ckd;
-mod tee_registration;
-mod tdx_attestation;
 
 use anyhow::{Context, Result};
 use config::{Config, TeeMode};
@@ -65,10 +66,15 @@ async fn main() -> Result<()> {
     if config.tee_mode == TeeMode::OutlayerTee {
         match tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            tdx_attestation::get_phala_app_info()
-        ).await {
+            tdx_attestation::get_phala_app_info(),
+        )
+        .await
+        {
             Ok(Some(info)) => {
-                tracing::info!("🔐 Phala TEE verification: https://trust.phala.com/app/{}", info.app_id);
+                tracing::info!(
+                    "🔐 Phala TEE verification: https://trust.phala.com/app/{}",
+                    info.app_id
+                );
             }
             Ok(None) => {
                 tracing::warn!("⚠️ Could not get Phala app info");
@@ -116,7 +122,9 @@ async fn main() -> Result<()> {
         tracing::error!("❌ Configuration error: KEYSTORE_MASTER_SECRET cannot be used with USE_TEE_REGISTRATION=true");
         tracing::error!("   When using TEE registration, the master secret comes from MPC CKD after DAO approval");
         tracing::error!("   Please remove KEYSTORE_MASTER_SECRET from your .env file");
-        return Err(anyhow::anyhow!("Incompatible configuration: KEYSTORE_MASTER_SECRET with USE_TEE_REGISTRATION=true"));
+        return Err(anyhow::anyhow!(
+            "Incompatible configuration: KEYSTORE_MASTER_SECRET with USE_TEE_REGISTRATION=true"
+        ));
     }
 
     // Initialize keystore (temporary if TEE mode)
@@ -148,7 +156,9 @@ async fn main() -> Result<()> {
                     // Replace the temporary keystore with the real one
                     state_clone.replace_keystore(real_keystore).await;
                     state_clone.mark_ready();
-                    tracing::info!("✅ TEE registration complete! Keystore is now ready to serve requests");
+                    tracing::info!(
+                        "✅ TEE registration complete! Keystore is now ready to serve requests"
+                    );
                 }
                 Err(e) => {
                     tracing::error!("❌ TEE registration failed: {}", e);
@@ -199,14 +209,13 @@ async fn perform_tee_registration(config: &Config) -> Result<Keystore> {
     tracing::info!("🔐 Starting TEE registration flow with retry logic");
 
     // Check required environment variables - NO FALLBACKS!
-    let dao_contract = std::env::var("KEYSTORE_DAO_CONTRACT")
-        .context("KEYSTORE_DAO_CONTRACT not set")?;
-    let init_account_id = std::env::var("INIT_ACCOUNT_ID")
-        .context("INIT_ACCOUNT_ID not set")?;
-    let init_private_key = std::env::var("INIT_ACCOUNT_PRIVATE_KEY")
-        .context("INIT_ACCOUNT_PRIVATE_KEY not set")?;
-    let near_rpc_url = std::env::var("NEAR_RPC_URL")
-        .context("NEAR_RPC_URL is required for TEE registration")?;
+    let dao_contract =
+        std::env::var("KEYSTORE_DAO_CONTRACT").context("KEYSTORE_DAO_CONTRACT not set")?;
+    let init_account_id = std::env::var("INIT_ACCOUNT_ID").context("INIT_ACCOUNT_ID not set")?;
+    let init_private_key =
+        std::env::var("INIT_ACCOUNT_PRIVATE_KEY").context("INIT_ACCOUNT_PRIVATE_KEY not set")?;
+    let near_rpc_url =
+        std::env::var("NEAR_RPC_URL").context("NEAR_RPC_URL is required for TEE registration")?;
 
     // Create registration client
     let registration = tee_registration::RegistrationClient::new(
@@ -227,14 +236,18 @@ async fn perform_tee_registration(config: &Config) -> Result<Keystore> {
         &near_rpc_url,
         &dao_contract,
         &public_key.to_string(),
-    ).await {
+    )
+    .await
+    {
         Ok(approved) => approved,
         Err(e) => {
             let error_str = format!("{:?}", e);
             if error_str.contains("MethodNotFound") {
                 tracing::warn!("⚠️ Method 'is_keystore_approved' not found on DAO contract");
                 tracing::warn!("   This might be an older version of the contract");
-                tracing::warn!("   Assuming keystore is NOT approved and proceeding with registration");
+                tracing::warn!(
+                    "   Assuming keystore is NOT approved and proceeding with registration"
+                );
                 false // Assume not approved if method doesn't exist
             } else {
                 return Err(e);
@@ -264,7 +277,9 @@ async fn perform_tee_registration(config: &Config) -> Result<Keystore> {
             _ => anyhow::bail!("Only ED25519 keys supported"),
         };
 
-        let tdx_quote = tdx_client.generate_registration_quote(&pubkey_bytes).await?;
+        let tdx_quote = tdx_client
+            .generate_registration_quote(&pubkey_bytes)
+            .await?;
         tracing::info!("📡 Generated TEE attestation (mode: {:?})", config.tee_mode);
         tracing::info!("   Quote will be verified by DAO contract against approved RTMR3 list");
 
@@ -274,7 +289,10 @@ async fn perform_tee_registration(config: &Config) -> Result<Keystore> {
             .map(|info| info.app_id);
 
         // Submit to DAO (contract will verify the quote)
-        let proposal_id = match registration.submit_registration(public_key.clone(), tdx_quote, app_id).await {
+        let proposal_id = match registration
+            .submit_registration(public_key.clone(), tdx_quote, app_id)
+            .await
+        {
             Ok(id) => id,
             Err(e) => {
                 let error_str = e.to_string();
@@ -294,7 +312,9 @@ async fn perform_tee_registration(config: &Config) -> Result<Keystore> {
                     tracing::error!("🔍 DEBUG: Failed to submit registration");
                     tracing::error!("   Error: {:?}", e);
                     tracing::error!("   Check that dao.outlayer.testnet has 'submit_keystore_registration' method");
-                    tracing::error!("   You can verify with: near view dao.outlayer.testnet get_config");
+                    tracing::error!(
+                        "   You can verify with: near view dao.outlayer.testnet get_config"
+                    );
                 }
                 return Err(e);
             }
@@ -304,7 +324,9 @@ async fn perform_tee_registration(config: &Config) -> Result<Keystore> {
         // Wait for approval
         tracing::info!("⏳ Waiting for DAO approval (this may take a while)...");
         tracing::info!("   DAO members need to vote on proposal #{}", proposal_id);
-        registration.wait_for_approval(proposal_id, &public_key).await?;
+        registration
+            .wait_for_approval(proposal_id, &public_key)
+            .await?;
     } else {
         tracing::info!("✅ Keystore already approved by DAO");
     }
@@ -333,7 +355,7 @@ async fn initialize_keystore(_config: &Config) -> Result<Keystore> {
             .parse::<bool>()
             .unwrap_or(false)
         {
-            use sha2::{Sha256, Digest};
+            use sha2::{Digest, Sha256};
             let mut hasher = Sha256::new();
             hasher.update(master_secret_hex.as_bytes());
             let hash = hasher.finalize();
