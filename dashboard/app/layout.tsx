@@ -7,6 +7,7 @@ import Link from 'next/link';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNearWallet } from '@/contexts/NearWalletContext';
 import { getCoordinatorApiUrl } from '@/lib/api';
+import TestnetDisabledNotice from '@/components/TestnetDisabledNotice';
 
 const inter = Inter({ subsets: ['latin'] });
 
@@ -78,6 +79,7 @@ export default function RootLayout({
       <body className={inter.className}>
         <NearWalletProvider>
           <div className="min-h-screen bg-gray-50">
+            <TestnetDisabledNotice variant="banner" />
             {/* Navigation */}
             <nav className="relative z-50 bg-white shadow-sm">
               <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">

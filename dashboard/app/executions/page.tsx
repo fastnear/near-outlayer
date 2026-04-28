@@ -1,10 +1,11 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { fetchJobs, JobHistoryEntry, AttestationResponse, fetchAttestation } from '@/lib/api';
+import { fetchJobs, JobHistoryEntry, AttestationResponse, fetchAttestation, isTestnetWorkersEnabled } from '@/lib/api';
 import { getTransactionUrl } from '@/lib/explorer';
 import { useNearWallet } from '@/contexts/NearWalletContext';
 import AttestationView from '@/components/AttestationView';
+import TestnetDisabledNotice from '@/components/TestnetDisabledNotice';
 import Link from 'next/link';
 
 const STORAGE_KEY = 'executions-table-settings';
@@ -116,6 +117,8 @@ export default function JobsPage() {
     return 'near'; // Fallback - should not happen
   }, [settings.showNear, settings.showHttps]);
 
+  const testnetDisabled = network === 'testnet' && !isTestnetWorkersEnabled();
+
   const loadJobs = useCallback(async () => {
     setLoading(true);
     try {
@@ -131,10 +134,15 @@ export default function JobsPage() {
     }
   }, [getSourceFilter]);
 
-  // Load jobs when filter changes
+  // Load jobs when filter changes (skip when testnet workers are offline)
   useEffect(() => {
+    if (testnetDisabled) {
+      setJobs([]);
+      setLoading(false);
+      return;
+    }
     loadJobs();
-  }, [loadJobs]);
+  }, [loadJobs, testnetDisabled]);
 
   // Toggle handlers that prevent both from being unchecked
   const toggleNear = () => {
@@ -328,7 +336,8 @@ export default function JobsPage() {
           </p>
         </div>
 
-        {/* Controls */}
+        {/* Controls (hidden when testnet workers are offline — nothing to filter) */}
+        {!testnetDisabled && (
         <div className="mt-4 sm:mt-0 flex items-center gap-4">
           {/* Source filter checkboxes */}
           <div className="flex items-center gap-4">
@@ -397,8 +406,16 @@ export default function JobsPage() {
             )}
           </div>
         </div>
+        )}
       </div>
 
+      {testnetDisabled && (
+        <div className="mt-8">
+          <TestnetDisabledNotice variant="block" />
+        </div>
+      )}
+
+      {!testnetDisabled && (
       <div className="mt-8 flex flex-col">
         <div className="-my-2 -mx-4 overflow-x-auto sm:-mx-6 lg:-mx-8">
           <div className="inline-block min-w-full py-2 align-middle md:px-6 lg:px-8">
@@ -646,6 +663,7 @@ export default function JobsPage() {
           </div>
         </div>
       </div>
+      )}
 
       {/* Attestation Modal */}
       {attestationModal && (

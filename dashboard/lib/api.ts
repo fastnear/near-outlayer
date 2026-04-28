@@ -7,6 +7,14 @@ import axios from 'axios';
 export type NetworkType = 'testnet' | 'mainnet';
 
 /**
+ * Whether testnet worker infrastructure is currently online.
+ * Set NEXT_PUBLIC_TESTNET_WORKERS_ENABLED=false to disable.
+ */
+export function isTestnetWorkersEnabled(): boolean {
+  return process.env.NEXT_PUBLIC_TESTNET_WORKERS_ENABLED !== 'false';
+}
+
+/**
  * Get Coordinator API base URL for the given network
  */
 export function getCoordinatorApiUrl(network?: NetworkType): string {
