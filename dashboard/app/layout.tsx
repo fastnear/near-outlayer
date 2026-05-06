@@ -133,6 +133,9 @@ export default function RootLayout({
                           <Link href="/payment-keys" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 hover:text-[#cc6600]">
                             Payment Keys
                           </Link>
+                          <Link href="/vault" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 hover:text-[#cc6600]">
+                            Vaults
+                          </Link>
                           <Link href="/earnings" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 hover:text-[#cc6600]">
                             Earnings
                           </Link>

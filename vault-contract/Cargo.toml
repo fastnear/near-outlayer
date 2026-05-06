@@ -1,0 +1,51 @@
+[package]
+name = "vault-contract"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+# Replaces the 7-day cessation delay / 7-day finalize window with
+# 30s / 30s values so near-sandbox integration tests can exercise the
+# real recovery flow without `fast_forward`'ing 1.3M blocks. NEVER
+# enable this in production builds — the resulting WASM hash is
+# deliberately distinct and will fail the keystore-dao
+# `is_vault_code_approved` check.
+test-timing = []
+
+[dependencies]
+near-sdk = { version = "= 5.9.0", features = ["legacy", "unstable"] }
+schemars = "0.8"
+
+[dev-dependencies]
+# Bumped from `= 0.14.1` to `= 0.18.0` (2026-05-06): the older
+# near-workspaces shipped near-sandbox-utils 0.10.0 whose embedded
+# neard binary couldn't deserialise WASM produced by
+# cargo-near 0.16.0 / near-sdk 5.9.0 — every DeployContract action
+# failed with `CompilationError(PrepareError(Deserialization))`.
+# 0.18.0 ships a sandbox neard that validates the current WASM
+# emit format. Newer 0.22.1+ would also work but pulls in
+# `cargo_metadata 0.21` which requires rustc 1.86; the contract's
+# rust-toolchain.toml pins 1.85.0, so we stay on 0.18.0.
+near-workspaces = { version = "= 0.18.0", features = ["unstable"] }
+near-sdk = { version = "= 5.9.0", features = ["legacy", "unstable", "unit-testing"] }
+tokio = { version = "1.40", features = ["full"] }
+anyhow = "1.0"
+serde_json = "1.0"
+
+[profile.release]
+codegen-units = 1
+opt-level = "s"
+lto = true
+debug = false
+panic = "abort"
+overflow-checks = true
+
+# Keep the embedded mock keystore-dao crate isolated so it does not get pulled
+# into this contract's build. It is its own workspace (see its Cargo.toml).
+[workspace]
+exclude = ["tests/mock-keystore-dao"]

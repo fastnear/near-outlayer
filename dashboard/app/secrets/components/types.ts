@@ -43,6 +43,11 @@ export interface FormData {
   // Common fields
   profile: string;
   access: unknown; // Contract format
+  // Phase 7 F2: vault scope. `null` = OutLayer default master
+  // (legacy / current behaviour). Non-null = secret encrypted with
+  // and bound to this customer-owned vault, recoverable through DAO
+  // cessation or unilateral exit.
+  vaultId: string | null;
 }
 
 // Helper functions for SecretAccessor

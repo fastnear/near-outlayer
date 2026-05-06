@@ -17,6 +17,8 @@ interface WalletInfo {
   wallet_id: string;
   address: string;
   chain: string;
+  /** Phase 7 F2: vault binding read back from `/address` response. */
+  vault_id?: string | null;
 }
 
 export default function WalletHandoffPage() {
@@ -138,6 +140,7 @@ function WalletHandoffContent() {
         wallet_id: data.wallet_id,
         address: data.address,
         chain: 'near',
+        vault_id: data.vault_id ?? null,
       });
     } catch (err) {
       setError((err as Error).message);
@@ -316,6 +319,18 @@ function WalletHandoffContent() {
             <div>
               <span className="text-xs text-gray-500 uppercase">NEAR Address (implicit)</span>
               <p className="text-sm font-mono text-gray-900 break-all">{walletInfo.address}</p>
+            </div>
+            <div>
+              <span className="text-xs text-gray-500 uppercase">Master key</span>
+              {walletInfo.vault_id ? (
+                <p className="text-sm font-mono text-green-700 break-all">
+                  Vault <code>{walletInfo.vault_id}</code> — recoverable through cessation or unilateral exit
+                </p>
+              ) : (
+                <p className="text-sm text-gray-700">
+                  OutLayer default master <span className="text-xs text-gray-500">(not recoverable if OutLayer ceases)</span>
+                </p>
+              )}
             </div>
             {existingPolicy === true && (
               <div className="mt-2 bg-blue-50 border border-blue-200 rounded p-2">

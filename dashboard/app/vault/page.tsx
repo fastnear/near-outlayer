@@ -1,0 +1,725 @@
+'use client';
+
+import { useState, useCallback, useEffect, useRef } from 'react';
+import { actionCreators } from '@near-js/transactions';
+import { PublicKey } from '@near-js/crypto';
+
+import { useNearWallet } from '@/contexts/NearWalletContext';
+import WalletConnectionModal from '@/components/WalletConnectionModal';
+import {
+  buildVaultDeployActions,
+  customerRegister,
+  deriveVaultTeeKey,
+  formatSeconds,
+  getVaultNetworkConfig,
+  isVaultCodeApproved,
+  loadBundledVaultWasm,
+  nsToDate,
+  parseExitWindow,
+  signVaultVerification,
+  VAULT_CALL_GAS,
+  VAULT_INITIAL_YOCTO,
+  VAULT_PARENT_BUDGET_YOCTO,
+  verifyVault,
+  viewAccountInfo,
+  type VerifyReport,
+} from '@/lib/vault';
+
+const EXIT_WINDOW_OPTIONS = [
+  { label: '24 hours (default)', value: '24h' },
+  { label: '7 days', value: '7d' },
+  { label: '30 days', value: '30d' },
+] as const;
+
+export default function VaultPage() {
+  const {
+    accountId,
+    isConnected,
+    signAndSendTransaction,
+    network,
+    rpcUrl,
+    viewMethod,
+    shouldReopenModal,
+    clearReopenModal,
+  } = useNearWallet();
+
+  // ── UI state ──────────────────────────────────────────────────────────
+  const [showWalletModal, setShowWalletModal] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  // Synchronous double-submit guard. React's `setBusy` is async (next
+  // render), so a fast double-click on Create can fire two atomic-deploy
+  // tx requests before the disabled state is applied. The first
+  // succeeds, the second hits CreateAccount on the now-existing vault
+  // and panics — wallet UI shows two confusing prompts. The ref blocks
+  // re-entry within the same event tick.
+  const inFlight = useRef(false);
+
+  // Create-vault form
+  const [name, setName] = useState('vault');
+  const [exitWindow, setExitWindow] = useState<string>('24h');
+
+  // API key returned by /customer/register — show once, never persist.
+  const [issuedApiKey, setIssuedApiKey] = useState<{
+    vault: string;
+    apiKey: string;
+    nearAccountId: string;
+  } | null>(null);
+
+  // Find / inspect vault
+  const [findInput, setFindInput] = useState('');
+  const [activeVaultId, setActiveVaultId] = useState<string | null>(null);
+  const [report, setReport] = useState<VerifyReport | null>(null);
+
+  // ── Modal handling matches existing pages ─────────────────────────────
+  useEffect(() => {
+    if (shouldReopenModal) {
+      setShowWalletModal(true);
+      clearReopenModal();
+    }
+  }, [shouldReopenModal, clearReopenModal]);
+
+  const guard = useCallback(
+    (msg: string) => {
+      if (!isConnected || !accountId) {
+        setShowWalletModal(true);
+        setError(msg);
+        return false;
+      }
+      return true;
+    },
+    [isConnected, accountId],
+  );
+
+  const refreshReport = useCallback(
+    async (vaultId: string) => {
+      try {
+        const r = await verifyVault(viewMethod, rpcUrl, network, vaultId);
+        setReport(r);
+        setActiveVaultId(vaultId);
+      } catch (e) {
+        setReport(null);
+        setError(`Failed to load vault state: ${(e as Error).message}`);
+      }
+    },
+    [viewMethod, rpcUrl, network],
+  );
+
+  // ── Create vault ──────────────────────────────────────────────────────
+  const handleCreate = async () => {
+    if (inFlight.current) return; // synchronous double-submit guard
+    if (!guard('Connect a NEAR wallet to deploy a vault.')) return;
+    if (!accountId) return;
+    setError(null);
+    setSuccess(null);
+    setIssuedApiKey(null);
+
+    // NEAR sub-account name rule: lowercase a-z, 0-9, `_`, `-`,
+    // 2-64 chars per label, no leading/trailing/consecutive separators.
+    // Matching the parser at near-account-id ensures the wallet popup
+    // doesn't surface a cryptic "InvalidAccountId" after the user
+    // already approved the deploy.
+    const NAME_RE = /^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$/;
+    if (!NAME_RE.test(name)) {
+      setError(
+        "Name must be 1-64 lowercase letters, digits, '_' or '-' " +
+          "(no dots, uppercase, leading/trailing separators). E.g. 'vault'.",
+      );
+      return;
+    }
+
+    let exitSecs: number;
+    try {
+      exitSecs = parseExitWindow(exitWindow);
+    } catch (e) {
+      setError((e as Error).message);
+      return;
+    }
+
+    const vaultAccountId = `${name}.${accountId}`;
+    inFlight.current = true;
+    setBusy('Pre-flight checks…');
+
+    try {
+      // 0a. Vault must NOT already exist.
+      const existing = await viewAccountInfo(rpcUrl, vaultAccountId);
+      if (existing.exists) {
+        throw new Error(
+          `${vaultAccountId} already exists. If a previous deploy crashed before \
+registration, use the "Resume" button below. Otherwise pick a different name.`,
+        );
+      }
+
+      // 0b. Parent must hold enough NEAR.
+      const parentInfo = await viewAccountInfo(rpcUrl, accountId);
+      if (!parentInfo.exists) {
+        throw new Error(`Parent account ${accountId} does not exist on ${network}.`);
+      }
+      const balance = BigInt(parentInfo.amountYocto);
+      if (balance < VAULT_PARENT_BUDGET_YOCTO) {
+        throw new Error(
+          `Parent ${accountId} has only ${(Number(balance) / 1e24).toFixed(3)} NEAR; \
+deploy requires at least ${(Number(VAULT_PARENT_BUDGET_YOCTO) / 1e24).toFixed(2)} NEAR \
+(${(Number(VAULT_INITIAL_YOCTO) / 1e24).toFixed(2)} for the vault + ~0.1 NEAR gas).`,
+        );
+      }
+
+      // 1. Bundle WASM + verify code-hash whitelist.
+      setBusy('Verifying vault code-hash whitelist…');
+      const { bytes, hashB58 } = await loadBundledVaultWasm();
+      const approved = await isVaultCodeApproved(viewMethod, network, hashB58);
+      if (!approved) {
+        throw new Error(
+          `Bundled vault WASM (sha256 base58 = ${hashB58}) is NOT approved on \
+${network}. The dashboard build is out of sync with the keystore-DAO whitelist.`,
+        );
+      }
+
+      // 2. TEE pubkey BEFORE deploy.
+      setBusy('Fetching TEE function-call pubkey…');
+      const teePubkey = await deriveVaultTeeKey(network, vaultAccountId);
+
+      // 3. Atomic deploy.
+      setBusy('Signing atomic deploy (5 actions, ~150 KB WASM)…');
+      const cfg = getVaultNetworkConfig(network);
+      const actions = buildVaultDeployActions({
+        parent: accountId,
+        keystoreDaoId: cfg.keystoreDaoId,
+        mpcContractId: cfg.mpcContractId,
+        exitWindowSecs: exitSecs,
+        wasm: bytes,
+        teePublicKey: teePubkey,
+      });
+      const outcome = await signAndSendTransaction({
+        receiverId: vaultAccountId,
+        actions,
+      });
+      const txHash = outcome?.transaction?.hash || outcome?.transaction_outcome?.id || '<unknown>';
+
+      // 4. Drive sign-verification (mark_vault_verified).
+      setBusy('Triggering on-chain mark_vault_verified…');
+      await signVaultVerification(network, vaultAccountId);
+
+      // 5. Mint API key.
+      setBusy('Registering with coordinator…');
+      const reg = await customerRegister(network, vaultAccountId);
+
+      setIssuedApiKey({
+        vault: reg.vault_id,
+        apiKey: reg.api_key,
+        nearAccountId: reg.near_account_id,
+      });
+      setSuccess(`Vault deployed and verified (tx ${txHash}). Save the API key below — it is shown once.`);
+      await refreshReport(vaultAccountId);
+    } catch (e) {
+      setError(`Vault init failed: ${(e as Error).message}`);
+    } finally {
+      setBusy(null);
+      inFlight.current = false;
+    }
+  };
+
+  // ── Resume an interrupted init ────────────────────────────────────────
+  const handleResume = async (vaultAccountId: string) => {
+    if (!vaultAccountId) return;
+    setError(null);
+    setSuccess(null);
+    setIssuedApiKey(null);
+    setBusy(`Resuming ${vaultAccountId}…`);
+    try {
+      // Step 4 — idempotent on the keystore side.
+      await signVaultVerification(network, vaultAccountId);
+      // Step 5 — surface unique-violation specifically.
+      try {
+        const reg = await customerRegister(network, vaultAccountId);
+        setIssuedApiKey({
+          vault: reg.vault_id,
+          apiKey: reg.api_key,
+          nearAccountId: reg.near_account_id,
+        });
+        setSuccess('Vault registration completed. Save the API key below — it is shown once.');
+      } catch (e) {
+        const msg = (e as Error).message;
+        // Coordinator's UNIQUE-violation branch surfaces a 400 with one
+        // of these phrases. We match on whichever survived the wire.
+        // Phrase coupling is fragile — see PROJECT.md / coordinator
+        // handlers if these stop matching.
+        const REGISTERED_PHRASES = [
+          'already bound to a wallet',
+          'revoke its API keys',
+          'already registered',
+          '23505',
+        ];
+        if (REGISTERED_PHRASES.some((p) => msg.includes(p))) {
+          throw new Error(
+            `${vaultAccountId} is already registered on the coordinator (a previous \
+run committed but the API key was never returned). On-chain state is intact; \
+contact OutLayer support to rotate the API key — no funds at risk.`,
+          );
+        }
+        throw e;
+      }
+      await refreshReport(vaultAccountId);
+    } catch (e) {
+      setError(`Resume failed: ${(e as Error).message}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // ── Inspect / refresh ─────────────────────────────────────────────────
+  const handleFind = async () => {
+    setError(null);
+    setSuccess(null);
+    if (!findInput.trim()) {
+      setError('Enter a vault account id (e.g. vault.alice.near).');
+      return;
+    }
+    setBusy(`Loading ${findInput.trim()}…`);
+    try {
+      await refreshReport(findInput.trim());
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // ── Recovery / window / add-key actions ──────────────────────────────
+  // All call directly into the vault contract; the parent NEAR account is
+  // the only signer that can use the predecessor-gated paths.
+  const callVault = async (
+    vaultId: string,
+    method: string,
+    args: Record<string, unknown>,
+    label: string,
+  ) => {
+    if (!guard(`Connect a NEAR wallet to call ${method}.`)) return;
+    setError(null);
+    setSuccess(null);
+    setBusy(label);
+    try {
+      const action = actionCreators.functionCall(
+        method,
+        new TextEncoder().encode(JSON.stringify(args)),
+        VAULT_CALL_GAS,
+        BigInt(0),
+      );
+      const outcome = await signAndSendTransaction({
+        receiverId: vaultId,
+        actions: [action],
+      });
+      const tx = outcome?.transaction?.hash || outcome?.transaction_outcome?.id || '<ok>';
+      setSuccess(`${label} → tx ${tx}`);
+      await refreshReport(vaultId);
+    } catch (e) {
+      setError(`${label} failed: ${(e as Error).message}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const initiateRecovery = (vaultId: string) =>
+    callVault(vaultId, 'initiate_recovery', {}, 'initiate_recovery (cessation)');
+
+  const initiateUnilateralRecovery = (vaultId: string) =>
+    callVault(
+      vaultId,
+      'unilateral_initiate_recovery',
+      {},
+      'unilateral_initiate_recovery',
+    );
+
+  const finalizeRecovery = (vaultId: string) =>
+    callVault(vaultId, 'finalize_recovery', {}, 'finalize_recovery');
+
+  const setExitWindowOnVault = async (vaultId: string, window: string) => {
+    let secs: number;
+    try {
+      secs = parseExitWindow(window);
+    } catch (e) {
+      setError((e as Error).message);
+      return;
+    }
+    await callVault(
+      vaultId,
+      'set_exit_window',
+      { new_window_secs: secs },
+      `set_exit_window (${formatSeconds(secs)})`,
+    );
+  };
+
+  const unlockedAddKey = async (vaultId: string, pubkey: string, fullAccess: boolean) => {
+    try {
+      // Reject malformed pubkeys client-side — a contract panic costs
+      // gas. Same pre-flight as the CLI.
+      PublicKey.fromString(pubkey);
+    } catch {
+      setError(`'${pubkey}' is not a valid NEAR public key (expected 'ed25519:...').`);
+      return;
+    }
+    await callVault(
+      vaultId,
+      'unlocked_add_key',
+      {
+        public_key: pubkey,
+        full_access: fullAccess,
+        // null = contract default (1 NEAR allowance for FCAK).
+        allowance: null,
+      },
+      `unlocked_add_key (${fullAccess ? 'FULL' : 'FCAK'})`,
+    );
+  };
+
+  // ── Render ────────────────────────────────────────────────────────────
+  return (
+    <div className="container mx-auto p-6 max-w-5xl">
+      <h1 className="text-3xl font-bold mb-2">Sovereign Vaults</h1>
+      <p className="text-gray-600 dark:text-gray-300 mb-6">
+        Per-customer master keys with recoverability. Wallet keys + secrets bound
+        to a vault stay derivable by you even if OutLayer ceases.
+      </p>
+
+      {!isConnected && (
+        <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-300 rounded p-4 mb-6">
+          <p className="text-sm">Connect a NEAR wallet to create or manage vaults.</p>
+          <button
+            onClick={() => setShowWalletModal(true)}
+            className="mt-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+          >
+            Connect Wallet
+          </button>
+        </div>
+      )}
+
+      {error && (
+        <div className="bg-red-50 dark:bg-red-900/20 border border-red-300 rounded p-3 mb-4 text-sm">
+          <strong>Error:</strong> {error}
+        </div>
+      )}
+      {success && (
+        <div className="bg-green-50 dark:bg-green-900/20 border border-green-300 rounded p-3 mb-4 text-sm">
+          {success}
+        </div>
+      )}
+      {busy && (
+        <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-300 rounded p-3 mb-4 text-sm">
+          ⏳ {busy}
+        </div>
+      )}
+
+      {issuedApiKey && (
+        <div className="bg-amber-50 dark:bg-amber-900/20 border-2 border-amber-500 rounded p-4 mb-6">
+          <h3 className="font-bold text-amber-900 dark:text-amber-200 mb-2">
+            ⚠ API Key — store now, shown ONCE
+          </h3>
+          <div className="text-xs text-gray-700 dark:text-gray-300 mb-2">
+            Vault: <code>{issuedApiKey.vault}</code>
+            <br />
+            NEAR address: <code>{issuedApiKey.nearAccountId}</code>
+          </div>
+          <div className="flex gap-2 items-stretch">
+            <code className="flex-1 bg-gray-900 text-green-200 p-2 rounded break-all text-xs">
+              {issuedApiKey.apiKey}
+            </code>
+            <button
+              onClick={() => {
+                navigator.clipboard
+                  .writeText(issuedApiKey.apiKey)
+                  .then(() => setSuccess('API key copied to clipboard.'))
+                  .catch(() => setError('Could not access clipboard — copy manually.'));
+              }}
+              className="px-3 py-1 bg-amber-600 text-white rounded text-xs hover:bg-amber-700"
+              title="Copy API key to clipboard"
+            >
+              Copy
+            </button>
+          </div>
+          <p className="text-xs text-gray-600 dark:text-gray-400 mt-2">
+            This key is NOT recoverable. If lost, you must revoke + re-register.
+          </p>
+        </div>
+      )}
+
+      {/* ── Create vault ─────────────────────────────────────────────── */}
+      <section className="border border-gray-200 dark:border-gray-700 rounded p-4 mb-6">
+        <h2 className="text-xl font-semibold mb-3">Create vault</h2>
+        <div className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+          Deploys <code>{name || 'vault'}.{accountId || '&lt;your-account&gt;'}</code> with a single atomic
+          NEAR transaction (CreateAccount + Transfer{' '}
+          {(Number(VAULT_INITIAL_YOCTO) / 1e24).toFixed(2)} NEAR + DeployContract +{' '}
+          new() + AddKey TEE function-call key).
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+          <label className="block">
+            <span className="text-sm">Sub-account name</span>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="mt-1 block w-full rounded border border-gray-300 dark:border-gray-600 dark:bg-gray-800 px-3 py-2"
+              placeholder="vault"
+            />
+          </label>
+          <label className="block">
+            <span className="text-sm">Unilateral exit window</span>
+            <select
+              value={exitWindow}
+              onChange={(e) => setExitWindow(e.target.value)}
+              className="mt-1 block w-full rounded border border-gray-300 dark:border-gray-600 dark:bg-gray-800 px-3 py-2"
+            >
+              {EXIT_WINDOW_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="flex items-end">
+            <button
+              onClick={handleCreate}
+              disabled={!isConnected || !!busy}
+              className="w-full px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400"
+            >
+              Create vault
+            </button>
+          </div>
+        </div>
+        <p className="text-xs text-gray-500 dark:text-gray-400">
+          Parent (= your account, immutable post-deploy) is the only NEAR account
+          that can call <code>unilateral_initiate_recovery</code>,{' '}
+          <code>set_exit_window</code>, or <code>unlocked_add_key</code>.
+        </p>
+      </section>
+
+      {/* ── Find / inspect vault ─────────────────────────────────────── */}
+      <section className="border border-gray-200 dark:border-gray-700 rounded p-4 mb-6">
+        <h2 className="text-xl font-semibold mb-3">Inspect a vault</h2>
+        <div className="flex gap-2 mb-3">
+          <input
+            type="text"
+            value={findInput}
+            onChange={(e) => setFindInput(e.target.value)}
+            placeholder="vault.alice.near"
+            className="flex-1 rounded border border-gray-300 dark:border-gray-600 dark:bg-gray-800 px-3 py-2"
+          />
+          <button
+            onClick={handleFind}
+            disabled={!!busy}
+            className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 disabled:bg-gray-400"
+          >
+            Load
+          </button>
+          <button
+            onClick={() => findInput.trim() && handleResume(findInput.trim())}
+            disabled={!isConnected || !!busy || !findInput.trim()}
+            className="px-4 py-2 bg-amber-600 text-white rounded hover:bg-amber-700 disabled:bg-gray-400"
+            title="Run sign-verification + customer/register against an already-deployed vault"
+          >
+            Resume
+          </button>
+        </div>
+
+        {report && activeVaultId && (
+          <VaultDetailPanel
+            report={report}
+            onInitiateRecovery={() => initiateRecovery(activeVaultId)}
+            onInitiateUnilateral={() => initiateUnilateralRecovery(activeVaultId)}
+            onFinalize={() => finalizeRecovery(activeVaultId)}
+            onSetExitWindow={(w) => setExitWindowOnVault(activeVaultId, w)}
+            onAddKey={(pk, fa) => unlockedAddKey(activeVaultId, pk, fa)}
+            onRefresh={() => refreshReport(activeVaultId)}
+            disabled={!!busy || !isConnected}
+          />
+        )}
+      </section>
+
+      <WalletConnectionModal
+        isOpen={showWalletModal}
+        onClose={() => setShowWalletModal(false)}
+      />
+    </div>
+  );
+}
+
+// ─── Detail panel ───────────────────────────────────────────────────────────
+
+function VaultDetailPanel(props: {
+  report: VerifyReport;
+  onInitiateRecovery: () => void;
+  onInitiateUnilateral: () => void;
+  onFinalize: () => void;
+  onSetExitWindow: (w: string) => void;
+  onAddKey: (pubkey: string, fullAccess: boolean) => void;
+  onRefresh: () => void;
+  disabled: boolean;
+}) {
+  const { report, disabled } = props;
+  const [newWindow, setNewWindow] = useState('24h');
+  const [newPubkey, setNewPubkey] = useState('');
+  const [newKeyFullAccess, setNewKeyFullAccess] = useState(false);
+
+  if (!report.exists) {
+    return (
+      <div className="bg-gray-50 dark:bg-gray-800 rounded p-3 text-sm">
+        Account <code>{report.vaultId}</code> does not exist on chain.
+      </div>
+    );
+  }
+  const s = report.state;
+
+  return (
+    <div className="border border-gray-200 dark:border-gray-700 rounded p-3 text-sm">
+      <div className="flex justify-between items-center mb-2">
+        <h3 className="font-semibold">{report.vaultId}</h3>
+        <button
+          onClick={props.onRefresh}
+          disabled={disabled}
+          className="text-xs px-2 py-1 bg-gray-200 dark:bg-gray-700 rounded"
+        >
+          Refresh
+        </button>
+      </div>
+
+      <div
+        className={`px-2 py-1 rounded mb-3 font-medium text-sm ${
+          report.safe
+            ? 'bg-green-100 dark:bg-green-900/40 text-green-800 dark:text-green-200'
+            : 'bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-200'
+        }`}
+      >
+        {report.safe
+          ? 'PASS — verified, all defense-in-depth checks OK'
+          : report.isVerified
+            ? 'NOT SAFE — defense-in-depth checks failed (do not deposit)'
+            : 'NOT VERIFIED — vault is not in keystore-DAO verified set'}
+      </div>
+
+      {report.warnings.length > 0 && (
+        <ul className="text-xs text-amber-700 dark:text-amber-300 mb-2 list-disc list-inside">
+          {report.warnings.map((w, i) => (
+            <li key={i}>{w}</li>
+          ))}
+        </ul>
+      )}
+
+      {s && (
+        <table className="text-xs w-full mb-3">
+          <tbody>
+            <tr>
+              <td className="text-gray-500 pr-3">Parent</td>
+              <td><code>{s.parent}</code></td>
+            </tr>
+            <tr>
+              <td className="text-gray-500 pr-3">keystore-DAO</td>
+              <td><code>{s.keystore_dao}</code></td>
+            </tr>
+            <tr>
+              <td className="text-gray-500 pr-3">MPC contract</td>
+              <td><code>{s.mpc_contract}</code></td>
+            </tr>
+            <tr>
+              <td className="text-gray-500 pr-3">Status</td>
+              <td>{s.unlocked ? 'UNLOCKED (recovered)' : 'locked (TEE-controlled)'}</td>
+            </tr>
+            <tr>
+              <td className="text-gray-500 pr-3">Exit window</td>
+              <td>{formatSeconds(s.unilateral_exit_window_secs)}</td>
+            </tr>
+            <tr>
+              <td className="text-gray-500 pr-3">Registered TEE keys</td>
+              <td>{s.registered_tee_keys.length}</td>
+            </tr>
+            {s.recovery && (
+              <tr>
+                <td className="text-gray-500 pr-3">Recovery</td>
+                <td>
+                  {s.recovery.trigger} — finalize after{' '}
+                  {nsToDate(s.recovery.finalize_after).toLocaleString()}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      )}
+
+      <div className="flex flex-wrap gap-2 mb-3">
+        <button
+          onClick={props.onInitiateRecovery}
+          disabled={disabled || !!s?.unlocked || !!s?.recovery}
+          className="px-3 py-1 bg-orange-600 text-white rounded text-xs hover:bg-orange-700 disabled:bg-gray-400"
+          title="Cessation-triggered (DAO must have declared cessation)"
+        >
+          Initiate cessation recovery
+        </button>
+        <button
+          onClick={props.onInitiateUnilateral}
+          disabled={disabled || !!s?.unlocked || !!s?.recovery}
+          className="px-3 py-1 bg-orange-600 text-white rounded text-xs hover:bg-orange-700 disabled:bg-gray-400"
+          title="Parent-only voluntary exit"
+        >
+          Initiate unilateral recovery
+        </button>
+        <button
+          onClick={props.onFinalize}
+          disabled={disabled || !s?.recovery}
+          className="px-3 py-1 bg-purple-600 text-white rounded text-xs hover:bg-purple-700 disabled:bg-gray-400"
+        >
+          Finalize recovery
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="border border-gray-200 dark:border-gray-700 rounded p-2">
+          <div className="text-xs font-medium mb-1">Update exit window (parent only)</div>
+          <div className="flex gap-2">
+            <select
+              value={newWindow}
+              onChange={(e) => setNewWindow(e.target.value)}
+              className="flex-1 text-xs rounded border border-gray-300 dark:border-gray-600 dark:bg-gray-800 px-2 py-1"
+            >
+              {EXIT_WINDOW_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+            <button
+              onClick={() => props.onSetExitWindow(newWindow)}
+              disabled={disabled}
+              className="px-3 py-1 bg-gray-600 text-white rounded text-xs hover:bg-gray-700 disabled:bg-gray-400"
+            >
+              Set
+            </button>
+          </div>
+        </div>
+
+        <div className="border border-gray-200 dark:border-gray-700 rounded p-2">
+          <div className="text-xs font-medium mb-1">Add key (post-unlock, parent only)</div>
+          <input
+            type="text"
+            value={newPubkey}
+            onChange={(e) => setNewPubkey(e.target.value)}
+            placeholder="ed25519:..."
+            className="block w-full text-xs rounded border border-gray-300 dark:border-gray-600 dark:bg-gray-800 px-2 py-1 mb-1"
+          />
+          <label className="text-xs flex items-center gap-1 mb-1">
+            <input
+              type="checkbox"
+              checked={newKeyFullAccess}
+              onChange={(e) => setNewKeyFullAccess(e.target.checked)}
+            />
+            Full-access key (default: function-call, 1 NEAR allowance)
+          </label>
+          <button
+            onClick={() => props.onAddKey(newPubkey, newKeyFullAccess)}
+            disabled={disabled || !s?.unlocked}
+            className="w-full px-3 py-1 bg-gray-600 text-white rounded text-xs hover:bg-gray-700 disabled:bg-gray-400"
+          >
+            unlocked_add_key
+          </button>
+          {s && !s.unlocked && (
+            <p className="text-xs text-gray-500 mt-1">Vault must be unlocked first.</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

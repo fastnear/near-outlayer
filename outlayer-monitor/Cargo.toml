@@ -1,0 +1,51 @@
+[package]
+name = "outlayer-monitor"
+version = "0.1.0"
+edition = "2021"
+description = "Race-attack detection monitor for OutLayer per-customer vaults"
+publish = false
+
+[[bin]]
+name = "outlayer-monitor"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP client for keystore-worker /admin/ban-vault and /admin/evict-customer
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+anyhow = "1"
+
+# CLI args + env config
+clap = { version = "4", features = ["derive", "env"] }
+
+# Async traits + futures glue
+async-trait = "0.1"
+futures = "0.3"
+
+# neardata adapter — base64 for FunctionCall args decoding.
+base64 = "0.22"
+
+[features]
+# `lake-source` enables the production receipt-stream adapter that
+# polls FastNEAR's `neardata.xyz` HTTP feed (a free CDN equivalent of
+# the Pagoda S3 lake — same blocks, no AWS dep). Without this
+# feature, the binary refuses to start (compile-time check in
+# `main.rs`) so an operator cannot accidentally deploy a monitor
+# that silently sees no events.
+default = []
+lake-source = []
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }

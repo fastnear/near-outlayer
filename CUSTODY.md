@@ -436,6 +436,101 @@ If policy exists → keystore always reads fresh from chain (never cached).
 
 ---
 
+## Per-customer Vaults (sovereignty option)
+
+By default, every wallet's keys are derived from the **OutLayer
+default master** (HMAC-SHA256 chain rooted in the keystore-worker's
+TEE secret). Convenient and recovery-free, but if OutLayer ceases,
+the derived keys are gone with it.
+
+A **per-customer vault** replaces that shared master with a
+per-customer master derived via NEAR's MPC network from a
+sub-account the customer controls. The wallet's API key is bound
+to the vault at registration time; subsequent wallet operations
+forward `X-Customer-Vault: <vault_id>` to the keystore, which
+routes derivations through the per-vault master.
+
+### Wallet creation flow with vault scope
+
+```
+Customer → outlayer vault init  (or dashboard /vault page)
+    Atomic NEAR tx (5 actions, all-or-nothing):
+        CreateAccount(vault.<customer.near>)
+        Transfer(2.5 NEAR)
+        DeployContract(approved_vault_wasm)
+        FunctionCall("new", {parent, keystore_dao, mpc_contract, exit_window})
+        AddKey(tee_pubkey, FCAK on mpc_contract.request_app_private_key)
+    POST /customer/sign-verification → keystore re-verifies + signs
+                                       mark_vault_verified on chain
+    POST /customer/register {vault_id, webhook_url?}
+    Coordinator:
+        1. View-call keystore_dao.is_vault_verified(vault_id) — must be true
+        2. INSERT wallet_accounts (wallet_id, vault_id, vault_webhook_url)
+        3. INSERT wallet_api_keys (key_hash, customer_account_id=vault_id)
+        4. POST /wallet/derive-address  (with X-Customer-Vault header)
+    Keystore TEE:
+        5. Lazy-load: ensure_customer_loaded(vault_id) drives MPC CKD
+           with derivation_path = HMAC(default_master, "vault-master:{vault_id}")
+        6. Cache per-vault master in masters: HashMap<AccountId, [u8;32]>
+        7. HMAC(per_vault_master, "wallet:{wallet_id}:near") → keypair
+        8. Return { address, public_key }
+    Coordinator:
+        9. Save derived public_key on the wallet row
+       10. Commit transaction; return API key + fire vault_registered webhook
+```
+
+The customer's API key is now permanently bound to the vault. Every
+wallet operation uses the per-vault master; on cessation or
+unilateral exit, the customer recovers control of the vault account
+and the per-vault master remains derivable by any post-recovery
+DAO-approved TEE worker (deterministic — same `(default_master,
+vault_id)` → same `secret_path` → same MPC-derived master).
+
+### Recovery flow (cessation path)
+
+```
+DAO members → keystore_dao.declare_cessation()      [is_ceased() = true]
+
+Anyone      → vault.initiate_recovery()
+                  → cross-contract is_ceased() check
+                  → recovery = {trigger: Cessation,
+                                finalize_after: now+7d,
+                                finalize_before: now+14d}
+
+(7-day delay)
+
+Anyone      → vault.finalize_recovery()
+                  → cross-contract is_ceased() check (still true?)
+                  → unlocked = true
+                  → recovery = None
+
+Parent      → vault.unlocked_add_key(parent_pubkey, full_access: true)
+              [parent now controls the sub-account; can withdraw funds
+               and migrate to a new custody provider]
+```
+
+### Recovery flow (unilateral path)
+
+```
+Parent → vault.set_exit_window(86400)            [optional, 24h-30d range]
+Parent → vault.unilateral_initiate_recovery()
+            → recovery = {trigger: Unilateral,
+                          finalize_after: now + window_secs}
+
+(configured delay — default 24h)
+
+Anyone → vault.finalize_recovery()                [no DAO check]
+            → unlocked = true
+
+Parent → vault.unlocked_add_key(...)
+```
+
+For the architectural reference (two-layer key derivation, race-attack
+mitigation, governance fixes), see [VAULTS.md](VAULTS.md). For the
+customer-facing how-to, see `dashboard/app/docs/vaults/page.tsx`.
+
+---
+
 ## Security Model
 
 1. **MPC master secret** — obtained from NEAR Protocol MPC network via DAO-governed process. Lives only inside TEE. Individual wallet keys derived deterministically via HMAC-SHA256.

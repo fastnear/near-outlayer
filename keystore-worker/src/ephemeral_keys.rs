@@ -77,6 +77,7 @@ pub fn ephemeral_key_routes() -> Router<AppState> {
 
 async fn derive_ephemeral_key_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<DeriveEphemeralKeyRequest>,
 ) -> Result<Json<DeriveEphemeralKeyResponse>, ApiError> {
     if !state.is_ready() {
@@ -89,6 +90,18 @@ async fn derive_ephemeral_key_handler(
         ));
     }
 
+    // The ephemeral key MUST derive from the same master as
+    // `derive-address` returns for the same wallet. If we hard-coded
+    // `customer = None` here, vault-bound wallets would get their
+    // ephemeral keys from the DEFAULT master — not the per-vault
+    // master — and funds deposited at the resulting address would be
+    // unrecoverable through the customer's vault path.
+    let customer = crate::api::extract_customer_from_header(&headers)?;
+    state
+        .ensure_customer_loaded(customer.as_ref())
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
     let seed = format!(
         "wallet:{}:{}:{}",
         req.wallet_id,
@@ -98,7 +111,7 @@ async fn derive_ephemeral_key_handler(
 
     let keystore = state.keystore.read().await;
     let (signing_key, verifying_key) = keystore
-        .derive_keypair(&seed)
+        .derive_keypair(customer.as_ref(), &seed)
         .map_err(|e| ApiError::InternalError(format!("Ephemeral key derivation failed: {}", e)))?;
 
     let pubkey_hex = hex::encode(verifying_key.as_bytes());

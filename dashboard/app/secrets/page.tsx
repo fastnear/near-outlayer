@@ -104,6 +104,11 @@ export default function SecretsPage() {
         profile: formData.profile,
         encrypted_secrets_base64: encryptedBase64,
         access: formData.access,
+        // Phase 7 F2: vault scope from the form's <VaultScopeToggle>.
+        // `null` ⇒ legacy / default-master (current behaviour).
+        // Set ⇒ on-chain binding to a customer-owned vault, so the
+        // worker's `decrypt` path knows which per-vault master to use.
+        vault_id: formData.vaultId,
       };
       const estimateArgs = {
         accessor,
@@ -111,6 +116,9 @@ export default function SecretsPage() {
         owner: accountId,
         encrypted_secrets_base64: encryptedBase64,
         access: formData.access,
+        // Must mirror `transactionArgs.vault_id` so the cost estimate
+        // includes (or excludes) the binding-storage overhead.
+        vault_id: formData.vaultId,
       };
 
       // Estimate storage cost via viewMethod
@@ -352,6 +360,12 @@ export default function SecretsPage() {
                         branch: null,
                       },
                   profile: updatingSecret.profile,
+                  // Phase 7 audit H3: pass `undefined` so SecretsForm
+                  // performs the `get_secret_vault` view-call itself
+                  // and inherits the existing binding. Without this,
+                  // an update of a vault-bound secret silently
+                  // re-binds it to the default master.
+                  vaultId: undefined,
                 }
               : undefined
           }

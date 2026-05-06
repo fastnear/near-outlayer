@@ -27,6 +27,16 @@ const pageStructure = {
     { id: 'comparison', title: 'Comparison' },
     { id: 'dashboard', title: 'Dashboard' },
   ],
+  '/docs/vaults': [
+    { id: 'overview', title: 'Overview' },
+    { id: 'create', title: 'Creating a vault' },
+    { id: 'secrets', title: 'Vault for secrets' },
+    { id: 'custody', title: 'Vault for wallets' },
+    { id: 'recovery', title: 'Recovery procedures' },
+    { id: 'threat-model', title: 'For end-users' },
+    { id: 'verify', title: 'End-user verification' },
+    { id: 'ops', title: 'Operational considerations' },
+  ],
   '/docs/payment-checks': [
     { id: 'how-it-works', title: 'How It Works' },
     { id: 'mechanism', title: 'Transfer Mechanism' },
@@ -511,6 +521,44 @@ export default function DocsLayout({
                 {expandedPages['/docs/agent-custody'] && pageStructure['/docs/agent-custody'] && (
                   <div className="ml-4 mt-1 space-y-0.5">
                     {pageStructure['/docs/agent-custody'].map(section => (
+                      <button
+                        key={section.id}
+                        onClick={() => scrollToSection(section.id)}
+                        className="block w-full text-left px-3 py-1 text-xs text-gray-600 hover:text-[var(--primary-orange)] hover:bg-gray-50 rounded transition-colors cursor-pointer"
+                      >
+                        {section.title}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Sovereign Vaults */}
+              <div>
+                <Link
+                  href="/docs/vaults"
+                  className={`flex items-center justify-between w-full text-left px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                    isActive('/docs/vaults')
+                      ? 'bg-[var(--primary-orange)] text-white'
+                      : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                  onClick={(e) => {
+                    if (isActive('/docs/vaults')) {
+                      e.preventDefault();
+                      toggleExpand('/docs/vaults');
+                    }
+                  }}
+                >
+                  <span>Sovereign Vaults</span>
+                  {pageStructure['/docs/vaults'] && (
+                    <svg className={`w-4 h-4 transition-transform ${expandedPages['/docs/vaults'] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  )}
+                </Link>
+                {expandedPages['/docs/vaults'] && pageStructure['/docs/vaults'] && (
+                  <div className="ml-4 mt-1 space-y-0.5">
+                    {pageStructure['/docs/vaults'].map(section => (
                       <button
                         key={section.id}
                         onClick={() => scrollToSection(section.id)}

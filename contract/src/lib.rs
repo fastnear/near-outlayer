@@ -61,6 +61,8 @@ enum StorageKey {
     // Wallet owner index (owner -> set of wallet_pubkeys)
     WalletOwnerIndex,
     WalletOwnerList { account_id: AccountId },
+    // Per-secret vault binding (side-table for sovereign-vault opt-in)
+    SecretVaultBindings,
 }
 
 /// Execution source - GitHub repo, pre-compiled WASM URL, or project reference
@@ -480,6 +482,14 @@ pub struct Contract {
 
     // Wallet owner index: owner -> set of wallet_pubkeys (for get_wallet_policies_by_owner)
     wallet_owner_index: LookupMap<AccountId, UnorderedSet<String>>,
+
+    // Per-secret vault binding side-table.
+    // SecretKey -> vault account whose master encrypted this secret.
+    // None / absent entry means "use the default OutLayer master".
+    // Kept separate from SecretProfile so existing borsh-serialised
+    // entries deserialise unchanged after a contract upgrade that
+    // adds this map.
+    secret_vault_bindings: LookupMap<SecretKey, AccountId>,
 }
 
 #[near_bindgen]
@@ -523,6 +533,8 @@ impl Contract {
             // Wallet policies
             wallet_policies: LookupMap::new(StorageKey::WalletPolicies),
             wallet_owner_index: LookupMap::new(StorageKey::WalletOwnerIndex),
+            // Per-vault master phase 2
+            secret_vault_bindings: LookupMap::new(StorageKey::SecretVaultBindings),
         }
     }
 

@@ -51,6 +51,20 @@ export default function AgentCustodyPage() {
             No single party, not even the infrastructure operator, can extract keys or bypass policy rules.
           </p>
         </div>
+
+        <div className="bg-blue-50 border-l-4 border-blue-500 p-4 mb-6">
+          <p className="text-sm text-gray-700">
+            <strong>Optional: sovereign vaults.</strong> Custody wallets are derived from a shared OutLayer master by default
+            &mdash; convenient and recovery-free. If your application&rsquo;s value-at-risk justifies an extra setup step,
+            you can deploy a per-customer{' '}
+            <Link href="/docs/vaults" className="text-[#cc6600] hover:underline">
+              sovereign vault
+            </Link>
+            : the wallet&rsquo;s keys are then derived from a master that&rsquo;s recoverable by you through DAO cessation
+            or your own unilateral exit, even if OutLayer ceases. The agent code does not change &mdash; the API key
+            fully determines which master is used.
+          </p>
+        </div>
       </section>
 
       {/* How It Works */}

@@ -34,6 +34,7 @@ dashboard/app/docs/
 ├── page.tsx                      # Main documentation page (overview)
 ├── layout.tsx                    # Sidebar navigation menu
 ├── agent-custody/page.tsx        # Agent Custody — multi-chain wallet for AI agents
+├── vaults/page.tsx               # ✨ Sovereign Vaults (NEW) — per-customer master keys with on-chain recovery
 ├── payment-checks/page.tsx      # Payment Checks — gasless agent-to-agent payments
 ├── getting-started/page.tsx      # Getting Started (from sections/GettingStarted.tsx)
 ├── web2-integration/page.tsx     # Web2 Integration - HTTPS API with TEE attestation

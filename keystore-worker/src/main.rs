@@ -31,6 +31,7 @@ mod utils;
 mod mpc_ckd;
 mod tee_registration;
 mod tdx_attestation;
+mod vault_verifier;
 
 use anyhow::{Context, Result};
 use config::{Config, TeeMode};
@@ -144,9 +145,29 @@ async fn main() -> Result<()> {
             tracing::info!("🔐 Starting TEE registration process in background");
 
             match perform_tee_registration(&config_clone).await {
-                Ok(real_keystore) => {
-                    // Replace the temporary keystore with the real one
-                    state_clone.replace_keystore(real_keystore).await;
+                Ok(result) => {
+                    // Order matters: install the real keystore FIRST,
+                    // then publish the MPC context, then flip is_ready.
+                    //
+                    // Why this ordering matters:
+                    //   * Until is_ready, no handler is allowed to run
+                    //     (handler middleware checks the flag).
+                    //   * If we set MPC context before swapping the
+                    //     keystore, any code path that ignored is_ready
+                    //     (or any future bug that did) would see MPC
+                    //     context populated AND the temporary boot
+                    //     keystore still in place — derive_secret_string
+                    //     would HMAC against the wrong master, the
+                    //     resulting per-vault master would be unique to
+                    //     this worker boot, and recovery would break.
+                    //   * Setting context AFTER swap means anyone
+                    //     observing `mpc_ckd_config.get().is_some()` is
+                    //     guaranteed to also see the real default master.
+                    state_clone.replace_keystore(result.keystore).await;
+                    state_clone.set_mpc_context(
+                        result.mpc_ckd_config,
+                        result.keystore_dao_signer,
+                    );
                     state_clone.mark_ready();
                     tracing::info!("✅ TEE registration complete! Keystore is now ready to serve requests");
                 }
@@ -194,8 +215,23 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Outcome of a successful TEE registration: the freshly-derived
+/// default-master keystore plus the MPC CKD context that the lazy
+/// per-vault-master path needs at request time, plus the worker's
+/// signer for the keystore-dao contract (used by `/sign-vault-verification`
+/// to land `mark_vault_verified` tx).
+struct TeeRegistrationResult {
+    keystore: Keystore,
+    /// MPC CKD config — carries `keystore_dao_id` and `mpc_contract_id`
+    /// as parsed `AccountId`s. Phase 4 holistic audit I8: previously
+    /// this struct also had a separate `keystore_dao_id` field,
+    /// duplicating `mpc_ckd_config.keystore_dao_id`. Collapsed.
+    mpc_ckd_config: mpc_ckd::MpcCkdConfig,
+    keystore_dao_signer: near_crypto::InMemorySigner,
+}
+
 /// Perform TEE registration and get MPC-derived keystore
-async fn perform_tee_registration(config: &Config) -> Result<Keystore> {
+async fn perform_tee_registration(config: &Config) -> Result<TeeRegistrationResult> {
     tracing::info!("🔐 Starting TEE registration flow with retry logic");
 
     // Check required environment variables - NO FALLBACKS!
@@ -311,10 +347,15 @@ async fn perform_tee_registration(config: &Config) -> Result<Keystore> {
 
     // Now we're approved, get MPC-derived secret
     tracing::info!("🔑 Requesting master secret from MPC network via CKD");
-    let keystore = mpc_ckd::initialize_mpc_keystore(dao_contract, secret_key).await?;
+    let (keystore, mpc_ckd_config, keystore_dao_signer) =
+        mpc_ckd::initialize_mpc_keystore(dao_contract.clone(), secret_key).await?;
 
     tracing::info!("✅ Successfully obtained MPC-derived master secret");
-    Ok(keystore)
+    Ok(TeeRegistrationResult {
+        keystore,
+        mpc_ckd_config,
+        keystore_dao_signer,
+    })
 }
 
 /// Initialize keystore from environment or generate new one
@@ -348,7 +389,7 @@ async fn initialize_keystore(_config: &Config) -> Result<Keystore> {
         let keystore = Keystore::generate();
 
         // Get hex representation for user to save
-        let master_hex = keystore.master_secret_hex();
+        let master_hex = keystore.default_master_hex();
 
         tracing::warn!("");
         tracing::warn!("=================================================================");

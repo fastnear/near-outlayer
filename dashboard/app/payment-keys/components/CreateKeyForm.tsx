@@ -186,6 +186,10 @@ export function CreateKeyForm({
         profile: nonce.toString(),
         encrypted_secrets_base64: encryptedBase64,
         access: 'AllowAll',
+        // Per-vault master Phase 2: payment keys stay on the OutLayer
+        // default master (Category B in the plan — operational data
+        // tied to the coordinator's lifetime). Phase 7 may revisit.
+        vault_id: null,
       };
 
       // Execute store_secrets transaction
