@@ -9,13 +9,9 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@hot-labs/near-connect": "latest",
+    "@near-js/types": "latest",
     "@near-js/transactions": "^2.3.3",
-    "@near-wallet-selector/core": "^10.0.0",
-    "@near-wallet-selector/here-wallet": "^10.1.0",
-    "@near-wallet-selector/intear-wallet": "^10.1.0",
-    "@near-wallet-selector/meteor-wallet": "^10.1.0",
-    "@near-wallet-selector/modal-ui": "^10.0.0",
-    "@near-wallet-selector/my-near-wallet": "^10.0.0",
     "@stablelib/chacha20poly1305": "^2.0.1",
     "@stablelib/hkdf": "^2.0.1",
     "@stablelib/random": "^2.0.1",
