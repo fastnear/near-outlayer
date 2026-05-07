@@ -242,10 +242,11 @@ impl MpcCkdClient {
         );
 
         // Legacy proxy flow: keystore-dao calls itself, which internally
-        // forwards to MPC. receiver_id = signer's own account_id.
+        // forwards to MPC. receiver_id = signer's own account_id. The
+        // DAO's `request_key` accepts deposit = 0 (no `assert_one_yocto`).
         let receiver_id = signer.account_id.clone();
 
-        self.request_ckd_inner(signer, &receiver_id, "request_key", "")
+        self.request_ckd_inner(signer, &receiver_id, "request_key", "", 0)
             .await
     }
 
@@ -278,11 +279,15 @@ impl MpcCkdClient {
         // in `MpcCkdConfig::from_env`). No per-call parse needed.
         let receiver_id = self.config.mpc_contract_id.clone();
 
+        // MPC's `request_app_private_key` requires `assert_one_yocto()`
+        // — direct calls MUST attach exactly 1 yoctoNEAR or the receipt
+        // panics with "Attached deposit is lower than required".
         self.request_ckd_inner(
             vault_signer,
             &receiver_id,
             "request_app_private_key",
             derivation_path,
+            1,
         )
         .await
     }
@@ -308,6 +313,7 @@ impl MpcCkdClient {
         receiver_id: &AccountId,
         method_name: &str,
         derivation_path: &str,
+        deposit: u128,
     ) -> Result<[u8; 32]> {
         // 1. Ephemeral BLS12-381 G1 keypair (one-shot per request).
         let (ephemeral_private_key, ephemeral_public_key) = self.generate_ephemeral_key();
@@ -328,7 +334,7 @@ impl MpcCkdClient {
 
         // 3. Submit tx: signer → receiver_id, calling method_name(request_args).
         let response = self
-            .call_mpc_contract(signer, receiver_id, method_name, request_args)
+            .call_mpc_contract(signer, receiver_id, method_name, request_args, deposit)
             .await?;
 
         // 4. Recompute app_id the same way MPC did — based on the SIGNER
@@ -446,6 +452,7 @@ impl MpcCkdClient {
         receiver_id: &AccountId,
         method_name: &str,
         request: CkdRequestArgs,
+        deposit: u128,
     ) -> Result<CkdResponse> {
         tracing::info!(
             signer = %signer.account_id,
@@ -513,7 +520,7 @@ impl MpcCkdClient {
                 method_name: method_name.to_string(),
                 args,
                 gas: 300_000_000_000_000, // 300 TGas
-                deposit: 0,
+                deposit,
             }))],
         };
 

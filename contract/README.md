@@ -42,7 +42,7 @@ near call outlayer.testnet request_execution '{
 **With encrypted secrets (e.g., API keys):**
 ```bash
 # 1. Get keystore public key
-near view outlayer.testnet get_keystore_pubkey
+near contract call-function as-read-only outlayer.testnet get_keystore_pubkey json-args {} network-config testnet now
 
 # 2. Encrypt your secrets with the public key (use keystore encryption library)
 # encrypted_data = encrypt_for_keystore(pubkey, "OPENAI_API_KEY=sk-...")
@@ -156,7 +156,7 @@ near view outlayer.testnet get_request '{
 Get contract statistics.
 
 ```bash
-near view outlayer.testnet get_stats '{}'
+near contract call-function as-read-only outlayer.testnet get_stats json-args {} network-config testnet now
 ```
 
 #### `get_pricing`
