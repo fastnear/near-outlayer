@@ -19,18 +19,21 @@ use near_workspaces::{Account, Contract, Worker};
 use serde_json::{json, Value};
 use tokio::sync::OnceCell;
 
-// All timing values match the contract's `test-timing` feature (see
-// vault-contract/Cargo.toml [features]). Production builds use 7-day
-// delays; under test-timing they collapse to 30s so we can fast_forward
-// a bounded number of sandbox blocks.
+// Timing values are imported directly from the contract crate so they
+// always match what the freshly-compiled sandbox WASM has baked in.
+// When `vault-contract/src/lib.rs` is set to mainnet pacing (7-day
+// cessation etc.), this suite cannot run — sandbox `fast_forward` won't
+// cover 7 days in a reasonable test budget. Temporarily lower the
+// constants in `lib.rs` for sandbox QA, then restore mainnet values.
 const ONE_SECOND_NS: u64 = 1_000_000_000;
 const DAY_SECS: u64 = 24 * 60 * 60;
-const CESSATION_DELAY_NS: u64 = 30 * ONE_SECOND_NS;
-const FINALIZE_WINDOW_NS: u64 = 300 * ONE_SECOND_NS;
-// Under `test-timing` the contract collapses CESSATION_DELAY to 30 s and
-// widens FINALIZE_WINDOW to 300 s. Tests use the helper below to advance
-// the sandbox by a target number of *real timestamp seconds* — robust to
-// per-block-timestamp variance across sandbox versions.
+use vault_contract::{
+    CESSATION_DELAY_NS, FINALIZE_WINDOW_NS,
+    MAX_UNILATERAL_EXIT_WINDOW_SECS, MIN_UNILATERAL_EXIT_WINDOW_SECS,
+};
+// Tests use the helper below to advance the sandbox by a target
+// number of *real timestamp seconds* — robust to per-block-timestamp
+// variance across sandbox versions.
 
 /// Advance `worker` until `block_timestamp` is at least
 /// `target_advance_secs` ahead of the timestamp at this call. Loops
@@ -61,9 +64,17 @@ async fn fast_forward_secs(worker: &Worker<Sandbox>, target_advance_secs: u64) -
     }
 }
 
-/// `test-timing` collapses MIN unilateral exit window to 10 s and MAX to
-/// 600 s. Tests pick comfortably-in-range values.
-const TEST_UNILATERAL_WINDOW_SECS: u64 = 30;
+/// Comfortably in the contract's `[MIN, MAX]_UNILATERAL_EXIT_WINDOW_SECS`
+/// range so tests can pick a window without bumping into the bounds.
+/// Picks 2× MIN if there's room, else just MIN.
+const TEST_UNILATERAL_WINDOW_SECS: u64 = {
+    let doubled = MIN_UNILATERAL_EXIT_WINDOW_SECS * 2;
+    if doubled <= MAX_UNILATERAL_EXIT_WINDOW_SECS {
+        doubled
+    } else {
+        MIN_UNILATERAL_EXIT_WINDOW_SECS
+    }
+};
 
 // ============================================================
 // Fixture compilation (cached across all tests in this binary)

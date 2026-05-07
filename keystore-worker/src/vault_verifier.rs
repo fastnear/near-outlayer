@@ -193,7 +193,10 @@ pub async fn verify_vault_for_signing(
             got: keys.len(),
         });
     }
-    check_function_call_key(&keys[0], mpc_contract)?;
+    // The TEE key calls vault's own `request_master` proxy (not MPC
+    // directly), because FC keys can't attach the 1 yocto MPC's
+    // `assert_one_yocto` requires.
+    check_function_call_key(&keys[0], vault_id)?;
 
     // 3. Vault state — keystore_dao binding, mpc_contract binding,
     //    locked, no recovery.
@@ -262,7 +265,7 @@ async fn view_call_bool(
 
 fn check_function_call_key(
     key: &AccessKeyInfoView,
-    mpc_contract: &AccountId,
+    vault_id: &AccountId,
 ) -> Result<(), VerifyError> {
     match &key.access_key.permission {
         AccessKeyPermissionView::FullAccess => {
@@ -275,14 +278,15 @@ fn check_function_call_key(
             receiver_id,
             method_names,
         } => {
-            // `request_app_private_key` is the MPC contract's CKD entry
-            // point. The TEE key MUST be restricted to this method on
-            // exactly the configured MPC contract — anything else means
-            // the vault was deployed against a different policy and we
-            // cannot trust its security guarantees.
+            // The TEE key MUST be a self-call on the vault's
+            // `request_master` proxy. Direct calls to MPC's
+            // `request_app_private_key` are blocked by FC-key deposit
+            // rules (assert_one_yocto requires 1 yocto, FC keys can
+            // attach only 0). The proxy method on the vault contract
+            // adds the yocto from the vault's balance.
             let methods_ok =
-                method_names.len() == 1 && method_names[0] == "request_app_private_key";
-            if receiver_id != mpc_contract.as_str() || !methods_ok {
+                method_names.len() == 1 && method_names[0] == "request_master";
+            if receiver_id != vault_id.as_str() || !methods_ok {
                 return Err(VerifyError::FunctionCallKeyMisconfigured {
                     receiver: receiver_id.to_string(),
                     methods: method_names.clone(),
@@ -354,6 +358,10 @@ mod tests {
 
     fn mpc() -> AccountId {
         AccountId::from_str("v1.signer.testnet").unwrap()
+    }
+
+    fn vault() -> AccountId {
+        AccountId::from_str("vault.alice.testnet").unwrap()
     }
 
     // Pure parsers — testable without a NearClient.
@@ -429,12 +437,12 @@ mod tests {
                 nonce: 0,
                 permission: AccessKeyPermissionView::FunctionCall {
                     allowance: None,
-                    receiver_id: mpc().to_string(),
-                    method_names: vec!["request_app_private_key".to_string()],
+                    receiver_id: vault().to_string(),
+                    method_names: vec!["request_master".to_string()],
                 },
             },
         };
-        check_function_call_key(&key, &mpc()).expect("matches mpc + correct method");
+        check_function_call_key(&key, &vault()).expect("self-call to vault.request_master");
     }
 
     #[test]
@@ -446,11 +454,11 @@ mod tests {
                 permission: AccessKeyPermissionView::FunctionCall {
                     allowance: None,
                     receiver_id: "bogus.testnet".to_string(),
-                    method_names: vec!["request_app_private_key".to_string()],
+                    method_names: vec!["request_master".to_string()],
                 },
             },
         };
-        let err = check_function_call_key(&key, &mpc()).unwrap_err();
+        let err = check_function_call_key(&key, &vault()).unwrap_err();
         assert!(matches!(err, VerifyError::FunctionCallKeyMisconfigured { .. }));
     }
 
@@ -463,15 +471,15 @@ mod tests {
                 nonce: 0,
                 permission: AccessKeyPermissionView::FunctionCall {
                     allowance: None,
-                    receiver_id: mpc().to_string(),
+                    receiver_id: vault().to_string(),
                     method_names: vec![
-                        "request_app_private_key".to_string(),
+                        "request_master".to_string(),
                         "evil".to_string(),
                     ],
                 },
             },
         };
-        let err = check_function_call_key(&key, &mpc()).unwrap_err();
+        let err = check_function_call_key(&key, &vault()).unwrap_err();
         assert!(matches!(err, VerifyError::FunctionCallKeyMisconfigured { .. }));
     }
 
@@ -483,12 +491,12 @@ mod tests {
                 nonce: 0,
                 permission: AccessKeyPermissionView::FunctionCall {
                     allowance: None,
-                    receiver_id: mpc().to_string(),
-                    method_names: vec!["request_key".to_string()],
+                    receiver_id: vault().to_string(),
+                    method_names: vec!["request_app_private_key".to_string()],
                 },
             },
         };
-        let err = check_function_call_key(&key, &mpc()).unwrap_err();
+        let err = check_function_call_key(&key, &vault()).unwrap_err();
         assert!(matches!(err, VerifyError::FunctionCallKeyMisconfigured { .. }));
     }
 
@@ -501,7 +509,7 @@ mod tests {
                 permission: AccessKeyPermissionView::FullAccess,
             },
         };
-        let err = check_function_call_key(&key, &mpc()).unwrap_err();
+        let err = check_function_call_key(&key, &vault()).unwrap_err();
         assert!(matches!(err, VerifyError::FullAccessKeyPresent));
     }
 

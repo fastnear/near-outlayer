@@ -55,6 +55,7 @@
 
 use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use near_sdk::serde::{Deserialize, Serialize};
+use near_sdk::serde_json;
 use near_sdk::{
     env, ext_contract, near_bindgen, require, AccountId, Allowance, Gas, NearToken, PanicOnDefault,
     Promise, PromiseError, PromiseOrValue, PublicKey,
@@ -64,48 +65,41 @@ use schemars::JsonSchema;
 const SECOND_NS: u64 = 1_000_000_000;
 const DAY_SECS: u64 = 24 * 60 * 60;
 
-/// Cessation-recovery delay. Fixed 7 days in production; under the
-/// `test-timing` feature this is collapsed to 30 seconds so the
-/// near-sandbox integration suite can exercise the real recovery flow
-/// without `fast_forward`'ing hundreds of thousands of blocks.
-#[cfg(not(feature = "test-timing"))]
-pub const CESSATION_DELAY_NS: u64 = 7 * DAY_SECS * SECOND_NS;
-#[cfg(feature = "test-timing")]
-pub const CESSATION_DELAY_NS: u64 = 30 * SECOND_NS;
+// === Recovery / exit-window timing ===
+//
+// These five values are baked into the WASM at compile time. Changing
+// any of them requires a fresh vault build + new hash approval via DAO
+// + redeploy of any vault account that wants the new pacing (existing
+// vaults keep the values they were built against).
+//
+// Currently set to TESTNET values for fast E2E testing. Mainnet
+// targets are in each constant's comment — bump before mainnet build.
+
+/// Cessation-recovery delay between `initiate_recovery` and the earliest
+/// allowed `finalize_recovery`.
+/// **Mainnet target: `7 * DAY_SECS * SECOND_NS` (7 days).**
+pub const CESSATION_DELAY_NS: u64 = 60 * SECOND_NS;
 
 /// How long after the delay the customer has to call `finalize_recovery`.
 /// Past this point the recovery is auto-cancelled (state cleared, vault
 /// stays locked). Applies to both cessation and unilateral recoveries.
-///
-/// Under `test-timing` the value is widened to 300 s (rather than mirror
-/// the 30 s delay) so integration tests have a comfortable target window
-/// to land in given near-sandbox's ~0.3 s-per-block pace.
-#[cfg(not(feature = "test-timing"))]
-pub const FINALIZE_WINDOW_NS: u64 = 7 * DAY_SECS * SECOND_NS;
-#[cfg(feature = "test-timing")]
-pub const FINALIZE_WINDOW_NS: u64 = 300 * SECOND_NS;
+/// **Mainnet target: `7 * DAY_SECS * SECOND_NS` (7 days).**
+pub const FINALIZE_WINDOW_NS: u64 = 600 * SECOND_NS;
 
 /// Default unilateral exit window applied if `new()` is called with
-/// `initial_exit_window = None`. 24h in production; 30s under
-/// `test-timing` so the integration suite can exercise the flow.
-#[cfg(not(feature = "test-timing"))]
-pub const DEFAULT_UNILATERAL_EXIT_WINDOW_SECS: u64 = DAY_SECS; // 24h
-#[cfg(feature = "test-timing")]
-pub const DEFAULT_UNILATERAL_EXIT_WINDOW_SECS: u64 = 30;
+/// `initial_exit_window = None`.
+/// **Mainnet target: `DAY_SECS` (24h).**
+pub const DEFAULT_UNILATERAL_EXIT_WINDOW_SECS: u64 = 180;
 
 /// Minimum unilateral exit window — too short and a stolen parent key
 /// could grab funds before the customer notices.
-#[cfg(not(feature = "test-timing"))]
-pub const MIN_UNILATERAL_EXIT_WINDOW_SECS: u64 = DAY_SECS; // 24h
-#[cfg(feature = "test-timing")]
-pub const MIN_UNILATERAL_EXIT_WINDOW_SECS: u64 = 10;
+/// **Mainnet target: `DAY_SECS` (24h).**
+pub const MIN_UNILATERAL_EXIT_WINDOW_SECS: u64 = 60;
 
 /// Maximum unilateral exit window. Bounding the upper end prevents
 /// configurations that are practically equivalent to "no escape hatch".
-#[cfg(not(feature = "test-timing"))]
-pub const MAX_UNILATERAL_EXIT_WINDOW_SECS: u64 = 30 * DAY_SECS; // 30d
-#[cfg(feature = "test-timing")]
-pub const MAX_UNILATERAL_EXIT_WINDOW_SECS: u64 = 600; // 10 minutes
+/// **Mainnet target: `30 * DAY_SECS` (30 days).**
+pub const MAX_UNILATERAL_EXIT_WINDOW_SECS: u64 = 7 * DAY_SECS;
 
 /// Hard cap on `registered_tee_keys` length. Prevents anyone from blowing
 /// up vault state size with repeated `propose_tee_key` calls (each call
@@ -341,10 +335,15 @@ impl Vault {
         // off-chain consumer contract — keep it simple.
         env::log_str("vault_tee_key_added");
 
-        // The TEE function-call key is scoped to one method on the MPC
-        // contract: `request_app_private_key`. The name describes what
-        // the caller is asking for, NOT what is sent on the wire.
-        // CKD (Conditional Key Derivation) protocol:
+        // The TEE function-call key is scoped to ONE method on THIS
+        // vault contract: `request_master`, which proxies the MPC CKD
+        // call. Direct calls to MPC's `request_app_private_key` would
+        // be impossible because that method `assert_one_yocto`s and
+        // function-call access keys cannot attach any deposit. The
+        // proxy adds the 1 yocto from the vault's own balance via a
+        // cross-contract call.
+        //
+        // CKD (Conditional Key Derivation) protocol the proxy invokes:
         //   * Args:    `{ derivation_path, app_public_key, domain_id }`
         //              — `app_public_key` is the CALLER's ephemeral
         //              public key. No private key is ever passed.
@@ -355,14 +354,40 @@ impl Vault {
         //   * The keystore-worker decrypts the payload locally inside
         //     the TEE using its ephemeral app-private key, materialising
         //     the per-vault master only inside the enclave.
-        // Granting the TEE key access to ONLY this method bounds the
-        // blast radius of a TEE compromise — the key cannot transfer
-        // funds, deploy contracts, or call any other MPC method.
+        // Granting the TEE key access to ONLY `request_master` bounds
+        // the blast radius of a TEE compromise — the key cannot transfer
+        // funds, deploy contracts, or call any other vault method.
         Promise::new(env::current_account_id()).add_access_key_allowance(
             public_key,
             Allowance::Unlimited,
-            self.mpc_contract.clone(),
+            env::current_account_id(),
+            "request_master".to_string(),
+        )
+    }
+
+    /// MPC-CKD proxy for the per-vault master derivation. The TEE
+    /// function-call key calls THIS method (deposit=0, allowed for
+    /// FC keys), and this method makes the cross-contract call to
+    /// `mpc_contract.request_app_private_key` attaching the 1 yocto
+    /// MPC requires from THIS vault's balance.
+    ///
+    /// MPC sees the cross-contract call's predecessor as
+    /// `env::current_account_id()` (= this vault's account id), so
+    /// the per-vault uniqueness of the derived `app_id` is preserved
+    /// — different vault accounts produce different masters even with
+    /// identical `derivation_path` args.
+    ///
+    /// The returned `Promise` chains to MPC; NEAR's runtime auto-
+    /// propagates MPC's return value (the encrypted CKD payload) as
+    /// this method's return value. The keystore-worker's
+    /// `broadcast_tx_commit` therefore receives the payload directly.
+    pub fn request_master(&self, request: serde_json::Value) -> Promise {
+        require!(!self.unlocked, "vault is unlocked");
+        Promise::new(self.mpc_contract.clone()).function_call(
             "request_app_private_key".to_string(),
+            serde_json::to_vec(&request).expect("serialize CKD args"),
+            NearToken::from_yoctonear(1),
+            Gas::from_tgas(150),
         )
     }
 
@@ -710,7 +735,11 @@ impl Vault {
     fn assert_exit_window_in_range(secs: u64) {
         require!(
             secs >= MIN_UNILATERAL_EXIT_WINDOW_SECS && secs <= MAX_UNILATERAL_EXIT_WINDOW_SECS,
-            "exit window must be between 24 hours (86400s) and 30 days (2592000s)"
+            format!(
+                "exit window must be between {}s and {}s",
+                MIN_UNILATERAL_EXIT_WINDOW_SECS,
+                MAX_UNILATERAL_EXIT_WINDOW_SECS,
+            )
         );
     }
 }
@@ -962,32 +991,25 @@ mod tests {
         assert_eq!(v.get_exit_window(), DEFAULT_UNILATERAL_EXIT_WINDOW_SECS);
     }
 
-    #[cfg(not(feature = "test-timing"))]
-    #[test]
-    fn default_exit_window_is_24h_in_production() {
-        let v = fresh_vault();
-        assert_eq!(v.get_exit_window(), 86_400);
-    }
-
     #[test]
     fn new_accepts_explicit_exit_window_in_range() {
         testing_env!(ctx_for(alice()).build());
-        let v = Vault::new(alice(), dao(), mpc(), Some(7 * DAY_SECS));
-        assert_eq!(v.unilateral_exit_window_secs, 7 * DAY_SECS);
+        let v = Vault::new(alice(), dao(), mpc(), Some(MAX_UNILATERAL_EXIT_WINDOW_SECS));
+        assert_eq!(v.unilateral_exit_window_secs, MAX_UNILATERAL_EXIT_WINDOW_SECS);
     }
 
     #[test]
-    #[should_panic(expected = "exit window must be between 24 hours")]
+    #[should_panic(expected = "exit window must be between")]
     fn new_rejects_too_short_exit_window() {
         testing_env!(ctx_for(alice()).build());
-        let _ = Vault::new(alice(), dao(), mpc(), Some(60 * 60));
+        let _ = Vault::new(alice(), dao(), mpc(), Some(MIN_UNILATERAL_EXIT_WINDOW_SECS - 1));
     }
 
     #[test]
-    #[should_panic(expected = "exit window must be between 24 hours")]
+    #[should_panic(expected = "exit window must be between")]
     fn new_rejects_too_long_exit_window() {
         testing_env!(ctx_for(alice()).build());
-        let _ = Vault::new(alice(), dao(), mpc(), Some(60 * DAY_SECS));
+        let _ = Vault::new(alice(), dao(), mpc(), Some(MAX_UNILATERAL_EXIT_WINDOW_SECS + 1));
     }
 
     #[test]
@@ -1011,7 +1033,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "exit window must be between 24 hours")]
+    #[should_panic(expected = "exit window must be between")]
     fn set_exit_window_rejects_too_short() {
         let mut v = fresh_vault();
         testing_env!(ctx_for(alice()).build());
@@ -1019,7 +1041,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "exit window must be between 24 hours")]
+    #[should_panic(expected = "exit window must be between")]
     fn set_exit_window_rejects_too_long() {
         let mut v = fresh_vault();
         testing_env!(ctx_for(alice()).build());

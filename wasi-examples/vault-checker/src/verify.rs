@@ -228,24 +228,22 @@ pub fn verify_vault(
             receiver_id,
             method_names,
         } => {
-            // `request_app_private_key` is the MPC contract's CKD
-            // (Conditional Key Derivation) entry point. It's a method
-            // NAME on `cfg.mpc_contract`, not an argument — no private
-            // key is ever passed on the wire. Args are
-            // `{ derivation_path, app_public_key, domain_id }` where
-            // `app_public_key` is the caller's ephemeral public key.
-            // The MPC network returns an encrypted CKD payload that the
-            // keystore-worker decrypts inside its TEE, materialising
-            // the per-vault master only inside the enclave.
+            // `request_master` is the vault contract's MPC-CKD proxy.
+            // It cross-contract-calls `mpc_contract.request_app_private_key`
+            // attaching 1 yoctoNEAR from the vault's balance — that's
+            // required because MPC's `assert_one_yocto` rejects calls
+            // with deposit=0, and function-call access keys cannot
+            // attach any deposit on NEAR. The proxy is the only legal
+            // shape for the TEE key.
             //
             // We accept the vault key ONLY if it is restricted to this
-            // exact method on the configured MPC contract — nothing
-            // else. Any extra method or a different receiver means the
-            // vault was deployed against a different policy and we
-            // cannot trust its security guarantees.
+            // exact method on the vault itself — nothing else. Any
+            // extra method or a different receiver means the vault was
+            // deployed against a different policy and we cannot trust
+            // its security guarantees.
             let methods_ok = method_names.len() == 1
-                && method_names[0] == "request_app_private_key";
-            if receiver_id != &cfg.mpc_contract || !methods_ok {
+                && method_names[0] == "request_master";
+            if receiver_id != vault_id || !methods_ok {
                 return Err(VerifyError::FunctionCallKeyMisconfigured {
                     receiver: receiver_id.clone(),
                     methods: method_names.clone(),

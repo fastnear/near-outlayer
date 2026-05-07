@@ -183,7 +183,7 @@ fn happy_mock() -> MockRpc {
     );
     m.expect_access_key_list(
         VAULT,
-        &key_list_response(vec![fc_key(MPC, &["request_app_private_key"])]),
+        &key_list_response(vec![fc_key(VAULT, &["request_master"])]),
     );
     m.expect_view(
         VAULT,
@@ -329,8 +329,8 @@ fn verify_vault_extra_access_key() {
     m.expect_access_key_list(
         VAULT,
         &key_list_response(vec![
-            fc_key(MPC, &["request_app_private_key"]),
-            fc_key(MPC, &["request_app_private_key"]),
+            fc_key(VAULT, &["request_master"]),
+            fc_key(VAULT, &["request_master"]),
         ]),
     );
     let err = verify_vault(&m, &cfg(), VAULT).unwrap_err();
@@ -358,13 +358,13 @@ fn verify_vault_fc_key_wrong_receiver() {
     );
     m.expect_access_key_list(
         VAULT,
-        &key_list_response(vec![fc_key("evil.near", &["request_app_private_key"])]),
+        &key_list_response(vec![fc_key("evil.near", &["request_master"])]),
     );
     let err = verify_vault(&m, &cfg(), VAULT).unwrap_err();
     match err {
         VerifyError::FunctionCallKeyMisconfigured { receiver, methods } => {
             assert_eq!(receiver, "evil.near");
-            assert_eq!(methods, vec!["request_app_private_key".to_string()]);
+            assert_eq!(methods, vec!["request_master".to_string()]);
         }
         other => panic!("expected FunctionCallKeyMisconfigured, got {other:?}"),
     }
@@ -517,7 +517,7 @@ fn verify_vault_full_access_takes_priority_over_count_mismatch() {
         VAULT,
         &key_list_response(vec![
             full_access_key("ed25519:Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-            fc_key(MPC, &["request_app_private_key"]),
+            fc_key(VAULT, &["request_master"]),
         ]),
     );
     let err = verify_vault(&m, &cfg(), VAULT).unwrap_err();

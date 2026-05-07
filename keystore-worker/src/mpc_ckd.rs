@@ -246,7 +246,7 @@ impl MpcCkdClient {
         // DAO's `request_key` accepts deposit = 0 (no `assert_one_yocto`).
         let receiver_id = signer.account_id.clone();
 
-        self.request_ckd_inner(signer, &receiver_id, "request_key", "", 0)
+        self.request_ckd_inner(signer, &receiver_id, "request_key", "")
             .await
     }
 
@@ -275,19 +275,20 @@ impl MpcCkdClient {
             "Requesting per-vault master from MPC via direct request_app_private_key call"
         );
 
-        // mpc_contract_id is already a parsed AccountId (validated at boot
-        // in `MpcCkdConfig::from_env`). No per-call parse needed.
-        let receiver_id = self.config.mpc_contract_id.clone();
+        // The vault contract proxies the MPC call: the TEE function-call
+        // key signs `vault.request_master(args)` with deposit=0 (FC keys
+        // can't attach deposit), and the vault contract's cross-contract
+        // call to MPC adds the 1 yoctoNEAR `assert_one_yocto` requires
+        // out of its own balance. MPC sees the cross-contract call's
+        // predecessor as the vault account, so per-vault `app_id`
+        // uniqueness is preserved.
+        let receiver_id = vault_signer.account_id.clone();
 
-        // MPC's `request_app_private_key` requires `assert_one_yocto()`
-        // — direct calls MUST attach exactly 1 yoctoNEAR or the receipt
-        // panics with "Attached deposit is lower than required".
         self.request_ckd_inner(
             vault_signer,
             &receiver_id,
-            "request_app_private_key",
+            "request_master",
             derivation_path,
-            1,
         )
         .await
     }
@@ -313,7 +314,6 @@ impl MpcCkdClient {
         receiver_id: &AccountId,
         method_name: &str,
         derivation_path: &str,
-        deposit: u128,
     ) -> Result<[u8; 32]> {
         // 1. Ephemeral BLS12-381 G1 keypair (one-shot per request).
         let (ephemeral_private_key, ephemeral_public_key) = self.generate_ephemeral_key();
@@ -334,7 +334,7 @@ impl MpcCkdClient {
 
         // 3. Submit tx: signer → receiver_id, calling method_name(request_args).
         let response = self
-            .call_mpc_contract(signer, receiver_id, method_name, request_args, deposit)
+            .call_mpc_contract(signer, receiver_id, method_name, request_args)
             .await?;
 
         // 4. Recompute app_id the same way MPC did — based on the SIGNER
@@ -452,7 +452,6 @@ impl MpcCkdClient {
         receiver_id: &AccountId,
         method_name: &str,
         request: CkdRequestArgs,
-        deposit: u128,
     ) -> Result<CkdResponse> {
         tracing::info!(
             signer = %signer.account_id,
@@ -520,7 +519,14 @@ impl MpcCkdClient {
                 method_name: method_name.to_string(),
                 args,
                 gas: 300_000_000_000_000, // 300 TGas
-                deposit,
+                // FC access keys can't attach deposit. Boot CKD signs as
+                // dao.outlayer.testnet (FullAccess elsewhere but no
+                // deposit needed since DAO's `request_key` doesn't
+                // assert_one_yocto). Per-vault CKD goes through the
+                // vault's own `request_master` proxy — that adds the
+                // 1 yocto MPC requires from the vault contract's
+                // balance via cross-contract `with_attached_deposit`.
+                deposit: 0,
             }))],
         };
 
