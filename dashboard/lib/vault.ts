@@ -16,35 +16,37 @@ import { PublicKey } from '@near-js/crypto';
 
 import { getCoordinatorApiUrl, type NetworkType } from './api';
 
-// ─── Base58 encoding (NEAR `Base58CryptoHash` form) ───────────────────────
+// ─── Base58 (NEAR `Base58CryptoHash` form) ───────────────────────────────
 //
-// We don't pull in `bs58` to avoid a fresh runtime dep. The dashboard
-// only encodes 32-byte sha256 digests, so a 30-line in-tree encoder is
-// fine. Standard Bitcoin alphabet, identical output to `bs58.encode`.
+// Standard Bitcoin alphabet — identical to `bs58.encode/decode` output.
+// Decoder is the only call site that matters now: the operator-supplied
+// vault code hash arrives as base58 from env and we need 32 raw bytes
+// for the `UseGlobalContract` action.
 const BASE58_ALPHABET =
   '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 
-function bs58Encode(bytes: Uint8Array): string {
-  // Count leading zeros — they encode as the alphabet's first character.
+function bs58Decode(s: string): Uint8Array {
+  const map = new Map<string, number>();
+  for (let i = 0; i < BASE58_ALPHABET.length; i++) map.set(BASE58_ALPHABET[i], i);
   let zeros = 0;
-  while (zeros < bytes.length && bytes[zeros] === 0) zeros++;
-  // Convert big-endian byte array to base58 by repeated division.
-  const digits: number[] = [];
-  for (let i = zeros; i < bytes.length; i++) {
-    let carry = bytes[i];
-    for (let j = 0; j < digits.length; j++) {
-      carry += digits[j] << 8;
-      digits[j] = carry % 58;
-      carry = (carry / 58) | 0;
+  while (zeros < s.length && s[zeros] === BASE58_ALPHABET[0]) zeros++;
+  const bytes: number[] = [];
+  for (let i = zeros; i < s.length; i++) {
+    const v = map.get(s[i]);
+    if (v === undefined) throw new Error(`bs58Decode: invalid char '${s[i]}'`);
+    let carry = v;
+    for (let j = 0; j < bytes.length; j++) {
+      carry += bytes[j] * 58;
+      bytes[j] = carry & 0xff;
+      carry >>= 8;
     }
     while (carry > 0) {
-      digits.push(carry % 58);
-      carry = (carry / 58) | 0;
+      bytes.push(carry & 0xff);
+      carry >>= 8;
     }
   }
-  let out = '';
-  for (let i = 0; i < zeros; i++) out += BASE58_ALPHABET[0];
-  for (let i = digits.length - 1; i >= 0; i--) out += BASE58_ALPHABET[digits[i]];
+  const out = new Uint8Array(zeros + bytes.length);
+  for (let i = bytes.length - 1, k = zeros; i >= 0; i--, k++) out[k] = bytes[i];
   return out;
 }
 
@@ -185,41 +187,50 @@ export function formatSeconds(secs: number): string {
   return `${secs}s`;
 }
 
-// ─── WASM bundling ────────────────────────────────────────────────────────
-
-let cachedWasm: Uint8Array | null = null;
-let cachedHashB58: string | null = null;
-let cachedHashBytes: Uint8Array | null = null;
+// ─── Vault global-contract code hash (operator-managed) ──────────────────
 
 /**
- * Fetch the bundled vault WASM (served from /vault_contract.wasm) and
- * compute its base58-sha256 hash for `is_vault_code_approved`. Cached
- * after the first call.
+ * Read the per-network vault WASM hash from env. The hash names a
+ * blob already deployed via `near contract deploy-as-global ...
+ * as-global-hash` AND already approved on the keystore-DAO whitelist
+ * — both pre-conditions are operator responsibility.
+ *
+ * We used to ship `vault_contract.wasm` (~150 KB) inside the dashboard
+ * bundle and hash it client-side, back when the deploy tx inlined the
+ * bytes via `DeployContract`. With the switch to NEP-591
+ * `UseGlobalContract { CodeHash }` only the 32-byte hash flows through
+ * the tx, so the WASM asset is dead weight on the client.
+ *
+ * Validation: bs58-decoded bytes MUST be 32; we still gate against the
+ * DAO whitelist before sending the tx, so a typo'd env wedge fails
+ * loud at deploy time, not silently.
  */
-export async function loadBundledVaultWasm(): Promise<{
-  bytes: Uint8Array;
+export function getVaultCodeHash(network: NetworkType): {
   hashB58: string;
   hashBytes: Uint8Array;
-}> {
-  if (cachedWasm && cachedHashB58 && cachedHashBytes) {
-    return {
-      bytes: cachedWasm,
-      hashB58: cachedHashB58,
-      hashBytes: cachedHashBytes,
-    };
+} {
+  const envName =
+    network === 'mainnet'
+      ? 'NEXT_PUBLIC_MAINNET_VAULT_CODE_HASH'
+      : 'NEXT_PUBLIC_TESTNET_VAULT_CODE_HASH';
+  const hashB58 =
+    network === 'mainnet'
+      ? process.env.NEXT_PUBLIC_MAINNET_VAULT_CODE_HASH
+      : process.env.NEXT_PUBLIC_TESTNET_VAULT_CODE_HASH;
+  if (!hashB58) {
+    throw new Error(
+      `${envName} is not set. Operator must publish the vault WASM as a global contract `
+        + `(\`near contract deploy-as-global ... as-global-hash\`), get the hash approved on `
+        + `the keystore-DAO whitelist, and put the base58 hash in this env var.`,
+    );
   }
-  const resp = await fetch('/vault_contract.wasm');
-  if (!resp.ok) {
-    throw new Error(`failed to fetch /vault_contract.wasm: ${resp.status}`);
+  const hashBytes = bs58Decode(hashB58);
+  if (hashBytes.length !== 32) {
+    throw new Error(
+      `${envName}='${hashB58}' decoded to ${hashBytes.length} bytes; expected 32 (sha256).`,
+    );
   }
-  const buf = new Uint8Array(await resp.arrayBuffer());
-  const digestBuf = await crypto.subtle.digest('SHA-256', buf);
-  const hashBytes = new Uint8Array(digestBuf);
-  const hash = bs58Encode(hashBytes);
-  cachedWasm = buf;
-  cachedHashB58 = hash;
-  cachedHashBytes = hashBytes;
-  return { bytes: buf, hashB58: hash, hashBytes };
+  return { hashB58, hashBytes };
 }
 
 // ─── View calls (RPC) ─────────────────────────────────────────────────────
@@ -302,9 +313,17 @@ export async function viewAccountInfo(
     }
     throw new Error(`view_account('${accountId}') failed: ${msg}`);
   }
+  // NEP-591: accounts deployed via UseGlobalContract leave `code_hash`
+  // at the all-zeros sentinel and store the real WASM hash in
+  // `global_contract_hash`. Surface either as the same opaque string
+  // so the DAO whitelist check works for both deploy shapes.
+  const inline: string = data.result.code_hash;
+  const global: string | undefined = data.result.global_contract_hash;
+  const NO_CODE_LOCAL = '11111111111111111111111111111111';
+  const codeHash = inline && inline !== NO_CODE_LOCAL ? inline : (global || inline || '');
   return {
     exists: true,
-    codeHash: data.result.code_hash,
+    codeHash,
     amountYocto: data.result.amount,
   };
 }

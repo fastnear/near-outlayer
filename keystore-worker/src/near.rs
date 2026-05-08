@@ -50,6 +50,10 @@ pub struct SecretWithVault {
 pub struct NearClient {
     /// JSON-RPC client
     rpc_client: JsonRpcClient,
+    /// Raw RPC URL — kept around for handcrafted JSON-RPC calls that
+    /// the typed `near-primitives 0.26` bindings can't decode (NEP-591
+    /// global-contract account fields).
+    rpc_url: String,
     /// Contract account ID
     contract_id: AccountId,
 }
@@ -66,6 +70,7 @@ impl NearClient {
 
         Ok(Self {
             rpc_client,
+            rpc_url: rpc_url.to_string(),
             contract_id,
         })
     }
@@ -489,37 +494,79 @@ impl NearClient {
         Ok(SecretWithVault { profile, vault_id })
     }
 
-    /// Fetch the `code_hash` of an account.
+    /// Fetch the contract hash of an account.
     ///
-    /// Returns the base58-encoded hash. Empty string is mapped to None
-    /// for the NEAR sentinel `11111111111111111111111111111111` (which
-    /// the runtime returns when an account has no contract deployed).
+    /// Returns the base58-encoded sha256 of the WASM code the account
+    /// will execute, regardless of whether the bytes were deployed
+    /// inline (`DeployContract`) or referenced from on-chain storage
+    /// (NEP-591 `UseGlobalContract`). For inline deploys the value
+    /// comes from `code_hash`; for global-contract deploys NEAR leaves
+    /// `code_hash` at the all-zeros sentinel
+    /// (`11111111111111111111111111111111`) and stores the real hash
+    /// in `global_contract_hash`. We surface both as the same opaque
+    /// string so the DAO whitelist (which keys on the WASM hash) can
+    /// validate either deploy shape.
+    ///
+    /// Returns `None` when the account has neither — typically a
+    /// not-deployed account.
+    ///
+    /// Implementation note: `near-primitives 0.26` predates NEP-591, so
+    /// its `AccountView` doesn't carry the `global_contract_hash` field.
+    /// We hit JSON-RPC directly with `reqwest` and parse both fields
+    /// from the raw response instead of bumping the toolchain just for
+    /// this one read.
     pub async fn view_account_code_hash(
         &self,
         account_id: &AccountId,
     ) -> Result<Option<String>> {
-        let query = methods::query::RpcQueryRequest {
-            block_reference: BlockReference::latest(),
-            request: near_primitives::views::QueryRequest::ViewAccount {
-                account_id: account_id.clone(),
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": "view_account",
+            "method": "query",
+            "params": {
+                "request_type": "view_account",
+                "finality": "final",
+                "account_id": account_id.as_str(),
             },
-        };
-        let response = self
-            .rpc_client
-            .call(query)
+        });
+        let resp: serde_json::Value = reqwest::Client::new()
+            .post(&self.rpc_url)
+            .json(&body)
+            .send()
             .await
-            .with_context(|| format!("view_account({account_id})"))?;
+            .with_context(|| format!("view_account({account_id}): RPC POST failed"))?
+            .json()
+            .await
+            .with_context(|| format!("view_account({account_id}): RPC body not JSON"))?;
 
-        let view = match response.kind {
-            QueryResponseKind::ViewAccount(v) => v,
-            _ => anyhow::bail!("Unexpected response kind for view_account"),
+        if let Some(err) = resp.get("error") {
+            anyhow::bail!("view_account({account_id}) RPC error: {err}");
+        }
+
+        let result = resp
+            .get("result")
+            .with_context(|| format!("view_account({account_id}): no result field"))?;
+
+        let inline = result
+            .get("code_hash")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let global = result
+            .get("global_contract_hash")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+
+        // Inline DeployContract → code_hash holds the real WASM hash.
+        // UseGlobalContract → code_hash is the all-zeros sentinel, the
+        //                     real hash is in global_contract_hash.
+        let chosen = match (inline.as_deref(), global) {
+            (Some(s), Some(g)) if s == "11111111111111111111111111111111" => Some(g),
+            (Some(s), _) if s == "11111111111111111111111111111111" => None,
+            (Some(s), _) => Some(s.to_string()),
+            (None, g) => g,
         };
-        let s = view.code_hash.to_string();
-        Ok(if s == "11111111111111111111111111111111" {
-            None
-        } else {
-            Some(s)
-        })
+
+        Ok(chosen)
     }
 
     /// Fetch the typed access-key list for an account.

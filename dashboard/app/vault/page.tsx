@@ -11,9 +11,9 @@ import {
   customerRegister,
   deriveVaultTeeKey,
   formatSeconds,
+  getVaultCodeHash,
   getVaultNetworkConfig,
   isVaultCodeApproved,
-  loadBundledVaultWasm,
   nsToDate,
   parseExitWindow,
   signVaultVerification,
@@ -167,12 +167,12 @@ deploy requires at least ${(Number(VAULT_PARENT_BUDGET_YOCTO) / 1e24).toFixed(2)
 
       // 1. Bundle WASM hash + verify code-hash whitelist.
       setBusy('Verifying vault code-hash whitelist…');
-      const { hashB58, hashBytes } = await loadBundledVaultWasm();
+      const { hashB58, hashBytes } = getVaultCodeHash(network);
       const approved = await isVaultCodeApproved(viewMethod, network, hashB58);
       if (!approved) {
         throw new Error(
-          `Bundled vault WASM (sha256 base58 = ${hashB58}) is NOT approved on \
-${network}. The dashboard build is out of sync with the keystore-DAO whitelist.`,
+          `Vault code hash ${hashB58} (from env) is NOT approved on ${network}. `
+          + `The operator either pushed a stale env var or hasn't yet approved this hash on the keystore-DAO.`,
         );
       }
 

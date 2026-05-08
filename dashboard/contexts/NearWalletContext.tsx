@@ -150,6 +150,12 @@ export function NearWalletProvider({ children }: { children: ReactNode }) {
       connector = new NearConnector({
         network: network,
         autoConnect: false,
+        // Meteor and Trezu ship a bundled @near-js that predates the
+        // UseGlobalContract action — their signers reject the vault
+        // deploy tx with a cryptic "Invalid action type". Hiding them
+        // up front is more honest than letting the user pick a broken
+        // option and then erroring after the wallet UI opens.
+        excludedWallets: ['meteor-wallet', 'trezu-wallet'],
         ...(manifestObj ? { manifest: manifestObj } : {}),
       });
 
@@ -223,6 +229,26 @@ export function NearWalletProvider({ children }: { children: ReactNode }) {
     const connector = connectorRef.current;
     if (!connector) throw new Error('Wallet not initialized');
     const wallet = await connector.wallet();
+
+    // Some wallets ship an @near-js old enough to predate the
+    // UseGlobalContract action — their signer rejects the tx with a
+    // cryptic "Invalid action type". Detect that here and surface a
+    // useful message instead. List grows from observed failures, not
+    // from speculation.
+    const usesGlobalContract = Array.isArray(params?.actions)
+      && params.actions.some((a: any) => a?.useGlobalContract != null);
+    if (usesGlobalContract) {
+      const walletId = wallet?.manifest?.id ?? '';
+      const INCOMPATIBLE = new Set(['meteor-wallet', 'trezu-wallet']);
+      if (INCOMPATIBLE.has(walletId)) {
+        throw new Error(
+          `${wallet.manifest.name} cannot sign vault deploys yet — its bundled `
+          + `@near-js predates the UseGlobalContract action. Reconnect with `
+          + `MyNearWallet, HOT, or Intear and retry.`,
+        );
+      }
+    }
+
     return await wallet.signAndSendTransaction(params);
   }, []);
 
