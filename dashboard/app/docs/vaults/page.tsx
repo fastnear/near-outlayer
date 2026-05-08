@@ -4,55 +4,206 @@ import Link from 'next/link';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { AnchorHeading, useHashNavigation } from '../sections/utils';
+import { VaultArchitectureDiagram } from '@/components/VaultArchitectureDiagram';
 
 export default function VaultsDocsPage() {
   useHashNavigation();
 
   return (
     <div className="max-w-5xl">
-      <h1 className="text-4xl font-bold mb-3">Sovereign Vaults</h1>
-      <p className="text-gray-600 mb-8">
-        Per-customer master keys with on-chain recoverability. Wallet keys and
-        secrets bound to a vault stay derivable by you even if OutLayer
-        ceases — the only access key on the vault is a TEE function-call key
-        scoped to the MPC contract, plus a contract-level recovery path that
-        gives you back control under two trigger conditions: catastrophic
-        cessation of OutLayer, or your own voluntary exit.
+      <h1 className="text-4xl font-bold mb-3">MPC Vaults</h1>
+
+      {/* ── 0. Quick CKD primer ──────────────────────────────────────── */}
+      <div className="bg-blue-50 border-l-4 border-blue-500 p-4 mb-6 text-sm">
+        <p className="font-semibold text-blue-900 mb-1">
+          First, how OutLayer key custody works
+        </p>
+        <p className="text-gray-800 mb-2">
+          Every wallet key, every secret-encryption key, every payment-check
+          ephemeral on OutLayer is <strong>not stored anywhere</strong>. It is
+          derived on demand inside the keystore worker&rsquo;s TEE from a
+          single 32-byte master. The master itself is also not stored on
+          disk &mdash; on every keystore start it is requested from{' '}
+          <strong>NEAR&rsquo;s MPC network</strong> via a primitive called{' '}
+          <strong>CKD</strong> (Conditional Key Derivation): threshold-key
+          holders in the MPC network jointly hand back the master for a
+          given on-chain identifier, deterministically, without any single
+          MPC node ever assembling the secret.
+        </p>
+        <p className="text-gray-700 mb-0">
+          See <Link href="/docs/agent-custody" className="text-blue-700 underline">Agent Custody</Link>{' '}
+          and <Link href="/docs/secrets" className="text-blue-700 underline">Secrets</Link> for
+          how derived keys are used per-feature; the rest of this page
+          focuses on <strong>whose</strong> master it is.
+        </p>
+      </div>
+
+      <p className="text-gray-700 mb-3">
+        By default the master is <strong>bound to OutLayer&rsquo;s
+        keystore-DAO contract</strong>. The keystore TEE asks NEAR MPC
+        for that master, derives every customer&rsquo;s keys from it
+        inside the enclave, and never persists it. Nobody manages or
+        holds the master directly: it is reproduced from MPC on every
+        keystore restart, lives only in TEE memory, and the DAO contract
+        enforces hardware-attestation verification before MPC releases
+        the bytes &mdash; so even OutLayer operators cannot request it
+        outside an attested keystore.
+      </p>
+      <p className="text-gray-700 mb-3">
+        An <strong>MPC vault</strong> swaps that DAO-bound root for a
+        master <strong>bound to a contract you deploy</strong> on a
+        sub-account of your NEAR account. Same CKD primitive, same
+        keystore, same TEE flow &mdash; but the binding moves to your
+        vault, so only code that controls the vault account can ever
+        ask MPC for that master.
+      </p>
+      <p className="text-gray-700 mb-3">
+        The vault contract&rsquo;s only access key is a TEE function-call
+        key scoped to a single proxy method that calls NEAR MPC&rsquo;s{' '}
+        <code>request_app_private_key</code>. As long as that key is in
+        place, OutLayer&rsquo;s TEE is the only party that can ask MPC
+        for your master.
       </p>
 
-      {/* ── 1. What & when ─────────────────────────────────────────── */}
+      {/* ── 0b. Interactive architecture diagram ─────────────────────── */}
+      <VaultArchitectureDiagram />
+
+      {/* ── 0c. Side-by-side comparison table ────────────────────────── */}
+      <div className="border border-gray-200 rounded-lg overflow-hidden mb-6">
+        <table className="w-full text-sm">
+          <thead className="bg-gray-100">
+            <tr>
+              <th className="text-left px-3 py-2 font-semibold w-1/4">Aspect</th>
+              <th className="text-left px-3 py-2 font-semibold">Default (OutLayer master)</th>
+              <th className="text-left px-3 py-2 font-semibold bg-blue-50">MPC vault (yours)</th>
+            </tr>
+          </thead>
+          <tbody className="text-gray-700">
+            <tr className="border-t border-gray-200">
+              <td className="px-3 py-2 font-medium align-top">Master bound to</td>
+              <td className="px-3 py-2 align-top">OutLayer&rsquo;s keystore-DAO contract</td>
+              <td className="px-3 py-2 align-top bg-blue-50/50">
+                Your vault contract
+              </td>
+            </tr>
+            <tr className="border-t border-gray-200">
+              <td className="px-3 py-2 font-medium align-top">Runtime that holds master</td>
+              <td className="px-3 py-2 align-top">OutLayer keystore TEE only</td>
+              <td className="px-3 py-2 align-top bg-blue-50/50">
+                <strong>Swappable</strong>: OutLayer TEE today, your own attested runtime after recovery
+              </td>
+            </tr>
+            <tr className="border-t border-gray-200">
+              <td className="px-3 py-2 font-medium align-top">Takeover path</td>
+              <td className="px-3 py-2 align-top">None &mdash; you depend on OutLayer continuing to serve</td>
+              <td className="px-3 py-2 align-top bg-blue-50/50">
+                Cessation recovery (DAO declares <code>is_ceased</code>) <em>or</em> unilateral exit (parent-only, configurable window)
+              </td>
+            </tr>
+            <tr className="border-t border-gray-200">
+              <td className="px-3 py-2 font-medium align-top">After takeover</td>
+              <td className="px-3 py-2 align-top">&mdash;</td>
+              <td className="px-3 py-2 align-top bg-blue-50/50">
+                Your runtime calls NEAR MPC from the vault account &rArr; same 32 bytes &rArr; same derived keys
+              </td>
+            </tr>
+            <tr className="border-t border-gray-200">
+              <td className="px-3 py-2 font-medium align-top">One-time cost</td>
+              <td className="px-3 py-2 align-top">$0</td>
+              <td className="px-3 py-2 align-top bg-blue-50/50">~0.1 NEAR (storage stake + MPC gas reserve)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div className="border-l-4 border-blue-500 bg-blue-50 p-4 mb-6">
+        <h4 className="font-semibold mb-2 text-blue-900">Two modes &mdash; one-way switch</h4>
+        <p className="text-sm text-gray-800 mb-2">
+          Once your vault is deployed you choose how to operate it. You
+          can change modes later, but it&rsquo;s a one-way move:
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+          <div className="bg-white border border-gray-200 rounded p-3">
+            <div className="font-semibold mb-1">A. OutLayer-managed (default)</div>
+            <p className="text-gray-700 mb-1">
+              OutLayer&rsquo;s TEE holds the FC key, derives the master via
+              MPC CKD, and runs your agents on its infrastructure. You keep
+              full sovereignty (parent account + recovery path), but the
+              keystore TEE is what does the actual key derivation and
+              decryption.
+            </p>
+          </div>
+          <div className="bg-white border border-gray-200 rounded p-3">
+            <div className="font-semibold mb-1">B. Self-managed (you take over)</div>
+            <p className="text-gray-700 mb-1">
+              You initiate recovery (cessation or unilateral exit), the
+              vault becomes <code>unlocked</code>, OutLayer&rsquo;s
+              keystore refuses to serve it. You add a FullAccess key and
+              run the same MPC derivation yourself &mdash; from your own
+              TEE, your own attested runtime, or by hand. Every derived
+              key is regenerable from the same master.
+            </p>
+          </div>
+        </div>
+        <p className="text-sm text-gray-700 mt-3">
+          <strong>One-way:</strong> once a vault is unlocked,
+          OutLayer&rsquo;s keystore won&rsquo;t serve it again. You
+          can&rsquo;t come back to mode A &mdash; the FC-key + MPC-CKD
+          binding only holds while the contract&rsquo;s
+          <code> unlocked = false</code>. To use OutLayer with a fresh
+          managed vault you would deploy a new vault on a new sub-account.
+        </p>
+      </div>
+
+      <div className="border border-gray-200 rounded-lg p-4 mb-6 bg-gray-50">
+        <h4 className="font-semibold mb-2">What is &ldquo;CKD&rdquo;?</h4>
+        <p className="text-sm text-gray-700 mb-2">
+          <strong>Conditional Key Derivation</strong> is a primitive of
+          NEAR&rsquo;s MPC service. Threshold-key holders in the MPC
+          network jointly derive a private key for a given on-chain
+          identifier, deterministically, without ever assembling the
+          secret on any single node. The resulting key is unique to the
+          contract that requested it; another contract asking for the
+          same path gets a completely different key.
+        </p>
+        <p className="text-sm text-gray-700 mb-0">
+          For an MPC vault, the requesting contract is the vault
+          itself. The TEE keystore calls{' '}
+          <code>request_app_private_key</code> through the vault&rsquo;s
+          proxy method; NEAR MPC returns 32 bytes that become your
+          per-customer master inside the enclave. Same inputs &rArr;
+          same master, deterministically &mdash; so you can reproduce
+          it later by querying the same MPC network from the vault
+          account, even if OutLayer is gone.
+        </p>
+      </div>
+
+      {/* ── 1. When to use ─────────────────────────────────────────── */}
       <section className="mb-10">
-        <AnchorHeading id="overview">What are vaults &amp; when to use them</AnchorHeading>
-        <p className="mb-3">
-          By default, all wallet keys and encrypted secrets on OutLayer are
-          derived from a shared <strong>OutLayer master</strong> held inside
-          the keystore worker&rsquo;s TEE. Convenient: zero customer setup,
-          shared infrastructure cost. The trust model is &ldquo;OutLayer is
-          honest&rdquo; — if OutLayer disappears, so do your derived keys.
-        </p>
-        <p className="mb-3">
-          A <strong>vault</strong> replaces that shared master with one
-          that is derived per-customer via MPC and recoverable by you.
-          You deploy a tiny smart contract on a sub-account of your NEAR
-          account; the keystore worker derives a master keyed on
-          <code> (TEE secret, your vault id) </code>and burns the
-          mapping into the vault&rsquo;s on-chain record. From then on,
-          every wallet key and encrypted secret you bind to that vault
-          is derivable from <em>your</em> sub-account, not OutLayer&rsquo;s
-          shared infrastructure.
-        </p>
+        <AnchorHeading id="overview">When to use a vault</AnchorHeading>
         <div className="border border-gray-200 rounded-lg p-4 mb-3">
           <h4 className="font-semibold mb-2">Trade-offs</h4>
           <ul className="list-disc list-inside text-sm text-gray-700 space-y-1">
-            <li><strong>Default master:</strong> simpler, no setup, no on-chain footprint. Wallet keys / secrets are gone if OutLayer ceases.</li>
-            <li><strong>Per-customer vault:</strong> recoverable through DAO cessation or unilateral exit. Costs ~2.5 NEAR storage stake one-time + a small recurring gas reserve, and adds one atomic transaction at setup.</li>
+            <li>
+              <strong>Default master:</strong> shared keystore-DAO root, zero
+              customer setup, no on-chain footprint. Best for prototyping
+              and low-value automation. You rely on OutLayer&rsquo;s
+              keystore as the only path to your derived keys.
+            </li>
+            <li>
+              <strong>Per-customer MPC vault:</strong> on-chain CKD-issuer
+              contract bound to your account. ~0.1 NEAR one-time
+              (storage stake + gas reserve for outbound MPC calls) thanks
+              to <code>UseGlobalContract</code>; one atomic tx at setup.
+              You can later take the vault over yourself via NEAR MPC and
+              keep deriving every key independently of OutLayer.
+            </li>
           </ul>
         </div>
         <p className="text-sm text-gray-600">
           Use a vault if your application&rsquo;s value-at-risk justifies
           the extra setup, or if your governance / audit requirements
-          mandate sovereign control over derived keys. Stay on the
-          default master for prototyping or low-value automation.
+          mandate independent control over derived keys.
         </p>
       </section>
 
@@ -88,7 +239,7 @@ outlayer vault init --name treasury --exit-window 7d`}
         <ol className="list-decimal list-inside text-sm space-y-1 mb-4">
           <li>CLI/dashboard probes <code>is_vault_code_approved(hash)</code> on keystore-DAO so you don&rsquo;t pay gas to deploy a deprecated WASM.</li>
           <li>Coordinator returns the deterministic TEE function-call public key for your vault id (HMAC-derived inside the TEE).</li>
-          <li>One transaction, five actions: <code>CreateAccount</code>{' + '}<code>Transfer 2.5 NEAR</code>{' + '}<code>DeployContract</code>{' + '}<code>new(parent, keystore_dao, mpc_contract, exit_window)</code>{' + '}<code>AddKey(tee_pubkey, FCAK on mpc_contract.request_app_private_key)</code>.</li>
+          <li>One transaction, five actions: <code>CreateAccount</code>{' + '}<code>Transfer 0.1 NEAR</code>{' + '}<code>UseGlobalContract(code_hash)</code>{' + '}<code>new(parent, keystore_dao, mpc_contract, exit_window)</code>{' + '}<code>AddKey(tee_pubkey, FCAK on vault.request_master)</code>.</li>
           <li>Coordinator triggers keystore re-verification — keystore-worker independently re-runs five RPC checks and signs <code>mark_vault_verified</code> on chain.</li>
           <li>Coordinator binds an API key to the verified vault and returns it.</li>
         </ol>
@@ -282,11 +433,14 @@ outlayer vault unlocked-add-key              vault.alice.near ed25519:...`}
         <AnchorHeading id="ops">Operational considerations</AnchorHeading>
         <ul className="list-disc list-inside text-sm space-y-2">
           <li>
-            <strong>One-time cost:</strong> ~2.5 NEAR transferred to the
-            new vault account (1.5 NEAR storage stake + ~1 NEAR gas
-            reserve for outbound MPC calls). Top up the vault with
-            additional NEAR if its gas reserve gets depleted by
-            high-frequency derivations.
+            <strong>One-time cost:</strong> ~0.1 NEAR transferred to the
+            new vault account. With <code>UseGlobalContract</code> the
+            WASM lives in the global registry, so storage stake is just
+            the contract state (~0.004 NEAR). The remaining ~0.1 NEAR
+            covers the gas reserve for outbound MPC calls
+            (<code>vault.request_master → mpc.request_app_private_key</code>,
+            ~0.001 NEAR/call, master is cached afterwards). Top up if
+            you ever exhaust the reserve.
           </li>
           <li>
             <strong>Race-attack protection:</strong> a malicious customer

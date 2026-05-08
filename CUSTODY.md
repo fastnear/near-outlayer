@@ -456,10 +456,10 @@ routes derivations through the per-vault master.
 Customer → outlayer vault init  (or dashboard /vault page)
     Atomic NEAR tx (5 actions, all-or-nothing):
         CreateAccount(vault.<customer.near>)
-        Transfer(2.5 NEAR)
-        DeployContract(approved_vault_wasm)
+        Transfer(0.1 NEAR)               // storage stake + MPC-call gas reserve
+        UseGlobalContract(approved_code_hash)
         FunctionCall("new", {parent, keystore_dao, mpc_contract, exit_window})
-        AddKey(tee_pubkey, FCAK on mpc_contract.request_app_private_key)
+        AddKey(tee_pubkey, FCAK on vault.request_master)
     POST /customer/sign-verification → keystore re-verifies + signs
                                        mark_vault_verified on chain
     POST /customer/register {vault_id, webhook_url?}

@@ -377,11 +377,47 @@ contact OutLayer support to rotate the API key — no funds at risk.`,
   // ── Render ────────────────────────────────────────────────────────────
   return (
     <div className="container mx-auto p-6 max-w-5xl">
-      <h1 className="text-3xl font-bold mb-2">Sovereign Vaults</h1>
-      <p className="text-gray-600 mb-6">
-        Per-customer master keys with recoverability. Wallet keys + secrets bound
-        to a vault stay derivable by you even if OutLayer ceases.
+      <h1 className="text-3xl font-bold mb-2">MPC Vaults</h1>
+      <p className="text-gray-700 mb-2">
+        Deploy a CKD-issuer contract bound to your NEAR account. OutLayer&apos;s
+        keystore TEE derives your per-customer master <em>inside the enclave</em>
+        via NEAR&apos;s MPC network; from that master it generates keys for
+        your agents&apos; wallets, encrypted secrets, and payment checks on
+        demand &mdash; all without anyone seeing the raw master.
       </p>
+      <p className="text-gray-700 mb-2">
+        You either let OutLayer&apos;s TEE manage this vault, or later take it
+        over yourself (run it from your own TEE / runtime, or use the master
+        manually). It&apos;s a one-way switch: once you take over, OutLayer
+        stops serving this vault &mdash; but you keep every derived key,
+        because the same MPC path reproduces the same master.
+      </p>
+      <details className="mb-6 text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded p-3">
+        <summary className="cursor-pointer font-medium text-gray-800">
+          What is CKD?
+        </summary>
+        <div className="mt-2 space-y-2">
+          <p>
+            <strong>Conditional Key Derivation</strong> is a NEAR MPC primitive.
+            The MPC network&apos;s threshold-key holders jointly derive a
+            private key for a given <em>app id</em> &mdash; deterministically,
+            without any single node ever assembling the secret. The key is
+            unique to the predecessor account that requested it.
+          </p>
+          <p>
+            Here, the predecessor is your vault contract and the app id is
+            an HMAC of <code>vault-master:{'<your_vault_id>'}</code>. The
+            keystore TEE asks NEAR MPC for the 32 bytes; same inputs &rArr;
+            same master, every time. From that master, all your wallet keys
+            and secret-encryption keys are HKDF-derived inside the enclave.
+            Detaching from OutLayer = you query the same MPC path from the
+            vault account and get the same master back.{' '}
+            <a className="text-blue-600 hover:underline" href="/docs/vaults">
+              Full explanation
+            </a>.
+          </p>
+        </div>
+      </details>
 
       {!isConnected && (
         <div className="bg-yellow-50 border border-yellow-300 rounded p-4 mb-6">
@@ -412,36 +448,7 @@ contact OutLayer support to rotate the API key — no funds at risk.`,
       )}
 
       {issuedApiKey && (
-        <div className="bg-amber-50 border-2 border-amber-500 rounded p-4 mb-6">
-          <h3 className="font-bold text-amber-900 mb-2">
-            ⚠ API Key — store now, shown ONCE
-          </h3>
-          <div className="text-xs text-gray-700 mb-2">
-            Vault: <code>{issuedApiKey.vault}</code>
-            <br />
-            NEAR address: <code>{issuedApiKey.nearAccountId}</code>
-          </div>
-          <div className="flex gap-2 items-stretch">
-            <code className="flex-1 bg-gray-900 text-green-200 p-2 rounded break-all text-xs">
-              {issuedApiKey.apiKey}
-            </code>
-            <button
-              onClick={() => {
-                navigator.clipboard
-                  .writeText(issuedApiKey.apiKey)
-                  .then(() => setSuccess('API key copied to clipboard.'))
-                  .catch(() => setError('Could not access clipboard — copy manually.'));
-              }}
-              className="px-3 py-1 bg-amber-600 text-white rounded text-xs hover:bg-amber-700"
-              title="Copy API key to clipboard"
-            >
-              Copy
-            </button>
-          </div>
-          <p className="text-xs text-gray-600 mt-2">
-            This key is NOT recoverable. If lost, you must revoke + re-register.
-          </p>
-        </div>
+        <IssuedVaultPanel data={issuedApiKey} />
       )}
 
       {/* ── Create vault ─────────────────────────────────────────────── */}
@@ -541,6 +548,57 @@ contact OutLayer support to rotate the API key — no funds at risk.`,
         isOpen={showWalletModal}
         onClose={() => setShowWalletModal(false)}
       />
+    </div>
+  );
+}
+
+// ─── Issued vault panel ────────────────────────────────────────────────────
+//
+// Shown right after a successful CKD-issuer (a.k.a. "vault") deploy.
+// The contract itself is just an on-chain admin/governance container
+// that binds a per-customer master inside the keystore TEE via MPC CKD.
+// From that master OutLayer derives an unbounded family of keypairs on
+// demand (`wallet:{wallet_id}:near`, `wallet:{wallet_id}:eth`,
+// `check:{counter}`, `vault-master:...`, etc.). Treating any individual
+// derivation as "the wallet" is misleading — there is no canonical
+// wallet, the keystore mints whichever address the current call needs.
+//
+// We do NOT show:
+//   - the `wk_...` trial token from `/customer/register` — coordinator
+//     trial-quota artifact, irrelevant to vault sovereignty;
+//   - the `wallet:{wallet_id}:near` derivation — happens to exist
+//     because /customer/register asks for it, but it's just one of many
+//     possible derivations and the user has no reason to deposit funds
+//     there as if it were an account.
+//
+// What matters is the contract account and its recoverability.
+function IssuedVaultPanel({
+  data,
+}: {
+  data: { vault: string };
+}) {
+  return (
+    <div className="bg-green-50 border-2 border-green-600 rounded p-4 mb-6">
+      <h3 className="font-bold text-green-900 mb-2">
+        ✓ Custody contract deployed and verified
+      </h3>
+      <div className="text-sm text-gray-800 space-y-2">
+        <div>
+          <code className="block bg-white px-2 py-1 rounded text-xs break-all">{data.vault}</code>
+        </div>
+        <div className="text-xs text-gray-700">
+          On-chain CKD issuer. Binds your per-customer master inside the
+          keystore TEE (via MPC CKD) so OutLayer can derive keys for your
+          agents, secrets, and payment checks on demand. No funds live on
+          this contract — it's a governance/recovery root.
+        </div>
+        <div className="text-xs text-gray-700">
+          If OutLayer stops serving, the parent account regains control via{' '}
+          <code>initiate_unilateral_recovery</code> →{' '}
+          <code>finalize_recovery</code>, and the per-customer master is
+          recoverable via the <code>customer-recovery</code> script.
+        </div>
+      </div>
     </div>
   );
 }

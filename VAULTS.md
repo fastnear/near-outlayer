@@ -52,12 +52,12 @@ either all succeed or all roll back:
 receiver = vault.<customer.near>
 actions  = [
     CreateAccount,
-    Transfer(2.5 NEAR),                                 // storage stake + gas reserve
-    DeployContract(approved_vault_wasm),
+    Transfer(0.1 NEAR),                                 // storage stake (~0.004) + MPC-call gas reserve
+    UseGlobalContract(approved_code_hash),              // NEP-591 — WASM lives in global registry, not on-account
     FunctionCall("new", {parent, keystore_dao,
                          mpc_contract, initial_exit_window}),
     AddKey(tee_function_call_key,
-           FCAK on mpc_contract.request_app_private_key,
+           FCAK on vault.request_master,
            allowance: Unlimited),
 ]
 ```
@@ -315,11 +315,15 @@ after execution starts a fresh proposal.
 
 ## Operational considerations
 
-- **One-time cost:** ~2.5 NEAR transferred to the vault account at
-  deploy time. ~1.5 NEAR is permanent storage stake (covers a
-  ~150 KB WASM + ~100 bytes of state); ~1 NEAR is gas reserve for
-  the vault's outbound MPC `request_app_private_key` calls. Top up
-  the vault if its balance drifts low.
+- **One-time cost:** ~0.1 NEAR transferred to the vault account at
+  deploy time. With NEP-591 `UseGlobalContract` the WASM bytes live
+  in the global registry, so storage stake collapses to the contract
+  state (~0.004 NEAR for 391 bytes — three `AccountId`s, flags,
+  empty `registered_tee_keys`). The remainder is gas reserve for
+  outbound `vault.request_master → mpc.request_app_private_key`
+  (~0.001 NEAR/call; the master is cached in keystore-worker enclave
+  memory after the first call, so most vaults trigger MPC only a
+  handful of times). Top up if you ever exhaust the reserve.
 - **TEE key cap:** `Vault::MAX_REGISTERED_TEE_KEYS = 32`. Bricking
   this through griefing requires 32 distinct DAO-approved keystore
   pubkeys (each call costs the attacker gas and adds only

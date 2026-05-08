@@ -132,12 +132,27 @@ export interface AccessKeyEntry {
 /**
  * Initial NEAR transferred to the vault account at deploy.
  *
- * Storage stake on NEAR is 1e19 yocto/byte; the vault WASM is ~150 KB
- * → ~1.5 NEAR for storage alone. 2.5 NEAR leaves ~1 NEAR headroom for
- * the gas reserve consumed by outbound MPC `request_app_private_key`
- * calls. Matches `outlayer-cli/src/commands/vault.rs::VAULT_INITIAL_NEAR`.
+ * With NEP-591 `UseGlobalContract` the WASM bytes (~150 KB) live in
+ * the global registry, not on this account, so storage stake collapses
+ * from ~1.5 NEAR to whatever the contract STATE plus access keys take.
+ * Measured on-chain after a fresh deploy: `storage_usage = 391 bytes`
+ * (three `AccountId`s, flags, empty `registered_tee_keys` Vec) →
+ * ~0.004 NEAR storage stake.
+ *
+ * Outbound `vault.request_master → mpc.request_app_private_key` costs
+ * ~0.001 NEAR/call (gas burn; the deposit is 1 yocto). The master is
+ * cached in keystore-worker enclave memory after the first call, so a
+ * vault typically only triggers MPC a handful of times in its
+ * lifetime (initial customer use + occasional keystore restarts).
+ *
+ * 0.1 NEAR ≈ 0.004 storage + ~100 MPC-calls headroom with 10× safety
+ * margin on storage growth (registered_tee_keys, recovery state).
+ * High-frequency derivers can top up; the parent account budget check
+ * is enforced before deploy so the user can't get stuck mid-flow.
+ *
+ * Must match `outlayer-cli/src/commands/vault.rs::VAULT_INITIAL_NEAR`.
  */
-export const VAULT_INITIAL_YOCTO = BigInt('2500000000000000000000000'); // 2.5 NEAR
+export const VAULT_INITIAL_YOCTO = BigInt('100000000000000000000000'); // 0.1 NEAR
 
 /** Conservative parent-balance check: initial transfer + 0.1 NEAR gas headroom. */
 export const VAULT_PARENT_BUDGET_YOCTO =

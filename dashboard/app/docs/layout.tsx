@@ -533,7 +533,7 @@ export default function DocsLayout({
                 )}
               </div>
 
-              {/* Sovereign Vaults */}
+              {/* MPC Vaults */}
               <div>
                 <Link
                   href="/docs/vaults"
@@ -549,7 +549,7 @@ export default function DocsLayout({
                     }
                   }}
                 >
-                  <span>Sovereign Vaults</span>
+                  <span>MPC Vaults</span>
                   {pageStructure['/docs/vaults'] && (
                     <svg className={`w-4 h-4 transition-transform ${expandedPages['/docs/vaults'] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
