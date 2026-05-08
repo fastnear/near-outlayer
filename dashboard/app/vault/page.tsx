@@ -561,6 +561,11 @@ function VaultDetailPanel(props: {
   const [newWindow, setNewWindow] = useState('24h');
   const [newPubkey, setNewPubkey] = useState('');
   const [newKeyFullAccess, setNewKeyFullAccess] = useState(false);
+  // Recovery / parent-only admin controls live behind a toggle so the
+  // happy path doesn't open with three orange "Initiate recovery"
+  // buttons screaming at the user. The state itself stays visible
+  // above; only the action buttons are hidden by default.
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   if (!report.exists) {
     return (
@@ -630,8 +635,22 @@ function VaultDetailPanel(props: {
               <td>{formatSeconds(s.unilateral_exit_window_secs)}</td>
             </tr>
             <tr>
-              <td className="text-gray-500 pr-3">Registered TEE keys</td>
-              <td>{s.registered_tee_keys.length}</td>
+              <td
+                className="text-gray-500 pr-3"
+                title="Informational rotation registry inside the contract.
+The authoritative list is the account's access keys (see vault-checker).
+Atomic deploy adds the FC access key at the account level only — this Vec
+fills up later if/when someone calls propose_tee_key for explicit rotation
+tracking."
+              >
+                Registered TEE keys (registry)
+              </td>
+              <td>
+                {s.registered_tee_keys.length}
+                {s.registered_tee_keys.length === 0 && report.safe && (
+                  <span className="text-gray-400"> — informational; active TEE access key is on the account</span>
+                )}
+              </td>
             </tr>
             {s.recovery && (
               <tr>
@@ -646,84 +665,95 @@ function VaultDetailPanel(props: {
         </table>
       )}
 
-      <div className="flex flex-wrap gap-2 mb-3">
-        <button
-          onClick={props.onInitiateRecovery}
-          disabled={disabled || !!s?.unlocked || !!s?.recovery}
-          className="px-3 py-1 bg-orange-600 text-white rounded text-xs hover:bg-orange-700 disabled:bg-gray-400"
-          title="Cessation-triggered (DAO must have declared cessation)"
-        >
-          Initiate cessation recovery
-        </button>
-        <button
-          onClick={props.onInitiateUnilateral}
-          disabled={disabled || !!s?.unlocked || !!s?.recovery}
-          className="px-3 py-1 bg-orange-600 text-white rounded text-xs hover:bg-orange-700 disabled:bg-gray-400"
-          title="Parent-only voluntary exit"
-        >
-          Initiate unilateral recovery
-        </button>
-        <button
-          onClick={props.onFinalize}
-          disabled={disabled || !s?.recovery}
-          className="px-3 py-1 bg-purple-600 text-white rounded text-xs hover:bg-purple-700 disabled:bg-gray-400"
-        >
-          Finalize recovery
-        </button>
-      </div>
+      <button
+        onClick={() => setShowAdvanced((v) => !v)}
+        className="text-xs text-gray-600 underline hover:text-gray-900 mb-2"
+      >
+        {showAdvanced ? '▾ Hide advanced (recovery, exit window, post-unlock keys)' : '▸ Advanced (recovery, exit window, post-unlock keys)'}
+      </button>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="border border-gray-200 rounded p-2">
-          <div className="text-xs font-medium mb-1">Update exit window (parent only)</div>
-          <div className="flex gap-2">
-            <select
-              value={newWindow}
-              onChange={(e) => setNewWindow(e.target.value)}
-              className="flex-1 text-xs rounded-md border border-gray-300 bg-white px-2 py-1 text-gray-900 shadow-sm focus:border-[#cc6600] focus:ring-[#cc6600]"
-            >
-              {EXIT_WINDOW_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>{o.label}</option>
-              ))}
-            </select>
+      {showAdvanced && (
+        <>
+          <div className="flex flex-wrap gap-2 mb-3">
             <button
-              onClick={() => props.onSetExitWindow(newWindow)}
-              disabled={disabled}
-              className="px-3 py-1 bg-gray-600 text-white rounded text-xs hover:bg-gray-700 disabled:bg-gray-400"
+              onClick={props.onInitiateRecovery}
+              disabled={disabled || !!s?.unlocked || !!s?.recovery}
+              className="px-3 py-1 bg-orange-600 text-white rounded text-xs hover:bg-orange-700 disabled:bg-gray-400"
+              title="Cessation-triggered (DAO must have declared cessation)"
             >
-              Set
+              Initiate cessation recovery
+            </button>
+            <button
+              onClick={props.onInitiateUnilateral}
+              disabled={disabled || !!s?.unlocked || !!s?.recovery}
+              className="px-3 py-1 bg-orange-600 text-white rounded text-xs hover:bg-orange-700 disabled:bg-gray-400"
+              title="Parent-only voluntary exit"
+            >
+              Initiate unilateral recovery
+            </button>
+            <button
+              onClick={props.onFinalize}
+              disabled={disabled || !s?.recovery}
+              className="px-3 py-1 bg-purple-600 text-white rounded text-xs hover:bg-purple-700 disabled:bg-gray-400"
+            >
+              Finalize recovery
             </button>
           </div>
-        </div>
 
-        <div className="border border-gray-200 rounded p-2">
-          <div className="text-xs font-medium mb-1">Add key (post-unlock, parent only)</div>
-          <input
-            type="text"
-            value={newPubkey}
-            onChange={(e) => setNewPubkey(e.target.value)}
-            placeholder="ed25519:..."
-            className="block w-full text-xs rounded-md border border-gray-300 bg-white px-2 py-1 text-gray-900 shadow-sm focus:border-[#cc6600] focus:ring-[#cc6600] mb-1"
-          />
-          <label className="text-xs flex items-center gap-1 mb-1">
-            <input
-              type="checkbox"
-              checked={newKeyFullAccess}
-              onChange={(e) => setNewKeyFullAccess(e.target.checked)}
-            />
-            Full-access key (default: function-call, 1 NEAR allowance)
-          </label>
-          <button
-            onClick={() => props.onAddKey(newPubkey, newKeyFullAccess)}
-            disabled={disabled || !s?.unlocked}
-            className="w-full px-3 py-1 bg-gray-600 text-white rounded text-xs hover:bg-gray-700 disabled:bg-gray-400"
-          >
-            unlocked_add_key
-          </button>
-          {s && !s.unlocked && (
-            <p className="text-xs text-gray-500 mt-1">Vault must be unlocked first.</p>
-          )}
-        </div>
-      </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="border border-gray-200 rounded p-2">
+              <div className="text-xs font-medium mb-1">Update exit window (parent only)</div>
+              <div className="flex gap-2">
+                <select
+                  value={newWindow}
+                  onChange={(e) => setNewWindow(e.target.value)}
+                  className="flex-1 text-xs rounded-md border border-gray-300 bg-white px-2 py-1 text-gray-900 shadow-sm focus:border-[#cc6600] focus:ring-[#cc6600]"
+                >
+                  {EXIT_WINDOW_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+                <button
+                  onClick={() => props.onSetExitWindow(newWindow)}
+                  disabled={disabled}
+                  className="px-3 py-1 bg-gray-600 text-white rounded text-xs hover:bg-gray-700 disabled:bg-gray-400"
+                >
+                  Set
+                </button>
+              </div>
+            </div>
+
+            <div className="border border-gray-200 rounded p-2">
+              <div className="text-xs font-medium mb-1">Add key (post-unlock, parent only)</div>
+              <input
+                type="text"
+                value={newPubkey}
+                onChange={(e) => setNewPubkey(e.target.value)}
+                placeholder="ed25519:..."
+                className="block w-full text-xs rounded-md border border-gray-300 bg-white px-2 py-1 text-gray-900 shadow-sm focus:border-[#cc6600] focus:ring-[#cc6600] mb-1"
+              />
+              <label className="text-xs flex items-center gap-1 mb-1">
+                <input
+                  type="checkbox"
+                  checked={newKeyFullAccess}
+                  onChange={(e) => setNewKeyFullAccess(e.target.checked)}
+                />
+                Full-access key (default: function-call, 1 NEAR allowance)
+              </label>
+              <button
+                onClick={() => props.onAddKey(newPubkey, newKeyFullAccess)}
+                disabled={disabled || !s?.unlocked}
+                className="w-full px-3 py-1 bg-gray-600 text-white rounded text-xs hover:bg-gray-700 disabled:bg-gray-400"
+              >
+                unlocked_add_key
+              </button>
+              {s && !s.unlocked && (
+                <p className="text-xs text-gray-500 mt-1">Vault must be unlocked first.</p>
+              )}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
