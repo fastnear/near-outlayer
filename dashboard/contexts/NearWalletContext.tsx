@@ -107,47 +107,8 @@ export function NearWalletProvider({ children }: { children: ReactNode }) {
     setIsWalletReady(false);
     setAccountId(null);
 
-    // Pin the manifest URL explicitly. NearConnector defaults to a
-    // pair of CDN URLs and silently falls back to an EMPTY wallet
-    // list if both fail (catch in NearConnector.js:68 → `wallets: []`),
-    // which manifests as "wallet picker shows no wallets" on the UI.
-    // The manifest below contains MyNearWallet, Meteor, HOT, Intear,
-    // Ledger, Nightly, OKX, NEAR Mobile, Trezu, WalletConnect, etc.
-    const connector = new NearConnector({
-      network: network,
-      autoConnect: false,
-      // Pin the manifest URL explicitly. NearConnector defaults to a
-      // pair of CDN URLs and silently falls back to an EMPTY wallet
-      // list if both fail (catch in NearConnector.js → `wallets: []`),
-      // which manifests as "wallet picker shows no wallets".
-      manifest:
-        'https://raw.githubusercontent.com/hot-dao/near-selector/refs/heads/main/repository/manifest.json',
-      // Vault deploys use NEAR's `UseGlobalContract` action. Wallets
-      // whose bundled `@near-js/transactions` predates that schema
-      // refuse to sign with "Invalid action type". As of 2026-05
-      // Meteor and Trezu lag here. MyNearWallet, HOT Wallet, Intear,
-      // Ledger, NEAR CLI signer all work. Excluding the laggers
-      // prevents users from foot-gunning on vault init.
-      excludedWallets: ['meteor-wallet', 'trezu-wallet'],
-    });
-
-    connectorRef.current = connector;
-
-    // Try to restore an existing session — if the user previously
-    // connected on this network, near-connect surfaces the account
-    // immediately without re-prompting.
-    connector.getConnectedWallet()
-      .then(({ accounts }) => {
-        if (accounts.length > 0) {
-          setAccountId(accounts[0].accountId);
-        }
-      })
-      .catch(() => {
-        // No existing session — that's fine.
-      })
-      .finally(() => {
-        setIsWalletReady(true);
-      });
+    let cancelled = false;
+    let connector: NearConnector | null = null;
 
     const handleSignIn = ({ accounts }: { accounts: Array<{ accountId: string }> }) => {
       if (accounts.length > 0) {
@@ -159,12 +120,66 @@ export function NearWalletProvider({ children }: { children: ReactNode }) {
       setAccountId(null);
     };
 
-    connector.on('wallet:signIn', handleSignIn as any);
-    connector.on('wallet:signOut', handleSignOut);
+    (async () => {
+      // The upstream manifest doesn't set `features.testnet: true`
+      // on wallets that DO support testnet (MyNearWallet, HOT,
+      // Meteor, OKX, …). NearConnector hides every wallet without
+      // that flag when `network === 'testnet'`, leaving the picker
+      // nearly empty. Fetch the manifest, force-enable testnet on
+      // every entry, and pass the patched object inline so the
+      // picker stays consistent mainnet vs testnet.
+      let manifestObj: { wallets: any[]; version: string } | undefined;
+      try {
+        const res = await fetch(
+          'https://raw.githubusercontent.com/hot-dao/near-selector/refs/heads/main/repository/manifest.json',
+        );
+        const m = await res.json();
+        if (Array.isArray(m?.wallets)) {
+          for (const w of m.wallets) {
+            if (!w.features) w.features = {};
+            w.features.testnet = true;
+          }
+          manifestObj = m;
+        }
+      } catch {
+        // Fall back to letting NearConnector load its defaults.
+      }
+
+      if (cancelled) return;
+
+      connector = new NearConnector({
+        network: network,
+        autoConnect: false,
+        ...(manifestObj ? { manifest: manifestObj } : {}),
+      });
+
+      connectorRef.current = connector;
+
+      connector.on('wallet:signIn', handleSignIn as any);
+      connector.on('wallet:signOut', handleSignOut);
+
+      // Try to restore an existing session — if the user previously
+      // connected on this network, near-connect surfaces the account
+      // immediately without re-prompting.
+      try {
+        const { accounts } = await connector.getConnectedWallet();
+        if (!cancelled && accounts.length > 0) {
+          setAccountId(accounts[0].accountId);
+        }
+      } catch {
+        // No existing session — that's fine.
+      }
+      if (!cancelled) {
+        setIsWalletReady(true);
+      }
+    })();
 
     return () => {
-      connector.off('wallet:signIn', handleSignIn as any);
-      connector.off('wallet:signOut', handleSignOut);
+      cancelled = true;
+      if (connector) {
+        connector.off('wallet:signIn', handleSignIn as any);
+        connector.off('wallet:signOut', handleSignOut);
+      }
     };
   }, [network]);
 
