@@ -79,7 +79,7 @@ export function VaultScopeToggle({
         value={value ?? ''}
         onChange={(e) => onChange(e.target.value || null)}
         disabled={disabled || vaults === null}
-        className="w-full rounded border border-gray-300 dark:border-gray-600 dark:bg-gray-800 px-3 py-2 text-sm"
+        className="w-full rounded border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm"
       >
         <option value="">
           Default OutLayer master (no recovery)
@@ -95,19 +95,19 @@ export function VaultScopeToggle({
         ))}
       </select>
       {value && (
-        <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
+        <p className="text-xs text-gray-600 mt-1">
           Keys derived from your vault <code>{value}</code>. Recoverable through
           DAO cessation or your own unilateral exit window.
         </p>
       )}
       {!value && vaults && vaults.length > 0 && (
-        <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
+        <p className="text-xs text-gray-600 mt-1">
           Default master: simpler, no on-chain footprint, NOT recoverable if
           OutLayer ceases.
         </p>
       )}
       {vaults !== null && vaults.length === 0 && !error && owner && (
-        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+        <p className="text-xs text-gray-500 mt-1">
           No vaults registered for <code>{owner}</code>. Create one on the{' '}
           <a href="/vault" className="text-blue-600 hover:underline">Vaults</a> page.
         </p>
