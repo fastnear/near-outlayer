@@ -655,6 +655,92 @@ pub async fn check_keystore_approval(
     }
 }
 
+/// Read the on-chain access key for `(dao_contract, public_key)` and
+/// verify its method-list contains every method this keystore-worker
+/// build needs to call. Used at boot AFTER `is_keystore_approved`
+/// returns true so a contract upgrade that widened the method-list
+/// (without re-issuing access keys) is detected loudly instead of
+/// silently sending txs that fail at access-key validation.
+///
+/// The DAO's `internal_execute_proposal` grants
+/// `["request_key", "mark_vault_verified", "ban_vault"]` for any new
+/// keystore. An older keystore approved before that change has only
+/// `["request_key"]` — silent failure surface for vault verification
+/// and ban operations. Returning Err here forces the operator to
+/// regenerate the keystore keypair (TEE mode: restart the container)
+/// or to manually delete-and-re-add the access key with the wider
+/// method-list before the worker continues.
+pub async fn check_access_key_methods(
+    near_rpc_url: &str,
+    dao_contract: &str,
+    public_key: &near_crypto::PublicKey,
+) -> Result<()> {
+    use near_primitives::views::{AccessKeyPermissionView, QueryRequest as Qr};
+
+    const REQUIRED: &[&str] = &["request_key", "mark_vault_verified", "ban_vault"];
+
+    let client = JsonRpcClient::connect(near_rpc_url);
+    let request = methods::query::RpcQueryRequest {
+        block_reference: BlockReference::Finality(Finality::Final),
+        request: Qr::ViewAccessKey {
+            account_id: dao_contract.parse()?,
+            public_key: public_key.clone(),
+        },
+    };
+    let response = client
+        .call(request)
+        .await
+        .with_context(|| format!("view access_key for {}", public_key))?;
+
+    let access_key = match response.kind {
+        QueryResponseKind::AccessKey(view) => view,
+        other => {
+            anyhow::bail!(
+                "view_access_key returned unexpected response kind: {:?}",
+                other
+            )
+        }
+    };
+
+    match access_key.permission {
+        AccessKeyPermissionView::FullAccess => {
+            // Full access trivially covers all methods — common for
+            // local-dev keystores.
+            tracing::info!("Access key has FullAccess (covers all methods)");
+            Ok(())
+        }
+        AccessKeyPermissionView::FunctionCall {
+            method_names,
+            receiver_id,
+            ..
+        } => {
+            let missing: Vec<&str> = REQUIRED
+                .iter()
+                .copied()
+                .filter(|m| !method_names.iter().any(|n| n == m))
+                .collect();
+            if !missing.is_empty() {
+                anyhow::bail!(
+                    "keystore is approved but its access key on {dao} (receiver={receiver}) \
+                     has stale method-list {actual:?} — required {required:?}, missing {missing:?}. \
+                     This usually means the DAO contract was upgraded to widen the keystore \
+                     access-key grant but existing keystores were not re-registered. \
+                     Fix: regenerate this keystore's keypair (TEE mode → redeploy the container, \
+                     fresh keypair → fresh registration with the wider method-list), OR have \
+                     the DAO owner manually delete-and-re-add this access key with the new \
+                     methods.",
+                    dao = dao_contract,
+                    receiver = receiver_id,
+                    actual = method_names,
+                    required = REQUIRED,
+                    missing = missing,
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
 /// Initialize keystore with MPC-derived master secret.
 ///
 /// Returns `(keystore, config, signer)` — all three are needed by
@@ -878,10 +964,44 @@ pub async fn ensure_customer_loaded(
         return Ok(());
     };
 
+    // Per-call gate: ALWAYS check on-chain state before serving, even
+    // when the master is already cached. A vault that has gone through
+    // `finalize_recovery` is now under parent FullAccess control —
+    // continuing to serve a cached master would break the "sovereign
+    // after recovery" guarantee (two parties would hold the secret:
+    // the sovereign customer AND the OutLayer keystore cache).
+    //
+    // Cost: 2 RPC view-calls per signing op. Acceptable — view-calls
+    // are ~100-300ms each and signing operations on the wallet path
+    // are not bulk-loop hot.
+    assert_serving_allowed(near_client, keystore_dao_id, vault_id, keystore).await?;
+
     if keystore.has_customer(vault_id) {
         return Ok(());
     }
 
+    add_customer(config, keystore, vault_id).await
+}
+
+/// Verify on-chain that we are still allowed to serve secrets bound
+/// to `vault_id`. Two checks:
+///
+/// 1. `keystore_dao.is_vault_verified(vault_id) == true` — covers the
+///    DAO's verified set AND the banned set in one read (the contract
+///    short-circuits banned vaults to false).
+/// 2. `vault_id.get_state().unlocked == false` — vaults under parent
+///    FullAccess (post-recovery) are no longer TEE-controlled. We must
+///    refuse to derive new addresses or sign operations against them.
+///
+/// On unlocked detection we proactively evict the cached master so
+/// subsequent calls don't even reach the cache check; the next attempt
+/// will re-fail this gate cleanly with the same actionable error.
+async fn assert_serving_allowed(
+    near_client: &crate::near::NearClient,
+    keystore_dao_id: &AccountId,
+    vault_id: &AccountId,
+    keystore: &Keystore,
+) -> Result<()> {
     let response = near_client
         .view_call_json(
             keystore_dao_id,
@@ -899,9 +1019,11 @@ pub async fn ensure_customer_loaded(
     })?;
 
     if !verified {
+        // Drop any cached master — vault was banned or de-verified.
+        keystore.evict_customer(vault_id);
         anyhow::bail!(
             "vault {} is not verified on keystore-dao (or has been banned); \
-             cannot derive per-vault master",
+             cannot serve per-vault master",
             vault_id
         );
     }
@@ -921,14 +1043,16 @@ pub async fn ensure_customer_loaded(
             )
         })?;
     if unlocked {
+        keystore.evict_customer(vault_id);
         anyhow::bail!(
             "vault {} is unlocked (recovery completed); per-vault master \
-             cannot be derived for unlocked vaults",
+             cannot be served for unlocked vaults — the customer now \
+             owns this vault and must derive their own keys directly via MPC",
             vault_id
         );
     }
 
-    add_customer(config, keystore, vault_id).await
+    Ok(())
 }
 
 #[cfg(test)]

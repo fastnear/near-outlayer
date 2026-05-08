@@ -343,6 +343,17 @@ async fn perform_tee_registration(config: &Config) -> Result<TeeRegistrationResu
         registration.wait_for_approval(proposal_id, &public_key).await?;
     } else {
         tracing::info!("✅ Keystore already approved by DAO");
+        // Defense against silent upgrade-path bugs: just because the
+        // pubkey is in `approved_keystores` doesn't mean its access
+        // key on the DAO contract has the method-list this build
+        // expects. A widened DAO grant + an existing approved
+        // keystore = stale access key that silently fails calls to
+        // the new methods. Catch it loudly here so operators
+        // regenerate the keypair (TEE mode: restart) or manually
+        // upgrade the access key.
+        mpc_ckd::check_access_key_methods(&near_rpc_url, &dao_contract, &public_key)
+            .await?;
+        tracing::info!("✅ Access key method-list covers all required methods");
     }
 
     // Now we're approved, get MPC-derived secret

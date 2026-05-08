@@ -569,7 +569,7 @@ async fn cessation_full_happy_path_unlocks_after_7d() -> Result<()> {
             .await?,
     )?;
 
-    fast_forward_secs(&s.worker, 60).await?;
+    fast_forward_secs(&s.worker, (CESSATION_DELAY_NS / ONE_SECOND_NS).max(TEST_UNILATERAL_WINDOW_SECS) + 30).await?;
 
     let outcome = expect_success(
         s.vault
@@ -601,7 +601,7 @@ async fn cessation_recovery_cancelled_if_dao_revokes() -> Result<()> {
 
     // DAO changes its mind during the 7-day window.
     s.dao_set_ceased(false).await?;
-    fast_forward_secs(&s.worker, 60).await?;
+    fast_forward_secs(&s.worker, (CESSATION_DELAY_NS / ONE_SECOND_NS).max(TEST_UNILATERAL_WINDOW_SECS) + 30).await?;
 
     let outcome = expect_success(
         s.vault
@@ -631,9 +631,12 @@ async fn cessation_finalize_after_14d_clears_state() -> Result<()> {
             .await?,
     )?;
 
-    // Past finalize_before (delay + window).
-    // Past finalize_before (delay 30 s + window 300 s = 330 s).
-    fast_forward_secs(&s.worker, 360).await?;
+    // Past finalize_before (CESSATION_DELAY + FINALIZE_WINDOW + buffer).
+    fast_forward_secs(
+        &s.worker,
+        ((CESSATION_DELAY_NS + FINALIZE_WINDOW_NS) / ONE_SECOND_NS) + 30,
+    )
+    .await?;
 
     let outcome = expect_success(
         s.vault
@@ -694,7 +697,7 @@ async fn unilateral_full_happy_path_24h_window() -> Result<()> {
     assert_eq!(state_before["recovery"]["trigger"], "Unilateral");
 
     // 24h + safety margin.
-    fast_forward_secs(&s.worker, 60).await?;
+    fast_forward_secs(&s.worker, (CESSATION_DELAY_NS / ONE_SECOND_NS).max(TEST_UNILATERAL_WINDOW_SECS) + 30).await?;
 
     let outcome = expect_success(
         s.vault
@@ -730,7 +733,7 @@ async fn unilateral_finalize_works_without_dao_check() -> Result<()> {
     let is_ceased: bool = s.dao.view("is_ceased").await?.json()?;
     assert!(!is_ceased);
 
-    fast_forward_secs(&s.worker, 60).await?;
+    fast_forward_secs(&s.worker, (CESSATION_DELAY_NS / ONE_SECOND_NS).max(TEST_UNILATERAL_WINDOW_SECS) + 30).await?;
 
     let outcome = expect_success(
         s.vault
@@ -813,16 +816,15 @@ async fn set_exit_window_then_initiate_uses_new_window() -> Result<()> {
 
 #[tokio::test]
 async fn set_exit_window_validates_range() -> Result<()> {
-    // Under `test-timing` the contract's bounds are MIN=10s, MAX=600s.
-    // Production builds (no feature) have 24h..=30d. The shape of the
-    // checks is identical — the values are just scaled.
+    // Bounds come from the imported MIN/MAX constants — values just
+    // scale with the contract build.
     let s = Setup::new(None).await?;
 
     // Below MIN — too short
     let too_short = s
         .parent
         .call(s.vault.id(), "set_exit_window")
-        .args_json(json!({ "new_window_secs": 5u64 }))
+        .args_json(json!({ "new_window_secs": MIN_UNILATERAL_EXIT_WINDOW_SECS - 1 }))
         .max_gas()
         .transact()
         .await?;
@@ -832,7 +834,7 @@ async fn set_exit_window_validates_range() -> Result<()> {
     let too_long = s
         .parent
         .call(s.vault.id(), "set_exit_window")
-        .args_json(json!({ "new_window_secs": 1_000u64 }))
+        .args_json(json!({ "new_window_secs": MAX_UNILATERAL_EXIT_WINDOW_SECS + 1 }))
         .max_gas()
         .transact()
         .await?;
@@ -842,14 +844,14 @@ async fn set_exit_window_validates_range() -> Result<()> {
     expect_success(
         s.parent
             .call(s.vault.id(), "set_exit_window")
-            .args_json(json!({ "new_window_secs": 600u64 }))
+            .args_json(json!({ "new_window_secs": MAX_UNILATERAL_EXIT_WINDOW_SECS }))
             .max_gas()
             .transact()
             .await?,
     )?;
 
     let exit_window: u64 = s.vault.view("get_exit_window").await?.json()?;
-    assert_eq!(exit_window, 600);
+    assert_eq!(exit_window, MAX_UNILATERAL_EXIT_WINDOW_SECS);
     Ok(())
 }
 
@@ -957,7 +959,7 @@ async fn unlocked_add_key_actually_adds_full_access_key_after_recovery() -> Resu
             .transact()
             .await?,
     )?;
-    fast_forward_secs(&s.worker, 60).await?;
+    fast_forward_secs(&s.worker, (CESSATION_DELAY_NS / ONE_SECOND_NS).max(TEST_UNILATERAL_WINDOW_SECS) + 30).await?;
     expect_success(
         s.vault
             .call("finalize_recovery")
@@ -1000,7 +1002,7 @@ async fn unlocked_add_key_default_allowance_is_one_near_for_function_call_keys()
             .transact()
             .await?,
     )?;
-    fast_forward_secs(&s.worker, 60).await?;
+    fast_forward_secs(&s.worker, (CESSATION_DELAY_NS / ONE_SECOND_NS).max(TEST_UNILATERAL_WINDOW_SECS) + 30).await?;
     expect_success(
         s.vault
             .call("finalize_recovery")
@@ -1051,7 +1053,7 @@ async fn unlocked_add_key_rejects_non_parent_after_unlock() -> Result<()> {
             .transact()
             .await?,
     )?;
-    fast_forward_secs(&s.worker, 60).await?;
+    fast_forward_secs(&s.worker, (CESSATION_DELAY_NS / ONE_SECOND_NS).max(TEST_UNILATERAL_WINDOW_SECS) + 30).await?;
     expect_success(
         s.vault
             .call("finalize_recovery")

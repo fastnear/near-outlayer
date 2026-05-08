@@ -374,13 +374,13 @@ contact OutLayer support to rotate the API key — no funds at risk.`,
   return (
     <div className="container mx-auto p-6 max-w-5xl">
       <h1 className="text-3xl font-bold mb-2">Sovereign Vaults</h1>
-      <p className="text-gray-600 dark:text-gray-300 mb-6">
+      <p className="text-gray-600 mb-6">
         Per-customer master keys with recoverability. Wallet keys + secrets bound
         to a vault stay derivable by you even if OutLayer ceases.
       </p>
 
       {!isConnected && (
-        <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-300 rounded p-4 mb-6">
+        <div className="bg-yellow-50 border border-yellow-300 rounded p-4 mb-6">
           <p className="text-sm">Connect a NEAR wallet to create or manage vaults.</p>
           <button
             onClick={() => setShowWalletModal(true)}
@@ -392,27 +392,27 @@ contact OutLayer support to rotate the API key — no funds at risk.`,
       )}
 
       {error && (
-        <div className="bg-red-50 dark:bg-red-900/20 border border-red-300 rounded p-3 mb-4 text-sm">
+        <div className="bg-red-50 border border-red-300 rounded p-3 mb-4 text-sm">
           <strong>Error:</strong> {error}
         </div>
       )}
       {success && (
-        <div className="bg-green-50 dark:bg-green-900/20 border border-green-300 rounded p-3 mb-4 text-sm">
+        <div className="bg-green-50 border border-green-300 rounded p-3 mb-4 text-sm">
           {success}
         </div>
       )}
       {busy && (
-        <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-300 rounded p-3 mb-4 text-sm">
+        <div className="bg-blue-50 border border-blue-300 rounded p-3 mb-4 text-sm">
           ⏳ {busy}
         </div>
       )}
 
       {issuedApiKey && (
-        <div className="bg-amber-50 dark:bg-amber-900/20 border-2 border-amber-500 rounded p-4 mb-6">
-          <h3 className="font-bold text-amber-900 dark:text-amber-200 mb-2">
+        <div className="bg-amber-50 border-2 border-amber-500 rounded p-4 mb-6">
+          <h3 className="font-bold text-amber-900 mb-2">
             ⚠ API Key — store now, shown ONCE
           </h3>
-          <div className="text-xs text-gray-700 dark:text-gray-300 mb-2">
+          <div className="text-xs text-gray-700 mb-2">
             Vault: <code>{issuedApiKey.vault}</code>
             <br />
             NEAR address: <code>{issuedApiKey.nearAccountId}</code>
@@ -434,16 +434,16 @@ contact OutLayer support to rotate the API key — no funds at risk.`,
               Copy
             </button>
           </div>
-          <p className="text-xs text-gray-600 dark:text-gray-400 mt-2">
+          <p className="text-xs text-gray-600 mt-2">
             This key is NOT recoverable. If lost, you must revoke + re-register.
           </p>
         </div>
       )}
 
       {/* ── Create vault ─────────────────────────────────────────────── */}
-      <section className="border border-gray-200 dark:border-gray-700 rounded p-4 mb-6">
+      <section className="border border-gray-200 rounded p-4 mb-6">
         <h2 className="text-xl font-semibold mb-3">Create vault</h2>
-        <div className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+        <div className="text-sm text-gray-600 mb-3">
           Deploys <code>{name || 'vault'}.{accountId || '&lt;your-account&gt;'}</code> with a single atomic
           NEAR transaction (CreateAccount + Transfer{' '}
           {(Number(VAULT_INITIAL_YOCTO) / 1e24).toFixed(2)} NEAR + DeployContract +{' '}
@@ -456,7 +456,7 @@ contact OutLayer support to rotate the API key — no funds at risk.`,
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="mt-1 block w-full rounded border border-gray-300 dark:border-gray-600 dark:bg-gray-800 px-3 py-2"
+              className="mt-1 block w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-gray-900 shadow-sm focus:border-[#cc6600] focus:ring-[#cc6600]"
               placeholder="vault"
             />
           </label>
@@ -465,7 +465,7 @@ contact OutLayer support to rotate the API key — no funds at risk.`,
             <select
               value={exitWindow}
               onChange={(e) => setExitWindow(e.target.value)}
-              className="mt-1 block w-full rounded border border-gray-300 dark:border-gray-600 dark:bg-gray-800 px-3 py-2"
+              className="mt-1 block w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-gray-900 shadow-sm focus:border-[#cc6600] focus:ring-[#cc6600]"
             >
               {EXIT_WINDOW_OPTIONS.map((o) => (
                 <option key={o.value} value={o.value}>
@@ -484,7 +484,7 @@ contact OutLayer support to rotate the API key — no funds at risk.`,
             </button>
           </div>
         </div>
-        <p className="text-xs text-gray-500 dark:text-gray-400">
+        <p className="text-xs text-gray-500">
           Parent (= your account, immutable post-deploy) is the only NEAR account
           that can call <code>unilateral_initiate_recovery</code>,{' '}
           <code>set_exit_window</code>, or <code>unlocked_add_key</code>.
@@ -492,7 +492,7 @@ contact OutLayer support to rotate the API key — no funds at risk.`,
       </section>
 
       {/* ── Find / inspect vault ─────────────────────────────────────── */}
-      <section className="border border-gray-200 dark:border-gray-700 rounded p-4 mb-6">
+      <section className="border border-gray-200 rounded p-4 mb-6">
         <h2 className="text-xl font-semibold mb-3">Inspect a vault</h2>
         <div className="flex gap-2 mb-3">
           <input
@@ -500,7 +500,7 @@ contact OutLayer support to rotate the API key — no funds at risk.`,
             value={findInput}
             onChange={(e) => setFindInput(e.target.value)}
             placeholder="vault.alice.near"
-            className="flex-1 rounded border border-gray-300 dark:border-gray-600 dark:bg-gray-800 px-3 py-2"
+            className="flex-1 rounded-md border border-gray-300 bg-white px-3 py-2 text-gray-900 shadow-sm focus:border-[#cc6600] focus:ring-[#cc6600]"
           />
           <button
             onClick={handleFind}
@@ -560,7 +560,7 @@ function VaultDetailPanel(props: {
 
   if (!report.exists) {
     return (
-      <div className="bg-gray-50 dark:bg-gray-800 rounded p-3 text-sm">
+      <div className="bg-gray-50 rounded p-3 text-sm">
         Account <code>{report.vaultId}</code> does not exist on chain.
       </div>
     );
@@ -568,13 +568,13 @@ function VaultDetailPanel(props: {
   const s = report.state;
 
   return (
-    <div className="border border-gray-200 dark:border-gray-700 rounded p-3 text-sm">
+    <div className="border border-gray-200 rounded p-3 text-sm">
       <div className="flex justify-between items-center mb-2">
         <h3 className="font-semibold">{report.vaultId}</h3>
         <button
           onClick={props.onRefresh}
           disabled={disabled}
-          className="text-xs px-2 py-1 bg-gray-200 dark:bg-gray-700 rounded"
+          className="text-xs px-2 py-1 bg-gray-200 rounded"
         >
           Refresh
         </button>
@@ -583,8 +583,8 @@ function VaultDetailPanel(props: {
       <div
         className={`px-2 py-1 rounded mb-3 font-medium text-sm ${
           report.safe
-            ? 'bg-green-100 dark:bg-green-900/40 text-green-800 dark:text-green-200'
-            : 'bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-200'
+            ? 'bg-green-100 text-green-800'
+            : 'bg-red-100 text-red-800'
         }`}
       >
         {report.safe
@@ -595,7 +595,7 @@ function VaultDetailPanel(props: {
       </div>
 
       {report.warnings.length > 0 && (
-        <ul className="text-xs text-amber-700 dark:text-amber-300 mb-2 list-disc list-inside">
+        <ul className="text-xs text-amber-700 mb-2 list-disc list-inside">
           {report.warnings.map((w, i) => (
             <li key={i}>{w}</li>
           ))}
@@ -669,13 +669,13 @@ function VaultDetailPanel(props: {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="border border-gray-200 dark:border-gray-700 rounded p-2">
+        <div className="border border-gray-200 rounded p-2">
           <div className="text-xs font-medium mb-1">Update exit window (parent only)</div>
           <div className="flex gap-2">
             <select
               value={newWindow}
               onChange={(e) => setNewWindow(e.target.value)}
-              className="flex-1 text-xs rounded border border-gray-300 dark:border-gray-600 dark:bg-gray-800 px-2 py-1"
+              className="flex-1 text-xs rounded-md border border-gray-300 bg-white px-2 py-1 text-gray-900 shadow-sm focus:border-[#cc6600] focus:ring-[#cc6600]"
             >
               {EXIT_WINDOW_OPTIONS.map((o) => (
                 <option key={o.value} value={o.value}>{o.label}</option>
@@ -691,14 +691,14 @@ function VaultDetailPanel(props: {
           </div>
         </div>
 
-        <div className="border border-gray-200 dark:border-gray-700 rounded p-2">
+        <div className="border border-gray-200 rounded p-2">
           <div className="text-xs font-medium mb-1">Add key (post-unlock, parent only)</div>
           <input
             type="text"
             value={newPubkey}
             onChange={(e) => setNewPubkey(e.target.value)}
             placeholder="ed25519:..."
-            className="block w-full text-xs rounded border border-gray-300 dark:border-gray-600 dark:bg-gray-800 px-2 py-1 mb-1"
+            className="block w-full text-xs rounded-md border border-gray-300 bg-white px-2 py-1 text-gray-900 shadow-sm focus:border-[#cc6600] focus:ring-[#cc6600] mb-1"
           />
           <label className="text-xs flex items-center gap-1 mb-1">
             <input
