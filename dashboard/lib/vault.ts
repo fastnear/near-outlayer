@@ -11,7 +11,7 @@
  * Plan reference: partitioned-dreaming-patterson.md lines 681-722.
  */
 
-import { actionCreators } from '@near-js/transactions';
+import { actionCreators, GlobalContractIdentifier } from '@near-js/transactions';
 import { PublicKey } from '@near-js/crypto';
 
 import { getCoordinatorApiUrl, type NetworkType } from './api';
@@ -189,6 +189,7 @@ export function formatSeconds(secs: number): string {
 
 let cachedWasm: Uint8Array | null = null;
 let cachedHashB58: string | null = null;
+let cachedHashBytes: Uint8Array | null = null;
 
 /**
  * Fetch the bundled vault WASM (served from /vault_contract.wasm) and
@@ -198,9 +199,14 @@ let cachedHashB58: string | null = null;
 export async function loadBundledVaultWasm(): Promise<{
   bytes: Uint8Array;
   hashB58: string;
+  hashBytes: Uint8Array;
 }> {
-  if (cachedWasm && cachedHashB58) {
-    return { bytes: cachedWasm, hashB58: cachedHashB58 };
+  if (cachedWasm && cachedHashB58 && cachedHashBytes) {
+    return {
+      bytes: cachedWasm,
+      hashB58: cachedHashB58,
+      hashBytes: cachedHashBytes,
+    };
   }
   const resp = await fetch('/vault_contract.wasm');
   if (!resp.ok) {
@@ -208,10 +214,12 @@ export async function loadBundledVaultWasm(): Promise<{
   }
   const buf = new Uint8Array(await resp.arrayBuffer());
   const digestBuf = await crypto.subtle.digest('SHA-256', buf);
-  const hash = bs58Encode(new Uint8Array(digestBuf));
+  const hashBytes = new Uint8Array(digestBuf);
+  const hash = bs58Encode(hashBytes);
   cachedWasm = buf;
   cachedHashB58 = hash;
-  return { bytes: buf, hashB58: hash };
+  cachedHashBytes = hashBytes;
+  return { bytes: buf, hashB58: hash, hashBytes };
 }
 
 // ─── View calls (RPC) ─────────────────────────────────────────────────────
@@ -441,10 +449,14 @@ export async function customerRegister(
  */
 export function buildVaultDeployActions(args: {
   parent: string;
+  vaultAccountId: string; // `${name}.${parent}`
   keystoreDaoId: string;
   mpcContractId: string;
   exitWindowSecs: number;
-  wasm: Uint8Array;
+  /** Raw 32-byte SHA256 of the canonical vault WASM. The bytes must
+   *  already be deployed on-chain as a Global Contract by hash (see
+   *  `near contract deploy-as-global use-file ... as-global-hash`). */
+  wasmCodeHash: Uint8Array;
   teePublicKey: string; // 'ed25519:...'
 }) {
   const newArgs = JSON.stringify({
@@ -457,7 +469,15 @@ export function buildVaultDeployActions(args: {
   return [
     actionCreators.createAccount(),
     actionCreators.transfer(VAULT_INITIAL_YOCTO),
-    actionCreators.deployContract(args.wasm),
+    // UseGlobalContract instead of inline DeployContract: the same
+    // ~150 KB WASM is referenced by hash from the chain's global
+    // contract storage instead of being shipped in this tx. Tx
+    // payload drops from ~200 KB to ~hundreds of bytes — fits inside
+    // MyNearWallet's URL limit. Pre-condition: the WASM with this
+    // hash must already be deployed via DeployGlobalContract.
+    actionCreators.useGlobalContract(
+      new GlobalContractIdentifier({ CodeHash: args.wasmCodeHash }),
+    ),
     actionCreators.functionCall(
       'new',
       new TextEncoder().encode(newArgs),
@@ -466,11 +486,12 @@ export function buildVaultDeployActions(args: {
     ),
     actionCreators.addKey(
       PublicKey.fromString(args.teePublicKey),
-      // FunctionCall access key restricted to ONE method on the MPC
-      // contract. Omitting `allowance` selects the SDK default
-      // (unlimited), matching CLI + Phase 4 expectations. The vault
-      // funds its outbound calls from the Transfer action's deposit.
-      actionCreators.functionCallAccessKey(args.mpcContractId, ['request_app_private_key']),
+      // The TEE function-call key signs `vault.request_master(...)` —
+      // a self-call into the vault's MPC-CKD proxy method. Direct
+      // `mpc.request_app_private_key` calls are blocked by FC-key
+      // deposit rules (MPC asserts 1 yocto, FC keys can only attach
+      // 0); the proxy supplies the yocto from the vault's balance.
+      actionCreators.functionCallAccessKey(args.vaultAccountId, ['request_master']),
     ),
   ];
 }

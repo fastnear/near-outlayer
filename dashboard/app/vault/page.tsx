@@ -165,9 +165,9 @@ deploy requires at least ${(Number(VAULT_PARENT_BUDGET_YOCTO) / 1e24).toFixed(2)
         );
       }
 
-      // 1. Bundle WASM + verify code-hash whitelist.
+      // 1. Bundle WASM hash + verify code-hash whitelist.
       setBusy('Verifying vault code-hash whitelist…');
-      const { bytes, hashB58 } = await loadBundledVaultWasm();
+      const { hashB58, hashBytes } = await loadBundledVaultWasm();
       const approved = await isVaultCodeApproved(viewMethod, network, hashB58);
       if (!approved) {
         throw new Error(
@@ -180,15 +180,19 @@ ${network}. The dashboard build is out of sync with the keystore-DAO whitelist.`
       setBusy('Fetching TEE function-call pubkey…');
       const teePubkey = await deriveVaultTeeKey(network, vaultAccountId);
 
-      // 3. Atomic deploy.
-      setBusy('Signing atomic deploy (5 actions, ~150 KB WASM)…');
+      // 3. Atomic deploy via UseGlobalContract — references the
+      //    on-chain global vault contract by hash instead of shipping
+      //    the 150 KB WASM in this tx. Tx payload < 1 KB so it fits
+      //    inside MyNearWallet's URL limit.
+      setBusy('Signing atomic deploy (5 actions, global contract by hash)…');
       const cfg = getVaultNetworkConfig(network);
       const actions = buildVaultDeployActions({
         parent: accountId,
+        vaultAccountId,
         keystoreDaoId: cfg.keystoreDaoId,
         mpcContractId: cfg.mpcContractId,
         exitWindowSecs: exitSecs,
-        wasm: bytes,
+        wasmCodeHash: hashBytes,
         teePublicKey: teePubkey,
       });
       const outcome = await signAndSendTransaction({
