@@ -107,9 +107,28 @@ export function NearWalletProvider({ children }: { children: ReactNode }) {
     setIsWalletReady(false);
     setAccountId(null);
 
+    // Pin the manifest URL explicitly. NearConnector defaults to a
+    // pair of CDN URLs and silently falls back to an EMPTY wallet
+    // list if both fail (catch in NearConnector.js:68 → `wallets: []`),
+    // which manifests as "wallet picker shows no wallets" on the UI.
+    // The manifest below contains MyNearWallet, Meteor, HOT, Intear,
+    // Ledger, Nightly, OKX, NEAR Mobile, Trezu, WalletConnect, etc.
     const connector = new NearConnector({
       network: network,
       autoConnect: false,
+      // Pin the manifest URL explicitly. NearConnector defaults to a
+      // pair of CDN URLs and silently falls back to an EMPTY wallet
+      // list if both fail (catch in NearConnector.js → `wallets: []`),
+      // which manifests as "wallet picker shows no wallets".
+      manifest:
+        'https://raw.githubusercontent.com/hot-dao/near-selector/refs/heads/main/repository/manifest.json',
+      // Vault deploys use NEAR's `UseGlobalContract` action. Wallets
+      // whose bundled `@near-js/transactions` predates that schema
+      // refuse to sign with "Invalid action type". As of 2026-05
+      // Meteor and Trezu lag here. MyNearWallet, HOT Wallet, Intear,
+      // Ledger, NEAR CLI signer all work. Excluding the laggers
+      // prevents users from foot-gunning on vault init.
+      excludedWallets: ['meteor-wallet', 'trezu-wallet'],
     });
 
     connectorRef.current = connector;
