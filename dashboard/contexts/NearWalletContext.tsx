@@ -1,13 +1,7 @@
 'use client';
 
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { setupWalletSelector } from '@near-wallet-selector/core';
-import { setupMyNearWallet } from '@near-wallet-selector/my-near-wallet';
-import { setupMeteorWallet } from '@near-wallet-selector/meteor-wallet';
-import { setupHereWallet } from '@near-wallet-selector/here-wallet';
-import { setupIntearWallet } from '@near-wallet-selector/intear-wallet';
-import { setupModal } from '@near-wallet-selector/modal-ui';
-import '@near-wallet-selector/modal-ui/styles.css';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback, ReactNode } from 'react';
+import { NearConnector } from '@hot-labs/near-connect';
 
 export type NetworkType = 'testnet' | 'mainnet';
 
@@ -81,16 +75,17 @@ export function NearWalletProvider({ children }: { children: ReactNode }) {
     return (process.env.NEXT_PUBLIC_DEFAULT_NETWORK || 'testnet') as NetworkType;
   };
 
-  const [network] = useState<NetworkType>(getInitialNetwork);
+  const [network, setNetwork] = useState<NetworkType>(getInitialNetwork);
   const [accountId, setAccountId] = useState<string | null>(null);
-  const [selector, setSelector] = useState<any>(null);
-  const [modal, setModal] = useState<any>(null);
   const [isWalletReady, setIsWalletReady] = useState(false);
   const [shouldReopenModal, setShouldReopenModal] = useState(false);
 
+  const connectorRef = useRef<NearConnector | null>(null);
   const config = getNetworkConfig(network);
 
-  // Check if we should reopen modal after page reload
+  // Check if we should reopen modal after page reload (legacy from
+  // wallet-selector days; near-connect's switchNetwork doesn't reload
+  // anymore but the flag is still respected by the modal component).
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const reopenFlag = localStorage.getItem('near-wallet-selector:reopenModal');
@@ -107,139 +102,120 @@ export function NearWalletProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  // Initialize connector and restore session on every network change.
   useEffect(() => {
-    // Mark as not ready when starting to setup
     setIsWalletReady(false);
-    setSelector(null);
-    setModal(null);
+    setAccountId(null);
 
-    setupWalletSelector({
-      network,
-      modules: [
-        setupMyNearWallet(),
-        setupMeteorWallet(),
-        setupHereWallet(),
-        setupIntearWallet(),
-      ],
-    }).then(async (_selector) => {
-      // Setup modal WITHOUT contractId to avoid function call access key creation
-      const _modal = setupModal(_selector, {
-        contractId: '', // Empty string means no contract-specific access key
-      });
+    const connector = new NearConnector({
+      network: network,
+      autoConnect: false,
+    });
 
-      // Subscribe to account changes to auto-update UI
-      const subscription = _selector.store.observable
-        .subscribe((state: { accounts: Array<{ accountId: string }> }) => {
-          const accounts = state.accounts;
-          if (accounts.length > 0) {
-            setAccountId(accounts[0].accountId);
-          } else {
-            setAccountId(null);
-          }
-        });
+    connectorRef.current = connector;
 
-      // Check if wallet is already connected
-      if (_selector.isSignedIn()) {
-        const accounts = await _selector.store.getState().accounts;
+    // Try to restore an existing session — if the user previously
+    // connected on this network, near-connect surfaces the account
+    // immediately without re-prompting.
+    connector.getConnectedWallet()
+      .then(({ accounts }) => {
         if (accounts.length > 0) {
           setAccountId(accounts[0].accountId);
         }
-      }
-
-      // Set selector and modal AFTER everything is configured
-      setSelector(_selector);
-      setModal(_modal);
-
-      // Small delay to ensure modal is fully ready before allowing connections
-      setTimeout(() => {
+      })
+      .catch(() => {
+        // No existing session — that's fine.
+      })
+      .finally(() => {
         setIsWalletReady(true);
-      }, 100);
+      });
 
-      // Cleanup subscription on unmount
-      return () => subscription.unsubscribe();
-    });
+    const handleSignIn = ({ accounts }: { accounts: Array<{ accountId: string }> }) => {
+      if (accounts.length > 0) {
+        setAccountId(accounts[0].accountId);
+      }
+    };
+
+    const handleSignOut = () => {
+      setAccountId(null);
+    };
+
+    connector.on('wallet:signIn', handleSignIn as any);
+    connector.on('wallet:signOut', handleSignOut);
+
+    return () => {
+      connector.off('wallet:signIn', handleSignIn as any);
+      connector.off('wallet:signOut', handleSignOut);
+    };
   }, [network]);
 
-  const connect = () => {
-    if (modal) {
-      modal.show();
-    }
-  };
+  const connect = useCallback(() => {
+    if (!connectorRef.current) return;
+    connectorRef.current.connect().catch(() => {
+      // User rejected or wallet error — no action needed.
+    });
+  }, []);
 
-  const disconnect = async () => {
-    if (selector) {
-      const wallet = await selector.wallet();
-      await wallet.signOut();
-      setAccountId(null);
+  const disconnect = useCallback(async () => {
+    if (!connectorRef.current) return;
+    try {
+      await connectorRef.current.disconnect();
+    } catch {
+      // Already disconnected.
     }
-  };
+    setAccountId(null);
+  }, []);
 
-  const switchNetwork = async (newNetwork: NetworkType) => {
-    // Store selected network in localStorage
+  const switchNetwork = useCallback(async (newNetwork: NetworkType) => {
+    // Persist user choice and (legacy) ask the modal to reopen on
+    // next render. With near-connect we no longer have to reload the
+    // page; the useEffect above re-instantiates the connector.
     localStorage.setItem('near-wallet-selector:selectedNetworkId', newNetwork);
-    // Set flag to reopen modal after reload
     localStorage.setItem('near-wallet-selector:reopenModal', 'true');
 
-    // Disconnect current wallet before switching
-    if (selector && accountId) {
-      const wallet = await selector.wallet();
-      await wallet.signOut();
+    if (connectorRef.current && accountId) {
+      try {
+        await connectorRef.current.disconnect();
+      } catch {
+        // Already disconnected.
+      }
       setAccountId(null);
     }
 
-    // Reload page to reinitialize wallet selector with new network
-    window.location.reload();
-  };
+    setNetwork(newNetwork);
+  }, [accountId]);
 
-  const signAndSendTransaction = async (params: any) => {
-    if (!selector) throw new Error('Wallet not initialized');
-    const wallet = await selector.wallet();
+  const signAndSendTransaction = useCallback(async (params: any) => {
+    const connector = connectorRef.current;
+    if (!connector) throw new Error('Wallet not initialized');
+    const wallet = await connector.wallet();
     return await wallet.signAndSendTransaction(params);
-  };
+  }, []);
 
-  const signMessage = async (params: SignMessageParams): Promise<SignedMessage | null> => {
-    if (!selector || !accountId) throw new Error('Wallet not connected');
-
-    const wallet = await selector.wallet();
-
-    // Check if wallet supports signMessage (NEP-413)
-    if (!wallet.signMessage) {
-      throw new Error('Current wallet does not support message signing. Please use a wallet that supports NEP-413 (e.g., MyNearWallet, Meteor, Here Wallet)');
-    }
+  const signMessage = useCallback(async (params: SignMessageParams): Promise<SignedMessage | null> => {
+    const connector = connectorRef.current;
+    if (!connector || !accountId) throw new Error('Wallet not connected');
 
     try {
+      const wallet = await connector.wallet();
+
       const result = await wallet.signMessage({
         message: params.message,
         recipient: params.recipient,
         nonce: Buffer.from(params.nonce, 'base64'),
+        network: network,
+        signerId: accountId,
       });
 
       if (!result) {
         return null;
       }
 
-      // Handle signature format - it can be Uint8Array or base64 string depending on wallet
-      let signatureBase64: string;
-      if (result.signature instanceof Uint8Array) {
-        signatureBase64 = Buffer.from(result.signature).toString('base64');
-      } else if (typeof result.signature === 'string') {
-        // Already a string - assume it's base64
-        signatureBase64 = result.signature;
-      } else {
-        // Array-like object
-        signatureBase64 = Buffer.from(result.signature as ArrayLike<number>).toString('base64');
-      }
-
-      console.log('signMessage result:', {
-        signatureType: typeof result.signature,
-        signatureIsUint8Array: result.signature instanceof Uint8Array,
-        signatureLength: result.signature?.length,
-        signatureBase64Length: signatureBase64.length,
-        publicKey: result.publicKey,
-      });
-
+      // near-connect returns `signature` already as a string (base64
+      // for NEP-413). No more shape-detection wallet-selector forced
+      // on us.
       return {
-        signature: signatureBase64,
+        signature: result.signature,
         publicKey: result.publicKey,
         accountId: result.accountId,
       };
@@ -247,12 +223,9 @@ export function NearWalletProvider({ children }: { children: ReactNode }) {
       console.error('Error signing message:', error);
       throw error;
     }
-  };
+  }, [accountId, network]);
 
-  const viewMethod = async (params: { contractId: string; method: string; args?: Record<string, unknown> }) => {
-    if (!selector) throw new Error('Wallet not initialized');
-
-    // Use selector's network to make view call via RPC
+  const viewMethod = useCallback(async (params: { contractId: string; method: string; args?: Record<string, unknown> }) => {
     const response = await fetch(config.rpcUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -283,7 +256,7 @@ export function NearWalletProvider({ children }: { children: ReactNode }) {
 
     const resultStr = new TextDecoder().decode(new Uint8Array(resultBytes));
     return JSON.parse(resultStr);
-  };
+  }, [config.rpcUrl]);
 
   return (
     <NearWalletContext.Provider

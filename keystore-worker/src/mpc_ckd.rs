@@ -250,20 +250,32 @@ impl MpcCkdClient {
             .await
     }
 
-    /// Request a per-vault master from MPC by calling
-    /// `request_app_private_key` **directly** (no keystore-dao proxy)
-    /// FROM the vault account, signed with the vault's Layer 1 TEE
-    /// function-call key.
+    /// Request a per-vault master from MPC via the vault contract's
+    /// `request_master` proxy method, signed with the vault's Layer 1
+    /// TEE function-call key.
+    ///
+    /// Why a proxy and not a direct call to MPC: NEAR's
+    /// function-call access keys cannot attach any deposit, but
+    /// MPC's `request_app_private_key` `assert_one_yocto`s. The
+    /// vault contract's `request_master` is `predecessor==self`-gated
+    /// and adds the 1 yocto from the vault's own balance via a
+    /// cross-contract call. MPC sees the cross-contract call's
+    /// predecessor as the vault account, so per-vault `app_id`
+    /// uniqueness is preserved (different vault accounts ⇒ different
+    /// derived masters even with identical `derivation_path`).
     ///
     /// This is Layer 2 of the per-vault master derivation:
-    ///   - `vault_signer.account_id` is the vault id; this becomes the
-    ///     `predecessor` MPC hashes into the per-app key — uniqueness per
-    ///     vault id is what gives us per-vault masters.
-    ///   - `vault_signer.public_key` must be the Layer 1 TEE pubkey we
-    ///     told the customer to AddKey() during atomic deploy.
+    ///   - `vault_signer.account_id` is the vault id; the vault then
+    ///     acts as `predecessor` for MPC, which hashes into the
+    ///     per-app key — uniqueness per vault id is what gives us
+    ///     per-vault masters.
+    ///   - `vault_signer.public_key` must be the Layer 1 TEE pubkey
+    ///     the customer added as a function-call AccessKey during
+    ///     atomic deploy, scoped to `(vault_id, ["request_master"])`.
     ///   - `derivation_path` should be an HMAC-derived string (see
-    ///     [`Keystore::derive_secret_string`]) so a malicious customer
-    ///     cannot pre-empt the worker by guessing the path.
+    ///     [`Keystore::derive_secret_string`]) so a malicious
+    ///     customer cannot pre-empt the worker by guessing the path
+    ///     before the worker's first MPC call.
     pub async fn request_vault_master(
         &self,
         vault_signer: &near_crypto::InMemorySigner,
@@ -272,7 +284,7 @@ impl MpcCkdClient {
         tracing::info!(
             vault = %vault_signer.account_id,
             domain = self.config.mpc_domain_id,
-            "Requesting per-vault master from MPC via direct request_app_private_key call"
+            "Requesting per-vault master via vault.request_master proxy"
         );
 
         // The vault contract proxies the MPC call: the TEE function-call
@@ -1028,14 +1040,33 @@ async fn assert_serving_allowed(
         );
     }
 
-    let state = near_client
+    // get_state can fail for "real" reasons even when DAO still
+    // lists the vault as verified — most importantly when the parent
+    // has finalized recovery and then deleted the vault account
+    // (delete_account is reachable post-unlock via FullAccess key).
+    // In that case the cached master must NOT keep being served, and
+    // we should bail with a clear message rather than retrying.
+    let state = match near_client
         .view_call_json(vault_id, "get_state", serde_json::json!({}))
         .await
-        .with_context(|| format!("vault {} get_state view-call failed", vault_id))?;
+    {
+        Ok(v) => v,
+        Err(e) => {
+            keystore.evict_customer(vault_id);
+            anyhow::bail!(
+                "vault {} get_state failed ({}); evicting cached master and \
+                 refusing to serve. If the vault account was deleted post-recovery, \
+                 this is expected and customers must re-derive via direct MPC.",
+                vault_id,
+                e
+            );
+        }
+    };
     let unlocked = state
         .get("unlocked")
         .and_then(|v| v.as_bool())
         .ok_or_else(|| {
+            keystore.evict_customer(vault_id);
             anyhow::anyhow!(
                 "vault {} get_state returned malformed payload: {}",
                 vault_id,

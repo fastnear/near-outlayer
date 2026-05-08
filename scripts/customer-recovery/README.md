@@ -21,14 +21,27 @@ Binary: `target/release/customer-recovery`.
 
 ## Run
 
+> ⚠ **Never paste your FullAccess private key on the command line.**
+> CLI args end up in `~/.bash_history` / `~/.zsh_history` / `ps`
+> output / shell session recordings. Pass it via the
+> `VAULT_PRIVATE_KEY` env var instead — same for `MPC_PUBLIC_KEY` if
+> the operator considers it sensitive in your context.
+
 ```bash
+export VAULT_PRIVATE_KEY="$(cat path/to/vault-fullaccess.key)"
+export MPC_PUBLIC_KEY='bls12381g2:...'
+
 ./target/release/customer-recovery \
     --vault-id vault.alice.testnet \
-    --signer-private-key ed25519:5m... \
     --from-chain \
-    --mpc-public-key 'bls12381g2:...' \
     --rpc-url https://rpc.testnet.fastnear.com
 ```
+
+The `--signer-private-key` flag is also accepted (it reads
+`VAULT_PRIVATE_KEY` automatically when omitted), but operators
+running this in a terminal should prefer the env-var form. After
+the run, `unset VAULT_PRIVATE_KEY` to clear it from the shell
+session.
 
 Required inputs:
 

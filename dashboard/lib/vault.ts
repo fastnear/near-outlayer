@@ -582,11 +582,15 @@ export async function verifyVault(
       badKeys++;
       warnings.push(`vault has a FULL-ACCESS key ${k.public_key} — must not exist`);
     } else {
+      // The TEE function-call key signs `vault.request_master(...)`
+      // — a self-call into the vault's MPC-CKD proxy. Direct
+      // `mpc.request_app_private_key` calls are blocked by FC-key
+      // deposit rules, so the receiver must be the vault itself
+      // and the only allowed method is `request_master`.
       const scopeOk =
-        state !== null &&
-        k.permission.receiver_id === state.mpc_contract &&
+        k.permission.receiver_id === vaultId &&
         k.permission.method_names.length === 1 &&
-        k.permission.method_names[0] === 'request_app_private_key';
+        k.permission.method_names[0] === 'request_master';
       const unlockedSelfCall =
         state?.unlocked === true && k.permission.receiver_id === vaultId;
       if (!scopeOk && !unlockedSelfCall) {

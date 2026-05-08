@@ -383,6 +383,19 @@ impl Vault {
     /// this method's return value. The keystore-worker's
     /// `broadcast_tx_commit` therefore receives the payload directly.
     pub fn request_master(&self, request: serde_json::Value) -> Promise {
+        // Self-call only. Without this, ANY account on chain could
+        // sign a tx → vault.request_master with their own ephemeral
+        // CKD pubkey + the (publicly-discoverable) on-chain
+        // derivation_path, and MPC would derive the per-vault master
+        // encrypted to the attacker's pubkey — full key extraction.
+        // The TEE function-call access key on this vault produces a
+        // tx whose signer_account_id == current_account_id, so the
+        // receipt's predecessor matches; any external caller fails
+        // here.
+        require!(
+            env::predecessor_account_id() == env::current_account_id(),
+            "request_master is callable only via the vault's own access key"
+        );
         require!(!self.unlocked, "vault is unlocked");
         // MPC expects `{ "request": {...} }`. The caller passes the
         // INNER object (auto-unwrapped because near-sdk matched its
@@ -428,6 +441,31 @@ impl Vault {
             "only the parent account can clear TEE keys"
         );
         require!(!public_keys.is_empty(), "no keys to remove");
+
+        // Reject duplicates — a list with the same pubkey twice would
+        // succeed on the first iteration's swap_remove, then panic
+        // with a misleading "key not in registered_tee_keys" on the
+        // second. Deduping upfront gives a clear error.
+        for (i, pk) in public_keys.iter().enumerate() {
+            require!(
+                !public_keys[i + 1..].contains(pk),
+                "duplicate key in input — each pubkey must appear at most once"
+            );
+        }
+
+        // While locked, leaving the vault with zero TEE keys bricks
+        // it: no future request_master can be signed, AND parent
+        // can't add keys directly (`unlocked_add_key` requires
+        // `unlocked == true`). Force the parent to either keep at
+        // least one TEE key or finalize_recovery first.
+        if !self.unlocked {
+            require!(
+                public_keys.len() < self.registered_tee_keys.len(),
+                "refusing to remove ALL TEE keys while vault is locked — \
+                 would leave vault inoperable. Either keep one or \
+                 unlock first via recovery."
+            );
+        }
 
         for pk in &public_keys {
             let pos = self.registered_tee_keys.iter().position(|k| k == pk);
@@ -881,10 +919,17 @@ mod tests {
     #[test]
     #[should_panic(expected = "key not in registered_tee_keys")]
     fn clear_unused_tee_keys_rejects_unknown_key() {
+        // Extra registered key so the "all-keys removed while locked"
+        // guard doesn't fire first — this test only cares about the
+        // typo branch.
         let mut v = fresh_vault();
         v.registered_tee_keys.push(ed25519_key());
+        v.registered_tee_keys.push(ed25519_key_2());
+        // Use a third pubkey not registered anywhere — should hit
+        // the "key not in registered_tee_keys" panic.
+        let unknown: PublicKey = "ed25519:11111111111111111111111111111111".parse().unwrap();
         testing_env!(ctx_for(alice()).build());
-        let _ = v.clear_unused_tee_keys(vec![ed25519_key_2()]);
+        let _ = v.clear_unused_tee_keys(vec![unknown]);
     }
 
     #[test]
@@ -910,6 +955,85 @@ mod tests {
         testing_env!(ctx_for(alice()).build());
         let _ = v.clear_unused_tee_keys(vec![ed25519_key()]);
         assert_eq!(v.registered_tee_keys.len(), initial_len - 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate key in input")]
+    fn clear_unused_tee_keys_rejects_duplicates() {
+        let mut v = fresh_vault();
+        v.registered_tee_keys.push(ed25519_key());
+        testing_env!(ctx_for(alice()).build());
+        let _ = v.clear_unused_tee_keys(vec![ed25519_key(), ed25519_key()]);
+    }
+
+    #[test]
+    #[should_panic(expected = "would leave vault inoperable")]
+    fn clear_unused_tee_keys_rejects_emptying_locked_vault() {
+        // While locked, removing the last TEE key would brick the
+        // vault — no further request_master can be signed and parent
+        // cannot use unlocked_add_key. Operator must keep at least
+        // one or recover first.
+        let mut v = fresh_vault();
+        v.registered_tee_keys.push(ed25519_key());
+        v.registered_tee_keys.push(ed25519_key_2());
+        testing_env!(ctx_for(alice()).build());
+        let _ = v.clear_unused_tee_keys(vec![ed25519_key(), ed25519_key_2()]);
+    }
+
+    // ===== request_master proxy security =====
+
+    #[test]
+    #[should_panic(expected = "callable only via the vault's own access key")]
+    fn request_master_rejects_external_predecessor() {
+        // ANY external account calling request_master with their own
+        // ephemeral CKD pubkey + the on-chain (publicly visible)
+        // derivation_path would otherwise have MPC return the per-vault
+        // master encrypted to their pubkey. The predecessor==self gate
+        // is the security boundary.
+        let v = fresh_vault();
+        testing_env!(ctx_for("attacker.near".parse().unwrap()).build());
+        let _ = v.request_master(near_sdk::serde_json::json!({
+            "derivation_path": "deadbeef",
+            "app_public_key": "bls12381g1:dontcare",
+            "domain_id": 2u64,
+        }));
+    }
+
+    #[test]
+    fn request_master_accepts_self_predecessor() {
+        // The TEE function-call key signs tx → vault.request_master,
+        // producing predecessor=vault (current_account_id). The
+        // require holds.
+        let v = fresh_vault();
+        testing_env!(ctx_for(vault_account()).build());
+        let _ = v.request_master(near_sdk::serde_json::json!({
+            "derivation_path": "deadbeef",
+            "app_public_key": "bls12381g1:dontcare",
+            "domain_id": 2u64,
+        }));
+    }
+
+    #[test]
+    #[should_panic(expected = "vault is unlocked")]
+    fn request_master_rejects_unlocked_vault() {
+        let mut v = fresh_vault();
+        v.unlocked = true;
+        testing_env!(ctx_for(vault_account()).build());
+        let _ = v.request_master(near_sdk::serde_json::json!({}));
+    }
+
+    #[test]
+    fn clear_unused_tee_keys_can_empty_when_unlocked() {
+        // Once unlocked, parent has FullAccess and can add keys
+        // directly via unlocked_add_key — clearing all TEE keys is
+        // safe in that state.
+        let mut v = fresh_vault();
+        v.unlocked = true;
+        v.registered_tee_keys.push(ed25519_key());
+        v.registered_tee_keys.push(ed25519_key_2());
+        testing_env!(ctx_for(alice()).build());
+        let _ = v.clear_unused_tee_keys(vec![ed25519_key(), ed25519_key_2()]);
+        assert!(v.registered_tee_keys.is_empty());
     }
 
     #[test]
