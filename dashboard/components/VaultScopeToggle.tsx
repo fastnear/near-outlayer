@@ -145,9 +145,11 @@ export function VaultScopeToggle({
         {(vaults ?? []).map((v) => (
           <option key={v.vault_id} value={v.vault_id}>
             {v.vault_id}
-            {/* Pubkey suffix as a per-vault identifier — full pubkey is
-                too long for a dropdown row. */}
-            {v.near_pubkey ? ` — ${v.near_pubkey.replace(/^ed25519:/, '').slice(0, 12)}…` : ''}
+            {/* Wallet count surfaces how much the customer has minted
+                under this vault — helps disambiguate when several
+                vaults exist. */}
+            {' '}
+            ({v.wallet_count} {v.wallet_count === 1 ? 'wallet' : 'wallets'})
           </option>
         ))}
       </select>

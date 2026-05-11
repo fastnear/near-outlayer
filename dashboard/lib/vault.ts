@@ -457,11 +457,12 @@ export async function signVaultVerification(
 export interface VaultListEntry {
   vault_id: string;
   /**
-   * Custody NEAR public key (`ed25519:<base58>`) derived from this
-   * vault's per-customer master. The implicit account id is
-   * `hex(pubkey)` — the dashboard can render either.
+   * Number of custody wallets minted under this vault. Each call to
+   * `POST /register {vault_id}` and each sub-agent `PUT /api-key`
+   * adds one. Zero means the vault is verified on chain but no API
+   * key has been minted yet.
    */
-  near_pubkey: string | null;
+  wallet_count: number;
 }
 
 export async function listVaults(
@@ -556,6 +557,13 @@ export interface VerifyReport {
    * top-up prompt below this threshold.
    */
   amountYocto: string;
+  /**
+   * Number of custody wallets minted under this vault (from
+   * `/customer/list-vaults`). `null` means the coordinator lookup
+   * failed (transient — vault verification itself is independent
+   * of this signal).
+   */
+  walletCount: number | null;
 }
 
 /**
@@ -578,6 +586,32 @@ export async function verifyVault(
   const cfg = getVaultNetworkConfig(network);
 
   const info = await viewAccountInfo(rpcUrl, vaultId);
+  // Fetch the wallet count alongside the on-chain checks. The
+  // coordinator's /customer/list-vaults aggregates wallet_accounts +
+  // sub-agent api-key rows per vault — we look up the row matching
+  // this vault id. Owner is the dot-suffix of the vault account
+  // (e.g. `new.zavodil2.testnet` → `zavodil2.testnet`). Lookup
+  // failure is non-fatal: the verify result still loads, the count
+  // just renders as "unknown".
+  const dotIdx = vaultId.indexOf('.');
+  const owner = dotIdx > 0 ? vaultId.slice(dotIdx + 1) : '';
+  const walletCount: number | null = await (async () => {
+    if (!owner) return null;
+    try {
+      const list = await listVaults(network, owner);
+      const entry = list.find((v) => v.vault_id === vaultId);
+      // `entry === undefined`: vault has no wallets minted yet OR
+      //   never appeared in coordinator state. Either way render as
+      //   `unknown` so we don't claim "0" for a vault that might
+      //   just be too new to show up.
+      // `wallet_count` field missing: coordinator hasn't been
+      //   redeployed with the GROUP BY aggregation — also unknown.
+      return entry?.wallet_count ?? null;
+    } catch {
+      return null;
+    }
+  })();
+
   if (!info.exists) {
     return {
       vaultId,
@@ -589,6 +623,7 @@ export async function verifyVault(
       warnings: [`Account ${vaultId} does not exist on ${network}`],
       safe: false,
       amountYocto: '0',
+      walletCount,
     };
   }
 
@@ -626,8 +661,15 @@ export async function verifyVault(
     if (state.unlocked) {
       warnings.push('vault is UNLOCKED — parent has post-recovery key authority');
     }
-    if (state.registered_tee_keys.length === 0) {
-      warnings.push('vault has no registered TEE keys');
+    // `registered_tee_keys` is the explicit DAO-gated allow-list
+    // populated by `propose_tee_key`. The INITIAL TEE function-call
+    // key from the atomic deploy lives only on the access-key list
+    // (check below), not in this vec, so an empty vec right after
+    // init is the normal state. Only flag it once the parent has
+    // unlocked the vault — at that point we expect at least one
+    // registered key, otherwise there's no path back into the TEE.
+    if (state.registered_tee_keys.length === 0 && state.unlocked) {
+      warnings.push('vault is unlocked but has no registered TEE keys');
     }
     if (state.recovery) {
       warnings.push(`recovery in progress (${state.recovery.trigger})`);
@@ -700,5 +742,6 @@ export async function verifyVault(
     warnings,
     safe,
     amountYocto: info.amountYocto,
+    walletCount,
   };
 }

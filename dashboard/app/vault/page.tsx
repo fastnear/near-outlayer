@@ -683,6 +683,26 @@ function VaultDetailPanel(props: {
             <tr>
               <td
                 className="text-gray-500 pr-3"
+                title="Custody wallets minted under this vault via POST /register {vault_id} and PUT /api-key (sub-agents). Each wallet has its own wk_ API key and a distinct derived address; all share the per-vault master inside the keystore TEE."
+              >
+                Custody wallets
+              </td>
+              <td>
+                {report.walletCount === null ? (
+                  <span className="text-gray-400">unknown (coordinator lookup failed)</span>
+                ) : (
+                  <>
+                    <strong>{report.walletCount}</strong>
+                    {report.walletCount === 0 && (
+                      <span className="text-gray-500"> — none minted yet; <code>POST /register {`{"vault_id":"${report.vaultId}"}`}</code></span>
+                    )}
+                  </>
+                )}
+              </td>
+            </tr>
+            <tr>
+              <td
+                className="text-gray-500 pr-3"
                 title="Informational rotation registry inside the contract.
 The authoritative list is the account's access keys (see vault-checker).
 Atomic deploy adds the FC access key at the account level only — this Vec
@@ -709,6 +729,33 @@ tracking."
             )}
           </tbody>
         </table>
+      )}
+
+      {/* Agent integration hint — only shown for safe vaults to avoid
+          pointing customers at a vault they shouldn't yet use. */}
+      {report.safe && (
+        <div className="bg-blue-50 border border-blue-200 rounded p-3 mb-3 text-xs">
+          <div className="font-medium text-blue-900 mb-1">Use this vault with an AI agent</div>
+          <p className="text-gray-700 mb-2">
+            Drop the{' '}
+            <a
+              href="https://skills.outlayer.ai/agent-custody/SKILL.md"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-700 underline hover:text-blue-900"
+            >
+              agent-custody skill
+            </a>{' '}
+            into your agent (Claude, Cursor, your own LLM tool). It teaches the
+            agent how to mint a custody wallet under <code>{report.vaultId}</code>
+            {' '}via <code>POST /register</code>, derive on-chain addresses,
+            sign messages, send transfers and cross-chain swaps, all
+            backed by your per-customer master inside the keystore TEE.
+            The agent will not be able to deploy or recover the vault
+            itself — those are user actions — but it can use any number
+            of derived custody wallets you authorise it to mint.
+          </p>
+        </div>
       )}
 
       {/* Top-up prompt — shown whenever the vault balance is low. The
