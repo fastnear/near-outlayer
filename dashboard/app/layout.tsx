@@ -4,6 +4,7 @@ import { Inter } from 'next/font/google';
 import './globals.css';
 import { NearWalletProvider } from '@/contexts/NearWalletContext';
 import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNearWallet } from '@/contexts/NearWalletContext';
 import { getCoordinatorApiUrl } from '@/lib/api';
@@ -14,11 +15,16 @@ const inter = Inter({ subsets: ['latin'] });
 function PendingApprovalsBadge() {
   const { accountId, isConnected, network, contractId, viewMethod } = useNearWallet();
   const coordinatorUrl = getCoordinatorApiUrl(network);
+  const pathname = usePathname();
   const [count, setCount] = useState(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Stable ref for viewMethod to avoid re-triggering useEffect on every render
   const viewMethodRef = useRef(viewMethod);
   viewMethodRef.current = viewMethod;
+
+  // Only poll the coordinator on the approvals page itself, to avoid
+  // hammering /wallet/v1/pending_approvals_by_pubkey from every page.
+  const pollingEnabled = pathname === '/wallet/approvals';
 
   const fetchCount = useCallback(async () => {
     if (!accountId || !contractId) return;
@@ -47,11 +53,11 @@ function PendingApprovalsBadge() {
   }, [accountId, contractId, coordinatorUrl]);
 
   useEffect(() => {
-    if (!isConnected || !accountId) { setCount(0); return; }
+    if (!isConnected || !accountId || !pollingEnabled) { setCount(0); return; }
     fetchCount();
     intervalRef.current = setInterval(fetchCount, 30_000);
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
-  }, [isConnected, accountId, fetchCount]);
+  }, [isConnected, accountId, fetchCount, pollingEnabled]);
 
   if (count <= 0) return null;
   return (

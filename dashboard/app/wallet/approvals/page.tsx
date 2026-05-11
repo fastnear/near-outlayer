@@ -52,6 +52,10 @@ function WalletApprovalsContent() {
   const [nextRefreshIn, setNextRefreshIn] = useState<number | null>(null);
   // Cached wallet pubkeys (loaded once from contract, reused for polling)
   const walletPubkeysRef = useRef<string[]>([]);
+  // BroadcastChannel shared by all open tabs of this page: the leader tab
+  // (elected via Web Locks API) publishes fresh fetch results here so the
+  // followers update their UI without each hitting the coordinator.
+  const broadcastRef = useRef<BroadcastChannel | null>(null);
 
   // API key for approve action
   const [apiKey, setApiKey] = useState<string>('');
@@ -79,8 +83,10 @@ function WalletApprovalsContent() {
     }
   }, [approvals, apiKey]);
 
-  // Fetch pending approvals for cached wallet pubkeys (coordinator only, no RPC)
-  const fetchPendingApprovals = useCallback(async (pubkeys: string[], silent = false) => {
+  // Fetch pending approvals for cached wallet pubkeys (coordinator only, no RPC).
+  // Always broadcasts fresh results so other tabs of this page can update
+  // their UI without re-fetching.
+  const fetchPendingApprovals = useCallback(async (pubkeys: string[]) => {
     const allApprovals: PendingApproval[] = [];
     for (const pubkey of pubkeys) {
       try {
@@ -99,6 +105,7 @@ function WalletApprovalsContent() {
       }
     }
     setApprovals(allApprovals);
+    broadcastRef.current?.postMessage({ type: 'approvals-update', approvals: allApprovals });
   }, [coordinatorUrl]);
 
   // Initial load: get wallet pubkeys from contract (once), then fetch approvals
@@ -138,26 +145,83 @@ function WalletApprovalsContent() {
     }
   }, [isConnected, accountId, loadApprovals]);
 
-  // Auto-refresh timer: poll coordinator for pending approvals (no contract RPC)
+  // Auto-refresh timer with cross-tab dedup.
+  //
+  // Only one tab — the "leader", elected via the Web Locks API — actually
+  // polls the coordinator. Other open tabs of this page receive the leader's
+  // results via BroadcastChannel and update their UI without hitting the
+  // coordinator themselves. When the leader closes, the lock releases and
+  // another tab is promoted.
   useEffect(() => {
     if (!hasPolicies || !isConnected) {
       setNextRefreshIn(null);
       return;
     }
 
+    const channel =
+      typeof BroadcastChannel !== 'undefined'
+        ? new BroadcastChannel('outlayer-approvals-results')
+        : null;
+    broadcastRef.current = channel;
+
+    let cancelled = false;
+    let pollIntervalId: ReturnType<typeof setInterval> | null = null;
+    let releaseLock: (() => void) | null = null;
     let countdown = REFRESH_INTERVAL / 1000;
     setNextRefreshIn(countdown);
 
+    // Local 1-second tick drives the visible "next refresh in X" countdown on
+    // every tab. Followers reset their countdown whenever the leader broadcasts.
     const tick = setInterval(() => {
-      countdown -= 1;
-      if (countdown <= 0) {
-        fetchPendingApprovals(walletPubkeysRef.current, true);
-        countdown = REFRESH_INTERVAL / 1000;
-      }
+      countdown = Math.max(0, countdown - 1);
       setNextRefreshIn(countdown);
     }, 1000);
 
-    return () => clearInterval(tick);
+    if (channel) {
+      channel.onmessage = (event) => {
+        if (event.data?.type === 'approvals-update' && Array.isArray(event.data.approvals)) {
+          setApprovals(event.data.approvals as PendingApproval[]);
+          countdown = REFRESH_INTERVAL / 1000;
+          setNextRefreshIn(countdown);
+        }
+      };
+    }
+
+    const startLeaderPolling = () => {
+      if (cancelled) return;
+      pollIntervalId = setInterval(() => {
+        // fetchPendingApprovals already broadcasts via broadcastRef.
+        fetchPendingApprovals(walletPubkeysRef.current);
+        countdown = REFRESH_INTERVAL / 1000;
+        setNextRefreshIn(countdown);
+      }, REFRESH_INTERVAL);
+    };
+
+    const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined;
+    if (locks && typeof locks.request === 'function') {
+      locks.request(
+        'outlayer-approvals-leader',
+        { mode: 'exclusive' },
+        () =>
+          new Promise<void>((release) => {
+            if (cancelled) { release(); return; }
+            releaseLock = release;
+            startLeaderPolling();
+          }),
+      );
+    } else {
+      // No Web Locks API — fall back to per-tab polling.
+      startLeaderPolling();
+    }
+
+    return () => {
+      cancelled = true;
+      clearInterval(tick);
+      if (pollIntervalId) clearInterval(pollIntervalId);
+      if (releaseLock) releaseLock();
+      channel?.close();
+      broadcastRef.current = null;
+    };
   }, [hasPolicies, isConnected, fetchPendingApprovals]);
 
   // Approve a pending request (requires NEAR wallet signature, not API key)
