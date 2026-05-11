@@ -229,6 +229,58 @@ impl Keystore {
     ///
     /// Uses `HMAC-SHA256(master, seed)`; deterministic for any
     /// fixed `(master, seed)` pair.
+    ///
+    /// # Domain separation
+    ///
+    /// This method (and [`Keystore::derive_secp256k1_keypair`]) feed
+    /// `seed` directly into HMAC without a curve-tag. Cross-curve
+    /// safety relies on caller convention: every chain uses a
+    /// distinct seed suffix (`wallet:{id}:near` vs
+    /// `wallet:{id}:eth`, etc.), so the HMAC inputs never collide
+    /// in practice.
+    ///
+    /// **For future maintainers adding a new curve / KDF use-case:**
+    /// always prepend a unique curve-domain prefix to the HMAC input
+    /// (`mac.update(b"ed448:")` or similar). Don't copy this bare
+    /// pattern. Pin a `(master, seed) → pubkey` regression fixture
+    /// alongside the new method so accidental input changes surface
+    /// as test failures.
+    ///
+    /// # ⚠ Domain separation: bare HMAC, intentional
+    ///
+    /// This method does NOT prepend a curve-tag (e.g. `b"ed25519:"`)
+    /// to the HMAC input. [`Keystore::derive_secp256k1_keypair`] uses
+    /// the same bare pattern. [`Keystore::derive_x25519_keypair`]
+    /// (ECIES) does prepend `b"ecies:"`.
+    ///
+    /// The asymmetry is a historical artifact preserved deliberately:
+    /// adding a curve-tag here would change the HMAC output for every
+    /// existing `(master, seed)` pair, which would rotate every
+    /// already-derived NEAR / EVM address ever served to a customer.
+    /// Funds parked at those addresses would become unsignable from
+    /// the keystore (the new derivation produces different scalars).
+    /// Migrating safely requires a multi-week dual-derivation rollout
+    /// and customer-side asset moves; it is not a single-PR fix.
+    ///
+    /// **Cross-curve safety today** rests on caller convention:
+    /// every chain uses a distinct seed suffix
+    /// (`wallet:{id}:near` for Ed25519, `wallet:{id}:eth` for
+    /// secp256k1, `check:{counter}` for ephemerals, etc.), so the
+    /// HMAC inputs never collide across curves in practice. This is
+    /// enforced by code review, not by the type system.
+    ///
+    /// **For future maintainers adding a new curve / KDF use:**
+    ///   1. Always include a unique curve-domain prefix in the HMAC
+    ///      input — `mac.update(b"ed448:")` or similar — even if you
+    ///      "know" your seed already varies. Don't copy the bare
+    ///      pattern of this method.
+    ///   2. Add a regression test pinning a known `(master, seed) →
+    ///      pubkey` fixture so an accidental input change shows up
+    ///      as a test failure rather than a silent address rotation.
+    ///      See the existing fixtures in the `tests` module below.
+    ///
+    /// See `SECURITY.md` and audit report M-1 for the full background
+    /// and the migration plan template.
     pub fn derive_keypair(
         &self,
         customer: Option<&AccountId>,
@@ -563,6 +615,11 @@ impl Keystore {
     ///
     /// Same HMAC-SHA256 derivation as Ed25519, with the 32-byte output
     /// interpreted as a secp256k1 scalar.
+    ///
+    /// Note: like [`Keystore::derive_keypair`], this feeds `seed` into
+    /// HMAC without a curve-tag prefix. See that method's `Domain
+    /// separation` doc-section for the convention any future curve
+    /// addition MUST follow.
     pub fn derive_secp256k1_keypair(
         &self,
         customer: Option<&AccountId>,
@@ -1277,5 +1334,71 @@ mod tests {
         assert_eq!(sk1.to_bytes(), sk2.to_bytes());
         assert_eq!(vk1.as_bytes(), vk2.as_bytes());
         assert_eq!(path_1, path_2);
+    }
+
+    // ============ Pinned-pubkey regression fixtures ============
+    //
+    // Trip-wires for accidental changes to the HMAC input shape used
+    // by `derive_keypair` (Ed25519) and `derive_secp256k1_keypair`.
+    // Both methods feed the seed directly into HMAC without a
+    // curve-tag prefix; that's the documented contract on the
+    // method-level doc comments. If anyone "fixes" the missing
+    // prefix here, every customer's NEAR / EVM address rotates —
+    // these tests fail before the change can ship.
+    //
+    // Master is a fixed 32-byte string so the fixtures are
+    // reproducible across machines.
+    fn fixed_master() -> [u8; 32] {
+        let mut m = [0u8; 32];
+        for (i, b) in b"M-1 regression fixture .........".iter().enumerate() {
+            m[i] = *b;
+        }
+        m
+    }
+
+    #[test]
+    fn ed25519_pinned_fixture_for_known_master_seed() {
+        let ks = Keystore::from_master_secret(&fixed_master()).unwrap();
+        let (_, vk) = ks.derive_keypair(None, "wallet:fixed:near").unwrap();
+        // If this fails: someone changed the HMAC input for
+        // `derive_keypair`. Don't update the fixture — read the
+        // method's `Domain separation` doc-section first. Changing
+        // the input rotates every customer's NEAR address.
+        assert_eq!(
+            hex::encode(vk.as_bytes()),
+            "124d4dc445d7e1699bc95e94461540a21e605acf993b04e86da59cb046059f13",
+        );
+    }
+
+    #[test]
+    fn secp256k1_pinned_fixture_for_known_master_seed() {
+        let ks = Keystore::from_master_secret(&fixed_master()).unwrap();
+        let (_, pk) = ks.derive_secp256k1_keypair(None, "wallet:fixed:eth").unwrap();
+        // If this fails: someone changed the HMAC input for
+        // `derive_secp256k1_keypair`. Same warning as the Ed25519
+        // fixture above — changing the input rotates every
+        // customer's EVM address.
+        assert_eq!(
+            hex::encode(pk.to_encoded_point(true).as_bytes()),
+            "03ffd4869b507336699943453906991fe29fac4764f5a77410cbffea9496a6b420",
+        );
+    }
+
+    #[test]
+    fn hmac_inputs_diverge_across_curves_in_practice() {
+        // Co-pinned with the production caller convention: NEAR uses
+        // `wallet:{id}:near` and EVM uses `wallet:{id}:eth`. The two
+        // seeds MUST produce distinct HMAC outputs (and therefore
+        // distinct private scalars on each curve). This test would
+        // fail if a future caller-side bug normalised both chains
+        // onto the same seed string.
+        let ks = Keystore::from_master_secret(&fixed_master()).unwrap();
+        let (sk_near, _) = ks.derive_keypair(None, "wallet:fixed:near").unwrap();
+        let (sk_eth, _) = ks.derive_secp256k1_keypair(None, "wallet:fixed:eth").unwrap();
+        assert_ne!(
+            sk_near.to_bytes().as_slice(),
+            sk_eth.to_bytes().as_slice(),
+            "NEAR and EVM seeds must not share an HMAC input"
+        );
     }
 }

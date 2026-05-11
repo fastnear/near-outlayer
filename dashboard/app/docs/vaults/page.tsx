@@ -436,11 +436,26 @@ outlayer vault unlocked-add-key              vault.alice.near ed25519:...`}
             <strong>One-time cost:</strong> ~0.1 NEAR transferred to the
             new vault account. With <code>UseGlobalContract</code> the
             WASM lives in the global registry, so storage stake is just
-            the contract state (~0.004 NEAR). The remaining ~0.1 NEAR
-            covers the gas reserve for outbound MPC calls
+            the contract state (~0.004 NEAR). The remainder is the gas
+            reserve for outbound MPC calls
             (<code>vault.request_master → mpc.request_app_private_key</code>,
-            ~0.001 NEAR/call, master is cached afterwards). Top up if
-            you ever exhaust the reserve.
+            ~0.001 NEAR/call; the master is cached in the keystore TEE
+            after the first call).
+          </li>
+          <li>
+            <strong>Top-ups when the gas reserve runs low:</strong> gas
+            for <code>vault.request_master</code> is paid from the
+            vault account itself (it owns the TEE function-call key
+            that signs the call). If the balance falls below the
+            reserve threshold, the keystore eventually fails to
+            refresh your per-customer master in enclave memory and
+            derived-key requests stall until top-up. Top-up is a plain
+            on-chain NEAR transfer to the vault account from any
+            wallet — no contract method, no signature on a special
+            endpoint. The dashboard surfaces a banner with a suggested
+            transfer amount when the balance is below the threshold.
+            Operationally we recommend customers monitor the vault
+            balance the same way they monitor a hot wallet.
           </li>
           <li>
             <strong>Race-attack protection:</strong> a malicious customer

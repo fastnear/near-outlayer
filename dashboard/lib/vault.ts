@@ -542,7 +542,27 @@ export interface VerifyReport {
   warnings: string[];
   /** Final user-facing safety verdict — false ⇒ "do not deposit". */
   safe: boolean;
+  /**
+   * Vault account balance in yoctoNEAR. Surfaced because gas for
+   * outbound `vault.request_master → mpc.request_app_private_key` is
+   * paid from the vault account (it owns the FCAK that signs that
+   * call). When the balance falls below the gas reserve, the next
+   * MPC-CKD round-trip stalls and the keystore can no longer refresh
+   * the customer's master in enclave memory. The dashboard renders a
+   * top-up prompt below this threshold.
+   */
+  amountYocto: string;
 }
+
+/**
+ * Below this balance the dashboard surfaces a top-up warning. ~50
+ * MPC calls of headroom — enough that we don't cry-wolf during normal
+ * operation but loud enough that the customer notices before stalls.
+ */
+export const VAULT_LOW_BALANCE_YOCTO = BigInt('50000000000000000000000'); // 0.05 NEAR
+
+/** Minimum top-up the dashboard suggests when balance is low. */
+export const VAULT_TOPUP_SUGGESTED_YOCTO = BigInt('100000000000000000000000'); // 0.1 NEAR
 
 export async function verifyVault(
   viewMethod: ViewMethodFn,
@@ -564,6 +584,7 @@ export async function verifyVault(
       accessKeys: [],
       warnings: [`Account ${vaultId} does not exist on ${network}`],
       safe: false,
+      amountYocto: '0',
     };
   }
 
@@ -658,6 +679,13 @@ export async function verifyVault(
     !state.unlocked &&
     codeHashApproved === true;
 
+  if (BigInt(info.amountYocto) < VAULT_LOW_BALANCE_YOCTO) {
+    warnings.push(
+      `vault balance is ${(Number(info.amountYocto) / 1e24).toFixed(4)} NEAR — `
+        + `top up so the keystore can keep refreshing your master via MPC`,
+    );
+  }
+
   return {
     vaultId,
     isVerified,
@@ -667,5 +695,6 @@ export async function verifyVault(
     accessKeys,
     warnings,
     safe,
+    amountYocto: info.amountYocto,
   };
 }

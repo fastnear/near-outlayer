@@ -125,14 +125,16 @@ const GAS_CALLBACK: Gas = Gas::from_tgas(20);
 
 #[ext_contract(ext_keystore_dao)]
 pub trait ExtKeystoreDao {
-    /// keystore-dao expects `public_key: String`. `PublicKey` and
-    /// `String` JSON-serialize identically to the canonical
-    /// `ed25519:base58…` form (verified against
-    /// `near-sdk/src/types/public_key.rs`'s `serde::Serialize` impl), so
-    /// passing `PublicKey` produces a wire-compatible JSON call. The
-    /// Borsh representations differ but cross-contract calls go over
-    /// JSON-args, not Borsh.
-    fn is_keystore_approved(&self, public_key: PublicKey) -> bool;
+    /// Pinned to `String` to match keystore-dao's signature exactly
+    /// (`keystore-dao-contract/src/lib.rs::is_keystore_approved`). An
+    /// earlier version used `PublicKey` because near-sdk serialises
+    /// it to the same `"ed25519:base58…"` JSON shape that `String`
+    /// produces, so the wire bytes are identical. We pin to `String`
+    /// here to remove the implicit dependency on near-sdk's
+    /// `serde::Serialize for PublicKey` impl — the contract is
+    /// already deployed as immutable WASM, but new vault builds
+    /// should declare exactly what they put on the wire.
+    fn is_keystore_approved(&self, public_key: String) -> bool;
     fn is_ceased(&self) -> bool;
 }
 
@@ -245,6 +247,18 @@ impl Vault {
         mpc_contract: AccountId,
         initial_exit_window: Option<u64>,
     ) -> Self {
+        // The vault MUST be a direct sub-account of `parent`. Without
+        // this check anyone could deploy a vault on `attacker.near`
+        // listing `victim.near` as parent — `victim` would then
+        // appear (via on-chain queries) to control a vault they have
+        // no on-chain relationship to. The recovery path keys off
+        // `parent`, so a mis-bound vault hands its recovery to the
+        // wrong account. Enforce the on-chain naming relationship at
+        // construction time so this footgun is impossible.
+        require!(
+            env::current_account_id().is_sub_account_of(&parent),
+            "vault account must be a direct sub-account of `parent`"
+        );
         let window = initial_exit_window.unwrap_or(DEFAULT_UNILATERAL_EXIT_WINDOW_SECS);
         Self::assert_exit_window_in_range(window);
         Self {
@@ -294,7 +308,7 @@ impl Vault {
 
         ext_keystore_dao::ext(self.keystore_dao.clone())
             .with_static_gas(GAS_DAO_VIEW)
-            .is_keystore_approved(public_key.clone())
+            .is_keystore_approved(String::from(&public_key))
             .then(
                 Self::ext(env::current_account_id())
                     .with_static_gas(GAS_CALLBACK)
@@ -1139,6 +1153,54 @@ mod tests {
     fn new_rejects_too_long_exit_window() {
         testing_env!(ctx_for(alice()).build());
         let _ = Vault::new(alice(), dao(), mpc(), Some(MAX_UNILATERAL_EXIT_WINDOW_SECS + 1));
+    }
+
+    #[test]
+    fn new_accepts_direct_sub_account() {
+        // current = vault.alice.near, parent = alice.near. Direct
+        // sub-account relationship, must succeed and store fields
+        // verbatim.
+        testing_env!(ctx_for(alice()).build());
+        let v = Vault::new(alice(), dao(), mpc(), None);
+        assert_eq!(v.parent, alice());
+        assert_eq!(v.keystore_dao, dao());
+        assert_eq!(v.mpc_contract, mpc());
+        assert!(!v.unlocked);
+        assert!(v.recovery.is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "must be a direct sub-account of `parent`")]
+    fn new_rejects_sibling_parent() {
+        // current = vault.alice.near, parent = vault.alice.near
+        // (self). Self is not a sub-account of itself.
+        testing_env!(ctx_for(alice()).build());
+        let _ = Vault::new(vault_account(), dao(), mpc(), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "must be a direct sub-account of `parent`")]
+    fn new_rejects_unrelated_parent() {
+        // current_account_id = vault.alice.near, parent = bob.near.
+        // The vault is not a sub-account of bob, so construction
+        // must panic. Without this check, anyone could deploy a
+        // vault account whose name has no on-chain relationship to
+        // the `parent` it grants recovery to.
+        testing_env!(ctx_for(alice()).build());
+        let unrelated: AccountId = "bob.near".parse().unwrap();
+        let _ = Vault::new(unrelated, dao(), mpc(), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "must be a direct sub-account of `parent`")]
+    fn new_rejects_grandchild_parent_relationship() {
+        // current = vault.alice.near. Setting parent = .near would
+        // make the vault a *grandchild*, not a direct sub-account.
+        // Reject — the recovery semantics assume a direct parent
+        // (the only signer that owns the predecessor namespace).
+        testing_env!(ctx_for(alice()).build());
+        let tla: AccountId = "near".parse().unwrap();
+        let _ = Vault::new(tla, dao(), mpc(), None);
     }
 
     #[test]

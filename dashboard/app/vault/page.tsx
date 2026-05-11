@@ -19,7 +19,9 @@ import {
   signVaultVerification,
   VAULT_CALL_GAS,
   VAULT_INITIAL_YOCTO,
+  VAULT_LOW_BALANCE_YOCTO,
   VAULT_PARENT_BUDGET_YOCTO,
+  VAULT_TOPUP_SUGGESTED_YOCTO,
   verifyVault,
   viewAccountInfo,
   type VerifyReport,
@@ -598,6 +600,14 @@ function IssuedVaultPanel({
           <code>finalize_recovery</code>, and the per-customer master is
           recoverable via the <code>customer-recovery</code> script.
         </div>
+        <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+          <strong>Heads up:</strong> outbound MPC-CKD calls
+          (<code>vault.request_master</code>) burn gas from <em>this</em>{' '}
+          account. The vault was funded with ~0.1 NEAR at deploy — when the
+          balance gets low you&rsquo;ll need to top it up by sending NEAR to{' '}
+          <code>{data.vault}</code>. The dashboard surfaces a top-up
+          prompt on the vault detail page below the threshold.
+        </div>
       </div>
     </div>
   );
@@ -695,6 +705,22 @@ function VaultDetailPanel(props: {
             <tr>
               <td
                 className="text-gray-500 pr-3"
+                title="Vault account balance. Outbound MPC-CKD calls (vault.request_master → mpc.request_app_private_key) burn gas from this balance. Top up if low."
+              >
+                Balance
+              </td>
+              <td>
+                {(Number(report.amountYocto) / 1e24).toFixed(4)} NEAR
+                {BigInt(report.amountYocto) < VAULT_LOW_BALANCE_YOCTO && (
+                  <span className="ml-2 text-amber-700 font-medium">
+                    ⚠ low — top up below
+                  </span>
+                )}
+              </td>
+            </tr>
+            <tr>
+              <td
+                className="text-gray-500 pr-3"
                 title="Informational rotation registry inside the contract.
 The authoritative list is the account's access keys (see vault-checker).
 Atomic deploy adds the FC access key at the account level only — this Vec
@@ -721,6 +747,39 @@ tracking."
             )}
           </tbody>
         </table>
+      )}
+
+      {/* Top-up prompt — shown whenever the vault balance is low. The
+          gas to refresh the per-customer master via MPC-CKD is paid
+          out of this balance, so an empty vault wedges the keystore's
+          ability to keep serving derived keys for this customer until
+          the parent (or anyone, NEAR transfers are permissionless)
+          tops it up. */}
+      {report.exists && BigInt(report.amountYocto) < VAULT_LOW_BALANCE_YOCTO && (
+        <div className="bg-amber-50 border border-amber-300 rounded p-3 mb-3 text-sm">
+          <div className="font-medium text-amber-900 mb-1">⚠ Vault balance is low</div>
+          <p className="text-gray-700 mb-2">
+            <code>{report.vaultId}</code> has{' '}
+            <strong>{(Number(report.amountYocto) / 1e24).toFixed(4)} NEAR</strong>.
+            Outbound MPC-CKD calls (<code>vault.request_master</code>) burn gas
+            from this account. Once the balance goes below storage stake the
+            keystore stops being able to refresh your master, and any
+            derived-key request that requires re-fetching it will stall.
+          </p>
+          <p className="text-gray-700 mb-2">
+            Top up by transferring NEAR to <code>{report.vaultId}</code> from
+            any account — it&rsquo;s a plain on-chain transfer, no contract
+            method. Suggested:{' '}
+            <strong>{(Number(VAULT_TOPUP_SUGGESTED_YOCTO) / 1e24).toFixed(2)} NEAR</strong>{' '}
+            (~100 MPC calls of headroom).
+          </p>
+          <pre className="text-xs bg-white border border-gray-200 rounded p-2 mt-2 overflow-x-auto">
+{`# CLI:
+near send <your_account> ${report.vaultId} ${(Number(VAULT_TOPUP_SUGGESTED_YOCTO) / 1e24).toFixed(2)}
+
+# or any wallet — Send NEAR to ${report.vaultId}`}
+          </pre>
+        </div>
       )}
 
       <button

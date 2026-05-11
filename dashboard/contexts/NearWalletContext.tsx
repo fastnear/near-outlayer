@@ -102,6 +102,42 @@ export function NearWalletProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  // Patch every sandboxed wallet iframe so it gets the `bluetooth`
+  // feature-policy permission — without this, Ledger Nano X over BLE
+  // fails silently inside the wallet sandbox. NearConnector creates
+  // the iframes dynamically when the picker opens, so a one-shot
+  // querySelectorAll isn't enough; we keep a MutationObserver running
+  // for the lifetime of the page. Same fix shipped by the trezu
+  // reference impl (nt-fe/stores/near-store.ts:45-66).
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const ensureBluetoothAllow = (iframe: HTMLIFrameElement) => {
+      if (iframe.dataset.bluetoothPatched === '1') return;
+      const cur = iframe.getAttribute('allow') || '';
+      if (cur.includes('bluetooth')) {
+        iframe.dataset.bluetoothPatched = '1';
+        return;
+      }
+      const next = cur ? `${cur}; bluetooth *` : 'bluetooth *';
+      iframe.setAttribute('allow', next);
+      iframe.dataset.bluetoothPatched = '1';
+    };
+    document.querySelectorAll('iframe').forEach(ensureBluetoothAllow);
+    const observer = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        m.addedNodes.forEach((node) => {
+          if (node instanceof HTMLIFrameElement) {
+            ensureBluetoothAllow(node);
+          } else if (node instanceof Element) {
+            node.querySelectorAll('iframe').forEach(ensureBluetoothAllow);
+          }
+        });
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, []);
+
   // Initialize connector and restore session on every network change.
   useEffect(() => {
     setIsWalletReady(false);
@@ -121,13 +157,25 @@ export function NearWalletProvider({ children }: { children: ReactNode }) {
     };
 
     (async () => {
-      // The upstream manifest doesn't set `features.testnet: true`
-      // on wallets that DO support testnet (MyNearWallet, HOT,
-      // Meteor, OKX, …). NearConnector hides every wallet without
-      // that flag when `network === 'testnet'`, leaving the picker
-      // nearly empty. Fetch the manifest, force-enable testnet on
-      // every entry, and pass the patched object inline so the
-      // picker stays consistent mainnet vs testnet.
+      // The upstream manifest is missing two things we need to patch
+      // before passing it to NearConnector:
+      //
+      // (1) `features.testnet: true` on wallets that DO support testnet
+      //     (MyNearWallet, HOT, Meteor, OKX, …). Without this flag the
+      //     connector hides them when `network === 'testnet'`.
+      //
+      // (2) Per-wallet `permissions.allowsOpen` for testnet domain
+      //     variants. Example: MyNearWallet's manifest only allows
+      //     `https://app.mynearwallet.com`, but its sandbox tries to
+      //     `open` `https://testnet.mynearwallet.com` on testnet — the
+      //     connector then rejects with a fatal-looking "Permission
+      //     denied" thrown from `assertPermissions`. We extend
+      //     `allowsOpen` per known wallet so the testnet flow works.
+      //
+      // All patches live inline and don't depend on upstream changes.
+      const ALLOWS_OPEN_TESTNET_PATCHES: Record<string, string[]> = {
+        mynearwallet: ['https://testnet.mynearwallet.com'],
+      };
       let manifestObj: { wallets: any[]; version: string } | undefined;
       try {
         const res = await fetch(
@@ -138,6 +186,15 @@ export function NearWalletProvider({ children }: { children: ReactNode }) {
           for (const w of m.wallets) {
             if (!w.features) w.features = {};
             w.features.testnet = true;
+
+            const extra = ALLOWS_OPEN_TESTNET_PATCHES[w.id];
+            if (extra) {
+              if (!w.permissions) w.permissions = {};
+              const existing = Array.isArray(w.permissions.allowsOpen)
+                ? w.permissions.allowsOpen
+                : [];
+              w.permissions.allowsOpen = Array.from(new Set([...existing, ...extra]));
+            }
           }
           manifestObj = m;
         }
@@ -150,18 +207,28 @@ export function NearWalletProvider({ children }: { children: ReactNode }) {
       connector = new NearConnector({
         network: network,
         autoConnect: false,
-        // Meteor and Trezu ship a bundled @near-js that predates the
-        // UseGlobalContract action — their signers reject the vault
-        // deploy tx with a cryptic "Invalid action type". Hiding them
-        // up front is more honest than letting the user pick a broken
-        // option and then erroring after the wallet UI opens.
-        excludedWallets: ['meteor-wallet', 'trezu-wallet'],
+        // We previously excluded `meteor-wallet` and `trezu-wallet`
+        // because their bundled @near-js predates the
+        // UseGlobalContract action and the vault deploy tx would
+        // fail with "Invalid action type". Re-enabling them now —
+        // most wallet operations (login, signMessage, regular
+        // signAndSendTransaction) work fine, and the explicit
+        // pre-flight check in `signAndSendTransaction` below catches
+        // UseGlobalContract attempts with a clear error pointing the
+        // user at MyNearWallet / HOT / Intear instead of the cryptic
+        // wallet-side failure.
         ...(manifestObj ? { manifest: manifestObj } : {}),
       });
 
       connectorRef.current = connector;
 
       connector.on('wallet:signIn', handleSignIn as any);
+      // Some wallets emit `wallet:signInAndSignMessage` when the user
+      // signs in and signs a message in a single round-trip; the
+      // payload shape is the same as `wallet:signIn`. Without this
+      // listener we'd miss the accountId update for those flows
+      // (caught by trezu's reference impl in nt-fe/stores/near-store.ts).
+      connector.on('wallet:signInAndSignMessage', handleSignIn as any);
       connector.on('wallet:signOut', handleSignOut);
 
       // Try to restore an existing session — if the user previously
@@ -184,6 +251,7 @@ export function NearWalletProvider({ children }: { children: ReactNode }) {
       cancelled = true;
       if (connector) {
         connector.off('wallet:signIn', handleSignIn as any);
+        connector.off('wallet:signInAndSignMessage', handleSignIn as any);
         connector.off('wallet:signOut', handleSignOut);
       }
     };
@@ -230,21 +298,31 @@ export function NearWalletProvider({ children }: { children: ReactNode }) {
     if (!connector) throw new Error('Wallet not initialized');
     const wallet = await connector.wallet();
 
-    // Some wallets ship an @near-js old enough to predate the
-    // UseGlobalContract action — their signer rejects the tx with a
-    // cryptic "Invalid action type". Detect that here and surface a
-    // useful message instead. List grows from observed failures, not
-    // from speculation.
+    // Several wallets ship an @near-js old enough to predate the
+    // UseGlobalContract action (NEP-591). Failure modes observed:
+    //   - Meteor / Trezu throw a cryptic "Invalid action type" from
+    //     their selector-action converter.
+    //   - MyNearWallet ships near-api-js@0.45.1 (years pre-NEP-591),
+    //     deserialises the action discriminant inside a Promise its
+    //     UI doesn't surface — the sign page just hangs.
+    // Pre-empt with an explicit message rather than letting the user
+    // wait at a frozen wallet UI. Recommendation depends on network:
+    // HOT's sandbox doesn't surface in the testnet picker today, so
+    // there we point only at Intear.
     const usesGlobalContract = Array.isArray(params?.actions)
       && params.actions.some((a: any) => a?.useGlobalContract != null);
     if (usesGlobalContract) {
       const walletId = wallet?.manifest?.id ?? '';
-      const INCOMPATIBLE = new Set(['meteor-wallet', 'trezu-wallet']);
+      const INCOMPATIBLE = new Set(['meteor-wallet', 'trezu-wallet', 'mynearwallet']);
       if (INCOMPATIBLE.has(walletId)) {
+        const recommend =
+          network === 'testnet'
+            ? 'Reconnect with Intear and retry.'
+            : 'Reconnect with HOT or Intear and retry.';
         throw new Error(
           `${wallet.manifest.name} cannot sign vault deploys yet — its bundled `
-          + `@near-js predates the UseGlobalContract action. Reconnect with `
-          + `MyNearWallet, HOT, or Intear and retry.`,
+          + `@near-js predates the UseGlobalContract action (NEP-591). `
+          + recommend,
         );
       }
     }

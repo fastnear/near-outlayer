@@ -41,14 +41,36 @@ export default function SecretsPage() {
       });
 
       // Filter out System accessor (Payment Keys) - those are managed on /payment-keys page
-      const filteredSecrets = (Array.isArray(secrets) ? secrets : []).filter(
+      const filteredSecrets: UserSecret[] = (Array.isArray(secrets) ? secrets : []).filter(
         (s: UserSecret) => {
           if (!s.accessor || typeof s.accessor !== 'object') return true;
           return !('System' in s.accessor);
         }
       );
 
+      // Show the list immediately so the page isn't blocked on vault
+      // lookups, then enrich each entry in parallel with its on-chain
+      // vault-id binding. `get_secret_vault` returns null for legacy
+      // default-master secrets and the vault account id for vault-bound
+      // ones; the result back-fills the badge in `SecretCard` without
+      // re-rendering anything else.
       setUserSecrets(filteredSecrets);
+
+      const enriched = await Promise.all(
+        filteredSecrets.map(async (s) => {
+          try {
+            const v = await viewMethod({
+              contractId,
+              method: 'get_secret_vault',
+              args: { accessor: s.accessor, profile: s.profile, owner: accountId },
+            });
+            return { ...s, vault_id: typeof v === 'string' ? v : null };
+          } catch {
+            return { ...s, vault_id: null };
+          }
+        }),
+      );
+      setUserSecrets(enriched);
     } catch (err) {
       console.error('Failed to load user secrets:', err);
       setError(`Failed to load secrets: ${(err as Error).message}`);

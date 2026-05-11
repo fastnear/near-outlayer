@@ -399,18 +399,76 @@ async fn initialize_keystore(_config: &Config) -> Result<Keystore> {
         tracing::warn!("KEYSTORE_MASTER_SECRET not found - generating new master secret");
         let keystore = Keystore::generate();
 
-        // Get hex representation for user to save
+        // Get hex representation for the operator to capture.
         let master_hex = keystore.default_master_hex();
 
-        tracing::warn!("");
-        tracing::warn!("=================================================================");
-        tracing::warn!("IMPORTANT: Save this master secret to persist keystore:");
-        tracing::warn!("KEYSTORE_MASTER_SECRET={}", master_hex);
-        tracing::warn!("");
-        tracing::warn!("Add this to your .env file to avoid generating a new secret");
-        tracing::warn!("on next restart (which would invalidate all encrypted secrets)");
-        tracing::warn!("=================================================================");
-        tracing::warn!("");
+        // Log only a sha256 fingerprint via the structured logger —
+        // anything written via `tracing::*` is liable to end up in
+        // log shippers, SIEMs, Phala dashboards, and operator
+        // terminals' scrollback. Raw master never goes there.
+        let fp = {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(master_hex.as_bytes());
+            let d = h.finalize();
+            hex::encode(&d[..4])
+        };
+        tracing::warn!(
+            "Generated new keystore master (fingerprint sha256[..8]: {fp}). \
+             Capture the secret out-of-band as instructed below — restarting \
+             without saving it invalidates every encrypted secret already \
+             stored against this keystore."
+        );
+
+        // Raw master goes either to a 0o600 file (preferred,
+        // pickup-able by the operator's deploy automation) or, as a
+        // last resort, to stderr — bypassing `tracing` entirely so
+        // it doesn't reach structured-log destinations.
+        if let Ok(out_path) = std::env::var("KEYSTORE_MASTER_SECRET_OUT_PATH") {
+            use std::io::Write as _;
+            let mut opts = std::fs::OpenOptions::new();
+            opts.write(true).create(true).truncate(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt as _;
+                opts.mode(0o600);
+            }
+            match opts.open(&out_path) {
+                Ok(mut f) => {
+                    let _ = writeln!(f, "KEYSTORE_MASTER_SECRET={master_hex}");
+                    tracing::warn!(
+                        "Wrote new master to {out_path} (mode 0600). Move it into your .env \
+                         and `unset KEYSTORE_MASTER_SECRET_OUT_PATH` before next start."
+                    );
+                }
+                Err(e) => {
+                    // Fall back to stderr if the file can't be created
+                    // — better than losing the secret silently.
+                    eprintln!(
+                        "WARN: KEYSTORE_MASTER_SECRET_OUT_PATH={out_path} could not be written ({e}); \
+                         emitting master to stderr instead."
+                    );
+                    eprintln!("KEYSTORE_MASTER_SECRET={master_hex}");
+                }
+            }
+        } else {
+            // Stderr (not tracing!) — the operator running the binary
+            // interactively sees this once; log shippers usually only
+            // capture stdout (and tracing-subscriber writes to stdout
+            // by default). Not perfect, but a meaningful step up from
+            // burying the secret in a `warn!` event.
+            eprintln!();
+            eprintln!("=================================================================");
+            eprintln!("IMPORTANT: capture this master secret now (printed once on stderr):");
+            eprintln!("KEYSTORE_MASTER_SECRET={master_hex}");
+            eprintln!();
+            eprintln!("Add it to your .env to persist the keystore. Restarting without it");
+            eprintln!("regenerates a new master and invalidates every encrypted secret.");
+            eprintln!("Set KEYSTORE_MASTER_SECRET_OUT_PATH=<file> on next start to receive");
+            eprintln!("the secret in a 0o600 file instead of stderr.");
+            eprintln!("=================================================================");
+            eprintln!();
+        }
 
         Ok(keystore)
     }

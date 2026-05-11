@@ -1040,35 +1040,60 @@ async fn assert_serving_allowed(
         );
     }
 
-    // get_state can fail for "real" reasons even when DAO still
-    // lists the vault as verified — most importantly when the parent
-    // has finalized recovery and then deleted the vault account
-    // (delete_account is reachable post-unlock via FullAccess key).
-    // In that case the cached master must NOT keep being served, and
-    // we should bail with a clear message rather than retrying.
+    // get_state can fail for two distinct reasons:
+    //   (a) Authoritative — vault account no longer exists. Most
+    //       importantly the parent finalized recovery and deleted the
+    //       vault (delete_account is reachable post-unlock via the
+    //       FullAccess key). The cached master MUST stop being served.
+    //   (b) Transient — RPC node hiccup, timeout, 5xx, network blip.
+    //       Evicting on transients drains the customer's vault: every
+    //       follow-up request triggers another MPC CKD round-trip
+    //       (~0.001 NEAR/call burned from the vault's gas reserve).
+    //       Sustained RPC flapping = sustained drain (M-2).
+    // Disambiguate by error string: the NEAR RPC reports `UnknownAccount`
+    // / `does not exist` for case (a) and arbitrary transport / timeout
+    // text for case (b). We only evict on (a); for (b) we keep the
+    // cache and propagate the error so the caller can retry.
     let state = match near_client
         .view_call_json(vault_id, "get_state", serde_json::json!({}))
         .await
     {
         Ok(v) => v,
         Err(e) => {
-            keystore.evict_customer(vault_id);
+            let msg = format!("{e:#}");
+            let authoritative_gone =
+                msg.contains("UnknownAccount") || msg.contains("does not exist");
+            if authoritative_gone {
+                keystore.evict_customer(vault_id);
+                anyhow::bail!(
+                    "vault {} no longer exists on chain; evicting cached master. \
+                     If the vault was deleted post-recovery this is expected — \
+                     customers must re-derive via direct MPC.",
+                    vault_id
+                );
+            }
+            // Transient — keep the cache. Caller retries.
             anyhow::bail!(
-                "vault {} get_state failed ({}); evicting cached master and \
-                 refusing to serve. If the vault account was deleted post-recovery, \
-                 this is expected and customers must re-derive via direct MPC.",
+                "vault {} get_state failed (transient: {}); cache retained, \
+                 retry on next request.",
                 vault_id,
                 e
             );
         }
     };
+    // Malformed payload almost never happens in production — both
+    // sides of get_state live in this monorepo and the CI catches
+    // schema drift before deploy. Don't evict on this path: an
+    // accidental contract-side change shouldn't auto-drain every
+    // customer's vault while we wait for a hotfix.
     let unlocked = state
         .get("unlocked")
         .and_then(|v| v.as_bool())
         .ok_or_else(|| {
-            keystore.evict_customer(vault_id);
             anyhow::anyhow!(
-                "vault {} get_state returned malformed payload: {}",
+                "vault {} get_state returned malformed payload: {} \
+                 (cache retained — this likely indicates a contract / \
+                 keystore-worker version mismatch, not a customer-side issue)",
                 vault_id,
                 state
             )

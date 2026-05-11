@@ -26,6 +26,14 @@ export interface UserSecret {
   updated_at: number;
   storage_deposit: string;
   access: unknown; // Contract format (PascalCase)
+  /**
+   * On-chain vault-id binding for this secret, fetched client-side via
+   * `get_secret_vault(accessor, profile, owner)` after the list comes
+   * back. `undefined` = lookup not yet completed; `null` = not bound to
+   * a vault (default OutLayer master); a string = bound to that MPC
+   * vault. Surfaces in the UI as a badge on the secret card.
+   */
+  vault_id?: string | null;
 }
 
 // Form data for creating secrets

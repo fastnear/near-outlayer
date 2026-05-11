@@ -1127,10 +1127,19 @@ impl KeystoreDao {
         //   * `ban_vault`             — automated race-attack monitor
         //                                may invoke this when it
         //                                detects duplicate MPC calls.
-        let allowance = Allowance::limited(NearToken::from_near(1)).unwrap();
+        //
+        // Unlimited allowance: a finite allowance (previously 1 NEAR
+        // ≈ 1000 tx) creates a single-point-of-failure where a
+        // sustained spam against `/sign-vault-verification` could
+        // drain the key, bricking BOTH `mark_vault_verified` AND
+        // `ban_vault` for every customer simultaneously. The blast
+        // radius (whole trust pipeline) outweighs the upside of a
+        // gas budget cap, especially since the FCAK is already
+        // method-list-bounded (no transfer / cross-contract escape)
+        // and the holder runs inside an attested TEE.
         Promise::new(env::current_account_id()).add_access_key_allowance(
             proposal.public_key.clone(),
-            allowance,
+            Allowance::Unlimited,
             env::current_account_id(),
             "request_key,mark_vault_verified,ban_vault".to_string(),
         );

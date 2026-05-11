@@ -40,8 +40,15 @@ impl MockKeystoreDao {
 
     // ===== Vault-facing API (matches the real keystore-dao surface) =====
 
-    pub fn is_keystore_approved(&self, public_key: PublicKey) -> bool {
-        self.approved_keystores.contains(&public_key)
+    /// Mirrors the real `keystore-dao-contract::is_keystore_approved`
+    /// signature exactly: argument is `String`, parsed into a
+    /// `PublicKey` inside. Lets the vault-contract integration tests
+    /// exercise the same wire shape that production deploys hit.
+    pub fn is_keystore_approved(&self, public_key: String) -> bool {
+        let Ok(parsed) = public_key.parse::<PublicKey>() else {
+            return false;
+        };
+        self.approved_keystores.contains(&parsed)
     }
 
     pub fn is_ceased(&self) -> bool {

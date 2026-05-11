@@ -1032,8 +1032,23 @@ pub fn create_router(state: AppState) -> Router {
     // keeps the deploy story simple (one keystore token in coordinator
     // env, one in worker env, no double-allowlisting required) without
     // weakening the trust model.
-    let vault_routes = Router::new()
+    // /sign-vault-verification submits `mark_vault_verified` on chain
+    // using the worker's keystore-DAO access key — every legitimate
+    // call burns a small amount of that key's gas budget. To shrink
+    // the blast radius of a leaked TEE-worker token, we restrict this
+    // endpoint to coordinator auth only. Workers don't need to call
+    // it (the verification flow is coordinator-driven); they keep
+    // their wider auth on /decrypt, /derive, /wallet/*, etc.
+    let vault_sign_routes = Router::new()
         .route("/sign-vault-verification", post(sign_vault_verification_handler))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            coordinator_auth_middleware,
+        ));
+
+    // /derive-vault-tee-key returns a deterministic pubkey, no on-chain
+    // tx, no allowance burn — safe on the wider TEE-registration lane.
+    let vault_derive_routes = Router::new()
         .route("/derive-vault-tee-key", post(derive_vault_tee_key_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -1059,7 +1074,8 @@ pub fn create_router(state: AppState) -> Router {
         .merge(worker_routes)
         .merge(coordinator_routes)
         .merge(admin_routes)
-        .merge(vault_routes)
+        .merge(vault_sign_routes)
+        .merge(vault_derive_routes)
         .merge(tee_routes)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -1439,6 +1455,13 @@ async fn decrypt_handler(
     // - This is correct because seed must match the one used during encryption
     // - Access control already validated above (only owner can decrypt their secrets)
     // - Contract already returned the correct secrets based on request parameters
+    //
+    // The `seed` values logged below are NOT secrets — they are the
+    // public input to `HMAC(master, seed)`. The actual secret half
+    // is the master, which lives only in TEE enclave memory and is
+    // never logged. Logging the seed at debug level helps support
+    // hunt seed-mismatch bugs (caller computed seed != keystore's
+    // computed seed) without exposing any cryptographic material.
     let seed = match &req.accessor {
         SecretAccessor::Repo { repo, branch: request_branch } => {
             let normalized_repo = crate::utils::normalize_repo_url(repo);
@@ -1487,7 +1510,7 @@ async fn decrypt_handler(
                 format!("{}:{}", normalized_repo, req.owner)
             };
 
-            tracing::info!(
+            tracing::debug!(
                 task_id = %task_id_str,
                 repo_normalized = %normalized_repo,
                 owner = %req.owner,
@@ -1501,7 +1524,7 @@ async fn decrypt_handler(
         SecretAccessor::WasmHash { hash } => {
             let seed = format!("wasm_hash:{}:{}", hash, req.owner);
 
-            tracing::info!(
+            tracing::debug!(
                 task_id = %task_id_str,
                 wasm_hash = %hash,
                 owner = %req.owner,
@@ -1514,7 +1537,7 @@ async fn decrypt_handler(
         SecretAccessor::Project { project_id } => {
             let seed = format!("project:{}:{}", project_id, req.owner);
 
-            tracing::info!(
+            tracing::debug!(
                 task_id = %task_id_str,
                 project_id = %project_id,
                 owner = %req.owner,
@@ -1529,7 +1552,7 @@ async fn decrypt_handler(
             // nonce is stored in profile field
             let seed = format!("system:{}:{}:{}", secret_type.as_seed_str(), req.owner, req.profile);
 
-            tracing::info!(
+            tracing::debug!(
                 task_id = %task_id_str,
                 secret_type = ?secret_type,
                 owner = %req.owner,
@@ -1931,7 +1954,11 @@ async fn sign_vault_verification_handler(
         // to 409 Conflict so the caller doesn't retry indefinitely
         // treating it as a transient failure.
         let msg = format!("{e:#}");
-        if msg.contains("vault is banned") || msg.contains("banned") {
+        // Match only the exact contract-side panic phrase. The earlier
+        // loose `|| msg.contains("banned")` also fired on words like
+        // "unbanned" / "rebanned" / any future error mentioning the
+        // root, mis-mapping unrelated failures to 403 Forbidden.
+        if msg.contains("vault is banned") {
             ApiError::Forbidden(format!(
                 "vault {} is banned (likely banned between check and sign): {}",
                 vault_id, msg
