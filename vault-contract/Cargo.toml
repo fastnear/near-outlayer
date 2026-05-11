@@ -22,16 +22,22 @@ near-sdk = { version = "= 5.9.0", features = ["legacy", "unstable"] }
 schemars = "0.8"
 
 [dev-dependencies]
-# Bumped from `= 0.14.1` to `= 0.18.0` (2026-05-06): the older
-# near-workspaces shipped near-sandbox-utils 0.10.0 whose embedded
-# neard binary couldn't deserialise WASM produced by
-# cargo-near 0.16.0 / near-sdk 5.9.0 — every DeployContract action
-# failed with `CompilationError(PrepareError(Deserialization))`.
-# 0.18.0 ships a sandbox neard that validates the current WASM
-# emit format. Newer 0.22.1+ would also work but pulls in
-# `cargo_metadata 0.21` which requires rustc 1.86; the contract's
-# rust-toolchain.toml pins 1.85.0, so we stay on 0.18.0.
-near-workspaces = { version = "= 0.18.0", features = ["unstable"] }
+# Bumped through several pins as cargo-near / near-sdk / sandbox neard
+# drifted out of sync:
+#   * `= 0.14.1` (sandbox 2.0.0) — original; rejected WASM from
+#     cargo-near 0.16.0 / near-sdk 5.9.0 with
+#     `CompilationError(PrepareError(Deserialization))`.
+#   * `= 0.18.0` (sandbox 2.5.1, 2026-05-06) — was supposed to fix
+#     the above; still rejected the same WASM. The fix actually
+#     required sandbox neard 2.6+.
+#   * `= 0.22.1` (sandbox 2.6.x, 2026-05-11) — current. Pulls in
+#     `cargo_metadata 0.21` which needs rustc 1.86+. The contract's
+#     own `rust-toolchain.toml` still pins 1.85.0 for the
+#     reproducible production WASM build; integration tests are
+#     invoked with `cargo +1.88.0 test ... --test integration` so
+#     dev-deps compile under the newer toolchain without affecting
+#     the contract artefact.
+near-workspaces = { version = "= 0.22.1", features = ["unstable"] }
 near-sdk = { version = "= 5.9.0", features = ["legacy", "unstable", "unit-testing"] }
 tokio = { version = "1.40", features = ["full"] }
 anyhow = "1.0"

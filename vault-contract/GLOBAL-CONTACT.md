@@ -12,6 +12,13 @@ near contract deploy-as-global use-file \
   as-global-hash \
   outlayer.testnet \
   network-config testnet sign-with-keychain send
+
+
+near contract call-function as-transaction \
+  dao.outlayer.testnet approve_vault_version \
+  json-args '{"hash":"Cj3dgmnDDbUvBhhouEyiGo46dLEdDVND2ZmxePqXu1Rn","label":"v1.1","audit_url":null}' \
+  prepaid-gas '30 Tgas' attached-deposit '0 NEAR' \
+  sign-as zavodil2.testnet network-config testnet sign-with-keychain send
 ```
 
 Replace `outlayer.testnet` with whichever account is paying storage. On mainnet:
@@ -60,11 +67,10 @@ Both contract bytecode and wallet UX benefit:
 
 Bumping the vault contract is the same flow as before, with one extra step:
 
-1. Edit `vault-contract/src/lib.rs`. Rebuild via `bash build.sh`.
-2. Sync the three bundled copies (`scripts/verify_vault_wasm_sync.sh` will tell you which paths drifted) and rebuild `outlayer-cli` so the bundled hash refreshes.
+1. Edit `vault-contract/src/lib.rs`. Rebuild via `bash build.sh` (or `build-docker.sh` for the canonical reproducible hash).
+2. **Deploy the new WASM as a global contract** with `near contract deploy-as-global use-file ... as-global-hash`. Each global hash costs storage independently; the previous version stays referenceable for vaults that were already deployed against it.
 3. **Approve the new hash via DAO multisig** — `keystore-dao.approve_vault_version`.
-4. **Deploy the new WASM as a global contract** with the same `near contract deploy-as-global use-file ... as-global-hash` command. Each global hash costs storage independently; the previous version stays referenceable for vaults that were already deployed against it.
-5. Customers calling `outlayer vault init` (or the dashboard's Create Vault) from then on will use the new hash automatically — the bundled WASM in dashboard/CLI is what determines which `code_hash` the `UseGlobalContract` action references.
+4. Customers calling `outlayer vault init` (or the dashboard's Create Vault) from then on will use the new hash automatically: both clients view-call `keystore_dao.list_approved_vault_versions()` and pick the most recent non-deprecated entry, so the `UseGlobalContract` action references whatever hash the DAO has just whitelisted — no client rebuild needed.
 
 Old vaults keep working — they were deployed via `UseGlobalContract { CodeHash: <old_hash> }` and that reference is permanent. They use the old contract's behaviour until the parent does an unlock + redeploy from scratch (or the vault-checker bans them off the verified set).
 

@@ -96,6 +96,16 @@ fn build_with_features(manifest_dir: &str, features: &[&str]) -> Vec<u8> {
         "build".into(),
         "non-reproducible-wasm".into(),
         "--no-abi".into(),
+        // cargo-near 0.20.x refuses to build WASM with rustc >= 1.87
+        // ("compiled with 1.87.0 or newer rust toolchain is currently
+        // not compatible with nearcore VM"). The integration suite is
+        // invoked with `cargo +1.88.0 test` so dev-deps compile cleanly
+        // (time-macros requires 1.88), but the contract WASM itself
+        // must still come out of 1.85.0 to satisfy nearcore — so we
+        // shell out with an explicit override that wins over the
+        // `RUSTUP_TOOLCHAIN=1.88.0` env var the parent cargo sets.
+        "--override-toolchain".into(),
+        "1.85.0".into(),
         "--manifest-path".into(),
         format!("{}/Cargo.toml", manifest_dir),
     ];

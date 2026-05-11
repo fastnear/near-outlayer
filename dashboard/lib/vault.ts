@@ -108,13 +108,6 @@ export function nsToDate(ns: number | string): Date {
   return new Date(ms);
 }
 
-export interface CustomerRegisterResponse {
-  wallet_id: string;
-  api_key: string;
-  near_account_id: string;
-  vault_id: string;
-}
-
 export interface AccessKeyEntry {
   public_key: string;
   permission:
@@ -482,22 +475,6 @@ export async function listVaults(
   }
   const data = (await resp.json()) as { vaults: VaultListEntry[] };
   return data.vaults || [];
-}
-
-export async function customerRegister(
-  network: NetworkType,
-  vaultAccountId: string,
-): Promise<CustomerRegisterResponse> {
-  const url = `${getCoordinatorApiUrl(network)}/customer/register`;
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ vault_account_id: vaultAccountId }),
-  });
-  if (!resp.ok) {
-    throw new Error(`customer/register failed (${resp.status}): ${await resp.text()}`);
-  }
-  return resp.json();
 }
 
 // ─── Atomic deploy action builder ─────────────────────────────────────────

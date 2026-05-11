@@ -22,8 +22,15 @@ interface PendingApproval {
   wallet_pubkey?: string;
 }
 
-/** Auto-refresh interval in ms (30 seconds) */
-const REFRESH_INTERVAL = 30_000;
+/**
+ * Auto-refresh interval (ms). Drives the visible countdown only —
+ * the actual coordinator fetch is run by a single leader elected
+ * via `navigator.locks` in `app/layout.tsx::PendingApprovalsBadge`.
+ * This page subscribes to that leader's broadcasts and resets its
+ * countdown whenever an update arrives. Keep this in sync with the
+ * layout's `POLL_INTERVAL_MS`.
+ */
+const REFRESH_INTERVAL = 60_000;
 
 export default function WalletApprovalsPage() {
   return (
@@ -145,13 +152,20 @@ function WalletApprovalsContent() {
     }
   }, [isConnected, accountId, loadApprovals]);
 
-  // Auto-refresh timer with cross-tab dedup.
+  // Auto-refresh — passive listener.
   //
-  // Only one tab — the "leader", elected via the Web Locks API — actually
-  // polls the coordinator. Other open tabs of this page receive the leader's
-  // results via BroadcastChannel and update their UI without hitting the
-  // coordinator themselves. When the leader closes, the lock releases and
-  // another tab is promoted.
+  // The single global poller lives in the layout badge
+  // (PendingApprovalsBadge), elected across all tabs and all pages
+  // via navigator.locks. This page just subscribes to the broadcast
+  // channel and updates its UI when the leader publishes a fresh
+  // fetch. The 1-second tick drives the visible "next refresh in X"
+  // countdown; it resets whenever a broadcast lands.
+  //
+  // On mount we still trigger one synchronous fetch (via
+  // fetchPendingApprovals → /pending_approvals_by_pubkey) so the
+  // page shows data immediately rather than waiting up to a minute
+  // for the next leader tick. fetchPendingApprovals also broadcasts
+  // its result, so any open badge / other tab gets the update too.
   useEffect(() => {
     if (!hasPolicies || !isConnected) {
       setNextRefreshIn(null);
@@ -164,14 +178,9 @@ function WalletApprovalsContent() {
         : null;
     broadcastRef.current = channel;
 
-    let cancelled = false;
-    let pollIntervalId: ReturnType<typeof setInterval> | null = null;
-    let releaseLock: (() => void) | null = null;
     let countdown = REFRESH_INTERVAL / 1000;
     setNextRefreshIn(countdown);
 
-    // Local 1-second tick drives the visible "next refresh in X" countdown on
-    // every tab. Followers reset their countdown whenever the leader broadcasts.
     const tick = setInterval(() => {
       countdown = Math.max(0, countdown - 1);
       setNextRefreshIn(countdown);
@@ -187,42 +196,12 @@ function WalletApprovalsContent() {
       };
     }
 
-    const startLeaderPolling = () => {
-      if (cancelled) return;
-      pollIntervalId = setInterval(() => {
-        // fetchPendingApprovals already broadcasts via broadcastRef.
-        fetchPendingApprovals(walletPubkeysRef.current);
-        countdown = REFRESH_INTERVAL / 1000;
-        setNextRefreshIn(countdown);
-      }, REFRESH_INTERVAL);
-    };
-
-    const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined;
-    if (locks && typeof locks.request === 'function') {
-      locks.request(
-        'outlayer-approvals-leader',
-        { mode: 'exclusive' },
-        () =>
-          new Promise<void>((release) => {
-            if (cancelled) { release(); return; }
-            releaseLock = release;
-            startLeaderPolling();
-          }),
-      );
-    } else {
-      // No Web Locks API — fall back to per-tab polling.
-      startLeaderPolling();
-    }
-
     return () => {
-      cancelled = true;
       clearInterval(tick);
-      if (pollIntervalId) clearInterval(pollIntervalId);
-      if (releaseLock) releaseLock();
       channel?.close();
       broadcastRef.current = null;
     };
-  }, [hasPolicies, isConnected, fetchPendingApprovals]);
+  }, [hasPolicies, isConnected]);
 
   // Approve a pending request (requires NEAR wallet signature, not API key)
   const handleApprove = async (approvalId: string) => {

@@ -14,7 +14,6 @@ before launch; each section has a "what it covers" + "how to run" +
 | **NEAR CLI** | `near-cli-rs` | `npm i -g near-cli-rs`. Used by `tests/vault_recovery_e2e.sh`. |
 | **Node + npm** | `20+` | Dashboard build / type-check. |
 | **Local services** | coordinator + keystore-worker | E2E scripts assume `localhost:8080` (coordinator). Keystore-worker URL is internal — operator config. |
-| **`shasum`** | system | WASM hash sync check (`scripts/verify_vault_wasm_sync.sh`). |
 
 ---
 
@@ -48,9 +47,6 @@ echo "=== vault-checker WASI ===" && \
   cargo +$RUSTC test --quiet --manifest-path wasi-examples/vault-checker/Cargo.toml --bins && \
   cargo +$RUSTC build --quiet --target wasm32-wasip2 --release \
         --manifest-path wasi-examples/vault-checker/Cargo.toml
-
-echo "=== WASM hash sync ===" && \
-  ./scripts/verify_vault_wasm_sync.sh
 
 echo "=== outlayer-cli (separate repo) ===" && \
   cargo +$RUSTC test --quiet --manifest-path ../outlayer-cli/Cargo.toml --lib
@@ -245,20 +241,17 @@ npm run build
 5. Open `/wallet?key=<api_key>` for a vault-bound key, verify
    "Master key: Vault X" shows.
 
-### WASM hash sync
+### Vault WASM resolution
 
-```bash
-./scripts/verify_vault_wasm_sync.sh
-```
-
-Confirms three bundled copies are byte-identical:
-- `vault-contract/res/vault_contract.wasm` (canonical)
-- `outlayer-cli/res/vault_contract.wasm`
-- `dashboard/public/vault_contract.wasm`
-
-**What passing means**: `is_vault_code_approved(hash)` will accept
-the bundled WASM regardless of whether the customer deploys via CLI
-or dashboard.
+The CLI and dashboard no longer bundle a copy of `vault_contract.wasm`.
+Both resolve the approved code hash at deploy time by view-calling
+`keystore-DAO::list_approved_vault_versions()` and use a NEP-591
+`UseGlobalContract(code_hash)` action — the WASM bytes themselves live
+in NEAR's global-contract registry, not in our repo binaries. So the
+canonical artefact (`vault-contract/res/vault_contract.wasm`) only
+needs to exist so the operator can `cargo near deploy` it as a global
+contract and submit its hash to `approve_vault_version` on the DAO.
+There is nothing to "sync" across binaries.
 
 ---
 
@@ -356,9 +349,9 @@ and require operator-team action before launch:
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `time-macros@0.2.27 requires rustc 1.88.0` (any crate) | Default rustc is older than 1.88 | `rustup install 1.88.0` then `cargo +1.88.0 test ...` |
-| `CompilationError(PrepareError(Deserialization))` in vault-contract integration | near-workspaces too old | Already fixed: pinned `near-workspaces = "= 0.18.0"` in vault-contract/Cargo.toml |
+| `CompilationError(PrepareError(Deserialization))` in vault-contract integration | The cargo-near / near-sdk / sandbox neard triple has drifted out of sync. Fixed as of 2026-05-11 with cargo-near `0.20.1` + near-workspaces `0.22.1` (sandbox 2.11.0) + an explicit `--override-toolchain 1.85.0` in `vault-contract/tests/integration.rs::build_with_features`. If the error returns after a future bump, the override pin in integration.rs is the first thing to revisit. | Verify cargo-near version (`cargo near --version` ≥ 0.20). Confirm the override-toolchain flag is still present. If a newer cargo-near re-tightens the rustc gate, sync `1.85.0` with whatever cargo-near's `--help` documents as the max supported version. |
+| `wasm, compiled with 1.87.0 or newer rust toolchain is currently not compatible with nearcore VM` | cargo-near 0.20 refuses to build WASM with rustc ≥ 1.87, but `cargo +1.88.0 test` propagates `RUSTUP_TOOLCHAIN=1.88.0` to child `cargo near build` invocations. | The fix is in-tree: `tests/integration.rs::build_with_features` already passes `--override-toolchain 1.85.0`. If this re-appears, check that the args vector still includes that pair. |
 | Dashboard build fails on `/vault` route | `lib/vault.ts` imports break | Re-run `npx tsc --noEmit` for actual error; usually a missing field on `VaultListEntry` or `RecoveryState` |
-| WASM hash sync fails | Someone built a new vault-contract.wasm without copying to all three locations | `cp vault-contract/res/vault_contract.wasm outlayer-cli/res/`<br>`cp vault-contract/res/vault_contract.wasm dashboard/public/` |
 | Coordinator integration tests fail with sqlx errors | `SQLX_OFFLINE=true` not set, or sqlx-data.json stale | Set the env var, OR `cargo sqlx prepare` against a live DB |
 
 ---
@@ -368,7 +361,6 @@ and require operator-team action before launch:
 Before flipping `auto_ban_enabled = true` in production:
 
 - [ ] All quick-sweep tests green (run on the actual deploy commit, not main)
-- [ ] WASM hash sync confirms identical across three bundles
 - [ ] `tests/vault_e2e.sh all --apply` against testnet — happy/isolation/compat all pass
 - [ ] `tests/vault_recovery_e2e.sh unilateral --apply` — full cycle ≤ 60s
 - [ ] `outlayer-monitor` deployed in alert-only mode for ≥7 days, no false positives in logs

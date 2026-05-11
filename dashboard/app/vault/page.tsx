@@ -8,7 +8,6 @@ import { useNearWallet } from '@/contexts/NearWalletContext';
 import WalletConnectionModal from '@/components/WalletConnectionModal';
 import {
   buildVaultDeployActions,
-  customerRegister,
   deriveVaultTeeKey,
   formatSeconds,
   getVaultCodeHash,
@@ -61,11 +60,11 @@ export default function VaultPage() {
   const [name, setName] = useState('vault');
   const [exitWindow, setExitWindow] = useState<string>('24h');
 
-  // API key returned by /customer/register — show once, never persist.
+  // Confirmation that a vault was just deployed in this session.
+  // The vault is a master-secret root; API keys are minted
+  // separately via `POST /register {"vault_id":...}` (N per vault).
   const [issuedApiKey, setIssuedApiKey] = useState<{
     vault: string;
-    apiKey: string;
-    nearAccountId: string;
   } | null>(null);
 
   // Find / inspect vault
@@ -201,20 +200,16 @@ deploy requires at least ${(Number(VAULT_PARENT_BUDGET_YOCTO) / 1e24).toFixed(2)
       });
       const txHash = outcome?.transaction?.hash || outcome?.transaction_outcome?.id || '<unknown>';
 
-      // 4. Drive sign-verification (mark_vault_verified).
+      // 4. Drive sign-verification (mark_vault_verified). Deploy
+      //    stops here — the vault is now usable as a master-secret
+      //    root. API keys are minted separately via `POST /register
+      //    {"vault_id": "<vault>"}` (N keys per vault allowed), so
+      //    we do NOT auto-call `/customer/register` here.
       setBusy('Triggering on-chain mark_vault_verified…');
       await signVaultVerification(network, vaultAccountId);
 
-      // 5. Mint API key.
-      setBusy('Registering with coordinator…');
-      const reg = await customerRegister(network, vaultAccountId);
-
-      setIssuedApiKey({
-        vault: reg.vault_id,
-        apiKey: reg.api_key,
-        nearAccountId: reg.near_account_id,
-      });
-      setSuccess(`Vault deployed and verified (tx ${txHash}). Save the API key below — it is shown once.`);
+      setIssuedApiKey({ vault: vaultAccountId });
+      setSuccess(`Vault deployed and verified (tx ${txHash}).`);
       await refreshReport(vaultAccountId);
     } catch (e) {
       setError(`Vault init failed: ${(e as Error).message}`);
@@ -225,6 +220,9 @@ deploy requires at least ${(Number(VAULT_PARENT_BUDGET_YOCTO) / 1e24).toFixed(2)
   };
 
   // ── Resume an interrupted init ────────────────────────────────────────
+  // Only step 4 (mark_vault_verified) needs resumption — atomic
+  // deploy is all-or-nothing, and API key minting is now a
+  // separate user-driven step (POST /register with vault_id).
   const handleResume = async (vaultAccountId: string) => {
     if (!vaultAccountId) return;
     setError(null);
@@ -232,38 +230,9 @@ deploy requires at least ${(Number(VAULT_PARENT_BUDGET_YOCTO) / 1e24).toFixed(2)
     setIssuedApiKey(null);
     setBusy(`Resuming ${vaultAccountId}…`);
     try {
-      // Step 4 — idempotent on the keystore side.
       await signVaultVerification(network, vaultAccountId);
-      // Step 5 — surface unique-violation specifically.
-      try {
-        const reg = await customerRegister(network, vaultAccountId);
-        setIssuedApiKey({
-          vault: reg.vault_id,
-          apiKey: reg.api_key,
-          nearAccountId: reg.near_account_id,
-        });
-        setSuccess('Vault registration completed. Save the API key below — it is shown once.');
-      } catch (e) {
-        const msg = (e as Error).message;
-        // Coordinator's UNIQUE-violation branch surfaces a 400 with one
-        // of these phrases. We match on whichever survived the wire.
-        // Phrase coupling is fragile — see PROJECT.md / coordinator
-        // handlers if these stop matching.
-        const REGISTERED_PHRASES = [
-          'already bound to a wallet',
-          'revoke its API keys',
-          'already registered',
-          '23505',
-        ];
-        if (REGISTERED_PHRASES.some((p) => msg.includes(p))) {
-          throw new Error(
-            `${vaultAccountId} is already registered on the coordinator (a previous \
-run committed but the API key was never returned). On-chain state is intact; \
-contact OutLayer support to rotate the API key — no funds at risk.`,
-          );
-        }
-        throw e;
-      }
+      setIssuedApiKey({ vault: vaultAccountId });
+      setSuccess('Vault verification completed.');
       await refreshReport(vaultAccountId);
     } catch (e) {
       setError(`Resume failed: ${(e as Error).message}`);
@@ -524,7 +493,7 @@ contact OutLayer support to rotate the API key — no funds at risk.`,
             onClick={() => findInput.trim() && handleResume(findInput.trim())}
             disabled={!isConnected || !!busy || !findInput.trim()}
             className="px-4 py-2 bg-amber-600 text-white rounded hover:bg-amber-700 disabled:bg-gray-400"
-            title="Run sign-verification + customer/register against an already-deployed vault"
+            title="Re-run sign-verification against an already-deployed vault"
           >
             Resume
           </button>
@@ -563,15 +532,10 @@ contact OutLayer support to rotate the API key — no funds at risk.`,
 // derivation as "the wallet" is misleading — there is no canonical
 // wallet, the keystore mints whichever address the current call needs.
 //
-// We do NOT show:
-//   - the `wk_...` trial token from `/customer/register` — coordinator
-//     trial-quota artifact, irrelevant to vault sovereignty;
-//   - the `wallet:{wallet_id}:near` derivation — happens to exist
-//     because /customer/register asks for it, but it's just one of many
-//     possible derivations and the user has no reason to deposit funds
-//     there as if it were an account.
-//
 // What matters is the contract account and its recoverability.
+// API keys (`wk_...`) are minted separately on demand via
+// `POST /register {"vault_id": ...}` — N keys per vault allowed —
+// so the panel here surfaces only the vault id itself.
 function IssuedVaultPanel({
   data,
 }: {
