@@ -13,7 +13,6 @@ import {
   formatSeconds,
   getVaultCodeHash,
   getVaultNetworkConfig,
-  isVaultCodeApproved,
   nsToDate,
   parseExitWindow,
   signVaultVerification,
@@ -167,16 +166,15 @@ deploy requires at least ${(Number(VAULT_PARENT_BUDGET_YOCTO) / 1e24).toFixed(2)
         );
       }
 
-      // 1. Bundle WASM hash + verify code-hash whitelist.
-      setBusy('Verifying vault code-hash whitelist…');
-      const { hashB58, hashBytes } = getVaultCodeHash(network);
-      const approved = await isVaultCodeApproved(viewMethod, network, hashB58);
-      if (!approved) {
-        throw new Error(
-          `Vault code hash ${hashB58} (from env) is NOT approved on ${network}. `
-          + `The operator either pushed a stale env var or hasn't yet approved this hash on the keystore-DAO.`,
-        );
-      }
+      // 1. Resolve vault code hash from keystore-DAO.
+      //
+      // `getVaultCodeHash` view-calls `list_approved_vault_versions`
+      // and picks the most recently approved non-deprecated entry.
+      // No env-var to keep in sync — when the DAO whitelists a new
+      // vault version, the dashboard picks it up automatically.
+      // Bails with a clear error if no non-deprecated version exists.
+      setBusy('Resolving vault code hash from keystore-DAO…');
+      const { hashB58, hashBytes } = await getVaultCodeHash(viewMethod, network);
 
       // 2. TEE pubkey BEFORE deploy.
       setBusy('Fetching TEE function-call pubkey…');

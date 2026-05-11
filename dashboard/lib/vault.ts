@@ -205,47 +205,74 @@ export function formatSeconds(secs: number): string {
 // ─── Vault global-contract code hash (operator-managed) ──────────────────
 
 /**
- * Read the per-network vault WASM hash from env. The hash names a
- * blob already deployed via `near contract deploy-as-global ...
- * as-global-hash` AND already approved on the keystore-DAO whitelist
- * — both pre-conditions are operator responsibility.
+ * Resolve the vault WASM hash to deploy against by reading
+ * `keystore-DAO.list_approved_vault_versions()` and picking the most
+ * recently approved non-deprecated entry. Authoritative source =
+ * on-chain DAO state. No env-var, no config bake-in: when the DAO
+ * approves a new version (and optionally deprecates the old one),
+ * every dashboard user picks it up on their next deploy.
  *
- * We used to ship `vault_contract.wasm` (~150 KB) inside the dashboard
- * bundle and hash it client-side, back when the deploy tx inlined the
- * bytes via `DeployContract`. With the switch to NEP-591
- * `UseGlobalContract { CodeHash }` only the 32-byte hash flows through
- * the tx, so the WASM asset is dead weight on the client.
+ * The hash names a blob already published via `near contract
+ * deploy-as-global ... as-global-hash` AND approved by DAO — both
+ * conditions are gated by `approve_vault_version` on the DAO side.
  *
- * Validation: bs58-decoded bytes MUST be 32; we still gate against the
- * DAO whitelist before sending the tx, so a typo'd env wedge fails
- * loud at deploy time, not silently.
+ * Throws if the DAO has no non-deprecated approved version — the
+ * dashboard surfaces this with a banner pointing at DAO governance.
  */
-export function getVaultCodeHash(network: NetworkType): {
-  hashB58: string;
-  hashBytes: Uint8Array;
-} {
-  const envName =
-    network === 'mainnet'
-      ? 'NEXT_PUBLIC_MAINNET_VAULT_CODE_HASH'
-      : 'NEXT_PUBLIC_TESTNET_VAULT_CODE_HASH';
-  const hashB58 =
-    network === 'mainnet'
-      ? process.env.NEXT_PUBLIC_MAINNET_VAULT_CODE_HASH
-      : process.env.NEXT_PUBLIC_TESTNET_VAULT_CODE_HASH;
-  if (!hashB58) {
+type VaultVersionInfo = {
+  label: string;
+  deprecated: boolean;
+  approved_at: string; // u64 nanoseconds serialized as a JSON string by near-sdk
+  audit_url?: string | null;
+};
+
+export async function getVaultCodeHash(
+  viewMethod: ViewMethodFn,
+  network: NetworkType,
+): Promise<{ hashB58: string; hashBytes: Uint8Array; label: string }> {
+  const cfg = getVaultNetworkConfig(network);
+
+  const versions = (await viewMethod({
+    contractId: cfg.keystoreDaoId,
+    method: 'list_approved_vault_versions',
+    args: {},
+  })) as Array<[string, VaultVersionInfo]>;
+
+  let best: { hash: string; info: VaultVersionInfo; ts: bigint } | null = null;
+  for (const [hash, info] of versions) {
+    if (info.deprecated) continue;
+    const ts = BigInt(info.approved_at);
+    if (best === null || ts > best.ts) {
+      best = { hash, info, ts };
+    }
+  }
+  if (!best) {
     throw new Error(
-      `${envName} is not set. Operator must publish the vault WASM as a global contract `
-        + `(\`near contract deploy-as-global ... as-global-hash\`), get the hash approved on `
-        + `the keystore-DAO whitelist, and put the base58 hash in this env var.`,
+      `${cfg.keystoreDaoId} has no non-deprecated approved vault code hash. `
+        + `Operator must publish a vault WASM as a global contract and approve the `
+        + `hash via \`approve_vault_version\` before any vault can be deployed.`,
     );
   }
-  const hashBytes = bs58Decode(hashB58);
+  const hashBytes = bs58Decode(best.hash);
   if (hashBytes.length !== 32) {
     throw new Error(
-      `${envName}='${hashB58}' decoded to ${hashBytes.length} bytes; expected 32 (sha256).`,
+      `DAO returned vault code hash '${best.hash}' that decoded to ${hashBytes.length} bytes; expected 32.`,
     );
   }
-  return { hashB58, hashBytes };
+  // Log the resolved hash + label so the operator (and customer in
+  // browser devtools) can confirm which version is about to be
+  // deployed. Helps catch "DAO whitelisted but I'm pointing at the
+  // wrong network's DAO" mistakes without ceremony.
+  // ns → ms via integer division on bigint, then Number for Date.
+  // Safe through year 2554 (Date max ≈ 8.64e15 ms).
+  const approvedAtMs = Number(best.ts / BigInt(1_000_000));
+  // eslint-disable-next-line no-console
+  console.info(
+    `[vault] Using vault code hash ${best.hash} (label="${best.info.label}", `
+      + `approved at ${new Date(approvedAtMs).toISOString()}) `
+      + `from ${cfg.keystoreDaoId}`,
+  );
+  return { hashB58: best.hash, hashBytes, label: best.info.label };
 }
 
 // ─── View calls (RPC) ─────────────────────────────────────────────────────
