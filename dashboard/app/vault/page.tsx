@@ -202,6 +202,32 @@ deploy requires at least ${(Number(VAULT_PARENT_BUDGET_YOCTO) / 1e24).toFixed(2)
       //    root. API keys are minted separately via `POST /register
       //    {"vault_id": "<vault>"}` (N keys per vault allowed), so
       //    we do NOT auto-call `/customer/register` here.
+      //
+      // Wait for the just-deployed account to be visible at FINAL
+      // finality BEFORE we hand it to the keystore. The atomic
+      // deploy tx returned at "executed" finality (the
+      // `signAndSendTransaction` call), but the RPC node the
+      // keystore-worker uses for its own `view_account` re-check can
+      // still be a few blocks behind. Without this poll, sign-
+      // verification 400s with UNKNOWN_ACCOUNT and the dashboard
+      // shows the cryptic error a user just hit.
+      setBusy('Waiting for vault account to be visible at final finality…');
+      let vaultVisible = false;
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const probe = await viewAccountInfo(rpcUrl, vaultAccountId);
+        if (probe.exists) {
+          vaultVisible = true;
+          break;
+        }
+        await new Promise((res) => setTimeout(res, 2000));
+      }
+      if (!vaultVisible) {
+        throw new Error(
+          `Atomic deploy tx ${txHash} landed but ${vaultAccountId} is still not visible at final finality after 20 s. ` +
+            `Click "Resume vault init" below to retry sign-verification.`,
+        );
+      }
+
       setBusy('Triggering on-chain mark_vault_verified…');
       await signVaultVerification(network, vaultAccountId);
 
