@@ -205,9 +205,39 @@ deploy requires at least ${(Number(VAULT_PARENT_BUDGET_YOCTO) / 1e24).toFixed(2)
       setBusy('Triggering on-chain mark_vault_verified…');
       await signVaultVerification(network, vaultAccountId);
 
+      // Poll for verified state. `signVaultVerification` returns as
+      // soon as the keystore-worker has BROADCAST the
+      // `mark_vault_verified` tx, but RPC nodes can lag 1-5 s before
+      // it shows up at FINAL finality. Without this poll, the
+      // verify-block right below the success banner snapshots the
+      // pre-tx state and shows "NOT VERIFIED" — exactly the bug a
+      // user just hit.
+      setBusy('Waiting for on-chain verification to land…');
+      let verifiedReport: Awaited<ReturnType<typeof verifyVault>> | null = null;
+      for (let attempt = 0; attempt < 15; attempt++) {
+        const r = await verifyVault(viewMethod, rpcUrl, network, vaultAccountId);
+        if (r.isVerified) {
+          verifiedReport = r;
+          break;
+        }
+        await new Promise((res) => setTimeout(res, 1500));
+      }
+
       setIssuedApiKey({ vault: vaultAccountId });
-      setSuccess(`Vault deployed and verified (tx ${txHash}).`);
-      await refreshReport(vaultAccountId);
+      if (verifiedReport) {
+        setReport(verifiedReport);
+        setActiveVaultId(vaultAccountId);
+        setSuccess(`Vault deployed and verified (tx ${txHash}).`);
+      } else {
+        // 15 attempts × 1.5 s = 22.5 s of polling. If we still don't
+        // see daoVerified, surface a soft warning and let the user
+        // retry with the "Refresh" button; the deploy itself
+        // succeeded.
+        await refreshReport(vaultAccountId);
+        setSuccess(
+          `Vault deployed (tx ${txHash}). Verification tx not visible at final finality yet — click "Refresh" in 10-30s to confirm.`,
+        );
+      }
     } catch (e) {
       setError(`Vault init failed: ${(e as Error).message}`);
     } finally {

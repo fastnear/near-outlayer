@@ -16,9 +16,9 @@ near contract deploy-as-global use-file \
 
 near contract call-function as-transaction \
   dao.outlayer.testnet approve_vault_version \
-  json-args '{"hash":"Cj3dgmnDDbUvBhhouEyiGo46dLEdDVND2ZmxePqXu1Rn","label":"v1.1","audit_url":null}' \
+  json-args '{"hash":"VSdQE8ivTfcJQhf6NEUW5ghMD8LDHXcCqhn98z2ZLYz","label":"v1.1","audit_url":null}' \
   prepaid-gas '30 Tgas' attached-deposit '0 NEAR' \
-  sign-as zavodil2.testnet network-config testnet sign-with-keychain send
+  sign-as zavodil.testnet network-config testnet sign-with-keychain send
 ```
 
 Replace `outlayer.testnet` with whichever account is paying storage. On mainnet:

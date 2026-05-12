@@ -36,22 +36,43 @@ VAULT_NAME="${VAULT_NAME:-recovery-test-$(date +%s)}"
 VAULT_CONTRACT_DIR="${VAULT_CONTRACT_DIR:-$SCRIPT_DIR/../vault-contract}"
 KEYSTORE_DAO_ID="${KEYSTORE_DAO_ID:-dao.outlayer.testnet}"
 MPC_CONTRACT_ID="${MPC_CONTRACT_ID:-v1.signer-prod.testnet}"
-# test-timing feature window is hardcoded — see vault-contract/src/lib.rs:
-#   MIN_UNILATERAL_EXIT_WINDOW_SECS = 10
-#   FINALIZE_WINDOW_NS = 300 * 10^9  (300s)
-#   CESSATION_DELAY_NS = 30 * 10^9   (30s)
-EXIT_WINDOW_SECS=10
-FINALIZE_WAIT_SECS=15  # exit_window + small buffer
+# Current testnet contract constants (vault-contract/src/lib.rs):
+#   MIN_UNILATERAL_EXIT_WINDOW_SECS = 60
+#   FINALIZE_WINDOW_NS              = 600 * 10^9  (10 min)
+#   CESSATION_DELAY_NS              = 60 * 10^9   (60s)
+# `test-timing` feature exists in Cargo.toml but is currently a no-op
+# placeholder — the constants above are already the testnet-tuned
+# values. Use the contract minimum so this script completes in ~75s.
+EXIT_WINDOW_SECS=60
+FINALIZE_WAIT_SECS=70  # exit_window + small buffer
 
-log()   { printf '\n\033[36m▶ %s\033[0m\n' "$*"; }
-warn()  { printf '\033[33m⚠ %s\033[0m\n' "$*"; }
-fail()  { printf '\033[31m✗ %s\033[0m\n' "$*"; exit 1; }
-pass()  { printf '\033[32m✓ %s\033[0m\n' "$*"; }
+log()   { printf '\n\033[36m▶ %s\033[0m\n' "$*" >&2; }
+warn()  { printf '\033[33m⚠ %s\033[0m\n' "$*" >&2; }
+fail()  { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
+pass()  { printf '\033[32m✓ %s\033[0m\n' "$*" >&2; }
 
 run() {
   if [[ "$APPLY" == true ]]; then
     log "$ $*"
-    eval "$@"
+    # near-cli-rs 0.23.x aborts on `near contract deploy` (and a few
+    # other destructive flows) with "The input device is not a TTY"
+    # when invoked from a non-interactive parent. Faking a pty with
+    # `script` keeps the prompt path happy without prompting for
+    # input. We write the command to a temp file so the embedded
+    # backslash-newline continuations survive `script`'s argv
+    # tokenisation (passing a multi-line string via `-c` re-parses
+    # ANSI escapes that `log` left in the conversation buffer).
+    if command -v script >/dev/null 2>&1; then
+      local tmp_cmd
+      tmp_cmd=$(mktemp -t vault_e2e_cmd.XXXXXX.sh)
+      printf 'set -euo pipefail\n%s\n' "$*" > "$tmp_cmd"
+      script -q /dev/null bash "$tmp_cmd"
+      local rc=$?
+      rm -f "$tmp_cmd"
+      return $rc
+    else
+      eval "$@"
+    fi
   else
     printf '\033[90m  (dry-run) $ %s\033[0m\n' "$*"
   fi
@@ -67,10 +88,13 @@ require() {
 
 build_test_timing_wasm() {
   log "Building vault-contract with --features test-timing"
+  # cargo-near 0.20.x dropped `--no-locked` / `--no-docker` in favour
+  # of explicit `non-reproducible-wasm` subcommand. Use that for a
+  # fast local build; production deploys are built with `reproducible-wasm`.
   if [[ "$APPLY" == true ]]; then
-    (cd "$VAULT_CONTRACT_DIR" && cargo near build --no-locked --no-docker --features test-timing)
+    (cd "$VAULT_CONTRACT_DIR" && cargo near build non-reproducible-wasm --no-abi --features test-timing) 1>&2
   else
-    printf '  (dry-run) cd %s && cargo near build --no-locked --no-docker --features test-timing\n' "$VAULT_CONTRACT_DIR"
+    printf '  (dry-run) cd %s && cargo near build non-reproducible-wasm --no-abi --features test-timing\n' "$VAULT_CONTRACT_DIR" 1>&2
   fi
   WASM_PATH="$VAULT_CONTRACT_DIR/target/near/vault_contract.wasm"
   if [[ "$APPLY" == true && ! -f "$WASM_PATH" ]]; then
@@ -85,6 +109,30 @@ scenario_unilateral() {
   log "Scenario: unilateral recovery happy path (test-timing 10s window)"
   require "$PARENT" "PARENT (e.g. PARENT=alice.testnet)"
   local vault_account="$VAULT_NAME.$PARENT"
+
+  # Pre-generate the new parent keypair that `finalize_recovery` will
+  # install. `customer-recovery generate-key` emits the same shape
+  # the rest of the recovery walkthrough uses, so we get a fresh
+  # ed25519 keypair without depending on `openssl` or `near-cli-rs`
+  # keygen here.
+  local key_dir="${KEY_DIR:-/tmp/vault-recovery-e2e}"
+  mkdir -p "$key_dir"
+  local key_file="$key_dir/$vault_account.json"
+  local recovery_bin="$SCRIPT_DIR/../scripts/customer-recovery/target/release/customer-recovery"
+  if [[ "$APPLY" == true ]]; then
+    if [[ ! -x "$recovery_bin" ]]; then
+      log "Building customer-recovery binary"
+      (cd "$SCRIPT_DIR/../scripts/customer-recovery" && cargo build --release --quiet)
+    fi
+    "$recovery_bin" generate-key > "$key_file"
+    chmod 600 "$key_file"
+    NEW_PARENT_PUBKEY=$(jq -r '.public_key' "$key_file")
+    log "Generated new_parent_pubkey: $NEW_PARENT_PUBKEY"
+    log "  (private key stored at $key_file — sole authority over the vault post-finalize)"
+  else
+    NEW_PARENT_PUBKEY="ed25519:DRY_RUN_REPLACEMENT_PUBKEY"
+    printf '  (dry-run) would generate keypair at %s\n' "$key_file"
+  fi
 
   WASM_PATH=$(build_test_timing_wasm)
 
@@ -109,10 +157,15 @@ scenario_unilateral() {
         sign-with-keychain send"
 
   log "2. Deploy test-timing WASM + init"
+  # `initial_tee_pubkey` is passed as null — this e2e drives the
+  # recovery flow without a real TEE in the loop, so there's no TEE
+  # key to install at deploy time. `finalize_recovery` still atomically
+  # deletes whatever is in `initial_tee_key` (None means nothing to
+  # delete) and adds the new parent's FAK.
   run "near contract deploy $vault_account \\
         use-file $WASM_PATH \\
         with-init-call new \\
-          json-args '{\"parent\": \"$PARENT\", \"keystore_dao\": \"$KEYSTORE_DAO_ID\", \"mpc_contract\": \"$MPC_CONTRACT_ID\", \"initial_exit_window\": $EXIT_WINDOW_SECS}' \\
+          json-args '{\"parent\": \"$PARENT\", \"keystore_dao\": \"$KEYSTORE_DAO_ID\", \"mpc_contract\": \"$MPC_CONTRACT_ID\", \"initial_tee_pubkey\": null, \"initial_exit_window\": $EXIT_WINDOW_SECS}' \\
           prepaid-gas '30 TGas' \\
           attached-deposit '0 NEAR' \\
         network-config testnet \\
@@ -143,33 +196,31 @@ scenario_unilateral() {
     printf '  (dry-run) sleep %s\n' "$FINALIZE_WAIT_SECS"
   fi
 
-  log "7. Anyone calls finalize_recovery (vault unlocks synchronously)"
+  log "7. Parent calls finalize_recovery(new_parent_pubkey)"
+  # Parent-only entry — the contract checks
+  # `env::predecessor_account_id() == self.parent` as its first
+  # action, so any other signer is bounced. The atomic key-swap
+  # (DeleteKey(initial_tee_key + registered_tee_keys) +
+  # AddFullAccessKey(new_parent_pubkey)) happens in this same
+  # transaction's receipt batch.
   run "near contract call-function as-transaction $vault_account finalize_recovery \\
-        json-args '{}' \\
-        prepaid-gas '50 TGas' attached-deposit '0 NEAR' \\
+        json-args '{\"new_parent_pubkey\": \"$NEW_PARENT_PUBKEY\"}' \\
+        prepaid-gas '100 TGas' attached-deposit '0 NEAR' \\
         sign-as $PARENT \\
         network-config testnet \\
         sign-with-keychain send"
 
-  log "8. Verify unlocked=true"
+  log "8. Verify unlocked=true and recovery cleared"
   run "near contract call-function as-read-only $vault_account get_state \\
         json-args '{}' \\
         network-config testnet now"
 
-  log "9. Parent installs full-access key (via unlocked_add_key)"
-  warn "Replace ed25519:... below with a real public key under your control."
-  run "near contract call-function as-transaction $vault_account unlocked_add_key \\
-        json-args '{\"public_key\": \"ed25519:REPLACE_WITH_REAL_PUBKEY\", \"full_access\": true, \"allowance\": null}' \\
-        prepaid-gas '50 TGas' attached-deposit '0 NEAR' \\
-        sign-as $PARENT \\
-        network-config testnet \\
-        sign-with-keychain send"
-
-  log "10. Final assert: parent now has full access on $vault_account"
+  log "9. List access keys — expect new_parent_pubkey as full-access"
   run "near account list-keys $vault_account network-config testnet now"
-  warn "Manual check: the listed keys should now include the parent's full-access key."
+  warn "Manual check: $NEW_PARENT_PUBKEY must be present with full_access."
+  warn "  (private key for this pubkey: $key_file)"
 
-  pass "Scenario unilateral — done. Vault $vault_account is unlocked + parent-controlled."
+  pass "Scenario unilateral — done. Vault $vault_account is unlocked + new-parent-controlled."
 
   log "Cleanup: delete account, refund storage to $PARENT"
   warn "Run manually if desired:"
