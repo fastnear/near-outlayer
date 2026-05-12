@@ -30,6 +30,17 @@ use crate::types::{ban_reason, McpReceipt, VaultEventReceipt, Verdict};
 #[async_trait]
 pub trait ActionSink: Send + Sync {
     async fn ban_and_evict(&self, previous: &McpReceipt, current: &McpReceipt) -> Result<()>;
+
+    /// Drop the keystore-worker's cached per-vault master after a
+    /// successful `finalize_recovery`. The contract has already
+    /// deleted the TEE access keys on chain so the keystore physically
+    /// can't re-derive — this call just clears the in-memory cache so
+    /// signing requests fail within seconds rather than waiting for
+    /// the next cold-path re-verify. Best-effort: failures are
+    /// logged, not propagated (the on-chain key-swap is the
+    /// authoritative cutoff). `trigger` distinguishes the source
+    /// event for ops triage.
+    async fn evict_on_recovery_finalize(&self, vault_id: &str, trigger: &str) -> Result<()>;
 }
 
 /// Notifies an out-of-band alerting channel. Default impl
@@ -189,6 +200,48 @@ impl ActionSink for KeystoreActionSink {
                 status = %status,
                 body = %body,
                 "/admin/evict-customer failed; ban already on chain so safety boundary holds"
+            );
+        }
+        Ok(())
+    }
+
+    async fn evict_on_recovery_finalize(&self, vault_id: &str, trigger: &str) -> Result<()> {
+        // The reason field is descriptive only — keystore uses it
+        // for audit logging, not for any policy decision. Surface
+        // the trigger so ops know which recovery path fired.
+        let reason = format!("recovery_finalize:{trigger}");
+        let body = EvictRequest { vault_id, reason: &reason };
+        let resp = self
+            .client
+            .post(format!("{}/admin/evict-customer", self.keystore_base_url))
+            .bearer_auth(&self.worker_token)
+            .json(&body)
+            .send()
+            .await
+            .context("evict-customer POST failed (recovery-finalize)")?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            // Best-effort: contract has already deleted the on-chain
+            // TEE key, so the keystore physically cannot re-derive
+            // the master anyway. Cache eviction just shortens the
+            // window during which a still-cached master could
+            // service signing requests. Log at warn; do NOT bail.
+            tracing::warn!(
+                vault_id = %vault_id,
+                trigger = %trigger,
+                status = %status,
+                body = %body,
+                "/admin/evict-customer failed on recovery_finalize — \
+                 cached master may keep serving until next cold-path \
+                 re-verify, but on-chain key-swap already cut the \
+                 MPC re-derivation path"
+            );
+        } else {
+            tracing::info!(
+                vault_id = %vault_id,
+                trigger = %trigger,
+                "evicted cached per-vault master after recovery_finalize"
             );
         }
         Ok(())
@@ -715,6 +768,9 @@ mod tests {
     impl ActionSink for CountingSink {
         async fn ban_and_evict(&self, _: &McpReceipt, _: &McpReceipt) -> Result<()> {
             self.bans.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+        async fn evict_on_recovery_finalize(&self, _: &str, _: &str) -> Result<()> {
             Ok(())
         }
     }

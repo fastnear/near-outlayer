@@ -942,29 +942,30 @@ pub async fn add_customer(
     Ok(())
 }
 
-/// Lazy-load gate around any derive_* / encrypt / decrypt path that
-/// names a customer. Wallet handlers wrap their entry points with this.
+/// Cold-path loader for a per-customer master. The hot-path
+/// `has_customer` fast-return lives in the wrapper
+/// [`crate::api::AppState::ensure_customer_loaded`]; this function is
+/// only invoked when the master is NOT in the TEE-memory cache, so
+/// the gate it runs always precedes an actual MPC CKD round-trip.
 ///
 /// Behaviour:
 ///   * `customer = None` ⇒ no-op (legacy default-master path).
 ///   * `customer = Some(c)`:
-///     1. If `keystore.has_customer(c)` ⇒ no-op.
-///     2. View-call `keystore-dao.is_vault_verified(c)` — `false` for
-///        unverified AND banned vaults.
-///     3. View-call `c.get_state()` and require `unlocked == false`.
-///        This is defense-in-depth: a vault that went through
-///        `finalize_recovery` is now under parent control, but the
-///        DAO's `verified_vaults` set isn't auto-updated. Without the
-///        recheck, the worker would keep deriving and decrypting for
-///        a vault whose trust model has dropped to "parent has
-///        FullAccess".
-///     4. If both checks pass, call [`add_customer`] to populate the
-///        cache.
+///     1. View-call `keystore-dao.is_vault_verified(c)` — `false` for
+///        unverified AND banned vaults. Evicts cache + bails.
+///     2. View-call `c.get_state()` and require `unlocked == false`.
+///        A vault that went through `finalize_recovery` is now under
+///        parent control; the DAO's `verified_vaults` set isn't
+///        auto-updated, so without this recheck the worker would keep
+///        deriving for a vault whose trust model has dropped to
+///        "parent has FullAccess". Evicts cache + bails.
+///     3. If both checks pass, take the per-vault load lock + call
+///        [`add_customer`] to populate the cache.
 ///
-/// **Why on-chain verify before MPC**: we charge gas for the MPC call;
-/// without this gate, a malicious caller could trigger MPC bills on
-/// arbitrary vault ids by spamming requests with unknown
-/// `X-Customer-Vault` values. Both view calls are cheap.
+/// **Why on-chain verify before MPC**: the MPC call burns gas from
+/// the vault's balance; without this gate a malicious caller could
+/// trigger MPC bills on arbitrary vault ids by spamming requests
+/// with unknown `X-Customer-Vault` values. Both view calls are cheap.
 pub async fn ensure_customer_loaded(
     config: &MpcCkdConfig,
     near_client: &crate::near::NearClient,

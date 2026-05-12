@@ -1,8 +1,6 @@
 'use client';
 
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { actionCreators } from '@near-js/transactions';
-import { PublicKey } from '@near-js/crypto';
 
 import { useNearWallet } from '@/contexts/NearWalletContext';
 import WalletConnectionModal from '@/components/WalletConnectionModal';
@@ -15,7 +13,6 @@ import {
   nsToDate,
   parseExitWindow,
   signVaultVerification,
-  VAULT_CALL_GAS,
   VAULT_INITIAL_YOCTO,
   VAULT_LOW_BALANCE_YOCTO,
   VAULT_PARENT_BUDGET_YOCTO,
@@ -260,88 +257,17 @@ deploy requires at least ${(Number(VAULT_PARENT_BUDGET_YOCTO) / 1e24).toFixed(2)
   // ── Recovery / window / add-key actions ──────────────────────────────
   // All call directly into the vault contract; the parent NEAR account is
   // the only signer that can use the predecessor-gated paths.
-  const callVault = async (
-    vaultId: string,
-    method: string,
-    args: Record<string, unknown>,
-    label: string,
-  ) => {
-    if (!guard(`Connect a NEAR wallet to call ${method}.`)) return;
-    setError(null);
-    setSuccess(null);
-    setBusy(label);
-    try {
-      const action = actionCreators.functionCall(
-        method,
-        new TextEncoder().encode(JSON.stringify(args)),
-        VAULT_CALL_GAS,
-        BigInt(0),
-      );
-      const outcome = await signAndSendTransaction({
-        receiverId: vaultId,
-        actions: [action],
-      });
-      const tx = outcome?.transaction?.hash || outcome?.transaction_outcome?.id || '<ok>';
-      setSuccess(`${label} → tx ${tx}`);
-      await refreshReport(vaultId);
-    } catch (e) {
-      setError(`${label} failed: ${(e as Error).message}`);
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const initiateRecovery = (vaultId: string) =>
-    callVault(vaultId, 'initiate_recovery', {}, 'initiate_recovery (cessation)');
-
-  const initiateUnilateralRecovery = (vaultId: string) =>
-    callVault(
-      vaultId,
-      'unilateral_initiate_recovery',
-      {},
-      'unilateral_initiate_recovery',
-    );
-
-  const finalizeRecovery = (vaultId: string) =>
-    callVault(vaultId, 'finalize_recovery', {}, 'finalize_recovery');
-
-  const setExitWindowOnVault = async (vaultId: string, window: string) => {
-    let secs: number;
-    try {
-      secs = parseExitWindow(window);
-    } catch (e) {
-      setError((e as Error).message);
-      return;
-    }
-    await callVault(
-      vaultId,
-      'set_exit_window',
-      { new_window_secs: secs },
-      `set_exit_window (${formatSeconds(secs)})`,
-    );
-  };
-
-  const unlockedAddKey = async (vaultId: string, pubkey: string, fullAccess: boolean) => {
-    try {
-      // Reject malformed pubkeys client-side — a contract panic costs
-      // gas. Same pre-flight as the CLI.
-      PublicKey.fromString(pubkey);
-    } catch {
-      setError(`'${pubkey}' is not a valid NEAR public key (expected 'ed25519:...').`);
-      return;
-    }
-    await callVault(
-      vaultId,
-      'unlocked_add_key',
-      {
-        public_key: pubkey,
-        full_access: fullAccess,
-        // null = contract default (1 NEAR allowance for FCAK).
-        allowance: null,
-      },
-      `unlocked_add_key (${fullAccess ? 'FULL' : 'FCAK'})`,
-    );
-  };
+  // Recovery operations (`initiate_*_recovery`, `finalize_recovery`,
+  // `set_exit_window`, `unlocked_add_key`) are intentionally CLI-only.
+  // The recovery flow runs in the "OutLayer is potentially dead /
+  // compromised" scenario, so it must not depend on web infrastructure
+  // we host. The walkthrough at `scripts/customer-recovery/` is the
+  // single recovery surface — it generates the keypair locally, drives
+  // initiate/wait/finalize via `outlayer vault ...`, and recovers the
+  // per-vault master via the `customer-recovery` binary calling MPC
+  // directly. The dashboard's job is limited to: deploy + status +
+  // verify. Anything that mutates an already-deployed vault belongs
+  // in the CLI.
 
   // ── Render ────────────────────────────────────────────────────────────
   return (
@@ -502,13 +428,7 @@ deploy requires at least ${(Number(VAULT_PARENT_BUDGET_YOCTO) / 1e24).toFixed(2)
         {report && activeVaultId && (
           <VaultDetailPanel
             report={report}
-            onInitiateRecovery={() => initiateRecovery(activeVaultId)}
-            onInitiateUnilateral={() => initiateUnilateralRecovery(activeVaultId)}
-            onFinalize={() => finalizeRecovery(activeVaultId)}
-            onSetExitWindow={(w) => setExitWindowOnVault(activeVaultId, w)}
-            onAddKey={(pk, fa) => unlockedAddKey(activeVaultId, pk, fa)}
             onRefresh={() => refreshReport(activeVaultId)}
-            disabled={!!busy || !isConnected}
           />
         )}
       </section>
@@ -579,23 +499,9 @@ function IssuedVaultPanel({
 
 function VaultDetailPanel(props: {
   report: VerifyReport;
-  onInitiateRecovery: () => void;
-  onInitiateUnilateral: () => void;
-  onFinalize: () => void;
-  onSetExitWindow: (w: string) => void;
-  onAddKey: (pubkey: string, fullAccess: boolean) => void;
   onRefresh: () => void;
-  disabled: boolean;
 }) {
-  const { report, disabled } = props;
-  const [newWindow, setNewWindow] = useState('24h');
-  const [newPubkey, setNewPubkey] = useState('');
-  const [newKeyFullAccess, setNewKeyFullAccess] = useState(false);
-  // Recovery / parent-only admin controls live behind a toggle so the
-  // happy path doesn't open with three orange "Initiate recovery"
-  // buttons screaming at the user. The state itself stays visible
-  // above; only the action buttons are hidden by default.
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  const { report } = props;
 
   if (!report.exists) {
     return (
@@ -612,7 +518,6 @@ function VaultDetailPanel(props: {
         <h3 className="font-semibold">{report.vaultId}</h3>
         <button
           onClick={props.onRefresh}
-          disabled={disabled}
           className="text-xs px-2 py-1 bg-gray-200 rounded"
         >
           Refresh
@@ -703,18 +608,29 @@ function VaultDetailPanel(props: {
             <tr>
               <td
                 className="text-gray-500 pr-3"
-                title="Informational rotation registry inside the contract.
-The authoritative list is the account's access keys (see vault-checker).
-Atomic deploy adds the FC access key at the account level only — this Vec
-fills up later if/when someone calls propose_tee_key for explicit rotation
-tracking."
+                title="The initial TEE function-call key the customer installed via AddKey in the atomic deploy. finalize_recovery deletes this (plus all registered_tee_keys) atomically when the customer hands the vault to a sovereign key."
               >
-                Registered TEE keys (registry)
+                Initial TEE key
+              </td>
+              <td>
+                {s.initial_tee_key ? (
+                  <code className="text-[10px] break-all">{s.initial_tee_key}</code>
+                ) : (
+                  <span className="text-gray-400">(none — legacy vault)</span>
+                )}
+              </td>
+            </tr>
+            <tr>
+              <td
+                className="text-gray-500 pr-3"
+                title="DAO-rotated TEE keys added via propose_tee_key. finalize_recovery deletes all of these atomically together with the initial TEE key."
+              >
+                Registered TEE keys (DAO rotated)
               </td>
               <td>
                 {s.registered_tee_keys.length}
                 {s.registered_tee_keys.length === 0 && report.safe && (
-                  <span className="text-gray-400"> — informational; active TEE access key is on the account</span>
+                  <span className="text-gray-400"> — none rotated; initial TEE key (above) is the active one</span>
                 )}
               </td>
             </tr>
@@ -791,95 +707,55 @@ near send <your_account> ${report.vaultId} ${(Number(VAULT_TOPUP_SUGGESTED_YOCTO
         </div>
       )}
 
-      <button
-        onClick={() => setShowAdvanced((v) => !v)}
-        className="text-xs text-gray-600 underline hover:text-gray-900 mb-2"
-      >
-        {showAdvanced ? '▾ Hide advanced (recovery, exit window, post-unlock keys)' : '▸ Advanced (recovery, exit window, post-unlock keys)'}
-      </button>
-
-      {showAdvanced && (
-        <>
-          <div className="flex flex-wrap gap-2 mb-3">
-            <button
-              onClick={props.onInitiateRecovery}
-              disabled={disabled || !!s?.unlocked || !!s?.recovery}
-              className="px-3 py-1 bg-orange-600 text-white rounded text-xs hover:bg-orange-700 disabled:bg-gray-400"
-              title="Cessation-triggered (DAO must have declared cessation)"
-            >
-              Initiate cessation recovery
-            </button>
-            <button
-              onClick={props.onInitiateUnilateral}
-              disabled={disabled || !!s?.unlocked || !!s?.recovery}
-              className="px-3 py-1 bg-orange-600 text-white rounded text-xs hover:bg-orange-700 disabled:bg-gray-400"
-              title="Parent-only voluntary exit"
-            >
-              Initiate unilateral recovery
-            </button>
-            <button
-              onClick={props.onFinalize}
-              disabled={disabled || !s?.recovery}
-              className="px-3 py-1 bg-purple-600 text-white rounded text-xs hover:bg-purple-700 disabled:bg-gray-400"
-            >
-              Finalize recovery
-            </button>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="border border-gray-200 rounded p-2">
-              <div className="text-xs font-medium mb-1">Update exit window (parent only)</div>
-              <div className="flex gap-2">
-                <select
-                  value={newWindow}
-                  onChange={(e) => setNewWindow(e.target.value)}
-                  className="flex-1 text-xs rounded-md border border-gray-300 bg-white px-2 py-1 text-gray-900 shadow-sm focus:border-[#cc6600] focus:ring-[#cc6600]"
-                >
-                  {EXIT_WINDOW_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
-                  ))}
-                </select>
-                <button
-                  onClick={() => props.onSetExitWindow(newWindow)}
-                  disabled={disabled}
-                  className="px-3 py-1 bg-gray-600 text-white rounded text-xs hover:bg-gray-700 disabled:bg-gray-400"
-                >
-                  Set
-                </button>
-              </div>
-            </div>
-
-            <div className="border border-gray-200 rounded p-2">
-              <div className="text-xs font-medium mb-1">Add key (post-unlock, parent only)</div>
-              <input
-                type="text"
-                value={newPubkey}
-                onChange={(e) => setNewPubkey(e.target.value)}
-                placeholder="ed25519:..."
-                className="block w-full text-xs rounded-md border border-gray-300 bg-white px-2 py-1 text-gray-900 shadow-sm focus:border-[#cc6600] focus:ring-[#cc6600] mb-1"
-              />
-              <label className="text-xs flex items-center gap-1 mb-1">
-                <input
-                  type="checkbox"
-                  checked={newKeyFullAccess}
-                  onChange={(e) => setNewKeyFullAccess(e.target.checked)}
-                />
-                Full-access key (default: function-call, 1 NEAR allowance)
-              </label>
-              <button
-                onClick={() => props.onAddKey(newPubkey, newKeyFullAccess)}
-                disabled={disabled || !s?.unlocked}
-                className="w-full px-3 py-1 bg-gray-600 text-white rounded text-xs hover:bg-gray-700 disabled:bg-gray-400"
-              >
-                unlocked_add_key
-              </button>
-              {s && !s.unlocked && (
-                <p className="text-xs text-gray-500 mt-1">Vault must be unlocked first.</p>
-              )}
-            </div>
-          </div>
-        </>
+      {/* Recovery, exit-window changes, post-unlock key installation
+          are intentionally CLI-only. The recovery flow assumes
+          OutLayer's web infra may be unreliable (the whole point of
+          self-custody is to not depend on us), so trusting the
+          dashboard with the sovereignty handover would defeat the
+          design. Tools:
+            * `outlayer vault {initiate-unilateral-recovery,
+              initiate-recovery, finalize-recovery, set-exit-window,
+              unlocked-add-key}` — single ops.
+            * `scripts/customer-recovery/walkthrough.sh` — end-to-end
+              keygen → initiate → wait → finalize → master-recovery. */}
+      {(s?.recovery || s?.unlocked) && (
+        <div className="border border-amber-200 bg-amber-50 rounded p-2 mb-3 text-xs text-amber-900">
+          {s.recovery ? (
+            <>
+              <strong>Recovery in progress.</strong>{' '}
+              Finalize with{' '}
+              <code className="bg-white px-1 rounded">
+                outlayer vault finalize-recovery {report.vaultId} &lt;your_new_pubkey&gt;
+              </code>{' '}
+              after the timer elapses. Generate the keypair locally via{' '}
+              <code className="bg-white px-1 rounded">
+                customer-recovery generate-key
+              </code>.
+            </>
+          ) : (
+            <>
+              <strong>Vault is unlocked.</strong>{' '}
+              Recover the per-vault master locally with{' '}
+              <code className="bg-white px-1 rounded">
+                customer-recovery --vault-id {report.vaultId} --from-chain
+              </code>{' '}
+              if you haven&rsquo;t already.
+            </>
+          )}
+        </div>
       )}
+      <div className="text-xs text-gray-500 mt-2">
+        Recovery, exit-window, and post-unlock key operations are CLI-only
+        — see{' '}
+        <code className="bg-gray-100 px-1 rounded">outlayer vault --help</code>{' '}
+        and{' '}
+        <a
+          className="underline hover:text-gray-900"
+          href="https://github.com/out-layer/near-offshore/tree/main/scripts/customer-recovery"
+          target="_blank"
+          rel="noopener noreferrer"
+        >scripts/customer-recovery/</a>.
+      </div>
     </div>
   );
 }

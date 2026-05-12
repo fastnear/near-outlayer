@@ -1,5 +1,5 @@
 /**
- * Per-customer sovereign vault — dashboard client (Phase 7).
+ * Per-customer sovereign vault — dashboard client.
  *
  * Mirrors the surface of `outlayer-cli/src/commands/vault.rs`:
  *   - WASM hash lookup against keystore-DAO `is_vault_code_approved`
@@ -81,6 +81,14 @@ export interface VaultState {
   parent: string;
   keystore_dao: string;
   mpc_contract: string;
+  /**
+   * Initial TEE function-call key pinned at deploy. `null` only for
+   * vaults deployed against the pre-key-swap WASM hash. The
+   * contract's `finalize_recovery` deletes this and every
+   * `registered_tee_keys` entry atomically before adding the
+   * customer's new full-access key.
+   */
+  initial_tee_key: string | null;
   registered_tee_keys: string[];
   recovery: RecoveryState | null;
   unlocked: boolean;
@@ -153,9 +161,6 @@ export const VAULT_PARENT_BUDGET_YOCTO =
 
 /** Gas for the inline `new()` call (30 TGas — pure constructor logic). */
 export const VAULT_NEW_GAS = BigInt('30000000000000');
-
-/** Gas for vault recovery / set-exit-window / unlocked-add-key (100 TGas). */
-export const VAULT_CALL_GAS = BigInt('100000000000000');
 
 // ─── Window parsing ───────────────────────────────────────────────────────
 
@@ -448,7 +453,7 @@ export async function signVaultVerification(
 
 /**
  * `GET /customer/list-vaults?owner=<account>` — populate the
- * "Use my vault" dropdown in wallet/secrets forms (Phase 7 F2).
+ * "Use my vault" dropdown in wallet/secrets forms.
  *
  * Returns vaults that completed `/customer/register` for this owner
  * on the current coordinator. Returns `[]` (not error) for unknown
@@ -498,10 +503,15 @@ export function buildVaultDeployActions(args: {
   wasmCodeHash: Uint8Array;
   teePublicKey: string; // 'ed25519:...'
 }) {
+  // Stash the TEE pubkey inside the contract state via `new()` so a
+  // future `finalize_recovery` can atomically delete it during the
+  // sovereign key-swap. The same pubkey is also installed by the
+  // AddKey action below in the same atomic tx — they MUST match.
   const newArgs = JSON.stringify({
     parent: args.parent,
     keystore_dao: args.keystoreDaoId,
     mpc_contract: args.mpcContractId,
+    initial_tee_pubkey: args.teePublicKey,
     initial_exit_window: args.exitWindowSecs,
   });
 

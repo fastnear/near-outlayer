@@ -65,6 +65,8 @@ where
                 }
             }
             StreamEvent::Vault(vault_event) => {
+                // Mirror the event to the coordinator's webhook
+                // dispatcher (best-effort, customer-facing).
                 if let Some(ref f) = forwarder {
                     if let Err(e) = f.forward(&vault_event).await {
                         tracing::warn!(
@@ -81,6 +83,44 @@ where
                         "vault event observed but no forwarder configured; dropping"
                     );
                 }
+                // Sovereignty cutoff: on `recovery_finalized_*`, ask
+                // the keystore to drop the cached per-vault master
+                // so signing requests start failing within seconds.
+                // The contract has already deleted the on-chain TEE
+                // key by this point — this is the cache-eviction
+                // half of the same fence.
+                // Use `starts_with` instead of exact-match so any future
+                // contract-side log suffix (e.g. `_v2`, `_dryrun`) still
+                // routes to the eviction path. The contract's emitted
+                // event names are the authoritative spelling — kept
+                // narrow enough that unrelated `recovery_finalized*`
+                // strings (none today) still need an explicit branch.
+                let trigger = if vault_event
+                    .event_type
+                    .starts_with("recovery_finalized_unilateral")
+                {
+                    Some("unilateral")
+                } else if vault_event
+                    .event_type
+                    .starts_with("recovery_finalized_cessation")
+                {
+                    Some("cessation")
+                } else {
+                    None
+                };
+                if let Some(trigger) = trigger {
+                    if let Err(e) = actions
+                        .evict_on_recovery_finalize(&vault_event.vault_id, trigger)
+                        .await
+                    {
+                        tracing::warn!(
+                            vault_id = %vault_event.vault_id,
+                            trigger = %trigger,
+                            error = %e,
+                            "recovery_finalize evict failed; on-chain key-swap is the authoritative cutoff"
+                        );
+                    }
+                }
             }
         }
     }
@@ -95,11 +135,18 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    struct CountingActions(Arc<AtomicUsize>);
+    struct CountingActions {
+        bans: Arc<AtomicUsize>,
+        evicts: Arc<AtomicUsize>,
+    }
     #[async_trait]
     impl ActionSink for CountingActions {
         async fn ban_and_evict(&self, _: &McpReceipt, _: &McpReceipt) -> Result<()> {
-            self.0.fetch_add(1, Ordering::SeqCst);
+            self.bans.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+        async fn evict_on_recovery_finalize(&self, _: &str, _: &str) -> Result<()> {
+            self.evicts.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
     }
@@ -154,7 +201,7 @@ mod tests {
         ]);
         run(
             source,
-            CountingActions(bans.clone()),
+            CountingActions { bans: bans.clone(), evicts: Arc::new(AtomicUsize::new(0)) },
             CountingAlerts(alerts.clone()),
             None::<CountingForwarder>,
             RunConfig { window_blocks: 100 },
@@ -180,7 +227,7 @@ mod tests {
         ]);
         run(
             source,
-            CountingActions(bans.clone()),
+            CountingActions { bans: bans.clone(), evicts: Arc::new(AtomicUsize::new(0)) },
             CountingAlerts(alerts.clone()),
             Some(CountingForwarder(forwards.clone())),
             RunConfig { window_blocks: 100 },

@@ -132,8 +132,34 @@ struct CkdResponse {
     big_c: String,
 }
 
+/// `customer-recovery generate-key` — emit a fresh ed25519 keypair
+/// as JSON to stdout and exit. Used by `walkthrough.sh` step 1 so
+/// the user doesn't need an external NEAR keygen tool installed.
+/// The output shape matches what the rest of the walkthrough
+/// expects: `{public_key: "ed25519:...", private_key: "ed25519:..."}`
+/// — same format `near-cli-rs`'s key files use, so other NEAR tools
+/// can read it.
+fn generate_key_subcommand() -> Result<()> {
+    let sk = SecretKey::from_random(near_crypto::KeyType::ED25519);
+    let pk = sk.public_key();
+    let json = serde_json::json!({
+        "public_key": pk.to_string(),
+        "private_key": sk.to_string(),
+    });
+    println!("{}", serde_json::to_string_pretty(&json)?);
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Subcommand bypass: avoids restructuring clap for a single
+    // 30-line side path. If we ever grow more subcommands, switch
+    // to clap's Subcommand enum.
+    let argv: Vec<String> = std::env::args().collect();
+    if argv.len() == 2 && argv[1] == "generate-key" {
+        return generate_key_subcommand();
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

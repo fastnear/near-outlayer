@@ -190,6 +190,14 @@ pub struct VaultState {
     pub keystore_dao: AccountId,
     #[schemars(with = "String")]
     pub mpc_contract: AccountId,
+    /// Initial TEE function-call public key — the one the customer
+    /// installed via `AddKey` in the atomic deploy. The contract
+    /// stashes this so it can `Promise::delete_key` it on a
+    /// successful `finalize_recovery` (along with any
+    /// `registered_tee_keys` added later via `propose_tee_key`).
+    /// `None` for legacy vaults deployed before the key-swap upgrade.
+    #[schemars(with = "Option<String>")]
+    pub initial_tee_key: Option<PublicKey>,
     #[schemars(with = "Vec<String>")]
     pub registered_tee_keys: Vec<PublicKey>,
     pub recovery: Option<RecoveryState>,
@@ -197,6 +205,18 @@ pub struct VaultState {
     pub unilateral_exit_window_secs: u64,
 }
 
+/// On-chain vault state.
+///
+/// **No migration path from the pre-key-swap WASM hash.** This
+/// struct gained `initial_tee_key: Option<PublicKey>` at position 4;
+/// borsh is positional, so the old layout (7 fields) deserialises
+/// into the new layout (8 fields) as garbage. Pre-launch decision:
+/// rather than maintain a `migrate()` function for a handful of
+/// throwaway testnet vaults, the operator deletes them and customers
+/// redeploy under the new hash. CLI/dashboard always deploy against
+/// `keystore-dao.list_approved_vault_versions()`'s newest entry, so
+/// once the new hash is whitelisted there's no path back to the
+/// stale layout.
 #[near_bindgen]
 #[derive(BorshSerialize, BorshDeserialize, PanicOnDefault)]
 #[borsh(crate = "near_sdk::borsh")]
@@ -213,9 +233,23 @@ pub struct Vault {
     /// (e.g. `v1.signer-prod.testnet` on testnet, `v1.signer` on mainnet).
     /// Set at deploy time, immutable afterwards.
     pub mpc_contract: AccountId,
+    /// Initial TEE function-call key — pinned at construction time so
+    /// `finalize_recovery` can `Promise::delete_key` it during the
+    /// atomic key-swap. The customer adds the matching `AddKey`
+    /// action in the same atomic-deploy tx as `new()`, and the
+    /// pubkey passed here MUST match that AddKey's pubkey or the
+    /// final delete-on-recovery would target a key the account
+    /// doesn't have. `None` is left as an escape hatch but is
+    /// effectively unreachable now: every code path that constructs
+    /// a vault (CLI `outlayer vault init`, dashboard's atomic-deploy
+    /// action builder) passes `Some(...)`, and there is no in-place
+    /// upgrade path from the pre-key-swap hash (see struct-level
+    /// comment).
+    pub initial_tee_key: Option<PublicKey>,
     /// TEE keystore-worker public keys that have been registered via
-    /// `propose_tee_key` after deploy. Informational — the authoritative
-    /// access-key list lives on-chain in the account's access keys.
+    /// `propose_tee_key` after deploy. Authoritative — paired with
+    /// `initial_tee_key` they cover the full set of OutLayer-side
+    /// keys the contract knows how to remove on `finalize_recovery`.
     pub registered_tee_keys: Vec<PublicKey>,
     /// Recovery timer state, if a recovery is currently in progress.
     pub recovery: Option<RecoveryState>,
@@ -232,19 +266,28 @@ pub struct Vault {
 
 #[near_bindgen]
 impl Vault {
-    /// Initialize the vault. Does NOT manipulate keys — the customer's
-    /// atomic deploy transaction is responsible for adding the initial TEE
-    /// function-call key via a separate `AddKey` action.
+    /// Initialize the vault.
     ///
-    /// `initial_exit_window` is the unilateral-recovery delay in seconds.
-    /// `None` selects [`DEFAULT_UNILATERAL_EXIT_WINDOW_SECS`] (24h). Any
-    /// `Some` value must be in
+    /// `initial_tee_pubkey` is the public key that the customer's
+    /// atomic-deploy tx is adding (via its own `AddKey` action) as a
+    /// function-call key scoped to `vault.request_master`. The
+    /// contract stashes it so a future `finalize_recovery` can
+    /// atomically `Promise::delete_key(initial_tee_pubkey)` as part
+    /// of the sovereignty handover. Pass `None` only for legacy
+    /// deploys reproduced from old WASM hashes — at runtime the
+    /// recovery path will then have nothing to delete and the
+    /// parent must clean up TEE keys manually after unlock.
+    ///
+    /// `initial_exit_window` is the unilateral-recovery delay in
+    /// seconds. `None` selects [`DEFAULT_UNILATERAL_EXIT_WINDOW_SECS`]
+    /// (24h). Any `Some` value must be in
     /// [`MIN_UNILATERAL_EXIT_WINDOW_SECS`]..=[`MAX_UNILATERAL_EXIT_WINDOW_SECS`].
     #[init]
     pub fn new(
         parent: AccountId,
         keystore_dao: AccountId,
         mpc_contract: AccountId,
+        initial_tee_pubkey: Option<PublicKey>,
         initial_exit_window: Option<u64>,
     ) -> Self {
         // The vault MUST be a direct sub-account of `parent`. Without
@@ -265,6 +308,7 @@ impl Vault {
             parent,
             keystore_dao,
             mpc_contract,
+            initial_tee_key: initial_tee_pubkey,
             registered_tee_keys: Vec::new(),
             recovery: None,
             unlocked: false,
@@ -296,6 +340,10 @@ impl Vault {
         require!(
             !self.unlocked,
             "vault is unlocked — use unlocked_add_key instead"
+        );
+        require!(
+            self.initial_tee_key.as_ref() != Some(&public_key),
+            "public key is already the initial TEE key — cannot re-register"
         );
         require!(
             !self.registered_tee_keys.contains(&public_key),
@@ -330,6 +378,10 @@ impl Vault {
             ),
         };
         require!(approved, "public key is not approved by the keystore DAO");
+        require!(
+            self.initial_tee_key.as_ref() != Some(&public_key),
+            "public key is already the initial TEE key (race)"
+        );
         require!(
             !self.registered_tee_keys.contains(&public_key),
             "public key already registered (race)"
@@ -558,10 +610,11 @@ impl Vault {
 
     // ===== Unilateral-triggered recovery (voluntary, parent-controlled) =====
 
-    /// Parent-only voluntary exit. No DAO involvement. The delay before
-    /// `finalize_recovery` becomes valid is `unilateral_exit_window_secs`
-    /// captured at this call (so changing the window afterwards does not
-    /// shorten an in-flight recovery).
+    /// Parent-only voluntary exit. No DAO involvement. The delay
+    /// before `finalize_recovery` becomes valid is
+    /// `unilateral_exit_window_secs` captured at this call (so
+    /// changing the window afterwards does not shorten an in-flight
+    /// recovery).
     pub fn unilateral_initiate_recovery(&mut self) {
         require!(!self.unlocked, "vault is already unlocked");
         require!(
@@ -600,21 +653,90 @@ impl Vault {
 
     // ===== Shared finalize (routes by recovery.trigger) =====
 
-    /// Finalize the in-flight recovery.
+    /// Finalize the in-flight recovery and atomically hand on-chain
+    /// authority over the vault to `new_parent_pubkey`.
     ///
-    /// * **Cessation:** dispatches `keystore_dao.is_ceased()` and resolves
-    ///   asynchronously via [`Vault::callback_finalize`]. If the DAO
-    ///   revoked cessation during the delay the recovery is cancelled
-    ///   (state cleared, vault stays locked).
-    /// * **Unilateral:** synchronous — unlocks the vault if the window
-    ///   check passes, otherwise clears the recovery state.
+    /// **State-commit ordering.** This method only DISPATCHES the
+    /// key-swap promise. The `unlocked = true` flip and the
+    /// `self.recovery = None` clear happen in [`Vault::callback_after_swap`]
+    /// AFTER the atomic DeleteKey+AddKey batch reports success. If
+    /// the swap receipt panics (e.g. `new_parent_pubkey` collides
+    /// with an existing access key), no state mutates — the parent
+    /// can re-call `finalize_recovery` with a fresh pubkey within
+    /// the same `[finalize_after, finalize_before]` window without
+    /// having to re-initiate.
     ///
-    /// `finalize_after` is enforced up-front (too early panics without
-    /// state change). `finalize_before` is enforced inside the callback
-    /// (cessation) or inline (unilateral) so the recovery state can be
-    /// safely cleared on expiry without a panic rolling it back.
-    pub fn finalize_recovery(&mut self) -> PromiseOrValue<bool> {
+    /// On the success path (after the post-swap callback resolves):
+    ///   1. `self.unlocked = true` and `self.recovery = None`.
+    ///   2. `Promise::delete_key` for `initial_tee_key` and every entry
+    ///      in `registered_tee_keys` — physically removes the
+    ///      OutLayer-side TEE function-call keys so keystore-worker
+    ///      can no longer sign `vault.request_master`, ending the
+    ///      MPC-CKD re-derivation path.
+    ///   3. `Promise::add_full_access_key(new_parent_pubkey)` — the
+    ///      customer's locally generated key now owns the vault and
+    ///      can call `vault.request_master` themselves (or any other
+    ///      method) to recover the per-vault master via MPC.
+    ///
+    /// The customer is expected to generate `new_parent_pubkey`
+    /// locally BEFORE calling this — see the customer-recovery
+    /// walkthrough in `scripts/customer-recovery/`. Choosing a
+    /// pubkey controlled by anyone other than the customer would
+    /// hand the vault to that party; the contract has no way to
+    /// verify ownership of the supplied pubkey.
+    ///
+    /// Both unilateral and cessation paths share the same swap:
+    ///
+    /// * **Cessation:** dispatches `keystore_dao.is_ceased()` and
+    ///   resolves asynchronously via [`Vault::callback_finalize`],
+    ///   threading `new_parent_pubkey` through. If the DAO revoked
+    ///   cessation during the delay the recovery is cancelled (state
+    ///   cleared, vault stays locked, no key swap).
+    /// * **Unilateral:** synchronous — swaps keys via Promise if the
+    ///   window check passes, otherwise clears recovery state.
+    ///
+    /// `finalize_after` is enforced up-front (too early panics
+    /// without state change). `finalize_before` is enforced inside
+    /// the callback (cessation) or inline (unilateral) so the
+    /// recovery state can be safely cleared on expiry without a
+    /// panic rolling it back.
+    ///
+    /// **Parent-only entry.** `require!(predecessor == self.parent)`
+    /// is the very first action of this method. Without it, anyone
+    /// watching the chain could race the parent at finalize time
+    /// and substitute their own pubkey. Cessation finalize is also
+    /// parent-only despite the permissionless `initiate_recovery`
+    /// — the legitimate beneficiary of cessation IS the parent, and
+    /// only they should end up with the vault's full-access key.
+    /// **Operational note**: if the parent's NEAR account becomes
+    /// permanently unavailable (lost key, deceased operator), the
+    /// vault stays locked forever even after DAO cessation. This is
+    /// a deliberate trade-off — the alternative
+    /// (anyone-can-finalize-cessation) opens a vault-hijack vector.
+    /// Customers with high-value vaults should configure parent-
+    /// account social-recovery / multisig out-of-band so this risk
+    /// is bounded.
+    ///
+    pub fn finalize_recovery(&mut self, new_parent_pubkey: PublicKey) -> PromiseOrValue<bool> {
         require!(!self.unlocked, "vault is already unlocked");
+        // **Parent-only finalize.** Both unilateral and cessation
+        // paths require the predecessor to be the vault's parent.
+        // This closes the front-running window: after the recovery
+        // timer elapses, anyone watching the chain could otherwise
+        // call `finalize_recovery(<their_pubkey>)` and substitute
+        // their own key in the atomic swap. We know `self.parent`
+        // at construction time and check it here directly.
+        //
+        // For cessation, this is a tightening of the original
+        // "anyone can drive cessation" semantic — but the only
+        // legitimate beneficiary of cessation IS the parent, and
+        // making them prove possession of the parent account at
+        // finalize time keeps the OUTCOME aligned with the design
+        // intent. Initiating cessation remains permissionless.
+        require!(
+            env::predecessor_account_id() == self.parent,
+            "only the parent account can finalize recovery"
+        );
         let recovery = self
             .recovery
             .as_ref()
@@ -626,6 +748,17 @@ impl Vault {
             "recovery delay not yet elapsed"
         );
 
+        // Short-circuit expired window for BOTH triggers before
+        // burning gas on the cross-contract DAO view. The cessation
+        // path still re-checks inside `callback_finalize` because the
+        // callback can run several blocks after the DAO view returns
+        // and we don't want to swap on the strength of a stale `now`.
+        if now > recovery.finalize_before {
+            self.recovery = None;
+            env::log_str("recovery_window_expired");
+            return PromiseOrValue::Value(false);
+        }
+
         match recovery.trigger {
             RecoveryTrigger::Cessation => PromiseOrValue::Promise(
                 ext_keystore_dao::ext(self.keystore_dao.clone())
@@ -634,19 +767,13 @@ impl Vault {
                     .then(
                         Self::ext(env::current_account_id())
                             .with_static_gas(GAS_CALLBACK)
-                            .callback_finalize(),
+                            .callback_finalize(new_parent_pubkey),
                     ),
             ),
             RecoveryTrigger::Unilateral => {
-                if now > recovery.finalize_before {
-                    self.recovery = None;
-                    env::log_str("recovery_window_expired");
-                    return PromiseOrValue::Value(false);
-                }
-                self.unlocked = true;
-                self.recovery = None;
-                env::log_str("recovery_finalized_unilateral");
-                PromiseOrValue::Value(true)
+                // State mutation is DEFERRED to `callback_after_swap`
+                // — see `dispatch_swap` for the rationale.
+                PromiseOrValue::Promise(self.dispatch_swap(new_parent_pubkey, false))
             }
         }
     }
@@ -654,13 +781,14 @@ impl Vault {
     #[private]
     pub fn callback_finalize(
         &mut self,
+        new_parent_pubkey: PublicKey,
         #[callback_result] result: Result<bool, PromiseError>,
-    ) -> bool {
+    ) -> PromiseOrValue<bool> {
         // The recovery state must still exist; if it has already been
         // cleared (e.g. by a parallel finalize) we simply return false.
         let recovery = match self.recovery.clone() {
             Some(r) => r,
-            None => return false,
+            None => return PromiseOrValue::Value(false),
         };
         let now = env::block_timestamp();
 
@@ -671,29 +799,123 @@ impl Vault {
         if now > recovery.finalize_before {
             self.recovery = None;
             env::log_str("recovery_window_expired");
-            return false;
+            return PromiseOrValue::Value(false);
         }
 
         let ceased = match result {
             Ok(v) => v,
             Err(_) => {
                 env::log_str("recovery_finalize_failed_dao_call");
-                return false;
+                return PromiseOrValue::Value(false);
             }
         };
         if !ceased {
             // DAO revoked cessation during the delay. Cancel the
             // recovery; customer must restart if cessation is declared
-            // again.
+            // again. No state change beyond clearing recovery.
             self.recovery = None;
             env::log_str("recovery_cancelled_dao_revoked");
-            return false;
+            return PromiseOrValue::Value(false);
         }
 
-        self.unlocked = true;
-        self.recovery = None;
-        env::log_str("recovery_finalized_cessation");
-        true
+        // DAO still ceased + we're past finalize_after + within
+        // finalize_before + parent already authenticated in the
+        // synchronous `finalize_recovery` entry. Safe to dispatch
+        // the same atomic key-swap as unilateral path. State
+        // mutation deferred to `callback_after_swap`.
+        PromiseOrValue::Promise(self.dispatch_swap(new_parent_pubkey, true))
+    }
+
+    /// Build the key-swap Promise and chain a post-swap callback that
+    /// commits the state mutation. Used by both finalize paths.
+    /// `cessation` flag controls the success-log string so the
+    /// off-chain indexer can distinguish the two triggers.
+    ///
+    /// Returning a Promise from `finalize_recovery` commits the
+    /// parent receipt's state BEFORE the Promise's child receipt
+    /// runs — so if we mutated `unlocked`/`recovery`/the TEE vecs
+    /// in the parent receipt and the swap's
+    /// `delete_key`/`add_full_access_key` receipt then panicked
+    /// (duplicate key, malformed pubkey, `AccessKeyAlreadyExists`,
+    /// …), the parent's state mutation would persist while the
+    /// keys did not. Result: vault flagged unlocked + empty TEE
+    /// vecs, but on-chain access-key list still shows the TEE keys
+    /// and not the customer's — a permanently bricked vault under
+    /// TEE custody.
+    ///
+    /// To make the whole flow effectively atomic, all state mutation
+    /// (`unlocked = true`, clearing `recovery`, draining the TEE vecs)
+    /// happens in [`Self::callback_after_swap`] AFTER the
+    /// `delete_key`/`add_full_access_key` batch succeeds. If the swap
+    /// batch fails the contract state is untouched and the customer
+    /// can re-call `finalize_recovery` (still inside the
+    /// `finalize_after..=finalize_before` window) with a corrected
+    /// pubkey.
+    fn dispatch_swap(&self, new_parent_pubkey: PublicKey, cessation: bool) -> Promise {
+        // Dedupe TEE keys: `initial_tee_key` is tracked separately
+        // from `registered_tee_keys` but operators COULD (in
+        // principle) propose the initial pubkey via DAO rotation,
+        // ending up with the same key in both. A second `delete_key`
+        // on a key the first action just removed would panic the
+        // whole receipt with `AccessKeyNotFound`. Also dedupe inside
+        // `registered_tee_keys` itself for the same reason — the
+        // contract's own `propose_tee_key` rejects duplicates today
+        // but `dispatch_swap` should be self-contained.
+        let mut seen: std::collections::BTreeSet<PublicKey> =
+            std::collections::BTreeSet::new();
+        let mut promise = Promise::new(env::current_account_id());
+        if let Some(ref initial) = self.initial_tee_key {
+            if seen.insert(initial.clone()) {
+                promise = promise.delete_key(initial.clone());
+            }
+        }
+        for k in &self.registered_tee_keys {
+            if seen.insert(k.clone()) {
+                promise = promise.delete_key(k.clone());
+            }
+        }
+        promise = promise.add_full_access_key(new_parent_pubkey);
+        promise.then(
+            Self::ext(env::current_account_id())
+                .with_static_gas(GAS_CALLBACK)
+                .callback_after_swap(cessation),
+        )
+    }
+
+    /// Post-swap callback — commits the state mutation IFF the
+    /// `delete_key`/`add_full_access_key` batch succeeded. Receipts
+    /// containing only access-key actions return an empty `()`
+    /// success value, so we deserialize the result as
+    /// `Result<(), PromiseError>`.
+    ///
+    /// On failure we deliberately leave `recovery` populated so the
+    /// customer can re-call `finalize_recovery` with a fresh pubkey
+    /// (still inside the same `finalize_after..=finalize_before`
+    /// window) without re-running `initiate_*_recovery`.
+    #[private]
+    pub fn callback_after_swap(
+        &mut self,
+        cessation: bool,
+        #[callback_result] result: Result<(), PromiseError>,
+    ) -> bool {
+        match result {
+            Ok(()) => {
+                self.unlocked = true;
+                self.recovery = None;
+                self.initial_tee_key = None;
+                self.registered_tee_keys.clear();
+                env::log_str(if cessation {
+                    "recovery_finalized_cessation"
+                } else {
+                    "recovery_finalized_unilateral"
+                });
+                true
+            }
+            Err(_) => {
+                env::log_str("recovery_finalize_swap_failed");
+                false
+            }
+        }
     }
 
     /// After a successful recovery the parent account can add its own
@@ -755,6 +977,7 @@ impl Vault {
             parent: self.parent.clone(),
             keystore_dao: self.keystore_dao.clone(),
             mpc_contract: self.mpc_contract.clone(),
+            initial_tee_key: self.initial_tee_key.clone(),
             registered_tee_keys: self.registered_tee_keys.clone(),
             recovery: self.recovery.clone(),
             unlocked: self.unlocked,
@@ -845,7 +1068,7 @@ mod tests {
 
     fn fresh_vault() -> Vault {
         testing_env!(ctx_for(alice()).build());
-        Vault::new(alice(), dao(), mpc(), None)
+        Vault::new(alice(), dao(), mpc(), None, None)
     }
 
     #[test]
@@ -1055,7 +1278,7 @@ mod tests {
     fn finalize_without_initiate_panics() {
         let mut v = fresh_vault();
         testing_env!(ctx_for(alice()).build());
-        v.finalize_recovery();
+        v.finalize_recovery(ed25519_key_2());
     }
 
     #[test]
@@ -1073,7 +1296,7 @@ mod tests {
         let mut b = ctx_for(alice());
         b.block_timestamp(now + CESSATION_DELAY_NS - 1);
         testing_env!(b.build());
-        v.finalize_recovery();
+        v.finalize_recovery(ed25519_key_2());
     }
 
     #[test]
@@ -1137,7 +1360,7 @@ mod tests {
     #[test]
     fn new_accepts_explicit_exit_window_in_range() {
         testing_env!(ctx_for(alice()).build());
-        let v = Vault::new(alice(), dao(), mpc(), Some(MAX_UNILATERAL_EXIT_WINDOW_SECS));
+        let v = Vault::new(alice(), dao(), mpc(), None, Some(MAX_UNILATERAL_EXIT_WINDOW_SECS));
         assert_eq!(v.unilateral_exit_window_secs, MAX_UNILATERAL_EXIT_WINDOW_SECS);
     }
 
@@ -1145,14 +1368,14 @@ mod tests {
     #[should_panic(expected = "exit window must be between")]
     fn new_rejects_too_short_exit_window() {
         testing_env!(ctx_for(alice()).build());
-        let _ = Vault::new(alice(), dao(), mpc(), Some(MIN_UNILATERAL_EXIT_WINDOW_SECS - 1));
+        let _ = Vault::new(alice(), dao(), mpc(), None, Some(MIN_UNILATERAL_EXIT_WINDOW_SECS - 1));
     }
 
     #[test]
     #[should_panic(expected = "exit window must be between")]
     fn new_rejects_too_long_exit_window() {
         testing_env!(ctx_for(alice()).build());
-        let _ = Vault::new(alice(), dao(), mpc(), Some(MAX_UNILATERAL_EXIT_WINDOW_SECS + 1));
+        let _ = Vault::new(alice(), dao(), mpc(), None, Some(MAX_UNILATERAL_EXIT_WINDOW_SECS + 1));
     }
 
     #[test]
@@ -1161,7 +1384,7 @@ mod tests {
         // sub-account relationship, must succeed and store fields
         // verbatim.
         testing_env!(ctx_for(alice()).build());
-        let v = Vault::new(alice(), dao(), mpc(), None);
+        let v = Vault::new(alice(), dao(), mpc(), None, None);
         assert_eq!(v.parent, alice());
         assert_eq!(v.keystore_dao, dao());
         assert_eq!(v.mpc_contract, mpc());
@@ -1175,7 +1398,7 @@ mod tests {
         // current = vault.alice.near, parent = vault.alice.near
         // (self). Self is not a sub-account of itself.
         testing_env!(ctx_for(alice()).build());
-        let _ = Vault::new(vault_account(), dao(), mpc(), None);
+        let _ = Vault::new(vault_account(), dao(), mpc(), None, None);
     }
 
     #[test]
@@ -1188,7 +1411,7 @@ mod tests {
         // the `parent` it grants recovery to.
         testing_env!(ctx_for(alice()).build());
         let unrelated: AccountId = "bob.near".parse().unwrap();
-        let _ = Vault::new(unrelated, dao(), mpc(), None);
+        let _ = Vault::new(unrelated, dao(), mpc(), None, None);
     }
 
     #[test]
@@ -1200,7 +1423,7 @@ mod tests {
         // (the only signer that owns the predecessor namespace).
         testing_env!(ctx_for(alice()).build());
         let tla: AccountId = "near".parse().unwrap();
-        let _ = Vault::new(tla, dao(), mpc(), None);
+        let _ = Vault::new(tla, dao(), mpc(), None, None);
     }
 
     #[test]
@@ -1269,6 +1492,51 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "only the parent account can finalize recovery")]
+    fn finalize_recovery_rejects_non_parent_unilateral() {
+        // Recovery initiated by parent, then a third party tries to
+        // finalize ahead of parent and substitute their own pubkey.
+        // This is the front-running attack the predecessor check
+        // closes. With the gate in place the call must panic before
+        // any state mutation.
+        let mut v = fresh_vault();
+        let now: u64 = 1_700_000_000_000_000_000;
+        let window_secs = 7 * DAY_SECS;
+        v.recovery = Some(RecoveryState {
+            initiated_at: now,
+            finalize_after: now + window_secs * SECOND_NS,
+            finalize_before: now + window_secs * SECOND_NS + FINALIZE_WINDOW_NS,
+            trigger: RecoveryTrigger::Unilateral,
+        });
+        let mut b = ctx_for("eve.near".parse().unwrap());
+        b.block_timestamp(now + window_secs * SECOND_NS + 1);
+        testing_env!(b.build());
+        v.finalize_recovery(ed25519_key_2());
+    }
+
+    #[test]
+    #[should_panic(expected = "only the parent account can finalize recovery")]
+    fn finalize_recovery_rejects_non_parent_cessation() {
+        // Same front-run protection on the cessation branch — even
+        // though `initiate_recovery` (cessation) is permissionless,
+        // only the parent can finalize so anonymous callers can't
+        // sneak their own pubkey through the DAO-driven escape
+        // hatch.
+        let mut v = fresh_vault();
+        let now: u64 = 1_700_000_000_000_000_000;
+        v.recovery = Some(RecoveryState {
+            initiated_at: now,
+            finalize_after: now + CESSATION_DELAY_NS,
+            finalize_before: now + CESSATION_DELAY_NS + FINALIZE_WINDOW_NS,
+            trigger: RecoveryTrigger::Cessation,
+        });
+        let mut b = ctx_for("eve.near".parse().unwrap());
+        b.block_timestamp(now + CESSATION_DELAY_NS + 1);
+        testing_env!(b.build());
+        v.finalize_recovery(ed25519_key_2());
+    }
+
+    #[test]
     #[should_panic(expected = "recovery already in progress")]
     fn unilateral_initiate_rejects_when_recovery_active() {
         let mut v = fresh_vault();
@@ -1293,7 +1561,15 @@ mod tests {
     }
 
     #[test]
-    fn finalize_unilateral_unlocks_synchronously() {
+    fn finalize_unilateral_returns_promise_without_mutating_state() {
+        // Unit tests can't observe the swap Promise's child receipt,
+        // so we can only verify the SYNCHRONOUS half of
+        // `finalize_recovery`: the function returns the swap promise
+        // but defers all state mutation (unlocked, recovery,
+        // initial_tee_key, registered_tee_keys) to
+        // `callback_after_swap`. Integration tests (near-workspaces
+        // sandbox) cover the full async chain end-to-end and assert
+        // the post-callback state.
         let mut v = fresh_vault();
         let now: u64 = 1_700_000_000_000_000_000;
         let window_secs = 7 * DAY_SECS;
@@ -1307,13 +1583,55 @@ mod tests {
         b.block_timestamp(now + window_secs * SECOND_NS + 1);
         testing_env!(b.build());
 
-        // The Promise is returned but the state mutation happens
-        // synchronously inside `finalize_recovery` for the Unilateral
-        // branch.
-        let _ = v.finalize_recovery();
+        let _ = v.finalize_recovery(ed25519_key_2());
 
+        // State must remain unchanged — the callback hasn't run yet.
+        assert!(!v.unlocked, "unlocked must NOT flip until callback_after_swap");
+        assert!(v.recovery.is_some(), "recovery must NOT clear until callback_after_swap");
+    }
+
+    #[test]
+    fn callback_after_swap_commits_state_on_success() {
+        let mut v = fresh_vault();
+        v.recovery = Some(RecoveryState {
+            initiated_at: 0,
+            finalize_after: 0,
+            finalize_before: 0,
+            trigger: RecoveryTrigger::Unilateral,
+        });
+        v.initial_tee_key = Some(ed25519_key());
+        v.registered_tee_keys.push(ed25519_key_2());
+        testing_env!(ctx_for(vault_account()).build());
+        // Simulating callback_result = Ok(()) for the swap receipt.
+        let unlocked_returned = v.callback_after_swap(false, Ok(()));
+        assert!(unlocked_returned);
         assert!(v.unlocked);
         assert!(v.recovery.is_none());
+        assert!(v.initial_tee_key.is_none());
+        assert!(v.registered_tee_keys.is_empty());
+    }
+
+    #[test]
+    fn callback_after_swap_leaves_state_untouched_on_failure() {
+        let mut v = fresh_vault();
+        v.recovery = Some(RecoveryState {
+            initiated_at: 0,
+            finalize_after: 0,
+            finalize_before: 0,
+            trigger: RecoveryTrigger::Unilateral,
+        });
+        v.initial_tee_key = Some(ed25519_key());
+        v.registered_tee_keys.push(ed25519_key_2());
+        testing_env!(ctx_for(vault_account()).build());
+        // Simulate a failed swap receipt — the customer can re-call
+        // finalize_recovery inside the same window with a fresh
+        // pubkey because nothing has been mutated.
+        let unlocked_returned = v.callback_after_swap(false, Err(PromiseError::Failed));
+        assert!(!unlocked_returned);
+        assert!(!v.unlocked);
+        assert!(v.recovery.is_some());
+        assert_eq!(v.initial_tee_key.as_ref(), Some(&ed25519_key()));
+        assert_eq!(v.registered_tee_keys, vec![ed25519_key_2()]);
     }
 
     #[test]
@@ -1332,7 +1650,7 @@ mod tests {
         b.block_timestamp(finalize_before + 1);
         testing_env!(b.build());
 
-        let _ = v.finalize_recovery();
+        let _ = v.finalize_recovery(ed25519_key_2());
 
         assert!(!v.unlocked);
         assert!(v.recovery.is_none());
@@ -1353,7 +1671,7 @@ mod tests {
         let mut b = ctx_for(alice());
         b.block_timestamp(now + window_secs * SECOND_NS - 1);
         testing_env!(b.build());
-        v.finalize_recovery();
+        v.finalize_recovery(ed25519_key_2());
     }
 
     #[test]

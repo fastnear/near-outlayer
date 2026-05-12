@@ -76,6 +76,15 @@ const TEST_UNILATERAL_WINDOW_SECS: u64 = {
     }
 };
 
+/// Stand-in pubkey for `finalize_recovery(new_parent_pubkey)` calls
+/// in tests that don't otherwise care about the key-swap mechanics —
+/// they assert state transitions, not the on-chain access-key list.
+/// Generated once at compile time from a fixed secret so the value is
+/// stable across runs.
+fn test_recovery_pubkey() -> PublicKey {
+    SecretKey::from_seed(KeyType::ED25519, "test-recovery-pubkey").public_key()
+}
+
 // ============================================================
 // Fixture compilation (cached across all tests in this binary)
 // ============================================================
@@ -582,14 +591,17 @@ async fn cessation_full_happy_path_unlocks_after_7d() -> Result<()> {
     fast_forward_secs(&s.worker, (CESSATION_DELAY_NS / ONE_SECOND_NS).max(TEST_UNILATERAL_WINDOW_SECS) + 30).await?;
 
     let outcome = expect_success(
-        s.vault
-            .call("finalize_recovery")
+        s.parent
+            .call(s.vault.id(), "finalize_recovery")
+            .args_json(json!({"new_parent_pubkey": test_recovery_pubkey().to_string()}))
             .max_gas()
             .transact()
             .await?,
     )?;
-    let returned: bool = outcome.json()?;
-    assert!(returned, "finalize_recovery should return true");
+    // finalize_recovery now returns PromiseOrValue::Promise on the
+    // success path (the key-swap actions have no return value), so
+    // we assert correctness via the post-finalize vault state below.
+    let _ = outcome;
 
     let state = s.vault_state().await?;
     assert!(state["unlocked"].as_bool().unwrap_or(false));
@@ -614,8 +626,9 @@ async fn cessation_recovery_cancelled_if_dao_revokes() -> Result<()> {
     fast_forward_secs(&s.worker, (CESSATION_DELAY_NS / ONE_SECOND_NS).max(TEST_UNILATERAL_WINDOW_SECS) + 30).await?;
 
     let outcome = expect_success(
-        s.vault
-            .call("finalize_recovery")
+        s.parent
+            .call(s.vault.id(), "finalize_recovery")
+            .args_json(json!({"new_parent_pubkey": test_recovery_pubkey().to_string()}))
             .max_gas()
             .transact()
             .await?,
@@ -649,8 +662,9 @@ async fn cessation_finalize_after_14d_clears_state() -> Result<()> {
     .await?;
 
     let outcome = expect_success(
-        s.vault
-            .call("finalize_recovery")
+        s.parent
+            .call(s.vault.id(), "finalize_recovery")
+            .args_json(json!({"new_parent_pubkey": test_recovery_pubkey().to_string()}))
             .max_gas()
             .transact()
             .await?,
@@ -693,6 +707,73 @@ async fn unilateral_initiate_rejects_non_parent() -> Result<()> {
 }
 
 #[tokio::test]
+async fn unilateral_finalize_rejects_non_parent_after_window() -> Result<()> {
+    // Sandbox-level coverage of the front-running fix: even AFTER the
+    // unilateral exit window has elapsed (when finalize is otherwise
+    // ready to run), a non-parent caller must be bounced. Without
+    // this gate, any chain-watcher could substitute their own pubkey
+    // during the atomic key-swap and hijack the vault.
+    let s = Setup::new(Some(TEST_UNILATERAL_WINDOW_SECS)).await?;
+    expect_success(
+        s.parent
+            .call(s.vault.id(), "unilateral_initiate_recovery")
+            .max_gas()
+            .transact()
+            .await?,
+    )?;
+    fast_forward_secs(
+        &s.worker,
+        (CESSATION_DELAY_NS / ONE_SECOND_NS).max(TEST_UNILATERAL_WINDOW_SECS) + 30,
+    )
+    .await?;
+
+    let stranger = s
+        .worker
+        .root_account()?
+        .create_subaccount("eve")
+        .initial_balance(NearToken::from_near(10))
+        .transact()
+        .await?
+        .into_result()?;
+
+    let outcome = stranger
+        .call(s.vault.id(), "finalize_recovery")
+        .args_json(json!({"new_parent_pubkey": test_recovery_pubkey().to_string()}))
+        .max_gas()
+        .transact()
+        .await?;
+    assert!(outcome.is_failure(), "non-parent finalize must be rejected");
+
+    // Vault MUST remain locked with recovery state intact — the
+    // parent should be able to drive the same finalize themselves
+    // without re-initiating.
+    let state_after_reject = s.vault_state().await?;
+    assert_eq!(
+        state_after_reject["unlocked"].as_bool().unwrap(),
+        false,
+        "vault must remain locked after a rejected non-parent finalize"
+    );
+    assert_eq!(
+        state_after_reject["recovery"]["trigger"], "Unilateral",
+        "recovery state must survive a rejected non-parent finalize"
+    );
+
+    // Now the parent can complete the same recovery in-window.
+    expect_success(
+        s.parent
+            .call(s.vault.id(), "finalize_recovery")
+            .args_json(json!({"new_parent_pubkey": test_recovery_pubkey().to_string()}))
+            .max_gas()
+            .transact()
+            .await?,
+    )?;
+    let state_after_parent = s.vault_state().await?;
+    assert!(state_after_parent["unlocked"].as_bool().unwrap());
+    assert!(state_after_parent["recovery"].is_null());
+    Ok(())
+}
+
+#[tokio::test]
 async fn unilateral_full_happy_path_24h_window() -> Result<()> {
     let s = Setup::new(Some(TEST_UNILATERAL_WINDOW_SECS)).await?; // 24h
     expect_success(
@@ -710,14 +791,16 @@ async fn unilateral_full_happy_path_24h_window() -> Result<()> {
     fast_forward_secs(&s.worker, (CESSATION_DELAY_NS / ONE_SECOND_NS).max(TEST_UNILATERAL_WINDOW_SECS) + 30).await?;
 
     let outcome = expect_success(
-        s.vault
-            .call("finalize_recovery")
+        s.parent
+            .call(s.vault.id(), "finalize_recovery")
+            .args_json(json!({"new_parent_pubkey": test_recovery_pubkey().to_string()}))
             .max_gas()
             .transact()
             .await?,
     )?;
-    let returned: bool = outcome.json()?;
-    assert!(returned);
+    // Success path returns PromiseOrValue::Promise (key-swap actions
+    // have no FunctionCall return), so we check state instead.
+    let _ = outcome;
 
     let state_after = s.vault_state().await?;
     assert!(state_after["unlocked"].as_bool().unwrap());
@@ -746,14 +829,15 @@ async fn unilateral_finalize_works_without_dao_check() -> Result<()> {
     fast_forward_secs(&s.worker, (CESSATION_DELAY_NS / ONE_SECOND_NS).max(TEST_UNILATERAL_WINDOW_SECS) + 30).await?;
 
     let outcome = expect_success(
-        s.vault
-            .call("finalize_recovery")
+        s.parent
+            .call(s.vault.id(), "finalize_recovery")
+            .args_json(json!({"new_parent_pubkey": test_recovery_pubkey().to_string()}))
             .max_gas()
             .transact()
             .await?,
     )?;
-    let returned: bool = outcome.json()?;
-    assert!(returned, "Unilateral finalize must not depend on DAO state");
+    // Success path returns PromiseOrValue::Promise.
+    let _ = outcome;
 
     let state = s.vault_state().await?;
     assert!(state["unlocked"].as_bool().unwrap());
@@ -795,8 +879,9 @@ async fn set_exit_window_then_initiate_uses_new_window() -> Result<()> {
     // window would have permitted finalize at this point).
     fast_forward_secs(&s.worker, 50).await?;
     let outcome = s
-        .vault
-        .call("finalize_recovery")
+        .parent
+        .call(s.vault.id(), "finalize_recovery")
+        .args_json(json!({"new_parent_pubkey": test_recovery_pubkey().to_string()}))
         .max_gas()
         .transact()
         .await?;
@@ -810,14 +895,16 @@ async fn set_exit_window_then_initiate_uses_new_window() -> Result<()> {
     // Total +130 s from initiate (50 s already advanced above).
     fast_forward_secs(&s.worker, 80).await?;
     let outcome = expect_success(
-        s.vault
-            .call("finalize_recovery")
+        s.parent
+            .call(s.vault.id(), "finalize_recovery")
+            .args_json(json!({"new_parent_pubkey": test_recovery_pubkey().to_string()}))
             .max_gas()
             .transact()
             .await?,
     )?;
-    let returned: bool = outcome.json()?;
-    assert!(returned);
+    // Success path returns PromiseOrValue::Promise (key-swap actions
+    // have no FunctionCall return), so we check state instead.
+    let _ = outcome;
 
     let state = s.vault_state().await?;
     assert!(state["unlocked"].as_bool().unwrap());
@@ -971,8 +1058,9 @@ async fn unlocked_add_key_actually_adds_full_access_key_after_recovery() -> Resu
     )?;
     fast_forward_secs(&s.worker, (CESSATION_DELAY_NS / ONE_SECOND_NS).max(TEST_UNILATERAL_WINDOW_SECS) + 30).await?;
     expect_success(
-        s.vault
-            .call("finalize_recovery")
+        s.parent
+            .call(s.vault.id(), "finalize_recovery")
+            .args_json(json!({"new_parent_pubkey": test_recovery_pubkey().to_string()}))
             .max_gas()
             .transact()
             .await?,
@@ -1014,8 +1102,9 @@ async fn unlocked_add_key_default_allowance_is_one_near_for_function_call_keys()
     )?;
     fast_forward_secs(&s.worker, (CESSATION_DELAY_NS / ONE_SECOND_NS).max(TEST_UNILATERAL_WINDOW_SECS) + 30).await?;
     expect_success(
-        s.vault
-            .call("finalize_recovery")
+        s.parent
+            .call(s.vault.id(), "finalize_recovery")
+            .args_json(json!({"new_parent_pubkey": test_recovery_pubkey().to_string()}))
             .max_gas()
             .transact()
             .await?,
@@ -1065,8 +1154,9 @@ async fn unlocked_add_key_rejects_non_parent_after_unlock() -> Result<()> {
     )?;
     fast_forward_secs(&s.worker, (CESSATION_DELAY_NS / ONE_SECOND_NS).max(TEST_UNILATERAL_WINDOW_SECS) + 30).await?;
     expect_success(
-        s.vault
-            .call("finalize_recovery")
+        s.parent
+            .call(s.vault.id(), "finalize_recovery")
+            .args_json(json!({"new_parent_pubkey": test_recovery_pubkey().to_string()}))
             .max_gas()
             .transact()
             .await?,

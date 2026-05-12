@@ -226,10 +226,23 @@ impl AppState {
     ///   * `customer = Some(_)` but the worker was booted without MPC
     ///     context (non-TEE / mock — feature unsupported in that mode).
     ///   * the vault is not verified on keystore-dao (or banned).
+    ///   * the vault is `unlocked == true` on chain (recovery
+    ///     completed) — covered by the cold-path gate.
     ///   * the MPC CKD round-trip fails.
     ///
     /// `customer = None` always returns `Ok(())` immediately (legacy
     /// default-master path).
+    ///
+    /// **No cache short-circuit at this layer.** Every signing op
+    /// delegates straight into [`crate::mpc_ckd::ensure_customer_loaded`],
+    /// which calls `assert_serving_allowed` (the
+    /// `is_vault_verified` + `get_state().unlocked == false` view-call
+    /// pair) BEFORE checking the in-memory cache. That preserves the
+    /// "sovereign after recovery" property even if the indexer-driven
+    /// `/admin/evict-customer` is delayed: a vault under parent
+    /// FullAccess control will trip the unlocked check and have its
+    /// cached master evicted on the next request. Cost: ~200-600 ms
+    /// of view-calls per signing op; acceptable on the wallet path.
     pub async fn ensure_customer_loaded(
         &self,
         customer: Option<&near_primitives::types::AccountId>,
@@ -243,15 +256,6 @@ impl AppState {
         // Inserts into the snapshot's `masters` propagate to the
         // canonical keystore via the shared Arc.
         let keystore_snapshot = self.keystore.read().await.clone();
-
-        // Fast path: master already loaded → skip both the verify
-        // view-call and the MPC-context requirement. This is what
-        // makes the eviction-then-readd flow work, and what lets
-        // tests / mock modes operate on pre-populated customers
-        // without needing real MPC config.
-        if keystore_snapshot.has_customer(vault_id) {
-            return Ok(());
-        }
 
         let ctx = self.mpc_context.get().ok_or_else(|| {
             anyhow::anyhow!(
@@ -5352,30 +5356,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ensure_customer_loaded_some_with_cached_master_skips_view_call() {
-        // Fast path: even without MPC context configured, an already
-        // loaded customer master must be served (no view-call, no MPC
-        // tx). This is what makes a banned-then-evicted-then-re-add
-        // flow work — re-adding via /admin and the next handler
-        // request skips re-verification.
+    async fn ensure_customer_loaded_some_with_cached_master_still_requires_mpc_context() {
+        // The wrapper used to short-circuit on `has_customer` to skip
+        // the on-chain verify, but that opened a "served cached master
+        // for a now-unlocked vault" window if the indexer-driven
+        // eviction lagged. The current behaviour: every signing op
+        // delegates to `mpc_ckd::ensure_customer_loaded`, which does
+        // the `is_vault_verified` + `unlocked == false` view-call pair
+        // BEFORE checking the cache. A cached master alone is no
+        // longer a free pass.
         //
-        // We omit MPC config on purpose: if the gate fell through to
-        // the network path it would error out, but the early
-        // has_customer check should prevent that.
+        // In this test the worker has no MPC context, so the wrapper
+        // errors before reaching the view-call layer — exactly the
+        // contract we want: cached-master serving is gated behind a
+        // properly configured worker.
         use std::str::FromStr;
         let state = test_state();
         let vault = near_primitives::types::AccountId::from_str("vault.alice.testnet").unwrap();
-        // Pre-populate.
         state
             .keystore
             .read()
             .await
             .add_customer(vault.clone(), [9u8; 32]);
 
-        state
+        let err = state
             .ensure_customer_loaded(Some(&vault))
             .await
-            .expect("cached master must short-circuit MPC path");
+            .expect_err(
+                "cache hit must not short-circuit the MPC-context guard \
+                 — full re-verify happens at the next layer",
+            );
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("MPC CKD context") || msg.contains("non-TEE"),
+            "error must surface the missing MPC context, got: {}",
+            msg
+        );
     }
 
     // ============== Vault-scope helpers ==============
@@ -5668,40 +5684,41 @@ mod tests {
     // verify the gate's behaviour matrix:
 
     #[tokio::test]
-    async fn ensure_customer_loaded_independent_per_vault() {
-        // Loading customer A's master must not satisfy a request for
-        // customer B's master. The lazy-load gate's `has_customer`
-        // check is per-vault — populating one entry doesn't shadow
-        // another.
+    async fn ensure_customer_loaded_treats_cached_and_uncached_uniformly_without_mpc() {
+        // The api-layer wrapper used to fast-path on `has_customer`,
+        // so cached masters were served without going through
+        // `mpc_ckd::ensure_customer_loaded`'s on-chain verify. That
+        // short-circuit is gone — every call now needs an MPC context
+        // because the verify (and any subsequent re-load) happens at
+        // the lower layer. Both a cached vault AND an uncached vault
+        // must surface the same "no MPC context" error in non-TEE
+        // mode; per-vault cache isolation is unit-tested at the
+        // Keystore layer, not here.
         use std::str::FromStr;
         let state = test_state();
         let alice = near_primitives::types::AccountId::from_str("vault.alice.testnet").unwrap();
         let bob = near_primitives::types::AccountId::from_str("vault.bob.testnet").unwrap();
 
-        // Pre-populate alice only.
+        // Pre-populate alice only; bob stays uncached.
         state
             .keystore
             .read()
             .await
             .add_customer(alice.clone(), [0xAA; 32]);
 
-        // Alice → fast-path success (no MPC needed).
-        state
-            .ensure_customer_loaded(Some(&alice))
-            .await
-            .expect("alice's cached master must serve");
-
-        // Bob → not cached → would attempt MPC; without context
-        // configured this fails fast with the documented error.
-        let err = state
-            .ensure_customer_loaded(Some(&bob))
-            .await
-            .expect_err("bob's master is not loaded; gate must refuse");
-        let msg = format!("{:#}", err);
-        assert!(
-            msg.contains("MPC CKD context") || msg.contains("non-TEE"),
-            "non-TEE-mode error message expected, got: {msg}"
-        );
+        for vault in [&alice, &bob] {
+            let err = state
+                .ensure_customer_loaded(Some(vault))
+                .await
+                .expect_err(
+                    "wrapper must require MPC context regardless of cache state",
+                );
+            let msg = format!("{:#}", err);
+            assert!(
+                msg.contains("MPC CKD context") || msg.contains("non-TEE"),
+                "non-TEE-mode error message expected for {vault}, got: {msg}"
+            );
+        }
     }
 
     // ============== Audit noteC2 — backward-compat smoke ==============

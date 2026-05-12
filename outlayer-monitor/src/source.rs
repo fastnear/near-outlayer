@@ -456,10 +456,14 @@ pub(crate) fn parse_vault_log(
         "recovery_initiated_unilateral",
         "recovery_finalized_cessation",
         "recovery_finalized_unilateral",
+        "recovery_finalize_swap_failed",
+        "recovery_finalize_failed_dao_call",
         "recovery_window_expired",
         "recovery_cancelled_dao_revoked",
         "vault_tee_key_added",
-        // `exit_window_set_to_<n>_secs` — has dynamic suffix, special-cased below.
+        // `exit_window_set_to_<n>_secs` and
+        // `vault_tee_keys_cleared count=<n>` — dynamic suffixes,
+        // special-cased below.
     ];
     for ev in VAULT_EVENTS {
         if trimmed == *ev {
@@ -468,6 +472,9 @@ pub(crate) fn parse_vault_log(
     }
     if trimmed.starts_with("exit_window_set_to_") && trimmed.ends_with("_secs") {
         return Some(("exit_window_set".to_string(), executor_id.to_string()));
+    }
+    if trimmed.starts_with("vault_tee_keys_cleared") {
+        return Some(("vault_tee_keys_cleared".to_string(), executor_id.to_string()));
     }
 
     // DAO-emitted events (executor_id == keystore_dao). Format:
@@ -554,6 +561,39 @@ mod parse_vault_log_tests {
         assert_eq!(
             parse_vault_log("exit_window_set_to_604800_secs", VAULT, DAO),
             Some(("exit_window_set".into(), VAULT.into()))
+        );
+    }
+
+    #[test]
+    fn vault_emitted_finalize_swap_failed() {
+        // Contract emits this when the post-swap callback observes a
+        // failed atomic-swap promise. Operator-visible signal that
+        // the vault is still locked despite a finalize attempt.
+        assert_eq!(
+            parse_vault_log("recovery_finalize_swap_failed", VAULT, DAO),
+            Some(("recovery_finalize_swap_failed".into(), VAULT.into()))
+        );
+    }
+
+    #[test]
+    fn vault_emitted_finalize_failed_dao_call() {
+        assert_eq!(
+            parse_vault_log("recovery_finalize_failed_dao_call", VAULT, DAO),
+            Some(("recovery_finalize_failed_dao_call".into(), VAULT.into()))
+        );
+    }
+
+    #[test]
+    fn vault_emitted_tee_keys_cleared_dynamic_count() {
+        // Has a dynamic `count=<n>` suffix — collapse to the stable
+        // base event name so the webhook contract stays small.
+        assert_eq!(
+            parse_vault_log("vault_tee_keys_cleared count=3", VAULT, DAO),
+            Some(("vault_tee_keys_cleared".into(), VAULT.into()))
+        );
+        assert_eq!(
+            parse_vault_log("vault_tee_keys_cleared count=0", VAULT, DAO),
+            Some(("vault_tee_keys_cleared".into(), VAULT.into()))
         );
     }
 
