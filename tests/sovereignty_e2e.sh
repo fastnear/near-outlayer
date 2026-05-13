@@ -525,35 +525,21 @@ pass "fetched on-chain ciphertext (${#ENCRYPTED_B64} chars base64) for ($SECRET_
 
 SECRET_SEED="project:${SECRET_PROJECT}:${SECRET_PROJECT_OWNER}"
 log "14. Decrypting locally (seed=$SECRET_SEED)"
-DECRYPT_RC=0
 DECRYPTED=$("$RECOVERY_BIN" decrypt-secret \
   --master "$MASTER_HEX" \
   --seed "$SECRET_SEED" \
-  --ciphertext-base64 "$ENCRYPTED_B64" 2>&1) || DECRYPT_RC=$?
+  --ciphertext-base64 "$ENCRYPTED_B64") || \
+  fail "customer-recovery decrypt-secret failed — \
+the wire format from `outlayer secrets set` doesn't match the keystore's expected ECIES v1 \
+shape. This used to be a known gap (CLI used legacy ChaCha20-with-pubkey, keystore expected \
+ECIES) — if this fails after the CLI ECIES migration, the migration regressed."
 echo "decrypt output: $DECRYPTED" >&2
 
-# Round-trip self-test (`cargo test roundtrip` in customer-recovery)
-# proves the HMAC → ed25519 → ChaCha20 chain is correct for
-# synthetic inputs. And wallet derivation in step 10/11 proves the
-# CKD-recovered master matches the keystore's per-vault master.
-# But against the live `outlayer secrets set` ciphertext the AEAD
-# still rejects — there is a subtle normalisation or wire-format
-# step on the encryption side we have not yet pinned down. Treat as
-# a TODO rather than a hard failure: the customer can still see the
-# raw on-chain ciphertext (step 13) and they hold the master locally
-# (step 9), so the *capability* exists even if this one decryption
-# path doesn't yet line up.
-if [[ $DECRYPT_RC -ne 0 ]]; then
-  warn "local decrypt did not yield plaintext (TODO: investigate encrypt-side seed/format)."
-  warn "  master, ciphertext, and seed are all in this run's output for offline analysis."
-else
-  DECRYPTED_VALUE=$(echo "$DECRYPTED" | jq -r '.MY_TEST_SECRET // empty' 2>/dev/null || echo "")
-  if [[ "$DECRYPTED_VALUE" != "$SECRET_VALUE" ]]; then
-    warn "local decrypt succeeded but value mismatched: expected '$SECRET_VALUE', got '$DECRYPTED_VALUE'"
-  else
-    pass "local decryption matches the stored secret — customer can read secrets without OutLayer"
-  fi
+DECRYPTED_VALUE=$(echo "$DECRYPTED" | jq -r '.MY_TEST_SECRET // empty' 2>/dev/null || echo "")
+if [[ "$DECRYPTED_VALUE" != "$SECRET_VALUE" ]]; then
+  fail "local decrypt succeeded but value mismatched: expected '$SECRET_VALUE', got '$DECRYPTED_VALUE'"
 fi
+pass "local decryption matches the stored secret — customer reads secrets without OutLayer"
 
 echo
 pass "ALL CHECKS PASSED. End-to-end sovereignty cutoff verified on $NETWORK."

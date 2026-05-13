@@ -25,6 +25,7 @@ Both modes provide the same cryptographic proof via Intel TDX attestation.
 - **Sections**: `/dashboard/app/docs/sections/` - Reusable documentation components
 - **Examples**: `/wasi-examples/*/README.md` - Source for example documentation
 - **Navigation**: `/dashboard/app/docs/layout.tsx` - Sidebar menu configuration
+- **Vault runbook**: `/docs/LEAVING_OUTLAYER.md` — source-of-truth procedure for taking a vault out from under OutLayer's keystore (linked from `/docs/vaults` page; auditors should treat it as canonical)
 - **Live Site**: https://outlayer.fastnear.com/docs
 
 ## Documentation Structure
@@ -200,6 +201,7 @@ dashboard/app/docs/
 | `/docs/wasi` | `dashboard/app/docs/sections/Wasi.tsx` | `wasi-examples/WASI_TUTORIAL.md`, `worker/wit/world.wit` | WASI programming, host functions |
 | `/docs/secrets` | `dashboard/app/docs/sections/Secrets.tsx` | `keystore-dao-contract/README.md` | Secrets management, CKD, Keystore DAO |
 | `/docs/projects` | `dashboard/app/docs/projects/page.tsx` | `contract/src/projects.rs` | Projects, versions, persistent storage, project secrets |
+| `/docs/vaults` | `dashboard/app/docs/vaults/page.tsx` | `vault-contract/src/lib.rs`, `docs/LEAVING_OUTLAYER.md`, `scripts/customer-recovery/README.md` | **MPC Vaults (NEW): per-customer master via MPC CKD, cessation + unilateral recovery, atomic key-swap (`finalize_recovery`), parent-only finalize gate, ECIES secret encryption (CLI + dashboard agree), coordinator-side 423 fast-fail for unlocked vaults, sovereign-exit runbook with `customer-recovery` binary (`generate-key` / `derive-wallet-key` / `decrypt-secret` subcommands)** |
 | `/docs/pricing` | `dashboard/app/docs/sections/Pricing.tsx` | - | Cost model, resource limits |
 | `/docs/tee-attestation` | `dashboard/app/docs/sections/TeeAttestation.tsx` | `TEE_ATTESTATION_FLOW.md` | TEE verification, attestation |
 | `/docs/vrf` | `dashboard/app/docs/vrf/page.tsx` | `VRF.md`, `sdk/outlayer/src/vrf.rs` | **VRF: verifiable randomness, SDK, on-chain verification** |
@@ -611,6 +613,55 @@ HTTPS API is one of two equal ways to use OutLayer (alongside Blockchain/NEAR in
 - ✅ `/docs/earnings` - Developer earnings documentation
 - ✅ Dashboard `/payment-keys` - UI for key management
 - ✅ Dashboard `/earnings` - UI for earnings
+
+## Recent additions to `/docs/vaults` (sovereign-exit work)
+
+These behaviors are now live and should be reflected in `/docs/vaults`
+or in the supplementary `docs/LEAVING_OUTLAYER.md`. If a customer
+reads the rendered vaults page and any of the following is missing,
+update `dashboard/app/docs/vaults/page.tsx`:
+
+- **Atomic key-swap on `finalize_recovery`** — the contract now
+  bundles `DeleteKey(initial_tee_key + registered_tee_keys) +
+  AddFullAccessKey(new_parent_pubkey)` in a single Promise.
+  Customers pass `new_parent_pubkey` to the CLI / dashboard, generate
+  it locally first, and OutLayer's TEE keys are physically gone the
+  moment the swap callback resolves. See `vault-contract/src/lib.rs`
+  `finalize_recovery` + `callback_after_swap`.
+- **Parent-only `finalize_recovery`** — front-running fix. Both
+  cessation and unilateral paths require `predecessor == self.parent`.
+  Trade-off: parent must be alive at finalize time even for the
+  cessation path. Documented in `docs/LEAVING_OUTLAYER.md`.
+- **`customer-recovery` binary** — `scripts/customer-recovery/`,
+  Rust, three subcommands:
+  - `generate-key` — emit fresh ed25519 keypair (used in walkthrough
+    before `finalize_recovery` to produce the new parent key)
+  - `derive-wallet-key` — re-derive a custody wallet's ed25519
+    private key from master + wallet_id
+  - `decrypt-secret` — locally decrypt an on-chain secret using
+    master + accessor seed; auto-detects ECIES v1 vs legacy format.
+- **`walkthrough.sh`** — one-shot interactive recovery runbook
+  (`scripts/customer-recovery/walkthrough.sh`). Handles per-NETWORK
+  MPC contract / NEARblocks indexer constants and idempotent key
+  generation. Recommended over invoking the binary directly.
+- **ECIES across CLI + dashboard** — `outlayer secrets set --vault-id`
+  now uses the same ECIES v1 wire format the dashboard uses
+  (X25519 ECDH + HKDF-SHA256 with info `"outlayer-keystore-v1"` +
+  ChaCha20-Poly1305). Older legacy-format CLI secrets cannot be
+  decrypted by keystore — re-set them with current CLI.
+- **Coordinator vault-serving fast-fail** — `/call/<owner>/<project>`
+  refuses with **HTTP 423 Locked** (with structured body
+  `{reason: "vault_unlocked", vault_id}`) when the bound vault has
+  been recovered or is not in the DAO verified set (HTTP 403).
+  Prevents the 100s Cloudflare 524 that would otherwise hide behind
+  the WASI worker timeout. See
+  `outlayer-coordinator/src/handlers/call.rs::assert_secret_vault_serving_allowed`.
+- **VaultScopeToggle UX** — secret/wallet forms in dashboard now
+  default to a TEXTBOX for the vault id (with on-chain
+  `is_vault_verified` validation) and offer the
+  `/customer/list-vaults` dropdown as a secondary "← Choose from
+  registered" link. Customers without any minted wallet under a
+  vault can still bind a secret to it.
 
 ## Documentation Update Checklist
 

@@ -336,6 +336,95 @@ outlayer vault unlocked-add-key              vault.alice.near ed25519:...`}
           your end-users. Unilateral exit is a <em>customer&rsquo;s</em> escape
           hatch from OutLayer, not an end-user protection mechanism.
         </div>
+
+        <h4 className="font-semibold mt-6 mb-2">Local master recovery (after finalize)</h4>
+        <p className="text-sm text-gray-700 mb-3">
+          On-chain finalize is only half of the sovereign exit. The
+          per-vault master OutLayer&rsquo;s keystore used to derive your
+          wallet keys and decrypt your secrets is still recoverable
+          deterministically &mdash; anyone holding a FullAccess key on
+          the unlocked vault can submit a fresh{' '}
+          <code>request_app_private_key</code> to the MPC contract and
+          arrive at the same 32-byte master. The standalone{' '}
+          <a
+            href="https://github.com/out-layer/near-offshore/tree/main/scripts/customer-recovery"
+            className="text-blue-600 hover:underline"
+            target="_blank"
+            rel="noreferrer"
+          >
+            <code>customer-recovery</code>
+          </a>{' '}
+          binary does that, plus two helpers:
+        </p>
+        <ul className="list-disc list-inside text-sm text-gray-700 mb-3 space-y-1">
+          <li>
+            <code>generate-key</code> &mdash; emit a fresh ed25519
+            keypair locally (used in the walkthrough to produce the
+            new vault-owning key before <code>finalize_recovery</code>)
+          </li>
+          <li>
+            <code>derive-wallet-key --master &lt;hex&gt; --wallet-id
+            &lt;uuid&gt;</code> &mdash; re-derive a custody wallet&rsquo;s
+            ed25519 private key. <code>wallet_id</code> is the UUID
+            the coordinator returned at <code>/register</code> time;
+            keep a backup. Re-deriving offline produces the same
+            NEAR implicit address the keystore was serving.
+          </li>
+          <li>
+            <code>decrypt-secret --master &lt;hex&gt; --seed &lt;s&gt;
+            --ciphertext-base64 &lt;b64&gt;</code> &mdash; locally
+            decrypt an on-chain secret. Auto-detects ECIES v1 (current
+            CLI / dashboard format) vs legacy ChaCha20-Poly1305
+            (pre-v0.2 CLI). The ciphertext comes from{' '}
+            <code>get_secrets(accessor, profile, owner)</code> on the
+            <code>outlayer.near</code> contract.
+          </li>
+        </ul>
+        <p className="text-sm text-gray-700 mb-3">
+          The full procedure (deploy → recovery → master recovery →
+          wallet re-derivation → secret decryption) is documented as a
+          single runbook in{' '}
+          <a
+            href="https://github.com/out-layer/near-offshore/blob/main/docs/LEAVING_OUTLAYER.md"
+            className="text-blue-600 hover:underline"
+            target="_blank"
+            rel="noreferrer"
+          >
+            <code>docs/LEAVING_OUTLAYER.md</code>
+          </a>
+          . The wrapper script{' '}
+          <code>scripts/customer-recovery/walkthrough.sh</code> runs
+          the live steps with idempotency and exit-window
+          introspection.
+        </p>
+        <SyntaxHighlighter language="bash" style={vscDarkPlus}>
+{`# Standalone master recovery (after the on-chain finalize landed):
+VAULT_PRIVATE_KEY=$(jq -r .private_key ~/.outlayer-recovery/vault.alice.near.json) \\
+MPC_PUBLIC_KEY='bls12381g2:...' \\
+  ./scripts/customer-recovery/target/release/customer-recovery \\
+    --vault-id vault.alice.near \\
+    --from-chain \\
+    --rpc-url https://rpc.mainnet.fastnear.com \\
+    --mpc-contract v1.signer \\
+    --nearblocks-url https://api.nearblocks.io
+# stdout: master_hex=<64 hex>`}
+        </SyntaxHighlighter>
+
+        <div className="bg-blue-50 border border-blue-300 rounded p-3 mt-4 text-sm text-gray-800">
+          <strong>Coordinator-side fast-fail.</strong> Once the vault
+          is unlocked on chain, the OutLayer coordinator refuses any{' '}
+          <code>/call/&lt;owner&gt;/&lt;project&gt;</code> request that
+          touches a secret bound to it with{' '}
+          <strong>HTTP 423 Locked</strong> (body{' '}
+          <code>{`{reason: "vault_unlocked", vault_id, error}`}</code>)
+          in under a second, instead of letting the WASI worker time
+          out at the Cloudflare gateway. The same gate emits HTTP 403
+          with <code>reason: "vault_not_verified"</code> when the
+          DAO has not approved the vault (or revoked it). This is the
+          fence that distinguishes &ldquo;OutLayer doesn&rsquo;t serve
+          you anymore&rdquo; from a transient infra failure &mdash;
+          one is permanent (you&rsquo;ve exited), the other is a 5xx.
+        </div>
       </section>
 
       {/* ── 5b. Threat model for end-users ─────────────────────────── */}

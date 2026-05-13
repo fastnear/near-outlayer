@@ -66,6 +66,105 @@ master_hex=4f8c…32 bytes hex…
 
 This is the same 32-byte master the keystore-worker was using.
 
+## End-to-end runbook
+
+The full sovereign-exit procedure (initiate → wait → finalize →
+recover master → derive wallet → decrypt secrets) is documented in
+[`docs/LEAVING_OUTLAYER.md`](../../docs/LEAVING_OUTLAYER.md).
+The wrapper script [`walkthrough.sh`](./walkthrough.sh) runs steps
+1–5 of that procedure with idempotency, exit-window introspection,
+and pre-flight checks. Recommended over invoking the binary
+manually.
+
+```bash
+VAULT_ID=vault.alice.testnet \
+MPC_PUBLIC_KEY='bls12381g2:...' \
+NETWORK=testnet \
+  ./walkthrough.sh
+```
+
+## Subcommands
+
+The binary exposes three subcommands beyond the default
+master-recovery flow. All are read-only locally — none of them
+touch the network unless explicitly asked.
+
+### `generate-key`
+
+```bash
+customer-recovery generate-key > new-parent.json
+```
+
+Emits a fresh ed25519 keypair as `{public_key, private_key}`
+JSON (the format `near-cli-rs` keychain files use). Used in the
+walkthrough to produce the new vault-owning key before `finalize_recovery`
+so the user doesn't need an external NEAR keygen tool installed.
+
+### `derive-wallet-key`
+
+```bash
+customer-recovery derive-wallet-key \
+    --master <hex_64> \
+    --wallet-id <uuid>
+```
+
+Re-derives the ed25519 keypair the OutLayer keystore minted for a
+specific custody wallet (`POST /register {"vault_id": "..."}`).
+Output JSON:
+
+```json
+{
+  "wallet_id": "...",
+  "near_address": "<hex>",
+  "public_key": "ed25519:...",
+  "private_key": "ed25519:..."
+}
+```
+
+Cryptographic recipe (matches `keystore-worker/src/crypto.rs::derive_keypair`):
+```
+secret_bytes = HMAC-SHA256(per_vault_master, "wallet:{wallet_id}:near")[..32]
+ed25519     = SigningKey::from_bytes(secret_bytes)
+```
+
+`near_address` MUST equal the `near_account_id` the coordinator
+returned at `/register` time. Mismatch means the seed shape has
+diverged between keystore and customer-recovery — file a bug.
+
+### `decrypt-secret`
+
+```bash
+customer-recovery decrypt-secret \
+    --master <hex_64> \
+    --seed 'project:owner.near/project-name:owner.near' \
+    --ciphertext-base64 'AQB...'
+```
+
+Decrypts an on-chain ciphertext locally. Auto-detects the wire
+format:
+
+| First byte | Format | Algorithm |
+|---|---|---|
+| `0x01` | ECIES v1 | X25519 ECDH + HKDF-SHA256(`outlayer-keystore-v1`) + ChaCha20-Poly1305 |
+| anything else | Legacy ChaCha20-Poly1305 | Ed25519-verifying-key-as-symmetric (kept for backwards compatibility; broken on the keystore side, present here for completeness) |
+
+Dashboard-stored secrets (`/dashboard/secrets`) use ECIES.
+`outlayer secrets set --vault-id <vault>` uses ECIES as of
+outlayer-cli v0.2 (older versions used the legacy format which
+the keystore could not decrypt — re-set those secrets via current
+CLI or the dashboard).
+
+Seed format per accessor (matches `keystore-worker/src/api.rs:1542`):
+
+| Accessor | Seed |
+|---|---|
+| `Project { project_id }` | `project:<project_id>:<owner>` |
+| `Repo { repo, branch: Some(b) }` | `<normalized_repo>:<owner>:<b>` |
+| `Repo { repo, branch: None }` | `<normalized_repo>:<owner>` |
+| `WasmHash { hash }` | `wasm_hash:<hash>:<owner>` |
+
+Plaintext is canonical UTF-8 JSON (`{"KEY":"value", ...}`).
+
 ## Reproducing your wallet addresses
 
 Every keypair the keystore returned through `/wallet/v1/address`,
