@@ -228,6 +228,67 @@ mod roundtrip_tests {
     }
 
     #[test]
+    fn ecies_encrypt_decrypt_roundtrip() {
+        use chacha20poly1305::aead::Aead;
+        use chacha20poly1305::{ChaCha20Poly1305, KeyInit, Nonce};
+        use hkdf::Hkdf;
+        use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey, StaticSecret};
+
+        // Mirror the dashboard's encrypt path (dashboard/lib/ecies.ts)
+        // and confirm `decrypt_ecies_v1` round-trips. Catches drift
+        // between the ECIES wire layout, the HKDF info string, and
+        // the recipient seed derivation.
+        let master = [0x42u8; 32];
+        let seed = "project:zavodil2.testnet/test-vault:zavodil2.testnet";
+        let plaintext = b"{\"MY_TEST_SECRET\":\"555\"}";
+
+        // Recipient (keystore-side) X25519 keypair.
+        let mut mac = <HmacSha256 as Mac>::new_from_slice(&master).unwrap();
+        mac.update(b"ecies:");
+        mac.update(seed.as_bytes());
+        let derived = mac.finalize().into_bytes();
+        let mut sk_bytes = [0u8; 32];
+        sk_bytes.copy_from_slice(&derived[..32]);
+        let recipient_sk = StaticSecret::from(sk_bytes);
+        let recipient_pk = X25519PublicKey::from(&recipient_sk);
+
+        // Sender (dashboard-side): ephemeral keypair + ECDH.
+        let ephemeral_sk = EphemeralSecret::random_from_rng(rand::rngs::OsRng);
+        let ephemeral_pk = X25519PublicKey::from(&ephemeral_sk);
+        let shared = ephemeral_sk.diffie_hellman(&recipient_pk);
+
+        // HKDF expand with the canonical info string.
+        let hk = Hkdf::<sha2::Sha256>::new(None, shared.as_bytes());
+        let mut sym_key = [0u8; 32];
+        hk.expand(b"outlayer-keystore-v1", &mut sym_key).unwrap();
+
+        // AEAD encrypt with a fixed nonce for determinism.
+        let cipher = ChaCha20Poly1305::new((&sym_key).into());
+        let nonce_bytes = [0xABu8; 12];
+        let ct = cipher
+            .encrypt(Nonce::from_slice(&nonce_bytes), &plaintext[..])
+            .unwrap();
+
+        // Assemble the wire format:
+        //   [0x01 | ephemeral_pk(32) | nonce(12) | ciphertext+tag]
+        let mut blob = Vec::with_capacity(1 + 32 + 12 + ct.len());
+        blob.push(0x01);
+        blob.extend_from_slice(ephemeral_pk.as_bytes());
+        blob.extend_from_slice(&nonce_bytes);
+        blob.extend_from_slice(&ct);
+
+        // Decrypt via our local implementation.
+        let recovered = super::decrypt_ecies_v1(&master, seed, &blob).unwrap();
+        assert_eq!(recovered.as_slice(), plaintext);
+
+        // Sanity: recipient_pk must match what `public_key_hex` would
+        // return in the keystore (the value we capture at step 0 of
+        // vault_detach_test.sh). This is the assertion the detach
+        // test uses to prove the encryption chain end-to-end.
+        let _recipient_pk_hex = hex::encode(recipient_pk.as_bytes());
+    }
+
+    #[test]
     fn legacy_encrypt_decrypt_roundtrip() {
         let master = [0x42u8; 32];
         let seed = "project:zavodil2.testnet/test-vault:zavodil2.testnet";
@@ -277,39 +338,130 @@ fn decrypt_secret_subcommand(
         anyhow::bail!("--master must decode to 32 bytes, got {}", master.len());
     }
 
-    let mut mac = <HmacSha256 as Mac>::new_from_slice(&master)
-        .expect("HMAC can take a key of any size");
-    mac.update(seed.as_bytes());
-    let derived = mac.finalize().into_bytes();
-
-    let mut secret_bytes = [0u8; 32];
-    secret_bytes.copy_from_slice(&derived[..32]);
-    let sk = ed25519_dalek::SigningKey::from_bytes(&secret_bytes);
-    let chacha_key = sk.verifying_key().to_bytes();
-
     let blob = base64::Engine::decode(
         &base64::engine::general_purpose::STANDARD,
         ciphertext_b64.trim(),
     )
     .context("--ciphertext-base64 is not valid base64")?;
-    if blob.len() < 28 {
-        anyhow::bail!(
-            "ciphertext too short ({} bytes; need at least 12+16=28 for legacy format)",
-            blob.len()
-        );
+    if blob.is_empty() {
+        anyhow::bail!("ciphertext blob is empty");
     }
 
-    let cipher = ChaCha20Poly1305::new((&chacha_key).into());
-    let nonce = Nonce::from_slice(&blob[..12]);
-    let plaintext = cipher
-        .decrypt(nonce, &blob[12..])
-        .map_err(|e| anyhow!("AEAD decryption failed (master/seed mismatch?): {e}"))?;
+    // Auto-detect format the same way keystore-worker's
+    // `Keystore::decrypt` does (keystore-worker/src/crypto.rs:443):
+    //   * first byte == 0x01 AND length >= 61 ⇒ ECIES v1 (dashboard)
+    //   * otherwise                            ⇒ legacy (CLI)
+    // ECIES tries first, falls through to legacy on failure (covers
+    // the case where a legacy blob happens to start with 0x01).
+    const ECIES_VERSION: u8 = 0x01;
+    let mut last_err: Option<String> = None;
 
-    // Plaintext is canonical UTF-8 JSON (the CLI serialises a
-    // BTreeMap<String,String>). Print it raw — the caller can pipe
-    // through `jq` or similar.
-    print!("{}", String::from_utf8(plaintext).context("plaintext not valid UTF-8")?);
-    Ok(())
+    if blob[0] == ECIES_VERSION && blob.len() >= 61 {
+        match decrypt_ecies_v1(&master, seed, &blob) {
+            Ok(plaintext) => {
+                print!(
+                    "{}",
+                    String::from_utf8(plaintext)
+                        .context("plaintext not valid UTF-8")?
+                );
+                return Ok(());
+            }
+            Err(e) => last_err = Some(format!("ECIES path: {e}")),
+        }
+    }
+
+    // Legacy: [nonce(12) | ciphertext+tag(16+)]. Matches
+    // keystore-worker's `decrypt_legacy`: ed25519 verifying_key
+    // derived from HMAC(master, seed) used as a ChaCha20 symmetric
+    // key. NOTE: the keystore comments this path as
+    // "TODO: Remove after migration to ECIES". Dashboard-stored
+    // secrets are already ECIES; CLI-stored secrets still land here
+    // but the keystore can't actually decrypt them (encrypt side
+    // uses X25519 pubkey, decrypt side uses Ed25519 — separate
+    // server-side bug). Keeping this branch for forward-compat in
+    // case the CLI is fixed and the keystore migrates accordingly.
+    if blob.len() >= 28 {
+        let mut mac = <HmacSha256 as Mac>::new_from_slice(&master)
+            .expect("HMAC can take a key of any size");
+        mac.update(seed.as_bytes());
+        let derived = mac.finalize().into_bytes();
+        let mut secret_bytes = [0u8; 32];
+        secret_bytes.copy_from_slice(&derived[..32]);
+        let sk = ed25519_dalek::SigningKey::from_bytes(&secret_bytes);
+        let chacha_key = sk.verifying_key().to_bytes();
+
+        let cipher = ChaCha20Poly1305::new((&chacha_key).into());
+        let nonce = Nonce::from_slice(&blob[..12]);
+        match cipher.decrypt(nonce, &blob[12..]) {
+            Ok(plaintext) => {
+                print!(
+                    "{}",
+                    String::from_utf8(plaintext)
+                        .context("plaintext not valid UTF-8")?
+                );
+                return Ok(());
+            }
+            Err(e) => last_err = Some(format!("legacy path: {e}")),
+        }
+    }
+
+    anyhow::bail!(
+        "AEAD decryption failed under all formats. master/seed mismatch? {}",
+        last_err.unwrap_or_else(|| "no format matched the blob layout".into())
+    );
+}
+
+/// ECIES v1 decrypt — mirrors keystore-worker/src/crypto.rs:478.
+///
+/// Wire format (61+ bytes):
+///   [0x01 | ephemeral_x25519_pubkey(32) | nonce(12) | ciphertext+tag]
+///
+/// Recipient derivation matches `Keystore::derive_x25519_keypair`:
+///   recipient_sk = X25519 StaticSecret over
+///                  HMAC-SHA256(master, b"ecies:" || seed)[..32]
+///
+/// Shared secret = recipient_sk × ephemeral_pk (X25519 ECDH).
+/// Symmetric key = HKDF-SHA256(shared_secret, info="outlayer-keystore-v1").expand(32).
+/// Decrypt: ChaCha20-Poly1305(key=symmetric, nonce, ciphertext+tag).
+fn decrypt_ecies_v1(master: &[u8], seed: &str, blob: &[u8]) -> Result<Vec<u8>> {
+    use chacha20poly1305::aead::Aead;
+    use chacha20poly1305::{ChaCha20Poly1305, KeyInit, Nonce};
+    use hkdf::Hkdf;
+    use hmac::{Hmac, Mac};
+    use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
+    type HmacSha256 = Hmac<sha2::Sha256>;
+
+    // 1. Pull ephemeral pubkey out of the wire format.
+    let mut ephemeral_pub_bytes = [0u8; 32];
+    ephemeral_pub_bytes.copy_from_slice(&blob[1..33]);
+    let ephemeral_pub = X25519PublicKey::from(ephemeral_pub_bytes);
+
+    // 2. Re-derive the recipient X25519 keypair from (master, seed).
+    let mut mac = <HmacSha256 as Mac>::new_from_slice(master)
+        .expect("HMAC accepts any key length");
+    mac.update(b"ecies:");
+    mac.update(seed.as_bytes());
+    let derived = mac.finalize().into_bytes();
+    let mut sk_bytes = [0u8; 32];
+    sk_bytes.copy_from_slice(&derived[..32]);
+    let recipient_sk = StaticSecret::from(sk_bytes);
+
+    // 3. ECDH → 32-byte shared secret.
+    let shared_secret = recipient_sk.diffie_hellman(&ephemeral_pub);
+
+    // 4. HKDF-SHA256 stretch with the keystore's canonical info string.
+    let hk = Hkdf::<sha2::Sha256>::new(None, shared_secret.as_bytes());
+    let mut sym_key = [0u8; 32];
+    hk.expand(b"outlayer-keystore-v1", &mut sym_key)
+        .map_err(|e| anyhow!("HKDF expand failed: {e}"))?;
+
+    // 5. AEAD decrypt.
+    let cipher = ChaCha20Poly1305::new((&sym_key).into());
+    let nonce = Nonce::from_slice(&blob[33..45]);
+    let plaintext = cipher
+        .decrypt(nonce, &blob[45..])
+        .map_err(|e| anyhow!("ChaCha20-Poly1305 decrypt failed: {e}"))?;
+    Ok(plaintext)
 }
 
 fn derive_wallet_key_subcommand(master_hex: &str, wallet_id: &str) -> Result<()> {
