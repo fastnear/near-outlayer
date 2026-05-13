@@ -136,12 +136,16 @@ export default function VaultsDocsPage() {
           <div className="bg-white border border-gray-200 rounded p-3">
             <div className="font-semibold mb-1">B. Self-managed (you take over)</div>
             <p className="text-gray-700 mb-1">
-              You initiate recovery (cessation or unilateral exit), the
-              vault becomes <code>unlocked</code>, OutLayer&rsquo;s
-              keystore refuses to serve it. You add a FullAccess key and
-              run the same MPC derivation yourself &mdash; from your own
-              TEE, your own attested runtime, or by hand. Every derived
-              key is regenerable from the same master.
+              You initiate recovery (cessation or unilateral exit) and
+              call <code>finalize_recovery(new_parent_pubkey)</code>{' '}
+              with a key you generated locally. The contract atomically
+              deletes every OutLayer TEE key and adds your key as
+              FullAccess, then flips <code>unlocked = true</code>;
+              OutLayer&rsquo;s keystore refuses to serve any further
+              call against this vault. You then re-run the same MPC
+              CKD derivation yourself &mdash; from your own TEE, your
+              own attested runtime, or by hand &mdash; and reproduce
+              every per-vault wallet / secret key.
             </p>
           </div>
         </div>
@@ -223,7 +227,13 @@ export default function VaultsDocsPage() {
           <li>Open <Link href="/vault" className="text-blue-600 hover:underline">Vaults</Link> from My Workspace.</li>
           <li>Pick a sub-account name (default: <code>vault</code>) and an exit window (24h / 7d / 30d).</li>
           <li>Click <strong>Create vault</strong>; sign the atomic-deploy tx in your wallet.</li>
-          <li>Save the API key shown ONCE — it is not recoverable.</li>
+          <li>
+            The vault is now deployed and DAO-verified. <strong>No API
+            key is issued at this step.</strong> To mint a wallet API
+            key bound to this vault, see the &ldquo;Using a vault for
+            custody wallets&rdquo; section below (<code>POST /register
+            {`{vault_id}`}</code>, returns <code>wk_...</code>).
+          </li>
         </ol>
 
         <h4 className="font-semibold mt-4 mb-2">CLI</h4>
@@ -239,15 +249,25 @@ outlayer vault init --name treasury --exit-window 7d`}
         <ol className="list-decimal list-inside text-sm space-y-1 mb-4">
           <li>CLI/dashboard probes <code>is_vault_code_approved(hash)</code> on keystore-DAO so you don&rsquo;t pay gas to deploy a deprecated WASM.</li>
           <li>Coordinator returns the deterministic TEE function-call public key for your vault id (HMAC-derived inside the TEE).</li>
-          <li>One transaction, five actions: <code>CreateAccount</code>{' + '}<code>Transfer 0.1 NEAR</code>{' + '}<code>UseGlobalContract(code_hash)</code>{' + '}<code>new(parent, keystore_dao, mpc_contract, exit_window)</code>{' + '}<code>AddKey(tee_pubkey, FCAK on vault.request_master)</code>.</li>
-          <li>Coordinator triggers keystore re-verification — keystore-worker independently re-runs five RPC checks and signs <code>mark_vault_verified</code> on chain.</li>
-          <li>Coordinator binds an API key to the verified vault and returns it.</li>
+          <li>One transaction, five actions: <code>CreateAccount</code>{' + '}<code>Transfer 0.1 NEAR</code>{' + '}<code>UseGlobalContract(code_hash)</code>{' + '}<code>new(parent, keystore_dao, mpc_contract, initial_tee_pubkey, initial_exit_window)</code>{' + '}<code>AddKey(tee_pubkey, FCAK on vault.request_master)</code>.</li>
+          <li>
+            CLI/dashboard calls <code>POST /customer/register</code>{' '}
+            on the coordinator. The coordinator forwards to the
+            keystore-worker, which independently re-runs the five RPC
+            verification checks and signs{' '}
+            <code>mark_vault_verified</code> on the DAO so the vault
+            lands in <code>keystore-dao.verified_vaults</code>. <strong>No
+            API key is minted at this step</strong> — vault init is
+            pure on-chain provisioning + DAO trust signal.
+          </li>
         </ol>
         <p className="text-sm text-gray-600">
-          If init fails between step 4 and step 5 (e.g. transient
-          network failure), use <code>outlayer vault resume &lt;account&gt;</code>
-          {' '}or the <strong>Resume</strong> button on the dashboard. Steps 4
-          and 5 are idempotent on the keystore side.
+          If init fails between step 3 and step 4 (e.g. transient
+          network failure between the atomic deploy and the
+          coordinator&rsquo;s sign-verification call), use{' '}
+          <code>outlayer vault resume &lt;account&gt;</code>{' '}
+          or the <strong>Resume</strong> button on the dashboard.
+          Step 4 is idempotent.
         </p>
       </section>
 
@@ -273,19 +293,83 @@ outlayer vault init --name treasury --exit-window 7d`}
       {/* ── 4. Using vault for custody wallets ─────────────────────── */}
       <section className="mb-10">
         <AnchorHeading id="custody">Using a vault for custody wallets</AnchorHeading>
-        <p className="mb-3">
-          The API key returned by <code>vault init</code> is bound to
-          your vault: every wallet API call carries
-          <code> X-Customer-Vault </code>under the hood and the
-          coordinator forwards it to the keystore. Wallet addresses
-          for that API key are derived from your per-customer master,
-          so a future cessation or unilateral recovery puts the
-          private keys back in your hands without a migration step.
+
+        <h4 className="font-semibold mt-3 mb-2">Two distinct steps</h4>
+        <p className="mb-3 text-sm text-gray-700">
+          <strong><code>outlayer vault init</code> does NOT mint a
+          wallet API key.</strong> It performs the on-chain atomic
+          deploy and runs <code>POST /customer/register</code>, which
+          triggers keystore re-verification (<code>mark_vault_verified</code>
+          on the DAO) so the vault is in the DAO&rsquo;s verified set.
+          That&rsquo;s all. No <code>wk_...</code> is returned.
         </p>
-        <p className="mb-3">
-          You can run multiple wallets — some on the default master,
+        <p className="mb-3 text-sm text-gray-700">
+          To get a wallet API key bound to your vault, run{' '}
+          <code>POST /register</code> with{' '}
+          <code>{`{"vault_id": "<vault>"}`}</code> separately:
+        </p>
+        <SyntaxHighlighter language="bash" style={vscDarkPlus}>
+{`curl -sS -X POST https://api.outlayer.fastnear.com/register \\
+    -H 'Content-Type: application/json' \\
+    -d '{"vault_id": "vault.alice.near"}'
+# returns: { api_key: "wk_...", wallet_id: "<uuid>",
+#           near_account_id: "<hex>", handoff_url, trial }`}
+        </SyntaxHighlighter>
+        <p className="mb-3 text-sm text-gray-700">
+          Each call mints a fresh wallet under the same vault — the
+          coordinator stores <code>wallet_accounts(wallet_id, vault_id)</code>{' '}
+          and N wallets per vault are allowed. The wallet&rsquo;s NEAR
+          implicit address comes from{' '}
+          <code>HMAC-SHA256(per_vault_master, &quot;wallet:&#123;wallet_id&#125;:near&quot;)</code>,
+          so distinct <code>wallet_id</code>s give cryptographically
+          isolated keys even under the same vault.
+        </p>
+
+        <h4 className="font-semibold mt-4 mb-2">Auth on <code>/wallet/v1/*</code></h4>
+        <p className="mb-3 text-sm text-gray-700">
+          Every wallet API call sends{' '}
+          <code>Authorization: Bearer wk_...</code>. The coordinator
+          looks up the API key in its DB, finds the bound{' '}
+          <code>wallet_id</code> + <code>vault_id</code>, and forwards{' '}
+          <code>X-Customer-Vault: &lt;vault_id&gt;</code> to the
+          keystore on every signing call. The vault scope is{' '}
+          <strong>auth-driven, never request-driven</strong>: a
+          client-supplied <code>X-Customer-Vault</code> header on a
+          /wallet/v1 call is ignored — the binding lives on the API
+          key&rsquo;s DB row. (Test:{' '}
+          <code>tests/vault_multi_customer_isolation.sh</code>.)
+        </p>
+
+        <h4 className="font-semibold mt-4 mb-2">Multi-user patterns (bots, agents)</h4>
+        <p className="mb-3 text-sm text-gray-700">
+          For a Telegram-style bot serving thousands of users from one
+          vault: call <code>POST /register {`{vault_id}`}</code> once
+          per user, store the returned <code>(wallet_id, api_key)</code>
+          mapping under your user&rsquo;s ID in your own DB. Each user
+          ends up with a distinct NEAR address derived from the same
+          per-vault master. The bot signs as user U by using user
+          U&rsquo;s <code>api_key</code>.
+        </p>
+        <p className="mb-3 text-sm text-gray-700">
+          <strong>The deterministic <code>/register</code> path</strong>{' '}
+          (5-tuple: <code>account_id + seed + pubkey + message + signature</code>,
+          where the user proves possession of a NEAR key) does{' '}
+          <strong>not</strong> support <code>vault_id</code>. Passing
+          both is rejected with HTTP 400. Vault-scoped deterministic
+          derivation isn&rsquo;t a feature today; if you want per-user
+          determinism, derive the user&rsquo;s seed yourself and use it
+          as the <code>wallet_id</code>-equivalent (i.e. include it
+          in your DB so re-runs land on the same coordinator row).
+        </p>
+
+        <h4 className="font-semibold mt-4 mb-2">Default master vs vault</h4>
+        <p className="mb-3 text-sm text-gray-700">
+          You can run multiple wallets — some on the default master
+          (empty <code>POST /register</code>, no <code>vault_id</code>),
           some on different vaults. The agent code does not change;
-          the API key fully determines which master is used.
+          the API key fully determines which master derives that
+          wallet&rsquo;s keys. Legacy customers (pre-vault) keep
+          working on the default master indefinitely.
         </p>
       </section>
 
@@ -299,17 +383,27 @@ outlayer vault init --name treasury --exit-window 7d`}
           (<code>is_ceased() == true </code>on the keystore-DAO),
           anyone can call <code>initiate_recovery</code> on the vault.
           The vault contract re-checks the DAO flag inside its callback,
-          starts a fixed seven-day timer, and on
-          <code> finalize_recovery </code>flips the vault to
-          {' '}<code>unlocked = true</code>. After unlock, the parent
-          account can add its own key and withdraw funds or migrate
-          custody.
+          starts a fixed seven-day timer, then a seven-day window for{' '}
+          <code>finalize_recovery</code>. <strong>Only the parent
+          account can finalize</strong> (closes a front-running
+          window where a third party could substitute their own pubkey
+          at the atomic swap). Generate the new parent key locally
+          first &mdash; <code>finalize_recovery</code> takes it as an
+          argument, atomically deletes every OutLayer TEE key, and
+          installs your pubkey as the vault&rsquo;s only FullAccess
+          key in one tx.
         </p>
         <SyntaxHighlighter language="bash" style={vscDarkPlus}>
-{`outlayer vault initiate-recovery vault.alice.near
-# (wait 7 days)
-outlayer vault finalize-recovery  vault.alice.near
-outlayer vault unlocked-add-key   vault.alice.near ed25519:...`}
+{`# Generate the new parent key locally before finalize:
+./scripts/customer-recovery/target/release/customer-recovery generate-key \\
+    > ~/.outlayer-recovery/vault.alice.near.json
+NEW_PUBKEY=$(jq -r .public_key ~/.outlayer-recovery/vault.alice.near.json)
+
+# Run the recovery (parent signs):
+outlayer vault initiate-recovery vault.alice.near
+# (wait 7 days; DAO can revoke cessation, which auto-cancels)
+outlayer vault finalize-recovery vault.alice.near "$NEW_PUBKEY"
+# Vault is now unlocked; your key is the only FullAccess key.`}
         </SyntaxHighlighter>
 
         <h4 className="font-semibold mt-4 mb-2">Unilateral recovery (voluntary)</h4>
@@ -317,18 +411,28 @@ outlayer vault unlocked-add-key   vault.alice.near ed25519:...`}
           The parent account can exit at any time without DAO
           involvement. The delay is the
           {' '}<code>unilateral_exit_window_secs</code> chosen at
-          deploy (default 24h, configurable 24h-30d). Changing the
-          window via <code>set_exit_window</code> only affects future
-          recoveries — an in-flight recovery&rsquo;s finalize timestamps
-          are frozen at initiate time.
+          deploy (default 24h, configurable 1d&ndash;30d on mainnet).
+          Changing the window via <code>set_exit_window</code> only
+          affects future recoveries &mdash; an in-flight
+          recovery&rsquo;s finalize timestamps are frozen at initiate
+          time. Like cessation, <strong>finalize is parent-only</strong>{' '}
+          and atomically swaps OutLayer&rsquo;s TEE keys for{' '}
+          <code>new_parent_pubkey</code>.
         </p>
         <SyntaxHighlighter language="bash" style={vscDarkPlus}>
-{`outlayer vault set-exit-window               vault.alice.near 24h
+{`outlayer vault set-exit-window               vault.alice.near 24h  # optional, only affects future recoveries
 outlayer vault initiate-unilateral-recovery  vault.alice.near
 # (wait the configured window)
-outlayer vault finalize-recovery             vault.alice.near
-outlayer vault unlocked-add-key              vault.alice.near ed25519:...`}
+NEW_PUBKEY=$(jq -r .public_key ~/.outlayer-recovery/vault.alice.near.json)
+outlayer vault finalize-recovery             vault.alice.near "$NEW_PUBKEY"`}
         </SyntaxHighlighter>
+        <p className="text-sm text-gray-700 mt-3">
+          Optional follow-up:{' '}
+          <code>outlayer vault unlocked-add-key vault.alice.near ed25519:...</code>{' '}
+          adds <em>additional</em> keys (e.g. function-call keys for
+          day-to-day ops) on top of the new parent key that{' '}
+          <code>finalize_recovery</code> already installed.
+        </p>
 
         <div className="bg-yellow-50 border border-yellow-300 rounded p-3 mt-4 text-sm text-gray-800">
           <strong>Trust model note:</strong> end-users of your application
@@ -457,10 +561,14 @@ MPC_PUBLIC_KEY='bls12381g2:...' \\
           <strong>Yes &mdash; after the configured unilateral exit
           window.</strong> This is the explicit sovereignty feature
           the vault provides. After waiting <code>unilateral_exit_window_secs</code>
-          (24h&ndash;30d, chosen at deploy and visible on chain), the
-          customer&rsquo;s parent account can finalize a unilateral
-          recovery, unlock the vault, install a full-access key, and
-          re-derive the per-vault master themselves.
+          (1&ndash;30 days on mainnet, chosen at deploy and visible
+          on chain), the customer&rsquo;s parent account calls{' '}
+          <code>finalize_recovery(new_parent_pubkey)</code>: the
+          contract atomically deletes every OutLayer TEE key and
+          installs the customer&rsquo;s pubkey as the vault&rsquo;s
+          only FullAccess key, flips <code>unlocked = true</code>,
+          and the customer can re-derive the per-vault master via
+          MPC CKD themselves.
         </p>
         <p className="text-sm text-gray-700 mb-3">
           This is <em>not</em> a vulnerability in OutLayer&rsquo;s TEE
@@ -557,10 +665,15 @@ MPC_PUBLIC_KEY='bls12381g2:...' \\
           <li>
             <strong>TEE worker rotation:</strong> the vault contract caps
             registered TEE keys at 32. Each keystore-worker upgrade
-            registers a new key via <code>propose_tee_key</code>. There
-            is no revoke method in v1 — for any rotation that needs to
-            retire the old key, deploy a fresh vault with the new
-            approved code hash.
+            registers a new key via <code>propose_tee_key</code>{' '}
+            (permissionless, but the contract&rsquo;s callback
+            cross-checks <code>keystore-dao.is_keystore_approved</code>
+            before committing — non-approved adds are rolled back).
+            Parents can retire stale keys with{' '}
+            <code>clear_unused_tee_keys(vec![pubkey, ...])</code>{' '}
+            (parent-only; typo-guarded — panics on unknown keys).
+            <code>finalize_recovery</code> deletes the entire registered
+            set atomically as part of the atomic key-swap.
           </li>
         </ul>
       </section>

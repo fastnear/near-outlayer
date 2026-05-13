@@ -72,7 +72,8 @@ const NEAR_CKD_DOMAIN: &[u8] = b"NEAR BLS12381G1_XMD:SHA-256_SSWU_RO_";
 struct Cli {
     /// Vault account id (e.g. `vault.alice.testnet`). Used as the
     /// signer of the MPC tx — its FullAccess key must already be on
-    /// chain (that's what `unlocked_add_key --full-access` produces).
+    /// chain (that's what `finalize_recovery(new_parent_pubkey)`
+    /// atomically installs as part of the key-swap).
     #[arg(long)]
     vault_id: AccountId,
 

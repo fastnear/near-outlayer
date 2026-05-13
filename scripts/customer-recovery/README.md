@@ -48,7 +48,7 @@ Required inputs:
 | Flag | Source |
 |---|---|
 | `--vault-id` | Your vault sub-account |
-| `--signer-private-key` | The FullAccess key you added via `outlayer vault unlocked-add-key --full-access ...` after `finalize_recovery`. Also accepted via `VAULT_PRIVATE_KEY` env var |
+| `--signer-private-key` | The FullAccess private key that was atomically installed by `outlayer vault finalize-recovery <vault> <new_parent_pubkey>` — typically the `private_key` half of whatever you generated via `customer-recovery generate-key` before finalize. Also accepted via `VAULT_PRIVATE_KEY` env var |
 | `--mpc-public-key` | The MPC G2 public key (`bls12381g2:...`) — same value as the keystore's `MPC_PUBLIC_KEY` env var. Ask the operator or copy from `docker/.env.*-keystore-phala`. Also accepted via `MPC_PUBLIC_KEY` env var |
 | `--derivation-path` OR `--from-chain` | If `--from-chain` is set, the tool queries NEARblocks for the most recent `request_app_private_key` call from your vault and extracts the path automatically. Otherwise pass it explicitly |
 

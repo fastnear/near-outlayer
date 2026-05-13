@@ -261,6 +261,111 @@ fits in a browser-wallet URL. Full procedure in
 
 ---
 
+## Customer-facing HTTPS auth model (coordinator)
+
+The contract is the on-chain root. Customers actually reach it
+through OutLayer's coordinator HTTP API. Two distinct steps:
+
+### Step 1: `outlayer vault init` (or dashboard "Create vault")
+
+- Atomic deploy via `UseGlobalContract` (5 actions: CreateAccount,
+  Transfer, UseGlobalContract, `new(...)`, AddKey).
+- Calls `POST /customer/register` on the coordinator. This
+  triggers the keystore-worker's `mark_vault_verified` transaction
+  on the DAO so the vault lands in
+  `keystore-dao.verified_vaults`.
+- **No API key is issued.** The vault exists on chain and is
+  DAO-verified, but no `wk_` has been minted yet.
+
+### Step 2: `POST /register {"vault_id": "<vault>"}` (separate call)
+
+Mint one wallet API key bound to the vault. Returns:
+
+```json
+{
+  "api_key": "wk_<64 hex>",
+  "wallet_id": "<UUID v4>",
+  "near_account_id": "<hex of HMAC-SHA256(per_vault_master, 'wallet:<wallet_id>:near')[..32].verifying_key>",
+  "handoff_url": "https://outlayer.fastnear.com/wallet?key=wk_...",
+  "trial": { ... }
+}
+```
+
+Call this N times for N wallets under the same vault. Migration
+`20260511000001` dropped the UNIQUE constraint on
+`wallet_accounts.vault_id` so the coordinator stores N rows linking
+the same vault to N distinct `wallet_id`s. Each `wallet_id` gets a
+cryptographically isolated NEAR address because the seed differs.
+
+### `/wallet/v1/*` auth
+
+```
+Authorization: Bearer wk_<api_key>
+```
+
+Coordinator pipeline:
+1. Hash the API key, look up in `wallet_api_keys` table → get
+   `wallet_id` and `customer_account_id` (= the vault_id if
+   vault-bound, else NULL for legacy default-master wallets).
+2. Forward `X-Customer-Vault: <vault_id>` to the keystore on every
+   signing call. Keystore uses it to select the per-vault master
+   via MPC CKD (or default master if absent).
+
+**The vault binding is auth-driven, never request-driven.** A
+client-supplied `X-Customer-Vault` header on a `/wallet/v1` call
+is ignored — the binding lives on the API key's DB row. Test
+coverage: [`tests/vault_multi_customer_isolation.sh`](../tests/vault_multi_customer_isolation.sh).
+
+### Per-user patterns (one parent, many sub-wallets)
+
+For an application serving many users / tasks from one vault, two
+paths exist depending on what secret the application holds:
+
+**Path A — Stateful (random `POST /register` per user)**
+
+Application calls `POST /register {vault_id}` once per user, stores
+the returned `(user_id → wallet_id, api_key)` mapping in its own
+DB. Each user gets a cryptographically isolated NEAR address.
+Stateful but conservative: only `wk_`'s on the server, no NEAR
+private key, no on-chain auth per request.
+
+**Path B — Stateless Bearer (`PUT /wallet/v1/api-key` with Bearer
+parent `wk_`)**
+
+Application mints one parent `wk_` via `POST /register {vault_id}`
+at setup time and stores it in env. For each sub-wallet, it
+derives a `sub_key = "wk_" + sha256(seed:index:parent_wk)` locally
+and registers the hash via `PUT /api-key` with `Bearer parent_wk_`.
+The coordinator inherits the parent's vault binding automatically.
+Stateless after one-time setup: re-deriving sub-keys needs only
+the parent `wk_` + the seed. Parent's NEAR private key is never on
+the application server. Documented in
+[`docs/DETERMINISTIC_WALLETS.md` Flow 4a](../docs/DETERMINISTIC_WALLETS.md).
+
+| Path | Bot-server secret | Reach if leaked | Use when |
+|---|---|---|---|
+| A | `wk_`'s per user | Drain just that user's wallet, revoke single `wk_` | High-value vaults; explicit per-user audit trail |
+| B | parent `wk_` | Drain all sub-wallets; revoke parent `wk_` via `DELETE /api-key/:hash`, individually revoke pre-minted sub-keys | Default for stateless apps with vault sovereignty |
+
+The legacy **deterministic `POST /register`** path (5-tuple) does
+**NOT support `vault_id`** — the coordinator returns HTTP 400.
+Use Path A or B above for vault-scoped sub-wallets.
+
+### Default master vs vault — legacy compatibility
+
+Pre-vault customers register with empty body:
+
+```bash
+curl -X POST https://api.outlayer.fastnear.com/register -d '{}'
+```
+
+This produces a wk_ tied to the **OutLayer default master** (no
+vault_id). Existing pre-vault wallets keep working indefinitely —
+the keystore's `derive_keypair(customer = None, seed)` path is
+unchanged. Tests: [`tests/vault_backward_compat.sh`](../tests/vault_backward_compat.sh).
+
+---
+
 ## File layout
 
 ```
