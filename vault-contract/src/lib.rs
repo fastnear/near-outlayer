@@ -72,34 +72,61 @@ const DAY_SECS: u64 = 24 * 60 * 60;
 // + redeploy of any vault account that wants the new pacing (existing
 // vaults keep the values they were built against).
 //
-// Production values below. For testnet QA, drop CESSATION_DELAY_NS
-// and FINALIZE_WINDOW_NS to seconds, lower MIN/DEFAULT exit window
-// to a few minutes, and trim MAX to ~7 days, then build + whitelist
-// that test WASM hash on the testnet DAO.
+// Default `cargo near build` produces a WASM with **mainnet
+// semantics**: 7-day cessation delay, 7-day finalize window, 1-day
+// default + minimum exit window, 30-day maximum. This is the only
+// build that should ever land in the DAO-approved hash list for
+// production.
+//
+// `--features test-timing` collapses the long-tail delays to
+// second-granularity so:
+//   * the near-workspaces sandbox suite (`cargo test --features
+//     test-timing --test integration`) finishes in ~90 s instead of
+//     ~27 min,
+//   * dedicated testnet QA WASMs can be built + DAO-approved with a
+//     `60 s` minimum exit window so the sovereignty / detach e2e
+//     scripts complete within a single shell session.
+// The feature flag is NEVER enabled for the mainnet build.
 
 /// Cessation-recovery delay between `initiate_recovery` and the earliest
-/// allowed `finalize_recovery`. **Mainnet target: `7 * DAY_SECS * SECOND_NS`.**
-/// Currently TESTNET — restore before mainnet build.
+/// allowed `finalize_recovery`. Mainnet: 7 days.
+#[cfg(not(feature = "test-timing"))]
+pub const CESSATION_DELAY_NS: u64 = 7 * DAY_SECS * SECOND_NS;
+#[cfg(feature = "test-timing")]
 pub const CESSATION_DELAY_NS: u64 = 60 * SECOND_NS;
 
 /// How long after the delay the customer has to call `finalize_recovery`.
 /// Past this point the recovery is auto-cancelled (state cleared, vault
 /// stays locked). Applies to both cessation and unilateral recoveries.
-/// **Mainnet target: `7 * DAY_SECS * SECOND_NS`.** Currently TESTNET.
+/// Mainnet: 7 days.
+#[cfg(not(feature = "test-timing"))]
+pub const FINALIZE_WINDOW_NS: u64 = 7 * DAY_SECS * SECOND_NS;
+#[cfg(feature = "test-timing")]
 pub const FINALIZE_WINDOW_NS: u64 = 600 * SECOND_NS;
 
 /// Default unilateral exit window applied if `new()` is called with
-/// `initial_exit_window = None`. **Mainnet target: `DAY_SECS`.** Currently TESTNET.
+/// `initial_exit_window = None`. Mainnet: 1 day.
+#[cfg(not(feature = "test-timing"))]
+pub const DEFAULT_UNILATERAL_EXIT_WINDOW_SECS: u64 = DAY_SECS;
+#[cfg(feature = "test-timing")]
 pub const DEFAULT_UNILATERAL_EXIT_WINDOW_SECS: u64 = 180;
 
-/// Minimum unilateral exit window — too short and a stolen parent key
-/// could grab funds before the customer notices.
-/// **Mainnet target: `DAY_SECS`.** Currently TESTNET.
+/// Minimum unilateral exit window — too short and a stolen parent
+/// key could grab funds before the customer notices. Mainnet: 1 day.
+/// The 60 s testnet override only kicks in for `--features test-timing`
+/// builds (sandbox + testnet QA), so production WASM enforces the
+/// safe floor without operator-side discipline.
+#[cfg(not(feature = "test-timing"))]
+pub const MIN_UNILATERAL_EXIT_WINDOW_SECS: u64 = DAY_SECS;
+#[cfg(feature = "test-timing")]
 pub const MIN_UNILATERAL_EXIT_WINDOW_SECS: u64 = 60;
 
 /// Maximum unilateral exit window. Bounding the upper end prevents
 /// configurations that are practically equivalent to "no escape hatch".
-/// **Mainnet target: `30 * DAY_SECS`.** Currently TESTNET (7d).
+/// Mainnet: 30 days.
+#[cfg(not(feature = "test-timing"))]
+pub const MAX_UNILATERAL_EXIT_WINDOW_SECS: u64 = 30 * DAY_SECS;
+#[cfg(feature = "test-timing")]
 pub const MAX_UNILATERAL_EXIT_WINDOW_SECS: u64 = 7 * DAY_SECS;
 
 /// Hard cap on `registered_tee_keys` length. Prevents anyone from blowing

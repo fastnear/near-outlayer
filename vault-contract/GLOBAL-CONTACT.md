@@ -6,6 +6,7 @@ The vault WASM is deployed once on-chain as a [Global Contract by hash](https://
 
 Run **once** per network. Anyone with enough NEAR (~1.5 NEAR for storage) can deploy; the resulting global identifier is the WASM's SHA-256 — same as the hash already approved on the keystore-DAO, so no extra DAO vote is required.
 
+### Testnet 
 ```bash
 near contract deploy-as-global use-file \
   res/vault_contract.wasm \
@@ -16,19 +17,27 @@ near contract deploy-as-global use-file \
 
 near contract call-function as-transaction \
   dao.outlayer.testnet approve_vault_version \
-  json-args '{"hash":"VSdQE8ivTfcJQhf6NEUW5ghMD8LDHXcCqhn98z2ZLYz","label":"v1.1","audit_url":null}' \
+  json-args '{"hash":"9PWV7bvvZUzimQyRyK6ivZ97jjKW9bodpVVwzfmCTpVQ","label":"v1.1","audit_url":null}' \
   prepaid-gas '30 Tgas' attached-deposit '0 NEAR' \
   sign-as zavodil.testnet network-config testnet sign-with-keychain send
 ```
 
 Replace `outlayer.testnet` with whichever account is paying storage. On mainnet:
 
+### Mainnet 
 ```bash
 near contract deploy-as-global use-file \
   res/vault_contract.wasm \
   as-global-hash \
   outlayer.near \
   network-config mainnet sign-with-keychain send
+
+
+near contract call-function as-transaction \
+  dao.outlayer.near approve_vault_version \
+  json-args '{"hash":"G7ktGSeAkG6Q8YKZY3S8AKEYUMk9msdZbuFEGn4qaFJZ","label":"v1.1","audit_url":null}' \
+  prepaid-gas '30 Tgas' attached-deposit '0 NEAR' \
+  sign-as zavodil.near network-config mainnet sign-with-keychain send
 ```
 
 The deploy tx is small (just the WASM bytes + storage staking) — it does not hit any wallet URL limit. Use a CLI signer for it.
