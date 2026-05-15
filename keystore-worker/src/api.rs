@@ -3510,8 +3510,19 @@ async fn wallet_derive_address_handler(
             let (_, verifying_key) = keystore.derive_keypair(customer.as_ref(), &seed).map_err(|e| {
                 ApiError::InternalError(format!("Key derivation failed: {}", e))
             })?;
+            // Both fields use HEX-encoded ed25519 pubkey. This is
+            // intentional, NOT a bug. The OutLayer contract
+            // `wallet_policies` map keys are `ed25519:<hex>` (see
+            // contract/src/wallet.rs::parse_wallet_pubkey, which calls
+            // `hex::decode` and panics on anything else). Returning
+            // base58 here would diverge from `/wallet/sign-policy` (also
+            // hex) and break the round-trip into `store_wallet_policy`.
+            //
+            // For NEAR-canonical `ed25519:<base58>` (signatures, AddKey,
+            // SDK consumers), use `/wallet/sign-nep413` or
+            // `/derive-vault-tee-key` — those emit base58 because they
+            // feed NEAR-protocol-level parsers.
             let pubkey_hex = hex::encode(verifying_key.as_bytes());
-            // NEAR implicit account = hex-encoded Ed25519 public key
             Ok(Json(WalletDeriveAddressResponse {
                 address: pubkey_hex.clone(),
                 public_key: format!("ed25519:{}", pubkey_hex),

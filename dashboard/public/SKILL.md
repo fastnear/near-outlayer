@@ -10,7 +10,7 @@ metadata:
 
 # OutLayer Agent Custody Wallet
 
-Full skill with swap workflows, token reference, and cross-chain patterns: [skills/outlayer-skills/agent-custody/SKILL.md](https://github.com/nickolay-near/near-offshore/tree/main/skills/outlayer-skills/agent-custody/SKILL.md)
+Full skill with swap workflows, token reference, and cross-chain patterns: [skills/outlayer-skills/agent-custody/SKILL.md](https://skills.outlayer.ai/agent-custody/SKILL.md)
 
 ## Quick Start
 

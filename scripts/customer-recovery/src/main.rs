@@ -147,8 +147,20 @@ fn generate_key_subcommand() -> Result<()> {
         "public_key": pk.to_string(),
         "private_key": sk.to_string(),
     });
+    warn_sensitive_stdout("a freshly generated FullAccess key");
     println!("{}", serde_json::to_string_pretty(&json)?);
     Ok(())
+}
+
+/// Print a one-line stderr warning before stdout emits a secret.
+/// Drawn to the user's attention because they often pipe the tool's
+/// stdout into `tee`, log files, or shell history while testing.
+fn warn_sensitive_stdout(what: &str) {
+    eprintln!(
+        "\x1b[33m⚠  About to write {what} to stdout.\n   \
+         Redirect to a 0600 file, do NOT log or paste publicly. \
+         Anything captured here grants control of the wallet.\x1b[0m"
+    );
 }
 
 /// `customer-recovery derive-wallet-key --master <hex> --wallet-id <uuid>`
@@ -432,6 +444,18 @@ fn decrypt_ecies_v1(master: &[u8], seed: &str, blob: &[u8]) -> Result<Vec<u8>> {
     use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
     type HmacSha256 = Hmac<sha2::Sha256>;
 
+    // Wire format: 1-byte version || 32-byte ephemeral X25519 pub ||
+    // 12-byte nonce || ciphertext+tag (16-byte tag). Minimum length:
+    // 1 + 32 + 12 + 16 = 61 bytes for an empty plaintext. Reject
+    // anything shorter here even though callers also gate — defense
+    // against future callers that forget the precondition.
+    if blob.len() < 1 + 32 + 12 + 16 {
+        anyhow::bail!(
+            "ecies-v1 blob too short: {} bytes (need >= 61)",
+            blob.len()
+        );
+    }
+
     // 1. Pull ephemeral pubkey out of the wire format.
     let mut ephemeral_pub_bytes = [0u8; 32];
     ephemeral_pub_bytes.copy_from_slice(&blob[1..33]);
@@ -465,12 +489,501 @@ fn decrypt_ecies_v1(master: &[u8], seed: &str, blob: &[u8]) -> Result<Vec<u8>> {
     Ok(plaintext)
 }
 
+/// `customer-recovery verify-sign-message` — independently verify a
+/// signature that the OutLayer keystore returned for a NEP-413
+/// `/wallet/v1/sign-message` call.
+///
+/// Construction (must match `keystore-worker/src/api.rs::verify_near_signature`
+/// and `outlayer-cli/src/crypto.rs::sign_nep413`):
+///
+///     payload  = Borsh({ message, nonce[32], recipient, callback_url: None })
+///     data     = u32_LE(2147484061) || payload      // 2^31 + 413
+///     hash     = SHA-256(data)
+///     ed25519::verify(pubkey, hash, signature)
+///
+/// Used by `tests/wallet_sign_message_roundtrip.sh` to validate that
+/// the keystore's signature is cryptographically valid (not just a
+/// non-empty string), and that it cross-validates correctly between
+/// vault-bound and default-master wallets.
+///
+/// Exits 0 on a valid signature, non-zero on any failure (decode,
+/// length, ed25519 verify).
+fn verify_sign_message_subcommand(
+    pubkey: &str,
+    message: &str,
+    recipient: &str,
+    nonce_base64: &str,
+    signature: &str,
+) -> Result<()> {
+    use borsh::BorshSerialize;
+    use sha2::{Digest, Sha256};
+
+    // 1. Parse `ed25519:<base58>` public key (32 bytes).
+    let pubkey_b58 = pubkey
+        .strip_prefix("ed25519:")
+        .ok_or_else(|| anyhow!("--pubkey must start with 'ed25519:'"))?;
+    let pubkey_bytes = bs58::decode(pubkey_b58)
+        .into_vec()
+        .context("--pubkey base58 decode")?;
+    if pubkey_bytes.len() != 32 {
+        anyhow::bail!(
+            "--pubkey must decode to 32 bytes, got {}",
+            pubkey_bytes.len()
+        );
+    }
+    let mut pk_arr = [0u8; 32];
+    pk_arr.copy_from_slice(&pubkey_bytes);
+    let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&pk_arr)
+        .context("--pubkey is not on the ed25519 curve")?;
+
+    // 2. Parse nonce (base64 → 32 bytes).
+    let nonce_bytes = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        nonce_base64.trim(),
+    )
+    .context("--nonce-base64 decode")?;
+    if nonce_bytes.len() != 32 {
+        anyhow::bail!(
+            "--nonce-base64 must decode to 32 bytes, got {}",
+            nonce_bytes.len()
+        );
+    }
+    let mut nonce_arr = [0u8; 32];
+    nonce_arr.copy_from_slice(&nonce_bytes);
+
+    // 3. Parse signature. Accept either "ed25519:<base58>" (NEAR
+    //    canonical) or raw base58 — sign-message handler returns
+    //    both `.signature` (ed25519:base58) and `.signature_base64`
+    //    (raw base64). Be tolerant.
+    let sig_b58 = signature
+        .strip_prefix("ed25519:")
+        .unwrap_or(signature)
+        .trim();
+    let sig_bytes = bs58::decode(sig_b58)
+        .into_vec()
+        .or_else(|_| {
+            // Fall back to base64 if base58 fails (handles
+            // signature_base64 field directly).
+            base64::Engine::decode(
+                &base64::engine::general_purpose::STANDARD,
+                signature.trim(),
+            )
+        })
+        .context("--signature: tried base58 and base64, both failed")?;
+    if sig_bytes.len() != 64 {
+        anyhow::bail!(
+            "--signature must decode to 64 bytes, got {}",
+            sig_bytes.len()
+        );
+    }
+    let mut sig_arr = [0u8; 64];
+    sig_arr.copy_from_slice(&sig_bytes);
+    let sig = ed25519_dalek::Signature::from_bytes(&sig_arr);
+
+    // 4. Construct NEP-413 payload + tag and hash.
+    #[derive(BorshSerialize)]
+    struct Nep413Payload {
+        message: String,
+        nonce: [u8; 32],
+        recipient: String,
+        callback_url: Option<String>,
+    }
+    let payload = Nep413Payload {
+        message: message.to_string(),
+        nonce: nonce_arr,
+        recipient: recipient.to_string(),
+        callback_url: None,
+    };
+    let payload_bytes = borsh::to_vec(&payload).context("Borsh serialize")?;
+
+    const NEP413_TAG: u32 = 2_147_484_061; // 2^31 + 413
+    let mut data = Vec::with_capacity(4 + payload_bytes.len());
+    data.extend_from_slice(&NEP413_TAG.to_le_bytes());
+    data.extend_from_slice(&payload_bytes);
+    let hash = Sha256::digest(&data);
+
+    // 5. Verify. Use `verify_strict` to match the coordinator
+    // (`outlayer-coordinator/src/wallet/auth.rs::verify_ed25519`
+    // calls `verify_strict`). Non-strict allows small-order public
+    // keys / non-canonical signatures that the server would reject,
+    // which makes this tool's "looks good locally" miss a class of
+    // signatures the server still refuses.
+    verifying_key
+        .verify_strict(hash.as_slice(), &sig)
+        .map_err(|e| anyhow!("ed25519 verify_strict failed: {e}"))?;
+
+    println!("ok");
+    Ok(())
+}
+
+/// `customer-recovery sign-nep413 --private-key <ed25519:base58>
+/// --message <s> --recipient <s> --nonce-base64 <b64>`
+///
+/// Produces a NEP-413 signature in base64. The inverse of
+/// `verify-sign-message`. Used by `tests/approval_flow_e2e.sh` to
+/// have the approver locally sign `approve:<approval_id>:<request_hash>`
+/// without a wallet UI.
+///
+/// Parse an `ed25519:<base58>` NEAR-expanded private key into a
+/// `SigningKey` + base58 pubkey, with a **consistency check** that
+/// the trailing 32 bytes of the expanded form match the pubkey we
+/// derive from the seed prefix.
+///
+/// NEAR's "expanded" form is `seed(32) || pubkey(32)`. Without this
+/// check, a malformed paste / random 64-byte string would still
+/// produce a valid-looking ed25519 signature — just one that doesn't
+/// correspond to any on-chain account. The signer would proceed
+/// happily; the server would reject the auth (access-key check); the
+/// user would chase a phantom bug. Fail loud and early instead.
+fn parse_near_expanded_private_key(
+    s: &str,
+) -> Result<(ed25519_dalek::SigningKey, String)> {
+    let b58 = s
+        .strip_prefix("ed25519:")
+        .ok_or_else(|| anyhow!("private key must start with 'ed25519:'"))?;
+    let sk_bytes = bs58::decode(b58)
+        .into_vec()
+        .context("private key base58 decode")?;
+    if sk_bytes.len() != 64 {
+        anyhow::bail!(
+            "private key must decode to 64 bytes (NEAR expanded form), got {}",
+            sk_bytes.len()
+        );
+    }
+    let mut seed_bytes = [0u8; 32];
+    seed_bytes.copy_from_slice(&sk_bytes[..32]);
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed_bytes);
+    let derived_pubkey = signing_key.verifying_key().to_bytes();
+    // Consistency: trailing 32 bytes must be the pubkey derived from
+    // the seed prefix. Catches malformed pastes and arbitrary 64-byte
+    // blobs that aren't NEAR keys at all.
+    if derived_pubkey.as_slice() != &sk_bytes[32..] {
+        anyhow::bail!(
+            "private key 64-byte expanded form is inconsistent: \
+             derived pubkey does not match the trailing 32 bytes"
+        );
+    }
+    let pubkey_b58 = bs58::encode(&derived_pubkey).into_string();
+    Ok((signing_key, pubkey_b58))
+}
+
+/// Output: JSON `{"signature": "<base64>", "public_key": "ed25519:<base58>"}`
+fn sign_nep413_subcommand(
+    private_key: &str,
+    message: &str,
+    recipient: &str,
+    nonce_base64: &str,
+) -> Result<()> {
+    use borsh::BorshSerialize;
+    use sha2::{Digest, Sha256};
+
+    let (signing_key, pubkey_b58) = parse_near_expanded_private_key(private_key)?;
+
+    // Decode nonce (32 bytes, base64).
+    let nonce_bytes = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        nonce_base64.trim(),
+    )
+    .context("--nonce-base64 decode")?;
+    if nonce_bytes.len() != 32 {
+        anyhow::bail!(
+            "--nonce-base64 must decode to 32 bytes, got {}",
+            nonce_bytes.len()
+        );
+    }
+    let mut nonce_arr = [0u8; 32];
+    nonce_arr.copy_from_slice(&nonce_bytes);
+
+    // NEP-413 construction — must match
+    // outlayer-coordinator/src/wallet/auth.rs `Nep413Payload`.
+    #[derive(BorshSerialize)]
+    struct Nep413Payload {
+        message: String,
+        nonce: [u8; 32],
+        recipient: String,
+        callback_url: Option<String>,
+    }
+    let payload = Nep413Payload {
+        message: message.to_string(),
+        nonce: nonce_arr,
+        recipient: recipient.to_string(),
+        callback_url: None,
+    };
+    let payload_bytes = borsh::to_vec(&payload).context("Borsh serialize")?;
+
+    const NEP413_TAG: u32 = 2_147_484_061;
+    let mut data = Vec::with_capacity(4 + payload_bytes.len());
+    data.extend_from_slice(&NEP413_TAG.to_le_bytes());
+    data.extend_from_slice(&payload_bytes);
+    let hash = Sha256::digest(&data);
+
+    use ed25519_dalek::Signer;
+    let sig = signing_key.sign(hash.as_slice());
+    let sig_b64 = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        sig.to_bytes(),
+    );
+
+    let out = serde_json::json!({
+        "signature": sig_b64,
+        "public_key": format!("ed25519:{}", pubkey_b58),
+    });
+    println!("{}", out);
+    Ok(())
+}
+
+/// `customer-recovery sign-api-key-claim --private-key <ed25519:base58>
+/// --account-id <acct> --seed <s> --sub-key <wk_...> [--vault-id <v>]
+/// [--timestamp <unix-s>]`
+///
+/// Builds the exact JSON body the coordinator's NEAR-sig branch of
+/// `PUT /wallet/v1/api-key` expects. Used by
+/// `tests/api_key_signed_derive_e2e.sh` to exercise Flow 4b (external
+/// NEAR account mints a sub-wallet by signing a freshness claim, with
+/// optional vault binding).
+///
+/// The signature is a **raw ed25519** signature over the UTF-8 bytes of
+/// `api-key:<seed>:<unix-secs>` — NOT a NEP-413 envelope. This matches
+/// `outlayer-coordinator::wallet::auth::verify_near_auth_fields`.
+fn sign_api_key_claim_subcommand(
+    private_key: &str,
+    account_id: &str,
+    seed: &str,
+    sub_key: &str,
+    vault_id: Option<&str>,
+    timestamp: Option<u64>,
+) -> Result<()> {
+    use sha2::{Digest, Sha256};
+
+    let (signing_key, pubkey_b58) = parse_near_expanded_private_key(private_key)?;
+    let pubkey = format!("ed25519:{}", pubkey_b58);
+
+    let ts = timestamp.unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    });
+    let message = format!("api-key:{}:{}", seed, ts);
+
+    use ed25519_dalek::Signer;
+    let signature = signing_key.sign(message.as_bytes());
+    let signature_b58 = bs58::encode(signature.to_bytes()).into_string();
+
+    let mut hasher = Sha256::new();
+    hasher.update(sub_key.as_bytes());
+    let key_hash = hex::encode(hasher.finalize());
+
+    // Build JSON exactly matching `outlayer-coordinator::wallet::types::ApiKeyRequest`.
+    let mut body = serde_json::json!({
+        "account_id": account_id,
+        "seed": seed,
+        "key_hash": key_hash,
+        "pubkey": pubkey,
+        "message": message,
+        "signature": signature_b58,
+    });
+    if let Some(v) = vault_id {
+        body["vault_id"] = serde_json::Value::String(v.to_string());
+    }
+    println!("{}", serde_json::to_string(&body)?);
+    Ok(())
+}
+
+/// `customer-recovery sign-bearer-near --private-key <ed25519:base58>
+/// --account-id <acct> --seed <s> [--vault-id <v>] [--timestamp <unix-s>]`
+///
+/// Builds the base64url(json) value that goes after `Bearer near:` in
+/// the `Authorization` header. Used by
+/// `tests/api_key_signed_derive_e2e.sh` Section 8 to drive a stateless
+/// request against `/wallet/v1/address` and prove that Bearer near:
+/// with a `vault_id` resolves the same per-vault master as the PUT
+/// /api-key flow.
+///
+/// Signature shape matches `NearBearerPayload`:
+///   no vault_id:    "auth:<seed>:<timestamp>"             // raw ed25519, NOT NEP-413
+///   with vault_id:  "auth:<seed>:<timestamp>:<vault_id>"
+///   signature = base58(ed25519_sign(sk, message.utf8))
+///
+/// `vault_id` MUST be inside the signed payload (when set) — otherwise
+/// a captured token within the freshness window could be replayed
+/// against a different vault the same parent owns.
+/// Construct the message bytes that go into `ed25519_sign` for
+/// `Bearer near:` auth. **Must stay byte-identical** to the
+/// reconstruction in
+/// `outlayer-coordinator/src/wallet/auth.rs::extract_near_bearer_auth`.
+/// Format:
+///   - vault-scoped:    `"auth:<seed>:<timestamp>:<vault_id>"`
+///   - default-master:  `"auth:<seed>:<timestamp>"`
+///
+/// Extracted as a pure function so the message construction is
+/// pinned by a unit test (see `bearer_near_message_format_tests` below).
+/// Any drift in separator, ordering, or `vault_id` placement here
+/// silently breaks every customer's stored sub-wallet derivation,
+/// so the test must fail loudly at CI build.
+fn build_bearer_near_signed_message(seed: &str, ts: u64, vault_id: Option<&str>) -> String {
+    match vault_id {
+        Some(vid) => format!("auth:{}:{}:{}", seed, ts, vid),
+        None => format!("auth:{}:{}", seed, ts),
+    }
+}
+
+#[cfg(test)]
+mod bearer_near_message_format_tests {
+    use super::build_bearer_near_signed_message;
+
+    // Anchored exact strings. If the format ever changes, every
+    // existing Bearer near: caller (the bot's running fleet) breaks
+    // until they also update — so changes here must be coordinated
+    // with the coordinator team and announced to integrators.
+
+    #[test]
+    fn legacy_no_vault() {
+        assert_eq!(
+            build_bearer_near_signed_message("tg:12345", 1778691478, None),
+            "auth:tg:12345:1778691478",
+        );
+    }
+
+    #[test]
+    fn vault_scoped() {
+        assert_eq!(
+            build_bearer_near_signed_message("tg:12345", 1778691478, Some("v1.tipbot.near")),
+            "auth:tg:12345:1778691478:v1.tipbot.near",
+        );
+    }
+
+    #[test]
+    fn empty_seed_still_canonical() {
+        // Defensive: even pathological inputs must produce a stable
+        // bytewise canonical form so the verifier reconstructs the
+        // same bytes.
+        assert_eq!(
+            build_bearer_near_signed_message("", 0, None),
+            "auth::0",
+        );
+        assert_eq!(
+            build_bearer_near_signed_message("", 0, Some("v")),
+            "auth::0:v",
+        );
+    }
+}
+
+fn sign_bearer_near_subcommand(
+    private_key: &str,
+    account_id: &str,
+    seed: &str,
+    vault_id: Option<&str>,
+    timestamp: Option<u64>,
+) -> Result<()> {
+    use base64::Engine;
+    let (signing_key, pubkey_b58) = parse_near_expanded_private_key(private_key)?;
+
+    let ts = timestamp.unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    });
+    let message = build_bearer_near_signed_message(seed, ts, vault_id);
+
+    use ed25519_dalek::Signer;
+    let sig_b58 = bs58::encode(signing_key.sign(message.as_bytes()).to_bytes()).into_string();
+
+    let mut payload = serde_json::json!({
+        "account_id": account_id,
+        "seed":       seed,
+        "pubkey":     format!("ed25519:{}", pubkey_b58),
+        "timestamp":  ts,
+        "signature":  sig_b58,
+    });
+    if let Some(v) = vault_id {
+        payload["vault_id"] = serde_json::Value::String(v.to_string());
+    }
+    let json = serde_json::to_string(&payload)?;
+    let token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json.as_bytes());
+    print!("{}", token);
+    Ok(())
+}
+
+/// `customer-recovery compute-wallet-id --account-id <acct> --seed <s>`
+///
+/// Outputs the deterministic wallet_id (UUID) that the coordinator's
+/// `auth::deterministic_wallet_id(account_id, seed)` computes for the
+/// same inputs. Used in `tests/bearer_near_sovereignty_e2e.sh` so the
+/// post-exit recovery flow can re-derive the same user's wallet
+/// **offline** — no need to query the coordinator for wallet_id.
+///
+/// Formula (matches outlayer-coordinator::wallet::auth):
+///   wallet_id = UUID(SHA256("outlayer:deterministic-wallet-id:" + account_id + ":" + seed)[..16])
+fn compute_wallet_id_subcommand(account_id: &str, seed: &str) -> Result<()> {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"outlayer:deterministic-wallet-id:");
+    hasher.update(account_id.as_bytes());
+    hasher.update(b":");
+    hasher.update(seed.as_bytes());
+    let digest = hasher.finalize();
+    let uuid_bytes: [u8; 16] = digest[..16].try_into().unwrap();
+    let uuid = uuid::Uuid::from_bytes(uuid_bytes);
+    print!("{}", uuid);
+    Ok(())
+}
+
+#[cfg(test)]
+mod compute_wallet_id_tests {
+    use sha2::{Digest, Sha256};
+
+    fn compute_wallet_id(account_id: &str, seed: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(b"outlayer:deterministic-wallet-id:");
+        hasher.update(account_id.as_bytes());
+        hasher.update(b":");
+        hasher.update(seed.as_bytes());
+        let digest = hasher.finalize();
+        let uuid_bytes: [u8; 16] = digest[..16].try_into().unwrap();
+        uuid::Uuid::from_bytes(uuid_bytes).to_string()
+    }
+
+    /// Anchored against the value the live testnet coordinator returns
+    /// for `(account_id="zavodil2.testnet", seed="user-1778766412-16128")`
+    /// — confirmed equal to `1922bdda-f629-cc46-b975-a730afebb1fd`
+    /// during the WF-3 e2e run. If `outlayer-coordinator::wallet::auth::
+    /// deterministic_wallet_id` ever drifts (different prefix, different
+    /// separator, different hash), this test fails loud at CI build,
+    /// not at recovery time when the customer can no longer find their
+    /// wallets.
+    ///
+    /// To regenerate: pick any known coordinator-returned wallet_id and
+    /// its (account_id, seed) pair from an e2e run, paste the values
+    /// here. Do NOT change the formula without also updating the
+    /// coordinator side and any deployed wallets that depend on it
+    /// (those become unreachable on the new formula).
+    #[test]
+    fn matches_coordinator_anchor() {
+        assert_eq!(
+            compute_wallet_id("zavodil2.testnet", "user-1778766412-16128"),
+            "1922bdda-f629-cc46-b975-a730afebb1fd",
+            "deterministic_wallet_id formula drifted from outlayer-coordinator. \
+             Anchored value comes from the testnet WF-3 e2e run; any change \
+             here also changes the keys all existing wallets derive from."
+        );
+    }
+}
+
 fn derive_wallet_key_subcommand(master_hex: &str, wallet_id: &str) -> Result<()> {
     use hmac::{Hmac, Mac};
+    use zeroize::Zeroizing;
     type HmacSha256 = Hmac<sha2::Sha256>;
 
-    let master = hex::decode(master_hex.trim())
-        .context("--master must be hex-encoded (32 bytes)")?;
+    // Wrap master + derived seed in Zeroizing so the buffers are wiped
+    // on drop even if the function panics. Rust does not zero memory
+    // by default — without this, a core dump or swap-out persists the
+    // 32-byte master / 32-byte signing seed.
+    let master = Zeroizing::new(
+        hex::decode(master_hex.trim())
+            .context("--master must be hex-encoded (32 bytes)")?,
+    );
     if master.len() != 32 {
         anyhow::bail!("--master must decode to 32 bytes, got {}", master.len());
     }
@@ -481,7 +994,7 @@ fn derive_wallet_key_subcommand(master_hex: &str, wallet_id: &str) -> Result<()>
     mac.update(seed.as_bytes());
     let derived = mac.finalize().into_bytes();
 
-    let mut secret_bytes = [0u8; 32];
+    let mut secret_bytes = Zeroizing::new([0u8; 32]);
     secret_bytes.copy_from_slice(&derived[..32]);
 
     // near-crypto's ED25519 SecretKey wants a 64-byte expanded form
@@ -490,8 +1003,8 @@ fn derive_wallet_key_subcommand(master_hex: &str, wallet_id: &str) -> Result<()>
     let ed_sk = ed25519_dalek::SigningKey::from_bytes(&secret_bytes);
     let ed_pk_bytes = ed_sk.verifying_key().to_bytes();
 
-    let mut full_secret = [0u8; 64];
-    full_secret[..32].copy_from_slice(&secret_bytes);
+    let mut full_secret = Zeroizing::new([0u8; 64]);
+    full_secret[..32].copy_from_slice(&*secret_bytes);
     full_secret[32..].copy_from_slice(&ed_pk_bytes);
 
     let private_key = format!(
@@ -507,8 +1020,53 @@ fn derive_wallet_key_subcommand(master_hex: &str, wallet_id: &str) -> Result<()>
         "public_key": public_key,
         "private_key": private_key,
     });
+    warn_sensitive_stdout(&format!("the wallet ({}) private key", near_address));
     println!("{}", serde_json::to_string_pretty(&json)?);
     Ok(())
+}
+
+/// Reject non-HTTPS URLs at the boundary. Recovery is a one-shot
+/// operation where any MITM on the response wire can silently misdirect
+/// derivation (wrong `derivation_path` from NEARblocks, fake MPC share
+/// from RPC). Localhost is allowed for tests against a local MPC
+/// simulator.
+fn require_https(url: &str, flag: &str) -> Result<()> {
+    let lower = url.to_ascii_lowercase();
+    if lower.starts_with("https://") {
+        return Ok(());
+    }
+    if lower.starts_with("http://localhost")
+        || lower.starts_with("http://127.0.0.1")
+    {
+        eprintln!(
+            "\x1b[33m⚠  {} uses plain HTTP to localhost. Allowed for tests; \
+             never run recovery this way against an untrusted host.\x1b[0m",
+            flag
+        );
+        return Ok(());
+    }
+    anyhow::bail!(
+        "{} must be HTTPS (got '{}'). A plain-HTTP URL can be MITM'd to feed a \
+         malicious derivation path or MPC share. If you really need HTTP for a \
+         local test, use http://localhost or http://127.0.0.1.",
+        flag, url
+    )
+}
+
+/// Resolve a secret-bearing CLI flag with env-var fallback, so the
+/// flag form (visible in `ps` / shell history) stays optional.
+///
+/// Priority: explicit `--flag <value>` > env var > error.
+///
+/// Customers who care about op-sec should set the env var:
+///
+///     export CUSTOMER_RECOVERY_PRIVATE_KEY='ed25519:...'
+///     customer-recovery sign-nep413 --message ... --recipient ... --nonce-base64 ...
+///
+/// The flag is kept available for testing / CI where the env-var form
+/// is awkward.
+fn flag_or_env(flag_value: Option<String>, env_name: &str) -> Option<String> {
+    flag_value.or_else(|| std::env::var(env_name).ok())
 }
 
 #[tokio::main]
@@ -545,14 +1103,159 @@ async fn main() -> Result<()> {
                 ),
             }
         }
-        let m = master_hex
-            .ok_or_else(|| anyhow!("decrypt-secret: --master <hex> required"))?;
+        let m = flag_or_env(master_hex, "CUSTOMER_RECOVERY_MASTER")
+            .ok_or_else(|| anyhow!("decrypt-secret: --master <hex> or $CUSTOMER_RECOVERY_MASTER required"))?;
         let s = seed
             .ok_or_else(|| anyhow!("decrypt-secret: --seed <s> required"))?;
         let c = ciphertext.ok_or_else(|| {
             anyhow!("decrypt-secret: --ciphertext-base64 <b64> required")
         })?;
         return decrypt_secret_subcommand(&m, &s, &c);
+    }
+    if argv.len() >= 2 && argv[1] == "verify-sign-message" {
+        let mut pubkey: Option<String> = None;
+        let mut message: Option<String> = None;
+        let mut recipient: Option<String> = None;
+        let mut nonce_b64: Option<String> = None;
+        let mut signature: Option<String> = None;
+        let mut i = 2;
+        while i < argv.len() {
+            match argv[i].as_str() {
+                "--pubkey" => { pubkey = argv.get(i + 1).cloned(); i += 2; }
+                "--message" => { message = argv.get(i + 1).cloned(); i += 2; }
+                "--recipient" => { recipient = argv.get(i + 1).cloned(); i += 2; }
+                "--nonce-base64" => { nonce_b64 = argv.get(i + 1).cloned(); i += 2; }
+                "--signature" => { signature = argv.get(i + 1).cloned(); i += 2; }
+                other => anyhow::bail!(
+                    "unknown verify-sign-message flag: {}\nUsage: customer-recovery verify-sign-message \
+                     --pubkey <ed25519:...> --message <s> --recipient <s> \
+                     --nonce-base64 <b64> --signature <ed25519:... | base58 | base64>",
+                    other
+                ),
+            }
+        }
+        let pk = pubkey.ok_or_else(|| anyhow!("verify-sign-message: --pubkey required"))?;
+        let m = message.ok_or_else(|| anyhow!("verify-sign-message: --message required"))?;
+        let r = recipient.ok_or_else(|| anyhow!("verify-sign-message: --recipient required"))?;
+        let n = nonce_b64.ok_or_else(|| anyhow!("verify-sign-message: --nonce-base64 required"))?;
+        let s = signature.ok_or_else(|| anyhow!("verify-sign-message: --signature required"))?;
+        return verify_sign_message_subcommand(&pk, &m, &r, &n, &s);
+    }
+    if argv.len() >= 2 && argv[1] == "sign-nep413" {
+        let mut private_key: Option<String> = None;
+        let mut message: Option<String> = None;
+        let mut recipient: Option<String> = None;
+        let mut nonce_b64: Option<String> = None;
+        let mut i = 2;
+        while i < argv.len() {
+            match argv[i].as_str() {
+                "--private-key" => { private_key = argv.get(i + 1).cloned(); i += 2; }
+                "--message" => { message = argv.get(i + 1).cloned(); i += 2; }
+                "--recipient" => { recipient = argv.get(i + 1).cloned(); i += 2; }
+                "--nonce-base64" => { nonce_b64 = argv.get(i + 1).cloned(); i += 2; }
+                other => anyhow::bail!(
+                    "unknown sign-nep413 flag: {}\nUsage: customer-recovery sign-nep413 \
+                     --private-key <ed25519:base58> --message <s> --recipient <s> \
+                     --nonce-base64 <b64>\nOutputs JSON {{signature, public_key}}.",
+                    other
+                ),
+            }
+        }
+        let pk = flag_or_env(private_key, "CUSTOMER_RECOVERY_PRIVATE_KEY")
+            .ok_or_else(|| anyhow!("sign-nep413: --private-key or $CUSTOMER_RECOVERY_PRIVATE_KEY required"))?;
+        let m = message.ok_or_else(|| anyhow!("sign-nep413: --message required"))?;
+        let r = recipient.ok_or_else(|| anyhow!("sign-nep413: --recipient required"))?;
+        let n = nonce_b64.ok_or_else(|| anyhow!("sign-nep413: --nonce-base64 required"))?;
+        return sign_nep413_subcommand(&pk, &m, &r, &n);
+    }
+    if argv.len() >= 2 && argv[1] == "sign-api-key-claim" {
+        let mut private_key: Option<String> = None;
+        let mut account_id: Option<String> = None;
+        let mut seed: Option<String> = None;
+        let mut sub_key: Option<String> = None;
+        let mut vault_id: Option<String> = None;
+        let mut timestamp: Option<u64> = None;
+        let mut i = 2;
+        while i < argv.len() {
+            match argv[i].as_str() {
+                "--private-key" => { private_key = argv.get(i + 1).cloned(); i += 2; }
+                "--account-id" => { account_id = argv.get(i + 1).cloned(); i += 2; }
+                "--seed" => { seed = argv.get(i + 1).cloned(); i += 2; }
+                "--sub-key" => { sub_key = argv.get(i + 1).cloned(); i += 2; }
+                "--vault-id" => { vault_id = argv.get(i + 1).cloned(); i += 2; }
+                "--timestamp" => {
+                    timestamp = argv
+                        .get(i + 1)
+                        .and_then(|s| s.parse::<u64>().ok());
+                    i += 2;
+                }
+                other => anyhow::bail!(
+                    "unknown sign-api-key-claim flag: {}\nUsage: customer-recovery sign-api-key-claim \
+                     --private-key <ed25519:base58> --account-id <acct> --seed <s> \
+                     --sub-key <wk_...> [--vault-id <v>] [--timestamp <unix-s>]",
+                    other
+                ),
+            }
+        }
+        let pk = flag_or_env(private_key, "CUSTOMER_RECOVERY_PRIVATE_KEY")
+            .ok_or_else(|| anyhow!("sign-api-key-claim: --private-key or $CUSTOMER_RECOVERY_PRIVATE_KEY required"))?;
+        let a = account_id.ok_or_else(|| anyhow!("sign-api-key-claim: --account-id required"))?;
+        let s = seed.ok_or_else(|| anyhow!("sign-api-key-claim: --seed required"))?;
+        let sk = sub_key.ok_or_else(|| anyhow!("sign-api-key-claim: --sub-key required"))?;
+        return sign_api_key_claim_subcommand(&pk, &a, &s, &sk, vault_id.as_deref(), timestamp);
+    }
+    if argv.len() >= 2 && argv[1] == "sign-bearer-near" {
+        let mut private_key: Option<String> = None;
+        let mut account_id: Option<String> = None;
+        let mut seed: Option<String> = None;
+        let mut vault_id: Option<String> = None;
+        let mut timestamp: Option<u64> = None;
+        let mut i = 2;
+        while i < argv.len() {
+            match argv[i].as_str() {
+                "--private-key" => { private_key = argv.get(i + 1).cloned(); i += 2; }
+                "--account-id" => { account_id = argv.get(i + 1).cloned(); i += 2; }
+                "--seed" => { seed = argv.get(i + 1).cloned(); i += 2; }
+                "--vault-id" => { vault_id = argv.get(i + 1).cloned(); i += 2; }
+                "--timestamp" => {
+                    timestamp = argv
+                        .get(i + 1)
+                        .and_then(|s| s.parse::<u64>().ok());
+                    i += 2;
+                }
+                other => anyhow::bail!(
+                    "unknown sign-bearer-near flag: {}\nUsage: customer-recovery sign-bearer-near \
+                     --private-key <ed25519:base58> --account-id <acct> --seed <s> \
+                     [--vault-id <v>] [--timestamp <unix-s>]\n\
+                     Prints base64url(json) ready to drop in 'Authorization: Bearer near:<TOKEN>'.",
+                    other
+                ),
+            }
+        }
+        let pk = flag_or_env(private_key, "CUSTOMER_RECOVERY_PRIVATE_KEY")
+            .ok_or_else(|| anyhow!("sign-bearer-near: --private-key or $CUSTOMER_RECOVERY_PRIVATE_KEY required"))?;
+        let a = account_id.ok_or_else(|| anyhow!("sign-bearer-near: --account-id required"))?;
+        let s = seed.ok_or_else(|| anyhow!("sign-bearer-near: --seed required"))?;
+        return sign_bearer_near_subcommand(&pk, &a, &s, vault_id.as_deref(), timestamp);
+    }
+    if argv.len() >= 2 && argv[1] == "compute-wallet-id" {
+        let mut account_id: Option<String> = None;
+        let mut seed: Option<String> = None;
+        let mut i = 2;
+        while i < argv.len() {
+            match argv[i].as_str() {
+                "--account-id" => { account_id = argv.get(i + 1).cloned(); i += 2; }
+                "--seed" => { seed = argv.get(i + 1).cloned(); i += 2; }
+                other => anyhow::bail!(
+                    "unknown compute-wallet-id flag: {}\nUsage: customer-recovery compute-wallet-id \
+                     --account-id <acct> --seed <s>",
+                    other
+                ),
+            }
+        }
+        let a = account_id.ok_or_else(|| anyhow!("compute-wallet-id: --account-id required"))?;
+        let s = seed.ok_or_else(|| anyhow!("compute-wallet-id: --seed required"))?;
+        return compute_wallet_id_subcommand(&a, &s);
     }
     if argv.len() >= 2 && argv[1] == "derive-wallet-key" {
         // Parse `--master <hex> --wallet-id <uuid>` from the tail of
@@ -578,9 +1281,10 @@ async fn main() -> Result<()> {
                 ),
             }
         }
-        let master = master_hex.ok_or_else(|| {
-            anyhow!("derive-wallet-key: --master <hex> required")
-        })?;
+        let master = flag_or_env(master_hex, "CUSTOMER_RECOVERY_MASTER")
+            .ok_or_else(|| {
+                anyhow!("derive-wallet-key: --master <hex> or $CUSTOMER_RECOVERY_MASTER required")
+            })?;
         let wallet = wallet_id.ok_or_else(|| {
             anyhow!("derive-wallet-key: --wallet-id <uuid> required")
         })?;
@@ -595,6 +1299,15 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+
+    // Reject `http://` URLs at the boundary. A MITM proxy on a
+    // plain-HTTP `--nearblocks-url` could feed a wrong
+    // `derivation_path`, causing the customer to derive the wrong
+    // master and silently lose access to the wallets they're trying
+    // to recover. The MPC pairing check still catches a fake share
+    // on `--rpc-url`, but the cleaner contract is "no HTTP, period".
+    require_https(&cli.rpc_url, "--rpc-url")?;
+    require_https(&cli.nearblocks_url, "--nearblocks-url")?;
 
     let secret_key: SecretKey = cli
         .signer_private_key
@@ -649,15 +1362,16 @@ async fn main() -> Result<()> {
         decrypt_and_verify(response, ephemeral_private, &mpc_g2, &app_id)?;
 
     // 6. HKDF-stretch 48-byte G1 secret to 32-byte master.
-    let master = derive_strong_key(secret)?;
+    let master = zeroize::Zeroizing::new(derive_strong_key(secret)?);
 
     // 7. Print the master in hex (this is THE secret — protect it).
+    warn_sensitive_stdout("the per-vault master (32-byte hex)");
     println!();
     println!("# === Per-vault master recovered ===");
     println!("# vault_id       = {}", cli.vault_id);
     println!("# derivation_path= {}", derivation_path);
     println!();
-    println!("master_hex={}", hex::encode(master));
+    println!("master_hex={}", hex::encode(&*master));
     println!();
     println!(
         "# Now derive any wallet keypair: HMAC-SHA256(master, b\"wallet:<seed>\")"
@@ -757,8 +1471,18 @@ fn parse_g1(s: &str) -> Result<G1Projective> {
         .strip_prefix("bls12381g1:")
         .ok_or_else(|| anyhow!("expected bls12381g1: prefix in {s}"))?;
     let bytes = bs58::decode(b58).into_vec()?;
+    // Bounds check BEFORE `copy_from_slice` — a malicious RPC node
+    // (or MITM with HTTP) could return a short blob and crash the
+    // recovery tool via index-out-of-bounds panic.
+    if bytes.len() != BLS12381G1_PUBLIC_KEY_SIZE {
+        anyhow::bail!(
+            "bls12381g1: expected exactly {} compressed bytes, got {}",
+            BLS12381G1_PUBLIC_KEY_SIZE,
+            bytes.len()
+        );
+    }
     let mut compressed = [0u8; BLS12381G1_PUBLIC_KEY_SIZE];
-    compressed.copy_from_slice(&bytes[..BLS12381G1_PUBLIC_KEY_SIZE]);
+    compressed.copy_from_slice(&bytes);
     G1Projective::from_compressed(&compressed)
         .into_option()
         .ok_or_else(|| anyhow!("invalid G1 point"))
@@ -769,8 +1493,16 @@ fn parse_g2(s: &str) -> Result<G2Projective> {
         .strip_prefix("bls12381g2:")
         .ok_or_else(|| anyhow!("expected bls12381g2: prefix in {s}"))?;
     let bytes = bs58::decode(b58).into_vec()?;
+    // Same DoS hardening as `parse_g1` — fail loud on wrong-length input
+    // rather than panic.
+    if bytes.len() != 96 {
+        anyhow::bail!(
+            "bls12381g2: expected exactly 96 compressed bytes, got {}",
+            bytes.len()
+        );
+    }
     let mut compressed = [0u8; 96];
-    compressed.copy_from_slice(&bytes[..96]);
+    compressed.copy_from_slice(&bytes);
     G2Projective::from_compressed(&compressed)
         .into_option()
         .ok_or_else(|| anyhow!("invalid G2 point"))
