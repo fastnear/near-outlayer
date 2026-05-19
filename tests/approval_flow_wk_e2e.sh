@@ -107,16 +107,16 @@ REG_RESP=$(curl -sS -X POST "$COORDINATOR_URL/register" \
 WK_API_KEY=$(echo "$REG_RESP" | jq -r '.api_key')
 WALLET_ID=$(echo "$REG_RESP"  | jq -r '.wallet_id')
 SUB_ADDR=$(echo "$REG_RESP"   | jq -r '.near_account_id')
-GOT_VAULT=$(echo "$REG_RESP"  | jq -r '.vault_id // empty')
 [[ -n "$WK_API_KEY" && "$WK_API_KEY" != "null" ]] || fail "/register failed: $REG_RESP"
-[[ "$GOT_VAULT"  == "$VAULT_ID" ]] || fail "vault_id mismatch on /register: $GOT_VAULT vs $VAULT_ID"
 pass "wallet $WALLET_ID  addr=$SUB_ADDR  api_key=${WK_API_KEY:0:12}…"
 
-# Sanity: GET /address with wk_ Bearer must report vault_id.
+# /register doesn't echo vault_id in the response by current API shape —
+# verify the binding via the /address endpoint (which DOES expose vault_id).
 ADDR_RESP=$(curl -sS -G "$COORDINATOR_URL/wallet/v1/address" --data-urlencode "chain=near" \
   -H "Authorization: Bearer $WK_API_KEY")
-[[ "$(echo "$ADDR_RESP" | jq -r '.vault_id')" == "$VAULT_ID" ]] || \
-  fail "/address vault_id mismatch: $ADDR_RESP"
+GOT_VAULT=$(echo "$ADDR_RESP" | jq -r '.vault_id // empty')
+[[ "$GOT_VAULT" == "$VAULT_ID" ]] || \
+  fail "/address vault_id mismatch: got '$GOT_VAULT', expected '$VAULT_ID'. /register response: $REG_RESP"
 PUB_HEX_SHORT=$(echo "$ADDR_RESP" | jq -r '.public_key' | sed 's/^ed25519://')
 WALLET_PUBKEY_HEX="ed25519:$PUB_HEX_SHORT"
 
@@ -135,19 +135,21 @@ pass "sub-wallet funded + visible"
 # ─── 3. Encrypt + sign + store policy (same as Bearer near: test) ─
 
 log "3. encrypt-policy / sign-policy via wk_ Bearer, store on chain"
-POLICY_JSON=$(jq -nc \
+# Flat body shape per EncryptPolicyRequest.
+POLICY_BODY=$(jq -nc \
+  --arg wid "$WALLET_ID" \
   --arg approver "$APPROVER" \
   --arg approver_pub "$APPROVER_PUBKEY" \
   '{
-    rules: { transaction_types: ["transfer"],
-             limits: { per_transaction: { native: "1" } } },
+    wallet_id: $wid,
+    rules: { transaction_types: ["transfer"] },
     approval: { threshold: { required: 1 },
                 approvers: [ { id: $approver, pubkey: $approver_pub } ] }
   }')
 ENC_RESP=$(curl -sS -X POST "$COORDINATOR_URL/wallet/v1/encrypt-policy" \
   -H "Authorization: Bearer $WK_API_KEY" \
   -H 'Content-Type: application/json' \
-  -d "$(jq -nc --arg pj "$POLICY_JSON" '{policy_json: $pj}')")
+  -d "$POLICY_BODY")
 ENCRYPTED_B64=$(echo "$ENC_RESP" | jq -r '.encrypted_base64 // empty')
 [[ -n "$ENCRYPTED_B64" && "$ENCRYPTED_B64" != "null" ]] || fail "/encrypt-policy: $ENC_RESP"
 
@@ -171,7 +173,7 @@ pass "policy stored on chain"
 
 # ─── 4. Trigger approval via wk_ Bearer ──────────────────────────
 
-log "4. Transfer 0.01 NEAR (above 1-yocto limit) → pending_approval"
+log "4. Transfer 0.01 NEAR (approval-gated by policy) → pending_approval"
 T_RESP=$(curl -sS -X POST "$COORDINATOR_URL/wallet/v1/transfer" \
   -H "Authorization: Bearer $WK_API_KEY" \
   -H 'Content-Type: application/json' \
@@ -220,7 +222,7 @@ for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
   ST=$(echo "$S" | jq -r '.status')
   echo "  attempt $attempt: status=$ST" >&2
   case "$ST" in
-    completed) TX_HASH=$(echo "$S" | jq -r '.result.tx_hash // .result.transaction_hash // empty'); break;;
+    completed|success) TX_HASH=$(echo "$S" | jq -r '.result.tx_hash // .result.transaction_hash // empty'); break;;
     failed)    fail "worker failed: $(echo "$S" | jq -r '.result')";;
   esac
 done

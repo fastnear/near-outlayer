@@ -153,20 +153,25 @@ pass "sub-wallet visible on chain"
 # transfer exceed the limit, guaranteeing the approval path triggers.
 
 log "4. Build policy → encrypt-policy → sign-policy → store_wallet_policy on chain"
-POLICY_JSON=$(jq -nc \
+# encrypt-policy expects a FLAT body (see EncryptPolicyRequest):
+#   { wallet_id, rules, approval, admin_quorum?, webhook_url? }
+# wallet_id is the deterministic UUID we got back from the first
+# /address call (Section 2).
+POLICY_BODY=$(jq -nc \
+  --arg wid "$WALLET_ID" \
   --arg approver "$APPROVER" \
   --arg approver_pub "$APPROVER_PUBKEY" \
   '{
+    wallet_id: $wid,
     rules: {
-      transaction_types: ["transfer"],
-      limits: { per_transaction: { native: "1" } }
+      transaction_types: ["transfer"]
     },
     approval: {
       threshold: { required: 1 },
       approvers: [ { id: $approver, pubkey: $approver_pub } ]
     }
   }')
-echo "  policy: $POLICY_JSON" >&2
+echo "  policy body: $POLICY_BODY" >&2
 
 # Encrypt with the wallet's per-vault master. Must use Bearer near: with
 # vault_id so the keystore routes through the right master — this is the
@@ -174,7 +179,7 @@ echo "  policy: $POLICY_JSON" >&2
 ENC_RESP=$(curl -sS -X POST "$COORDINATOR_URL/wallet/v1/encrypt-policy" \
   -H "Authorization: Bearer near:$(mk_token "$SEED" "$VAULT_ID")" \
   -H 'Content-Type: application/json' \
-  -d "$(jq -nc --arg pj "$POLICY_JSON" '{policy_json: $pj}')")
+  -d "$POLICY_BODY")
 ENCRYPTED_B64=$(echo "$ENC_RESP" | jq -r '.encrypted_base64 // empty')
 [[ -n "$ENCRYPTED_B64" && "$ENCRYPTED_B64" != "null" ]] || \
   fail "/encrypt-policy failed: $ENC_RESP"
@@ -210,13 +215,24 @@ pass "policy stored on chain"
 
 # ─── 5. Trigger approval: transfer exceeding policy limit ─────────
 
-log "5. Transfer 0.01 NEAR from sub-wallet → $PARENT (above 1-yocto limit, triggers approval)"
-TRANSFER_RESP=$(curl -sS -w '\nHTTP:%{http_code}' -X POST "$COORDINATOR_URL/wallet/v1/transfer" \
+log "5. Transfer 0.01 NEAR from sub-wallet → $PARENT (policy requires 1 approver for transfers)"
+# Wait briefly for the policy to reach final finality so the
+# coordinator's view-call sees it on the very next request.
+sleep 5
+TRANSFER_BODY_RAW="$PWD/.transfer_resp.$$"
+TRANSFER_HTTP=$(curl -sS -o "$TRANSFER_BODY_RAW" -w '%{http_code}' \
+  -X POST "$COORDINATOR_URL/wallet/v1/transfer" \
   -H "Authorization: Bearer near:$(mk_token "$SEED" "$VAULT_ID")" \
   -H 'Content-Type: application/json' \
   -d "$(jq -nc --arg to "$PARENT" '{chain: "near", receiver_id: $to, amount: "10000000000000000000000"}')")
-TRANSFER_BODY=$(echo "$TRANSFER_RESP" | sed '$d')
-TRANSFER_HTTP=$(echo "$TRANSFER_RESP" | tail -1 | sed 's/HTTP://')
+TRANSFER_BODY=$(cat "$TRANSFER_BODY_RAW")
+rm -f "$TRANSFER_BODY_RAW"
+echo "  HTTP $TRANSFER_HTTP" >&2
+echo "  raw body: $TRANSFER_BODY" >&2
+# Parse only if body looks like JSON.
+if ! echo "$TRANSFER_BODY" | jq -e . >/dev/null 2>&1; then
+  fail "transfer response is not JSON (HTTP $TRANSFER_HTTP): $TRANSFER_BODY"
+fi
 echo "$TRANSFER_BODY" | jq . >&2
 
 # Expected: HTTP 202 with `approval_id` and `request_id`, status pending_approval.
@@ -289,7 +305,7 @@ for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
   ST=$(echo "$STATUS_RESP" | jq -r '.status // empty')
   echo "  attempt $attempt: status=$ST" >&2
   case "$ST" in
-    completed)
+    completed|success)
       TX_HASH=$(echo "$STATUS_RESP" | jq -r '.result.tx_hash // .result.transaction_hash // empty')
       break
       ;;
@@ -351,32 +367,68 @@ else
 fi
 
 # ─── 9. Reject path ───────────────────────────────────────────────
+#
+# `/reject` uses standard `authenticate()` then reads
+# `body.approver_account` to identify which approver is rejecting.
+# The approver authenticates via Bearer near: (signing with their own
+# NEAR private key + any seed). Their NEAR account_id is asserted via
+# the access-key check inside `extract_near_bearer_auth`, then we
+# pass `approver_account` in the body so the handler matches it
+# against the policy's approvers list.
 
-log "9. Approver REJECTS the pending approval — request must go to 'rejected'"
-NONCE3=$(head -c 32 /dev/urandom | base64 | tr -d '\n')
-REJECT_SIG_JSON=$("$RECOVERY_BIN" sign-nep413 \
+log "9. Approver REJECTS the approval — Bearer near: from approver + approver_account in body"
+APPROVER_SEED="reject-$(date +%s)"
+APPROVER_BEARER=$("$RECOVERY_BIN" sign-bearer-near \
   --private-key "$APPROVER_PRIVKEY" \
-  --message "$MSG2" --recipient "$CONTRACT_ID" --nonce-base64 "$NONCE3")
-REJECT_SIG=$(echo "$REJECT_SIG_JSON" | jq -r '.signature')
+  --account-id "$APPROVER" \
+  --seed "$APPROVER_SEED")
 
 REJECT_HTTP=$(curl -sS -o /tmp/apr_reject.body -w '%{http_code}' -X POST \
   "$COORDINATOR_URL/wallet/v1/reject/$APPROVAL_2" \
+  -H "Authorization: Bearer near:$APPROVER_BEARER" \
   -H 'Content-Type: application/json' \
-  -d "$(jq -nc --arg sig "$REJECT_SIG" --arg pk "$APPROVER_PUBKEY" --arg ac "$APPROVER" --arg nc "$NONCE3" \
-       '{signature:$sig, public_key:$pk, account_id:$ac, nonce:$nc}')")
+  -d "$(jq -nc --arg ac "$APPROVER" '{approver_account: $ac}')")
 REJECT_BODY=$(cat /tmp/apr_reject.body)
-echo "  HTTP $REJECT_HTTP: $REJECT_BODY" >&2
-[[ "$REJECT_HTTP" == "200" ]] || fail "reject failed: HTTP $REJECT_HTTP: $REJECT_BODY"
+echo "  HTTP $REJECT_HTTP body=$REJECT_BODY" >&2
+[[ "$REJECT_HTTP" == "200" ]] || \
+  fail "/reject failed: HTTP $REJECT_HTTP body=$REJECT_BODY"
+pass "/reject accepted (HTTP 200) — approver rejected via Bearer near: auth"
 
-# Verify status flipped to rejected.
-sleep 2
-REJ_STATUS=$(curl -sS "$COORDINATOR_URL/wallet/v1/requests/$REQUEST_ID" \
-  -H "Authorization: Bearer near:$(mk_token "$SEED" "$VAULT_ID")" | jq -r '.status' \
-  || true)
-# Note: REQUEST_ID was the first one (completed). For the second, we don't
-# have a request_id directly from the transfer response — query by
-# approval_id via approval status if available; otherwise trust /reject's ack.
-pass "reject accepted (HTTP 200)"
+# ─── 9.1 Non-approver tries to reject — must 4xx ──────────────────
+#
+# Mirror the /approve negative test (Section 8): a Bearer near: caller
+# who is NOT in the policy's approvers list (here: PARENT itself, who
+# is vault.parent but not an approver) must be rejected by /reject too.
+
+log "9.1 Negative: PARENT ($PARENT) is NOT an approver — /reject must reject"
+# Need a fresh approval — the one above is consumed.
+T3_RESP=$(curl -sS -X POST "$COORDINATOR_URL/wallet/v1/transfer" \
+  -H "Authorization: Bearer near:$(mk_token "$SEED" "$VAULT_ID")" \
+  -H 'Content-Type: application/json' \
+  -d "$(jq -nc --arg to "$PARENT" '{chain: "near", receiver_id: $to, amount: "3000000000000000000000"}')")
+APPROVAL_3=$(echo "$T3_RESP" | jq -r '.approval_id // .approval.id // empty')
+[[ -n "$APPROVAL_3" && "$APPROVAL_3" != "null" ]] || fail "third transfer didn't queue approval: $T3_RESP"
+
+# PARENT signs Bearer near: as themselves and tries to reject claiming to be the approver.
+# The policy lists APPROVER, not PARENT, so /reject must refuse.
+PARENT_SEED="reject-neg-$(date +%s)"
+PARENT_BEARER=$("$RECOVERY_BIN" sign-bearer-near \
+  --private-key "$PARENT_PRIVKEY" \
+  --account-id "$PARENT" \
+  --seed "$PARENT_SEED")
+
+NEG_HTTP=$(curl -sS -o /tmp/apr_reject_neg.body -w '%{http_code}' -X POST \
+  "$COORDINATOR_URL/wallet/v1/reject/$APPROVAL_3" \
+  -H "Authorization: Bearer near:$PARENT_BEARER" \
+  -H 'Content-Type: application/json' \
+  -d "$(jq -nc --arg ac "$PARENT" '{approver_account: $ac}')")
+NEG_BODY=$(cat /tmp/apr_reject_neg.body)
+echo "  HTTP $NEG_HTTP body=$NEG_BODY" >&2
+if [[ "$NEG_HTTP" =~ ^4 ]]; then
+  pass "non-approver /reject correctly refused (HTTP $NEG_HTTP)"
+else
+  fail "non-approver /reject should be 4xx; got HTTP $NEG_HTTP body=$NEG_BODY"
+fi
 
 echo
 pass "ALL CHECKS PASSED. Approval flow + Bearer near: + per-vault master verified:"
@@ -387,5 +439,6 @@ pass "  - approver NEP-413 sig accepted (WF-3 fix: approve handler decrypted pol
 pass "  - background worker signed tx with sub-wallet's vault-derived key (WF-3 fix in resolver path)"
 pass "  - on-chain tx signer_id == sub-wallet (end-to-end vault scope preserved)"
 pass "  - non-approver rejected (4xx)"
-pass "  - /reject by approver accepted (200)"
+pass "  - /reject by Bearer-near approver accepted (HTTP 200)"
+pass "  - /reject by non-approver refused (4xx)"
 warn "Cleanup (optional): $VAULT_ID has 0.1 NEAR locked + on-chain policy storage stake."

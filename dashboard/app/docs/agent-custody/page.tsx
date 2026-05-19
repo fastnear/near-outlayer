@@ -868,15 +868,20 @@ curl -s -X POST -H "Content-Type: application/json" \\
 
         <h3 className="text-lg font-semibold mt-6 mb-2">Bearer near: token format</h3>
         <p className="text-gray-700 mb-2">
-          Base64url-encode a JSON object. The signed message is <code className="bg-gray-100 px-1 rounded">auth:&lt;seed&gt;:&lt;timestamp&gt;</code> (±30s window).
+          Base64url-encode a JSON object. The signed message format depends on whether you include a vault scope (±30s window):
         </p>
+        <ul className="list-disc pl-6 text-gray-700 mb-2 text-sm space-y-1">
+          <li>No vault: <code className="bg-gray-100 px-1 rounded">auth:&lt;seed&gt;:&lt;timestamp&gt;</code></li>
+          <li>With vault: <code className="bg-gray-100 px-1 rounded">auth:&lt;seed&gt;:&lt;timestamp&gt;:&lt;vault_id&gt;</code> — vault_id MUST be inside the signed message (not only in JSON), otherwise verify fails with 401.</li>
+        </ul>
         <SyntaxHighlighter language="json" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
 {`{
   "account_id": "my-bot.near",
   "seed": "user-42",
   "pubkey": "ed25519:<base58>",
   "timestamp": 1712000000,
-  "signature": "<base58>"
+  "signature": "<base58>",
+  "vault_id": "vault.my-bot.near"   // optional; include in signed message too
 }`}
         </SyntaxHighlighter>
 

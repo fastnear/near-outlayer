@@ -377,6 +377,54 @@ echo "  default: $ADDR_NV" >&2
   fail "vault B and default-master derived the SAME address — per-vault HMAC broken"
 pass "three distinct addresses for the same (acct, seed) under three scopes"
 
+# ─── 9.1 /balance must honor vault scope in account_id ────────────
+#
+# Regression test for the resolve_wallet_pubkey DB-cache bug: /balance
+# resolved its wallet pubkey from wallet_accounts.near_pubkey, which is
+# first-write-wins per wallet_id (and wallet_id ignores vault scope).
+# If a /address (or any other writer) cached the default-master pubkey
+# before a vault-scoped call, /balance returned the stale default-master
+# account_id forever after — even with the correct vault Bearer token.
+# Fix: handlers route through `resolve_wallet_pubkey_scoped`, which
+# re-derives via the keystore when vault_id is present.
+
+bn_balance_account() {
+  # Echoes the .account_id field from GET /balance for a (parent, seed,
+  # vault) trio under a fresh Bearer near: token. Uses source=intents
+  # because that's the exact path that surfaced the production bug.
+  local label=$1 acct=$2 priv=$3 seed=$4 vault=$5
+  local token
+  token=$(build_bearer_near "$acct" "$priv" "$seed" "$vault")
+  [[ -n "$token" ]] || fail "$label: failed to build Bearer near: token"
+  local resp
+  resp=$(curl -sS -G "$COORDINATOR_URL/wallet/v1/balance" \
+    --data-urlencode "token=nep141:usdt.tether-token.near" \
+    --data-urlencode "source=intents" \
+    -H "Authorization: Bearer near:$token")
+  local acc
+  acc=$(echo "$resp" | jq -r '.account_id // empty')
+  [[ -n "$acc" ]] || fail "$label: no .account_id in /balance response: $resp"
+  echo "$acc"
+}
+
+log "9.1 /balance under vault A must report account_id == /address.address"
+BAL_VA=$(bn_balance_account "vault A" "$PARENT" "$PARENT_PRIVKEY" "$SHARED_SEED" "$VAULT_A_ID")
+[[ "$BAL_VA" == "$ADDR_VA" ]] || \
+  fail "/balance returned account_id='$BAL_VA' for vault A but /address gave '$ADDR_VA' — DB-cache silent fork in resolve_wallet_pubkey"
+pass "vault A: /balance.account_id == /address.address ($BAL_VA)"
+
+log "9.2 /balance under vault B must report account_id == /address.address"
+BAL_VB=$(bn_balance_account "vault B" "$PARENT" "$PARENT_PRIVKEY" "$SHARED_SEED" "$VAULT_B_ID")
+[[ "$BAL_VB" == "$ADDR_VB" ]] || \
+  fail "/balance returned '$BAL_VB' for vault B but /address gave '$ADDR_VB' — DB-cache silent fork"
+pass "vault B: /balance.account_id == /address.address ($BAL_VB)"
+
+log "9.3 /balance under default-master must report account_id == /address.address"
+BAL_NV=$(bn_balance_account "no vault" "$PARENT" "$PARENT_PRIVKEY" "$SHARED_SEED" "")
+[[ "$BAL_NV" == "$ADDR_NV" ]] || \
+  fail "/balance returned '$BAL_NV' for default-master but /address gave '$ADDR_NV'"
+pass "default: /balance.account_id == /address.address ($BAL_NV)"
+
 # ─── 10. Idempotency: repeat the same Bearer near: → same address ──
 #
 # Bot restart simulation. Three fresh Bearer near: requests with the
@@ -645,7 +693,10 @@ fi
 # explicit comparison rules out any caching / fallback weirdness.
 
 bn_sign_message_capture() {
-  # Signs `msg` under (seed, vault). Echoes "<sig>|<pubkey>".
+  # Signs `msg` under (seed, vault). Echoes "<sig>|<pubkey>|<nonce>".
+  # Captures the response nonce because the server is free to ignore /
+  # replace the requested `nonce_base64` (and the verifier needs the
+  # exact bytes the server hashed).
   local seed=$1 vault=$2 msg=$3
   local token resp
   token=$("$RECOVERY_BIN" sign-bearer-near \
@@ -655,11 +706,12 @@ bn_sign_message_capture() {
     -H "Authorization: Bearer near:$token" \
     -H 'Content-Type: application/json' \
     -d "$(jq -n --arg m "$msg" '{message: $m, recipient: "iso-verify.testnet", nonce_base64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}')")
-  local sig pub
+  local sig pub nonce
   sig=$(echo "$resp" | jq -r '.signature // empty')
   pub=$(echo "$resp" | jq -r '.public_key // empty')
+  nonce=$(echo "$resp" | jq -r '.nonce // empty')
   [[ -n "$sig" && "$sig" != "null" ]] || { echo "MISSING_SIG:$resp" >&2; return 1; }
-  echo "$sig|$pub"
+  echo "$sig|$pub|$nonce"
 }
 
 log "17. Signature-level vault isolation: same message, three scopes, three distinct sigs"
@@ -670,9 +722,9 @@ PAIR_A=$(bn_sign_message_capture "$ISO_SEED" "$VAULT_A_ID" "$ISO_MSG")
 PAIR_B=$(bn_sign_message_capture "$ISO_SEED" "$VAULT_B_ID" "$ISO_MSG")
 PAIR_NV=$(bn_sign_message_capture "$ISO_SEED" "" "$ISO_MSG")
 
-SIG_A=${PAIR_A%%|*};  PUB_A=${PAIR_A##*|}
-SIG_B=${PAIR_B%%|*};  PUB_B=${PAIR_B##*|}
-SIG_NV=${PAIR_NV%%|*}; PUB_NV=${PAIR_NV##*|}
+IFS='|' read -r SIG_A PUB_A NONCE_A <<<"$PAIR_A"
+IFS='|' read -r SIG_B PUB_B NONCE_B <<<"$PAIR_B"
+IFS='|' read -r SIG_NV PUB_NV NONCE_NV <<<"$PAIR_NV"
 
 echo "  vault A:  pub=$PUB_A" >&2
 echo "  vault B:  pub=$PUB_B" >&2
@@ -693,20 +745,25 @@ pass "three distinct public keys for the same (acct, seed) under three scopes"
 pass "three distinct signatures for the same message — vault isolation proven cryptographically"
 
 # Each signature must verify under ITS OWN pubkey only.
-for label in "A:$PUB_A:$SIG_A" "B:$PUB_B:$SIG_B" "NV:$PUB_NV:$SIG_NV"; do
-  IFS=':' read -r tag pub sig <<<"$label"
+# Use `|` as delimiter — `:` is inside the `ed25519:<base58>` pubkey
+# values and would split them in two. Pass the nonce as the server
+# actually used it (captured from /sign-message response).
+for label in "A|$PUB_A|$SIG_A|$NONCE_A" "B|$PUB_B|$SIG_B|$NONCE_B" "NV|$PUB_NV|$SIG_NV|$NONCE_NV"; do
+  IFS='|' read -r tag pub sig nonce <<<"$label"
   "$RECOVERY_BIN" verify-sign-message \
     --pubkey "$pub" --message "$ISO_MSG" --recipient "iso-verify.testnet" \
-    --nonce-base64 "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" \
+    --nonce-base64 "$nonce" \
     --signature "$sig" >/dev/null || \
     fail "sig $tag did not verify under its own pubkey $pub"
 done
 pass "each signature verifies under its own pubkey (closed loop)"
 
 # Cross-verify: SIG_A must NOT verify under PUB_B or PUB_NV.
+# Try with B's nonce since A's nonce wouldn't reconstruct B's hash;
+# the signature MUST still fail because keys differ.
 if "$RECOVERY_BIN" verify-sign-message \
      --pubkey "$PUB_B" --message "$ISO_MSG" --recipient "iso-verify.testnet" \
-     --nonce-base64 "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" \
+     --nonce-base64 "$NONCE_B" \
      --signature "$SIG_A" >/dev/null 2>&1; then
   fail "ISOLATION BROKEN: SIG_A verified under PUB_B"
 fi
