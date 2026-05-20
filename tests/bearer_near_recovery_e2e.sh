@@ -294,7 +294,11 @@ declare -a PRIVKEYS_POST
 for i in 0 1 2; do
   seed="${SEEDS[$i]}"
   expected="${ADDRS_PRE[$i]}"
-  wallet_id_local=$("$RECOVERY_BIN" compute-wallet-id --account-id "$PARENT" --seed "$seed")
+  # v2: wallet_id encodes vault scope. Users were minted via Bearer-near
+  # + vault_id=$VAULT_ID, so offline derivation MUST include the same
+  # vault_id to reproduce the coordinator-side wallet_id.
+  wallet_id_local=$("$RECOVERY_BIN" compute-wallet-id \
+    --account-id "$PARENT" --seed "$seed" --vault-id "$VAULT_ID")
   derived=$("$RECOVERY_BIN" derive-wallet-key --master "$MASTER_HEX" --wallet-id "$wallet_id_local")
   derived_addr=$(echo "$derived" | jq -r '.near_address')
   derived_priv=$(echo "$derived" | jq -r '.private_key')

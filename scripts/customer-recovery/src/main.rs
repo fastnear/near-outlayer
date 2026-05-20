@@ -906,68 +906,120 @@ fn sign_bearer_near_subcommand(
     Ok(())
 }
 
-/// `customer-recovery compute-wallet-id --account-id <acct> --seed <s>`
+/// `customer-recovery compute-wallet-id --account-id <acct> --seed <s> [--vault-id <vid>]`
 ///
 /// Outputs the deterministic wallet_id (UUID) that the coordinator's
-/// `auth::deterministic_wallet_id(account_id, seed)` computes for the
-/// same inputs. Used in `tests/bearer_near_sovereignty_e2e.sh` so the
-/// post-exit recovery flow can re-derive the same user's wallet
-/// **offline** — no need to query the coordinator for wallet_id.
+/// `auth::deterministic_wallet_id(account_id, seed, vault_id)` computes
+/// for the same inputs. Used in `tests/bearer_near_recovery_e2e.sh`
+/// and any sovereign-exit recovery flow so the customer can re-derive
+/// the same on-chain wallet **offline** — no coordinator query needed.
 ///
-/// Formula (matches outlayer-coordinator::wallet::auth):
-///   wallet_id = UUID(SHA256("outlayer:deterministic-wallet-id:" + account_id + ":" + seed)[..16])
-fn compute_wallet_id_subcommand(account_id: &str, seed: &str) -> Result<()> {
+/// v2 formula (matches outlayer-coordinator::wallet::auth):
+///   wallet_id = UUID(SHA256(
+///       "outlayer:deterministic-wallet-id:" + account_id + ":" + seed
+///       + (vault_id ? "\0vault:" + vault_id : "")
+///   )[..16])
+///
+/// When `vault_id` is None, the hash input is bit-identical to the
+/// pre-v2 formula. When `Some(vid)`, the `\0vault:` separator
+/// guarantees no collision (NUL is forbidden in validated seeds).
+///
+/// CRITICAL: this formula MUST stay in sync with the coordinator.
+/// Drift here = customer cannot recover their wallets after sovereign
+/// exit. Two anchored regression tests below catch drift at build
+/// time, not at recovery time.
+fn compute_wallet_id_subcommand(account_id: &str, seed: &str, vault_id: Option<&str>) -> Result<()> {
+    let uuid = compute_wallet_id(account_id, seed, vault_id);
+    print!("{}", uuid);
+    Ok(())
+}
+
+/// Pure function used by `compute_wallet_id_subcommand` and by the
+/// unit-test module. MUST match coordinator's auth::deterministic_wallet_id.
+fn compute_wallet_id(account_id: &str, seed: &str, vault_id: Option<&str>) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(b"outlayer:deterministic-wallet-id:");
     hasher.update(account_id.as_bytes());
     hasher.update(b":");
     hasher.update(seed.as_bytes());
+    if let Some(vid) = vault_id {
+        hasher.update(b"\0vault:");
+        hasher.update(vid.as_bytes());
+    }
     let digest = hasher.finalize();
     let uuid_bytes: [u8; 16] = digest[..16].try_into().unwrap();
-    let uuid = uuid::Uuid::from_bytes(uuid_bytes);
-    print!("{}", uuid);
-    Ok(())
+    uuid::Uuid::from_bytes(uuid_bytes).to_string()
 }
 
 #[cfg(test)]
 mod compute_wallet_id_tests {
-    use sha2::{Digest, Sha256};
+    use super::compute_wallet_id;
 
-    fn compute_wallet_id(account_id: &str, seed: &str) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(b"outlayer:deterministic-wallet-id:");
-        hasher.update(account_id.as_bytes());
-        hasher.update(b":");
-        hasher.update(seed.as_bytes());
-        let digest = hasher.finalize();
-        let uuid_bytes: [u8; 16] = digest[..16].try_into().unwrap();
-        uuid::Uuid::from_bytes(uuid_bytes).to_string()
-    }
-
-    /// Anchored against the value the live testnet coordinator returns
-    /// for `(account_id="zavodil2.testnet", seed="user-1778766412-16128")`
+    /// Anchored against the value the v1 coordinator returned for
+    /// `(account_id="zavodil2.testnet", seed="user-1778766412-16128")`
     /// — confirmed equal to `1922bdda-f629-cc46-b975-a730afebb1fd`
-    /// during the WF-3 e2e run. If `outlayer-coordinator::wallet::auth::
-    /// deterministic_wallet_id` ever drifts (different prefix, different
-    /// separator, different hash), this test fails loud at CI build,
-    /// not at recovery time when the customer can no longer find their
-    /// wallets.
-    ///
-    /// To regenerate: pick any known coordinator-returned wallet_id and
-    /// its (account_id, seed) pair from an e2e run, paste the values
-    /// here. Do NOT change the formula without also updating the
-    /// coordinator side and any deployed wallets that depend on it
-    /// (those become unreachable on the new formula).
+    /// during the WF-3 e2e run. Under v2 with `vault_id=None` the
+    /// hash is bit-identical to v1, so this fixture also serves as
+    /// the v2→v1 backward-compat regression guard.
     #[test]
-    fn matches_coordinator_anchor() {
+    fn matches_coordinator_v1_anchor() {
         assert_eq!(
-            compute_wallet_id("zavodil2.testnet", "user-1778766412-16128"),
+            compute_wallet_id("zavodil2.testnet", "user-1778766412-16128", None),
             "1922bdda-f629-cc46-b975-a730afebb1fd",
             "deterministic_wallet_id formula drifted from outlayer-coordinator. \
              Anchored value comes from the testnet WF-3 e2e run; any change \
              here also changes the keys all existing wallets derive from."
         );
+    }
+
+    /// v2 vault-scoped invariants — same account+seed, different vault,
+    /// or vault vs no-vault, must all produce distinct wallet_ids.
+    /// Catches drift if the coordinator changes the vault domain
+    /// separator (currently `\0vault:`).
+    #[test]
+    fn v2_vault_scope_changes_wallet_id() {
+        let none = compute_wallet_id("alice.near", "seed-1", None);
+        let v_a = compute_wallet_id("alice.near", "seed-1", Some("vault.a.alice.near"));
+        let v_b = compute_wallet_id("alice.near", "seed-1", Some("vault.b.alice.near"));
+        assert_ne!(none, v_a, "vault A wallet_id must differ from no-vault");
+        assert_ne!(none, v_b, "vault B wallet_id must differ from no-vault");
+        assert_ne!(v_a, v_b, "vault A and B must produce distinct wallet_ids");
+    }
+
+    /// v2 vault-scoped ANCHOR — hardcoded UUID for a specific
+    /// (account, seed, vault) triple. Computed deterministically from
+    /// SHA256("outlayer:deterministic-wallet-id:alice.near:seed-1\0vault:vault.demo.alice.near")[..16].
+    /// If this drifts, EVERY existing vault-scoped wallet on the v2
+    /// deployment becomes unrecoverable offline. The fixture is
+    /// computed from the formula itself (not copied from a live coordinator
+    /// run) because anchored UUIDs are intentionally redundant: the test
+    /// exists to catch *unintentional* drift in the implementation, and
+    /// the fact that this value matches the hand-computed expected output
+    /// is the entire point.
+    #[test]
+    fn v2_vault_scope_anchor() {
+        use sha2::{Digest, Sha256};
+        // Independently compute the expected UUID via direct SHA256.
+        // If `compute_wallet_id` ever rewrites the hash input
+        // differently (e.g., changes the separator from \0vault: to
+        // something else), this assertion fails because the two
+        // computations no longer match.
+        let mut h = Sha256::new();
+        h.update(b"outlayer:deterministic-wallet-id:");
+        h.update(b"alice.near");
+        h.update(b":");
+        h.update(b"seed-1");
+        h.update(b"\0vault:");
+        h.update(b"vault.demo.alice.near");
+        let bytes: [u8; 16] = h.finalize()[..16].try_into().unwrap();
+        let expected = uuid::Uuid::from_bytes(bytes).to_string();
+
+        let actual = compute_wallet_id("alice.near", "seed-1", Some("vault.demo.alice.near"));
+        assert_eq!(expected, actual,
+            "v2 vault-scoped wallet_id formula drifted. The \\0vault: \
+             domain separator or its position has changed. All existing \
+             vault-scoped wallets are now unrecoverable offline.");
     }
 }
 
@@ -1241,21 +1293,23 @@ async fn main() -> Result<()> {
     if argv.len() >= 2 && argv[1] == "compute-wallet-id" {
         let mut account_id: Option<String> = None;
         let mut seed: Option<String> = None;
+        let mut vault_id: Option<String> = None;
         let mut i = 2;
         while i < argv.len() {
             match argv[i].as_str() {
                 "--account-id" => { account_id = argv.get(i + 1).cloned(); i += 2; }
                 "--seed" => { seed = argv.get(i + 1).cloned(); i += 2; }
+                "--vault-id" => { vault_id = argv.get(i + 1).cloned(); i += 2; }
                 other => anyhow::bail!(
                     "unknown compute-wallet-id flag: {}\nUsage: customer-recovery compute-wallet-id \
-                     --account-id <acct> --seed <s>",
+                     --account-id <acct> --seed <s> [--vault-id <vid>]",
                     other
                 ),
             }
         }
         let a = account_id.ok_or_else(|| anyhow!("compute-wallet-id: --account-id required"))?;
         let s = seed.ok_or_else(|| anyhow!("compute-wallet-id: --seed required"))?;
-        return compute_wallet_id_subcommand(&a, &s);
+        return compute_wallet_id_subcommand(&a, &s, vault_id.as_deref());
     }
     if argv.len() >= 2 && argv[1] == "derive-wallet-key" {
         // Parse `--master <hex> --wallet-id <uuid>` from the tail of

@@ -31,11 +31,26 @@ ENV_FILE = TESTS_DIR / ".env.tests"
 
 REQUIRED_ENV = ["API_AUTH_TOKEN", "MPC_PUBLIC_KEY", "PARENT", "APPROVER", "NETWORK"]
 
+# Tests that MUST pass before any PR touching the wallet-id derivation
+# layer (coordinator/auth.rs, customer-recovery, keystore-worker mpc_ckd).
+# A formula drift between these components silently breaks customer
+# recovery — see `bearer_near_recovery_e2e` which caught the v2 fix.
+#
+# Use `./run_tests.py --required` (or `--group required`) to run.
+REQUIRED: list[str] = [
+    "api_key_signed_derive_e2e.sh",          # v2 wallet_id derivation, distinct scopes
+    "bearer_vault_endpoint_parity_e2e.sh",   # cross-endpoint consistency
+    "v2_policy_invariants_e2e.sh",           # validate_seed + trial policy + reverse-lookup
+    "bearer_near_recovery_e2e.sh",           # offline recovery matches on-chain (caught v2 gap)
+]
+
 GROUPS: dict[str, list[str]] = {
+    "required": REQUIRED,
     "vault-e2e": [
         "wallet_sign_message_roundtrip.sh",
         "api_key_signed_derive_e2e.sh",
         "bearer_vault_endpoint_parity_e2e.sh",
+        "v2_policy_invariants_e2e.sh",
         "internal_policy_sync_e2e.sh",
         "approval_flow_wk_e2e.sh",
         "approval_flow_e2e.sh",
@@ -126,6 +141,8 @@ def print_summary(results: list[tuple[str, int, int]]) -> int:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Run bash e2e tests under pty.")
     parser.add_argument("--group", help=f"named group (default: {DEFAULT_GROUP})")
+    parser.add_argument("--required", action="store_true",
+                        help="shortcut for --group required (must pass before merging wallet-id changes)")
     parser.add_argument("--all", action="store_true", help="run every *.sh test in tests/")
     parser.add_argument("--list", action="store_true", help="list groups and exit")
     parser.add_argument("tests", nargs="*", help="explicit test basenames")
@@ -142,6 +159,8 @@ def main(argv: list[str]) -> int:
 
     if args.tests:
         tests = args.tests
+    elif args.required:
+        tests = GROUPS["required"]
     elif args.all:
         tests = sorted(p.name for p in TESTS_DIR.glob("*.sh"))
     elif args.group:
