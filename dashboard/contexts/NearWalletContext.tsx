@@ -1,13 +1,7 @@
 'use client';
 
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { setupWalletSelector } from '@near-wallet-selector/core';
-import { setupMyNearWallet } from '@near-wallet-selector/my-near-wallet';
-import { setupMeteorWallet } from '@near-wallet-selector/meteor-wallet';
-import { setupHereWallet } from '@near-wallet-selector/here-wallet';
-import { setupIntearWallet } from '@near-wallet-selector/intear-wallet';
-import { setupModal } from '@near-wallet-selector/modal-ui';
-import '@near-wallet-selector/modal-ui/styles.css';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback, ReactNode } from 'react';
+import { NearConnector } from '@hot-labs/near-connect';
 
 export type NetworkType = 'testnet' | 'mainnet';
 
@@ -81,16 +75,17 @@ export function NearWalletProvider({ children }: { children: ReactNode }) {
     return (process.env.NEXT_PUBLIC_DEFAULT_NETWORK || 'testnet') as NetworkType;
   };
 
-  const [network] = useState<NetworkType>(getInitialNetwork);
+  const [network, setNetwork] = useState<NetworkType>(getInitialNetwork);
   const [accountId, setAccountId] = useState<string | null>(null);
-  const [selector, setSelector] = useState<any>(null);
-  const [modal, setModal] = useState<any>(null);
   const [isWalletReady, setIsWalletReady] = useState(false);
   const [shouldReopenModal, setShouldReopenModal] = useState(false);
 
+  const connectorRef = useRef<NearConnector | null>(null);
   const config = getNetworkConfig(network);
 
-  // Check if we should reopen modal after page reload
+  // Check if we should reopen modal after page reload (legacy from
+  // wallet-selector days; near-connect's switchNetwork doesn't reload
+  // anymore but the flag is still respected by the modal component).
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const reopenFlag = localStorage.getItem('near-wallet-selector:reopenModal');
@@ -107,139 +102,258 @@ export function NearWalletProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  // Patch every sandboxed wallet iframe so it gets the `bluetooth`
+  // feature-policy permission — without this, Ledger Nano X over BLE
+  // fails silently inside the wallet sandbox. NearConnector creates
+  // the iframes dynamically when the picker opens, so a one-shot
+  // querySelectorAll isn't enough; we keep a MutationObserver running
+  // for the lifetime of the page. Same fix shipped by the trezu
+  // reference impl (nt-fe/stores/near-store.ts:45-66).
   useEffect(() => {
-    // Mark as not ready when starting to setup
-    setIsWalletReady(false);
-    setSelector(null);
-    setModal(null);
-
-    setupWalletSelector({
-      network,
-      modules: [
-        setupMyNearWallet(),
-        setupMeteorWallet(),
-        setupHereWallet(),
-        setupIntearWallet(),
-      ],
-    }).then(async (_selector) => {
-      // Setup modal WITHOUT contractId to avoid function call access key creation
-      const _modal = setupModal(_selector, {
-        contractId: '', // Empty string means no contract-specific access key
-      });
-
-      // Subscribe to account changes to auto-update UI
-      const subscription = _selector.store.observable
-        .subscribe((state: { accounts: Array<{ accountId: string }> }) => {
-          const accounts = state.accounts;
-          if (accounts.length > 0) {
-            setAccountId(accounts[0].accountId);
-          } else {
-            setAccountId(null);
+    if (typeof window === 'undefined') return;
+    const ensureBluetoothAllow = (iframe: HTMLIFrameElement) => {
+      if (iframe.dataset.bluetoothPatched === '1') return;
+      const cur = iframe.getAttribute('allow') || '';
+      if (cur.includes('bluetooth')) {
+        iframe.dataset.bluetoothPatched = '1';
+        return;
+      }
+      const next = cur ? `${cur}; bluetooth *` : 'bluetooth *';
+      iframe.setAttribute('allow', next);
+      iframe.dataset.bluetoothPatched = '1';
+    };
+    document.querySelectorAll('iframe').forEach(ensureBluetoothAllow);
+    const observer = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        m.addedNodes.forEach((node) => {
+          if (node instanceof HTMLIFrameElement) {
+            ensureBluetoothAllow(node);
+          } else if (node instanceof Element) {
+            node.querySelectorAll('iframe').forEach(ensureBluetoothAllow);
           }
         });
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, []);
 
-      // Check if wallet is already connected
-      if (_selector.isSignedIn()) {
-        const accounts = await _selector.store.getState().accounts;
-        if (accounts.length > 0) {
-          setAccountId(accounts[0].accountId);
+  // Initialize connector and restore session on every network change.
+  useEffect(() => {
+    setIsWalletReady(false);
+    setAccountId(null);
+
+    let cancelled = false;
+    let connector: NearConnector | null = null;
+
+    const handleSignIn = ({ accounts }: { accounts: Array<{ accountId: string }> }) => {
+      if (accounts.length > 0) {
+        setAccountId(accounts[0].accountId);
+      }
+    };
+
+    const handleSignOut = () => {
+      setAccountId(null);
+    };
+
+    (async () => {
+      // The upstream manifest is missing two things we need to patch
+      // before passing it to NearConnector:
+      //
+      // (1) `features.testnet: true` on wallets that DO support testnet
+      //     (MyNearWallet, HOT, Meteor, OKX, …). Without this flag the
+      //     connector hides them when `network === 'testnet'`.
+      //
+      // (2) Per-wallet `permissions.allowsOpen` for testnet domain
+      //     variants. Example: MyNearWallet's manifest only allows
+      //     `https://app.mynearwallet.com`, but its sandbox tries to
+      //     `open` `https://testnet.mynearwallet.com` on testnet — the
+      //     connector then rejects with a fatal-looking "Permission
+      //     denied" thrown from `assertPermissions`. We extend
+      //     `allowsOpen` per known wallet so the testnet flow works.
+      //
+      // All patches live inline and don't depend on upstream changes.
+      const ALLOWS_OPEN_TESTNET_PATCHES: Record<string, string[]> = {
+        mynearwallet: ['https://testnet.mynearwallet.com'],
+      };
+      let manifestObj: { wallets: any[]; version: string } | undefined;
+      try {
+        const res = await fetch(
+          'https://raw.githubusercontent.com/hot-dao/near-selector/refs/heads/main/repository/manifest.json',
+        );
+        const m = await res.json();
+        if (Array.isArray(m?.wallets)) {
+          for (const w of m.wallets) {
+            if (!w.features) w.features = {};
+            w.features.testnet = true;
+
+            const extra = ALLOWS_OPEN_TESTNET_PATCHES[w.id];
+            if (extra) {
+              if (!w.permissions) w.permissions = {};
+              const existing = Array.isArray(w.permissions.allowsOpen)
+                ? w.permissions.allowsOpen
+                : [];
+              w.permissions.allowsOpen = Array.from(new Set([...existing, ...extra]));
+            }
+          }
+          manifestObj = m;
         }
+      } catch {
+        // Fall back to letting NearConnector load its defaults.
       }
 
-      // Set selector and modal AFTER everything is configured
-      setSelector(_selector);
-      setModal(_modal);
+      if (cancelled) return;
 
-      // Small delay to ensure modal is fully ready before allowing connections
-      setTimeout(() => {
+      connector = new NearConnector({
+        network: network,
+        autoConnect: false,
+        // We previously excluded `meteor-wallet` and `trezu-wallet`
+        // because their bundled @near-js predates the
+        // UseGlobalContract action and the vault deploy tx would
+        // fail with "Invalid action type". Re-enabling them now —
+        // most wallet operations (login, signMessage, regular
+        // signAndSendTransaction) work fine, and the explicit
+        // pre-flight check in `signAndSendTransaction` below catches
+        // UseGlobalContract attempts with a clear error pointing the
+        // user at MyNearWallet / HOT / Intear instead of the cryptic
+        // wallet-side failure.
+        ...(manifestObj ? { manifest: manifestObj } : {}),
+      });
+
+      connectorRef.current = connector;
+
+      connector.on('wallet:signIn', handleSignIn as any);
+      // Some wallets emit `wallet:signInAndSignMessage` when the user
+      // signs in and signs a message in a single round-trip; the
+      // payload shape is the same as `wallet:signIn`. Without this
+      // listener we'd miss the accountId update for those flows
+      // (caught by trezu's reference impl in nt-fe/stores/near-store.ts).
+      connector.on('wallet:signInAndSignMessage', handleSignIn as any);
+      connector.on('wallet:signOut', handleSignOut);
+
+      // Try to restore an existing session — if the user previously
+      // connected on this network, near-connect surfaces the account
+      // immediately without re-prompting.
+      try {
+        const { accounts } = await connector.getConnectedWallet();
+        if (!cancelled && accounts.length > 0) {
+          setAccountId(accounts[0].accountId);
+        }
+      } catch {
+        // No existing session — that's fine.
+      }
+      if (!cancelled) {
         setIsWalletReady(true);
-      }, 100);
+      }
+    })();
 
-      // Cleanup subscription on unmount
-      return () => subscription.unsubscribe();
-    });
+    return () => {
+      cancelled = true;
+      if (connector) {
+        connector.off('wallet:signIn', handleSignIn as any);
+        connector.off('wallet:signInAndSignMessage', handleSignIn as any);
+        connector.off('wallet:signOut', handleSignOut);
+      }
+    };
   }, [network]);
 
-  const connect = () => {
-    if (modal) {
-      modal.show();
-    }
-  };
+  const connect = useCallback(() => {
+    if (!connectorRef.current) return;
+    connectorRef.current.connect().catch(() => {
+      // User rejected or wallet error — no action needed.
+    });
+  }, []);
 
-  const disconnect = async () => {
-    if (selector) {
-      const wallet = await selector.wallet();
-      await wallet.signOut();
-      setAccountId(null);
+  const disconnect = useCallback(async () => {
+    if (!connectorRef.current) return;
+    try {
+      await connectorRef.current.disconnect();
+    } catch {
+      // Already disconnected.
     }
-  };
+    setAccountId(null);
+  }, []);
 
-  const switchNetwork = async (newNetwork: NetworkType) => {
-    // Store selected network in localStorage
+  const switchNetwork = useCallback(async (newNetwork: NetworkType) => {
+    // Persist user choice and (legacy) ask the modal to reopen on
+    // next render. With near-connect we no longer have to reload the
+    // page; the useEffect above re-instantiates the connector.
     localStorage.setItem('near-wallet-selector:selectedNetworkId', newNetwork);
-    // Set flag to reopen modal after reload
     localStorage.setItem('near-wallet-selector:reopenModal', 'true');
 
-    // Disconnect current wallet before switching
-    if (selector && accountId) {
-      const wallet = await selector.wallet();
-      await wallet.signOut();
+    if (connectorRef.current && accountId) {
+      try {
+        await connectorRef.current.disconnect();
+      } catch {
+        // Already disconnected.
+      }
       setAccountId(null);
     }
 
-    // Reload page to reinitialize wallet selector with new network
-    window.location.reload();
-  };
+    setNetwork(newNetwork);
+  }, [accountId]);
 
-  const signAndSendTransaction = async (params: any) => {
-    if (!selector) throw new Error('Wallet not initialized');
-    const wallet = await selector.wallet();
-    return await wallet.signAndSendTransaction(params);
-  };
+  const signAndSendTransaction = useCallback(async (params: any) => {
+    const connector = connectorRef.current;
+    if (!connector) throw new Error('Wallet not initialized');
+    const wallet = await connector.wallet();
 
-  const signMessage = async (params: SignMessageParams): Promise<SignedMessage | null> => {
-    if (!selector || !accountId) throw new Error('Wallet not connected');
-
-    const wallet = await selector.wallet();
-
-    // Check if wallet supports signMessage (NEP-413)
-    if (!wallet.signMessage) {
-      throw new Error('Current wallet does not support message signing. Please use a wallet that supports NEP-413 (e.g., MyNearWallet, Meteor, Here Wallet)');
+    // Several wallets ship an @near-js old enough to predate the
+    // UseGlobalContract action (NEP-591). Failure modes observed:
+    //   - Meteor / Trezu throw a cryptic "Invalid action type" from
+    //     their selector-action converter.
+    //   - MyNearWallet ships near-api-js@0.45.1 (years pre-NEP-591),
+    //     deserialises the action discriminant inside a Promise its
+    //     UI doesn't surface — the sign page just hangs.
+    // Pre-empt with an explicit message rather than letting the user
+    // wait at a frozen wallet UI. Recommendation depends on network:
+    // HOT's sandbox doesn't surface in the testnet picker today, so
+    // there we point only at Intear.
+    const usesGlobalContract = Array.isArray(params?.actions)
+      && params.actions.some((a: any) => a?.useGlobalContract != null);
+    if (usesGlobalContract) {
+      const walletId = wallet?.manifest?.id ?? '';
+      const INCOMPATIBLE = new Set(['meteor-wallet', 'trezu-wallet', 'mynearwallet']);
+      if (INCOMPATIBLE.has(walletId)) {
+        const recommend =
+          network === 'testnet'
+            ? 'Reconnect with Intear and retry.'
+            : 'Reconnect with HOT or Intear and retry.';
+        throw new Error(
+          `${wallet.manifest.name} cannot sign vault deploys yet — its bundled `
+          + `@near-js predates the UseGlobalContract action (NEP-591). `
+          + recommend,
+        );
+      }
     }
 
+    return await wallet.signAndSendTransaction(params);
+  }, []);
+
+  const signMessage = useCallback(async (params: SignMessageParams): Promise<SignedMessage | null> => {
+    const connector = connectorRef.current;
+    if (!connector || !accountId) throw new Error('Wallet not connected');
+
     try {
+      const wallet = await connector.wallet();
+
       const result = await wallet.signMessage({
         message: params.message,
         recipient: params.recipient,
         nonce: Buffer.from(params.nonce, 'base64'),
+        network: network,
+        signerId: accountId,
       });
 
       if (!result) {
         return null;
       }
 
-      // Handle signature format - it can be Uint8Array or base64 string depending on wallet
-      let signatureBase64: string;
-      if (result.signature instanceof Uint8Array) {
-        signatureBase64 = Buffer.from(result.signature).toString('base64');
-      } else if (typeof result.signature === 'string') {
-        // Already a string - assume it's base64
-        signatureBase64 = result.signature;
-      } else {
-        // Array-like object
-        signatureBase64 = Buffer.from(result.signature as ArrayLike<number>).toString('base64');
-      }
-
-      console.log('signMessage result:', {
-        signatureType: typeof result.signature,
-        signatureIsUint8Array: result.signature instanceof Uint8Array,
-        signatureLength: result.signature?.length,
-        signatureBase64Length: signatureBase64.length,
-        publicKey: result.publicKey,
-      });
-
+      // near-connect returns `signature` already as a string (base64
+      // for NEP-413). No more shape-detection wallet-selector forced
+      // on us.
       return {
-        signature: signatureBase64,
+        signature: result.signature,
         publicKey: result.publicKey,
         accountId: result.accountId,
       };
@@ -247,12 +361,9 @@ export function NearWalletProvider({ children }: { children: ReactNode }) {
       console.error('Error signing message:', error);
       throw error;
     }
-  };
+  }, [accountId, network]);
 
-  const viewMethod = async (params: { contractId: string; method: string; args?: Record<string, unknown> }) => {
-    if (!selector) throw new Error('Wallet not initialized');
-
-    // Use selector's network to make view call via RPC
+  const viewMethod = useCallback(async (params: { contractId: string; method: string; args?: Record<string, unknown> }) => {
     const response = await fetch(config.rpcUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -283,7 +394,7 @@ export function NearWalletProvider({ children }: { children: ReactNode }) {
 
     const resultStr = new TextDecoder().decode(new Uint8Array(resultBytes));
     return JSON.parse(resultStr);
-  };
+  }, [config.rpcUrl]);
 
   return (
     <NearWalletContext.Provider

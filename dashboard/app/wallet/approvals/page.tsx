@@ -22,8 +22,15 @@ interface PendingApproval {
   wallet_pubkey?: string;
 }
 
-/** Auto-refresh interval in ms (30 seconds) */
-const REFRESH_INTERVAL = 30_000;
+/**
+ * Auto-refresh interval (ms). Drives the visible countdown only —
+ * the actual coordinator fetch is run by a single leader elected
+ * via `navigator.locks` in `app/layout.tsx::PendingApprovalsBadge`.
+ * This page subscribes to that leader's broadcasts and resets its
+ * countdown whenever an update arrives. Keep this in sync with the
+ * layout's `POLL_INTERVAL_MS`.
+ */
+const REFRESH_INTERVAL = 60_000;
 
 export default function WalletApprovalsPage() {
   return (
@@ -52,6 +59,10 @@ function WalletApprovalsContent() {
   const [nextRefreshIn, setNextRefreshIn] = useState<number | null>(null);
   // Cached wallet pubkeys (loaded once from contract, reused for polling)
   const walletPubkeysRef = useRef<string[]>([]);
+  // BroadcastChannel shared by all open tabs of this page: the leader tab
+  // (elected via Web Locks API) publishes fresh fetch results here so the
+  // followers update their UI without each hitting the coordinator.
+  const broadcastRef = useRef<BroadcastChannel | null>(null);
 
   // API key for approve action
   const [apiKey, setApiKey] = useState<string>('');
@@ -79,8 +90,10 @@ function WalletApprovalsContent() {
     }
   }, [approvals, apiKey]);
 
-  // Fetch pending approvals for cached wallet pubkeys (coordinator only, no RPC)
-  const fetchPendingApprovals = useCallback(async (pubkeys: string[], silent = false) => {
+  // Fetch pending approvals for cached wallet pubkeys (coordinator only, no RPC).
+  // Always broadcasts fresh results so other tabs of this page can update
+  // their UI without re-fetching.
+  const fetchPendingApprovals = useCallback(async (pubkeys: string[]) => {
     const allApprovals: PendingApproval[] = [];
     for (const pubkey of pubkeys) {
       try {
@@ -99,6 +112,7 @@ function WalletApprovalsContent() {
       }
     }
     setApprovals(allApprovals);
+    broadcastRef.current?.postMessage({ type: 'approvals-update', approvals: allApprovals });
   }, [coordinatorUrl]);
 
   // Initial load: get wallet pubkeys from contract (once), then fetch approvals
@@ -138,27 +152,56 @@ function WalletApprovalsContent() {
     }
   }, [isConnected, accountId, loadApprovals]);
 
-  // Auto-refresh timer: poll coordinator for pending approvals (no contract RPC)
+  // Auto-refresh — passive listener.
+  //
+  // The single global poller lives in the layout badge
+  // (PendingApprovalsBadge), elected across all tabs and all pages
+  // via navigator.locks. This page just subscribes to the broadcast
+  // channel and updates its UI when the leader publishes a fresh
+  // fetch. The 1-second tick drives the visible "next refresh in X"
+  // countdown; it resets whenever a broadcast lands.
+  //
+  // On mount we still trigger one synchronous fetch (via
+  // fetchPendingApprovals → /pending_approvals_by_pubkey) so the
+  // page shows data immediately rather than waiting up to a minute
+  // for the next leader tick. fetchPendingApprovals also broadcasts
+  // its result, so any open badge / other tab gets the update too.
   useEffect(() => {
     if (!hasPolicies || !isConnected) {
       setNextRefreshIn(null);
       return;
     }
 
+    const channel =
+      typeof BroadcastChannel !== 'undefined'
+        ? new BroadcastChannel('outlayer-approvals-results')
+        : null;
+    broadcastRef.current = channel;
+
     let countdown = REFRESH_INTERVAL / 1000;
     setNextRefreshIn(countdown);
 
     const tick = setInterval(() => {
-      countdown -= 1;
-      if (countdown <= 0) {
-        fetchPendingApprovals(walletPubkeysRef.current, true);
-        countdown = REFRESH_INTERVAL / 1000;
-      }
+      countdown = Math.max(0, countdown - 1);
       setNextRefreshIn(countdown);
     }, 1000);
 
-    return () => clearInterval(tick);
-  }, [hasPolicies, isConnected, fetchPendingApprovals]);
+    if (channel) {
+      channel.onmessage = (event) => {
+        if (event.data?.type === 'approvals-update' && Array.isArray(event.data.approvals)) {
+          setApprovals(event.data.approvals as PendingApproval[]);
+          countdown = REFRESH_INTERVAL / 1000;
+          setNextRefreshIn(countdown);
+        }
+      };
+    }
+
+    return () => {
+      clearInterval(tick);
+      channel?.close();
+      broadcastRef.current = null;
+    };
+  }, [hasPolicies, isConnected]);
 
   // Approve a pending request (requires NEAR wallet signature, not API key)
   const handleApprove = async (approvalId: string) => {

@@ -1,0 +1,817 @@
+'use client';
+
+import { useState, useCallback, useEffect, useRef } from 'react';
+
+import { useNearWallet } from '@/contexts/NearWalletContext';
+import WalletConnectionModal from '@/components/WalletConnectionModal';
+import {
+  buildVaultDeployActions,
+  deriveVaultTeeKey,
+  formatSeconds,
+  getVaultCodeHash,
+  getVaultNetworkConfig,
+  nsToDate,
+  parseExitWindow,
+  signVaultVerification,
+  VAULT_INITIAL_YOCTO,
+  VAULT_LOW_BALANCE_YOCTO,
+  VAULT_PARENT_BUDGET_YOCTO,
+  VAULT_TOPUP_SUGGESTED_YOCTO,
+  verifyVault,
+  viewAccountInfo,
+  type VerifyReport,
+} from '@/lib/vault';
+
+const EXIT_WINDOW_OPTIONS = [
+  { label: '24 hours (default)', value: '24h' },
+  { label: '7 days', value: '7d' },
+  { label: '30 days', value: '30d' },
+] as const;
+
+export default function VaultPage() {
+  const {
+    accountId,
+    isConnected,
+    signAndSendTransaction,
+    network,
+    rpcUrl,
+    viewMethod,
+    shouldReopenModal,
+    clearReopenModal,
+  } = useNearWallet();
+
+  // ── UI state ──────────────────────────────────────────────────────────
+  const [showWalletModal, setShowWalletModal] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  // Synchronous double-submit guard. React's `setBusy` is async (next
+  // render), so a fast double-click on Create can fire two atomic-deploy
+  // tx requests before the disabled state is applied. The first
+  // succeeds, the second hits CreateAccount on the now-existing vault
+  // and panics — wallet UI shows two confusing prompts. The ref blocks
+  // re-entry within the same event tick.
+  const inFlight = useRef(false);
+
+  // Create-vault form
+  const [name, setName] = useState('vault');
+  const [exitWindow, setExitWindow] = useState<string>('24h');
+
+  // Confirmation that a vault was just deployed in this session.
+  // The vault is a master-secret root; API keys are minted
+  // separately via `POST /register {"vault_id":...}` (N per vault).
+  const [issuedApiKey, setIssuedApiKey] = useState<{
+    vault: string;
+  } | null>(null);
+
+  // Find / inspect vault
+  const [findInput, setFindInput] = useState('');
+  const [activeVaultId, setActiveVaultId] = useState<string | null>(null);
+  const [report, setReport] = useState<VerifyReport | null>(null);
+
+  // ── Modal handling matches existing pages ─────────────────────────────
+  useEffect(() => {
+    if (shouldReopenModal) {
+      setShowWalletModal(true);
+      clearReopenModal();
+    }
+  }, [shouldReopenModal, clearReopenModal]);
+
+  const guard = useCallback(
+    (msg: string) => {
+      if (!isConnected || !accountId) {
+        setShowWalletModal(true);
+        setError(msg);
+        return false;
+      }
+      return true;
+    },
+    [isConnected, accountId],
+  );
+
+  const refreshReport = useCallback(
+    async (vaultId: string) => {
+      try {
+        const r = await verifyVault(viewMethod, rpcUrl, network, vaultId);
+        setReport(r);
+        setActiveVaultId(vaultId);
+      } catch (e) {
+        setReport(null);
+        setError(`Failed to load vault state: ${(e as Error).message}`);
+      }
+    },
+    [viewMethod, rpcUrl, network],
+  );
+
+  // ── Create vault ──────────────────────────────────────────────────────
+  const handleCreate = async () => {
+    if (inFlight.current) return; // synchronous double-submit guard
+    if (!guard('Connect a NEAR wallet to deploy a vault.')) return;
+    if (!accountId) return;
+    setError(null);
+    setSuccess(null);
+    setIssuedApiKey(null);
+
+    // NEAR sub-account name rule: lowercase a-z, 0-9, `_`, `-`,
+    // 2-64 chars per label, no leading/trailing/consecutive separators.
+    // Matching the parser at near-account-id ensures the wallet popup
+    // doesn't surface a cryptic "InvalidAccountId" after the user
+    // already approved the deploy.
+    const NAME_RE = /^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$/;
+    if (!NAME_RE.test(name)) {
+      setError(
+        "Name must be 1-64 lowercase letters, digits, '_' or '-' " +
+          "(no dots, uppercase, leading/trailing separators). E.g. 'vault'.",
+      );
+      return;
+    }
+
+    let exitSecs: number;
+    try {
+      exitSecs = parseExitWindow(exitWindow);
+    } catch (e) {
+      setError((e as Error).message);
+      return;
+    }
+
+    const vaultAccountId = `${name}.${accountId}`;
+    inFlight.current = true;
+    setBusy('Pre-flight checks…');
+
+    try {
+      // 0a. Vault must NOT already exist.
+      const existing = await viewAccountInfo(rpcUrl, vaultAccountId);
+      if (existing.exists) {
+        throw new Error(
+          `${vaultAccountId} already exists. If a previous deploy crashed before \
+registration, use the "Resume" button below. Otherwise pick a different name.`,
+        );
+      }
+
+      // 0b. Parent must hold enough NEAR.
+      const parentInfo = await viewAccountInfo(rpcUrl, accountId);
+      if (!parentInfo.exists) {
+        throw new Error(`Parent account ${accountId} does not exist on ${network}.`);
+      }
+      const balance = BigInt(parentInfo.amountYocto);
+      if (balance < VAULT_PARENT_BUDGET_YOCTO) {
+        throw new Error(
+          `Parent ${accountId} has only ${(Number(balance) / 1e24).toFixed(3)} NEAR; \
+deploy requires at least ${(Number(VAULT_PARENT_BUDGET_YOCTO) / 1e24).toFixed(2)} NEAR \
+(${(Number(VAULT_INITIAL_YOCTO) / 1e24).toFixed(2)} for the vault + ~0.1 NEAR gas).`,
+        );
+      }
+
+      // 1. Resolve vault code hash from keystore-DAO.
+      //
+      // `getVaultCodeHash` view-calls `list_approved_vault_versions`
+      // and picks the most recently approved non-deprecated entry.
+      // No env-var to keep in sync — when the DAO whitelists a new
+      // vault version, the dashboard picks it up automatically.
+      // Bails with a clear error if no non-deprecated version exists.
+      setBusy('Resolving vault code hash from keystore-DAO…');
+      const { hashB58, hashBytes } = await getVaultCodeHash(viewMethod, network);
+
+      // 2. TEE pubkey BEFORE deploy.
+      setBusy('Fetching TEE function-call pubkey…');
+      const teePubkey = await deriveVaultTeeKey(network, vaultAccountId);
+
+      // 3. Atomic deploy via UseGlobalContract — references the
+      //    on-chain global vault contract by hash instead of shipping
+      //    the 150 KB WASM in this tx. Tx payload < 1 KB so it fits
+      //    inside MyNearWallet's URL limit.
+      setBusy('Signing atomic deploy (5 actions, global contract by hash)…');
+      const cfg = getVaultNetworkConfig(network);
+      const actions = buildVaultDeployActions({
+        parent: accountId,
+        vaultAccountId,
+        keystoreDaoId: cfg.keystoreDaoId,
+        mpcContractId: cfg.mpcContractId,
+        exitWindowSecs: exitSecs,
+        wasmCodeHash: hashBytes,
+        teePublicKey: teePubkey,
+      });
+      const outcome = await signAndSendTransaction({
+        receiverId: vaultAccountId,
+        actions,
+      });
+      const txHash = outcome?.transaction?.hash || outcome?.transaction_outcome?.id || '<unknown>';
+
+      // 4. Drive sign-verification (mark_vault_verified). Deploy
+      //    stops here — the vault is now usable as a master-secret
+      //    root. API keys are minted separately via `POST /register
+      //    {"vault_id": "<vault>"}` (N keys per vault allowed), so
+      //    we do NOT auto-call `/customer/register` here.
+      //
+      // Wait for the just-deployed account to be visible at FINAL
+      // finality BEFORE we hand it to the keystore. The atomic
+      // deploy tx returned at "executed" finality (the
+      // `signAndSendTransaction` call), but the RPC node the
+      // keystore-worker uses for its own `view_account` re-check can
+      // still be a few blocks behind. Without this poll, sign-
+      // verification 400s with UNKNOWN_ACCOUNT and the dashboard
+      // shows the cryptic error a user just hit.
+      setBusy('Waiting for vault account to be visible at final finality…');
+      let vaultVisible = false;
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const probe = await viewAccountInfo(rpcUrl, vaultAccountId);
+        if (probe.exists) {
+          vaultVisible = true;
+          break;
+        }
+        await new Promise((res) => setTimeout(res, 2000));
+      }
+      if (!vaultVisible) {
+        throw new Error(
+          `Atomic deploy tx ${txHash} landed but ${vaultAccountId} is still not visible at final finality after 20 s. ` +
+            `Click "Resume vault init" below to retry sign-verification.`,
+        );
+      }
+
+      setBusy('Triggering on-chain mark_vault_verified…');
+      await signVaultVerification(network, vaultAccountId);
+
+      // Poll for verified state. `signVaultVerification` returns as
+      // soon as the keystore-worker has BROADCAST the
+      // `mark_vault_verified` tx, but RPC nodes can lag 1-5 s before
+      // it shows up at FINAL finality. Without this poll, the
+      // verify-block right below the success banner snapshots the
+      // pre-tx state and shows "NOT VERIFIED" — exactly the bug a
+      // user just hit.
+      setBusy('Waiting for on-chain verification to land…');
+      let verifiedReport: Awaited<ReturnType<typeof verifyVault>> | null = null;
+      for (let attempt = 0; attempt < 15; attempt++) {
+        const r = await verifyVault(viewMethod, rpcUrl, network, vaultAccountId);
+        if (r.isVerified) {
+          verifiedReport = r;
+          break;
+        }
+        await new Promise((res) => setTimeout(res, 1500));
+      }
+
+      setIssuedApiKey({ vault: vaultAccountId });
+      if (verifiedReport) {
+        setReport(verifiedReport);
+        setActiveVaultId(vaultAccountId);
+        setSuccess(`Vault deployed and verified (tx ${txHash}).`);
+      } else {
+        // 15 attempts × 1.5 s = 22.5 s of polling. If we still don't
+        // see daoVerified, surface a soft warning and let the user
+        // retry with the "Refresh" button; the deploy itself
+        // succeeded.
+        await refreshReport(vaultAccountId);
+        setSuccess(
+          `Vault deployed (tx ${txHash}). Verification tx not visible at final finality yet — click "Refresh" in 10-30s to confirm.`,
+        );
+      }
+    } catch (e) {
+      setError(`Vault init failed: ${(e as Error).message}`);
+    } finally {
+      setBusy(null);
+      inFlight.current = false;
+    }
+  };
+
+  // ── Resume an interrupted init ────────────────────────────────────────
+  // Only step 4 (mark_vault_verified) needs resumption — atomic
+  // deploy is all-or-nothing, and API key minting is now a
+  // separate user-driven step (POST /register with vault_id).
+  const handleResume = async (vaultAccountId: string) => {
+    if (!vaultAccountId) return;
+    setError(null);
+    setSuccess(null);
+    setIssuedApiKey(null);
+    setBusy(`Resuming ${vaultAccountId}…`);
+    try {
+      await signVaultVerification(network, vaultAccountId);
+      setIssuedApiKey({ vault: vaultAccountId });
+      setSuccess('Vault verification completed.');
+      await refreshReport(vaultAccountId);
+    } catch (e) {
+      setError(`Resume failed: ${(e as Error).message}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // ── Inspect / refresh ─────────────────────────────────────────────────
+  const handleFind = async () => {
+    setError(null);
+    setSuccess(null);
+    if (!findInput.trim()) {
+      setError('Enter a vault account id (e.g. vault.alice.near).');
+      return;
+    }
+    setBusy(`Loading ${findInput.trim()}…`);
+    try {
+      await refreshReport(findInput.trim());
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // ── Recovery / window / add-key actions ──────────────────────────────
+  // All call directly into the vault contract; the parent NEAR account is
+  // the only signer that can use the predecessor-gated paths.
+  // Recovery operations (`initiate_*_recovery`, `finalize_recovery`,
+  // `set_exit_window`, `unlocked_add_key`) are intentionally CLI-only.
+  // The recovery flow runs in the "OutLayer is potentially dead /
+  // compromised" scenario, so it must not depend on web infrastructure
+  // we host. The walkthrough at `scripts/customer-recovery/` is the
+  // single recovery surface — it generates the keypair locally, drives
+  // initiate/wait/finalize via `outlayer vault ...`, and recovers the
+  // per-vault master via the `customer-recovery` binary calling MPC
+  // directly. The dashboard's job is limited to: deploy + status +
+  // verify. Anything that mutates an already-deployed vault belongs
+  // in the CLI.
+
+  // ── Render ────────────────────────────────────────────────────────────
+  return (
+    <div className="container mx-auto p-6 max-w-5xl">
+      <h1 className="text-3xl font-bold mb-2">MPC Vaults</h1>
+      <p className="text-gray-700 mb-2">
+        Deploy a CKD-issuer contract bound to your NEAR account. OutLayer&apos;s
+        keystore TEE derives your per-customer master <em>inside the enclave</em>
+        via NEAR&apos;s MPC network; from that master it generates keys for
+        your agents&apos; wallets, encrypted secrets, and payment checks on
+        demand &mdash; all without anyone seeing the raw master.
+      </p>
+      <p className="text-gray-700 mb-2">
+        You either let OutLayer&apos;s TEE manage this vault, or later take it
+        over yourself (run it from your own TEE / runtime, or use the master
+        manually). It&apos;s a one-way switch: once you take over, OutLayer
+        stops serving this vault &mdash; but you keep every derived key,
+        because the same MPC path reproduces the same master.
+      </p>
+      <details className="mb-6 text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded p-3">
+        <summary className="cursor-pointer font-medium text-gray-800">
+          What is CKD?
+        </summary>
+        <div className="mt-2 space-y-2">
+          <p>
+            <strong>Conditional Key Derivation</strong> is a NEAR MPC primitive.
+            The MPC network&apos;s threshold-key holders jointly derive a
+            private key for a given <em>app id</em> &mdash; deterministically,
+            without any single node ever assembling the secret. The key is
+            unique to the predecessor account that requested it.
+          </p>
+          <p>
+            Here, the predecessor is your vault contract and the app id is
+            an HMAC of <code>vault-master:{'<your_vault_id>'}</code>. The
+            keystore TEE asks NEAR MPC for the 32 bytes; same inputs &rArr;
+            same master, every time. From that master, all your wallet keys
+            and secret-encryption keys are HKDF-derived inside the enclave.
+            Detaching from OutLayer = you query the same MPC path from the
+            vault account and get the same master back.{' '}
+            <a className="text-blue-600 hover:underline" href="/docs/vaults">
+              Full explanation
+            </a>.
+          </p>
+        </div>
+      </details>
+
+      {!isConnected && (
+        <div className="bg-yellow-50 border border-yellow-300 rounded p-4 mb-6">
+          <p className="text-sm">Connect a NEAR wallet to create or manage vaults.</p>
+          <button
+            onClick={() => setShowWalletModal(true)}
+            className="mt-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+          >
+            Connect Wallet
+          </button>
+        </div>
+      )}
+
+      {error && (
+        <div className="bg-red-50 border border-red-300 rounded p-3 mb-4 text-sm">
+          <strong>Error:</strong> {error}
+        </div>
+      )}
+      {success && (
+        <div className="bg-green-50 border border-green-300 rounded p-3 mb-4 text-sm">
+          {success}
+        </div>
+      )}
+      {busy && (
+        <div className="bg-blue-50 border border-blue-300 rounded p-3 mb-4 text-sm">
+          ⏳ {busy}
+        </div>
+      )}
+
+      {issuedApiKey && (
+        <IssuedVaultPanel data={issuedApiKey} />
+      )}
+
+      {/* ── Create vault ─────────────────────────────────────────────── */}
+      <section className="border border-gray-200 rounded p-4 mb-6">
+        <h2 className="text-xl font-semibold mb-3">Create vault</h2>
+        <div className="text-sm text-gray-600 mb-3">
+          Deploys <code>{name || 'vault'}.{accountId || '&lt;your-account&gt;'}</code> with a single atomic
+          NEAR transaction (CreateAccount + Transfer{' '}
+          {(Number(VAULT_INITIAL_YOCTO) / 1e24).toFixed(2)} NEAR + DeployContract +{' '}
+          new() + AddKey TEE function-call key).
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+          <label className="block">
+            <span className="text-sm">Sub-account name</span>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="mt-1 block w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-gray-900 shadow-sm focus:border-[#cc6600] focus:ring-[#cc6600]"
+              placeholder="vault"
+            />
+          </label>
+          <label className="block">
+            <span className="text-sm">Unilateral exit window</span>
+            <select
+              value={exitWindow}
+              onChange={(e) => setExitWindow(e.target.value)}
+              className="mt-1 block w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-gray-900 shadow-sm focus:border-[#cc6600] focus:ring-[#cc6600]"
+            >
+              {EXIT_WINDOW_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="flex items-end">
+            <button
+              onClick={handleCreate}
+              disabled={!isConnected || !!busy}
+              className="w-full px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400"
+            >
+              Create vault
+            </button>
+          </div>
+        </div>
+        <p className="text-xs text-gray-500">
+          Parent (= your account, immutable post-deploy) is the only NEAR account
+          that can call <code>unilateral_initiate_recovery</code>,{' '}
+          <code>set_exit_window</code>, or <code>unlocked_add_key</code>.
+        </p>
+      </section>
+
+      {/* ── Find / inspect vault ─────────────────────────────────────── */}
+      <section className="border border-gray-200 rounded p-4 mb-6">
+        <h2 className="text-xl font-semibold mb-3">Inspect a vault</h2>
+        <div className="flex gap-2 mb-3">
+          <input
+            type="text"
+            value={findInput}
+            onChange={(e) => setFindInput(e.target.value)}
+            placeholder="vault.alice.near"
+            className="flex-1 rounded-md border border-gray-300 bg-white px-3 py-2 text-gray-900 shadow-sm focus:border-[#cc6600] focus:ring-[#cc6600]"
+          />
+          <button
+            onClick={handleFind}
+            disabled={!!busy}
+            className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 disabled:bg-gray-400"
+          >
+            Load
+          </button>
+          <button
+            onClick={() => findInput.trim() && handleResume(findInput.trim())}
+            disabled={!isConnected || !!busy || !findInput.trim()}
+            className="px-4 py-2 bg-amber-600 text-white rounded hover:bg-amber-700 disabled:bg-gray-400"
+            title="Re-run sign-verification against an already-deployed vault"
+          >
+            Resume
+          </button>
+        </div>
+
+        {report && activeVaultId && (
+          <VaultDetailPanel
+            report={report}
+            onRefresh={() => refreshReport(activeVaultId)}
+          />
+        )}
+      </section>
+
+      <WalletConnectionModal
+        isOpen={showWalletModal}
+        onClose={() => setShowWalletModal(false)}
+      />
+    </div>
+  );
+}
+
+// ─── Issued vault panel ────────────────────────────────────────────────────
+//
+// Shown right after a successful CKD-issuer (a.k.a. "vault") deploy.
+// The contract itself is just an on-chain admin/governance container
+// that binds a per-customer master inside the keystore TEE via MPC CKD.
+// From that master OutLayer derives an unbounded family of keypairs on
+// demand (`wallet:{wallet_id}:near`, `wallet:{wallet_id}:eth`,
+// `check:{counter}`, `vault-master:...`, etc.). Treating any individual
+// derivation as "the wallet" is misleading — there is no canonical
+// wallet, the keystore mints whichever address the current call needs.
+//
+// What matters is the contract account and its recoverability.
+// API keys (`wk_...`) are minted separately on demand via
+// `POST /register {"vault_id": ...}` — N keys per vault allowed —
+// so the panel here surfaces only the vault id itself.
+function IssuedVaultPanel({
+  data,
+}: {
+  data: { vault: string };
+}) {
+  return (
+    <div className="bg-green-50 border-2 border-green-600 rounded p-4 mb-6">
+      <h3 className="font-bold text-green-900 mb-2">
+        ✓ Custody contract deployed and verified
+      </h3>
+      <div className="text-sm text-gray-800 space-y-2">
+        <div>
+          <code className="block bg-white px-2 py-1 rounded text-xs break-all">{data.vault}</code>
+        </div>
+        <div className="text-xs text-gray-700">
+          On-chain CKD issuer. Binds your per-customer master inside the
+          keystore TEE (via MPC CKD) so OutLayer can derive keys for your
+          agents, secrets, and payment checks on demand. No funds live on
+          this contract — it's a governance/recovery root.
+        </div>
+        <div className="text-xs text-gray-700">
+          If OutLayer stops serving, the parent account regains control via{' '}
+          <code>initiate_unilateral_recovery</code> →{' '}
+          <code>finalize_recovery</code>, and the per-customer master is
+          recoverable via the <code>customer-recovery</code> script.
+        </div>
+        <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+          <strong>Heads up:</strong> outbound MPC-CKD calls
+          (<code>vault.request_master</code>) burn gas from <em>this</em>{' '}
+          account. The vault was funded with ~0.1 NEAR at deploy — when the
+          balance gets low you&rsquo;ll need to top it up by sending NEAR to{' '}
+          <code>{data.vault}</code>. The dashboard surfaces a top-up
+          prompt on the vault detail page below the threshold.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Detail panel ───────────────────────────────────────────────────────────
+
+function VaultDetailPanel(props: {
+  report: VerifyReport;
+  onRefresh: () => void;
+}) {
+  const { report } = props;
+
+  if (!report.exists) {
+    return (
+      <div className="bg-gray-50 rounded p-3 text-sm">
+        Account <code>{report.vaultId}</code> does not exist on chain.
+      </div>
+    );
+  }
+  const s = report.state;
+
+  return (
+    <div className="border border-gray-200 rounded p-3 text-sm">
+      <div className="flex justify-between items-center mb-2">
+        <h3 className="font-semibold">{report.vaultId}</h3>
+        <button
+          onClick={props.onRefresh}
+          className="text-xs px-2 py-1 bg-gray-200 rounded"
+        >
+          Refresh
+        </button>
+      </div>
+
+      <div
+        className={`px-2 py-1 rounded mb-3 font-medium text-sm ${
+          report.safe
+            ? 'bg-green-100 text-green-800'
+            : 'bg-red-100 text-red-800'
+        }`}
+      >
+        {report.safe
+          ? 'PASS — verified, all defense-in-depth checks OK'
+          : report.isVerified
+            ? 'NOT SAFE — defense-in-depth checks failed (do not deposit)'
+            : 'NOT VERIFIED — vault is not in keystore-DAO verified set'}
+      </div>
+
+      {report.warnings.length > 0 && (
+        <ul className="text-xs text-amber-700 mb-2 list-disc list-inside">
+          {report.warnings.map((w, i) => (
+            <li key={i}>{w}</li>
+          ))}
+        </ul>
+      )}
+
+      {s && (
+        <table className="text-xs w-full mb-3">
+          <tbody>
+            <tr>
+              <td className="text-gray-500 pr-3">Parent</td>
+              <td><code>{s.parent}</code></td>
+            </tr>
+            <tr>
+              <td className="text-gray-500 pr-3">keystore-DAO</td>
+              <td><code>{s.keystore_dao}</code></td>
+            </tr>
+            <tr>
+              <td className="text-gray-500 pr-3">MPC contract</td>
+              <td><code>{s.mpc_contract}</code></td>
+            </tr>
+            <tr>
+              <td className="text-gray-500 pr-3">Status</td>
+              <td>{s.unlocked ? 'UNLOCKED (recovered)' : 'locked (TEE-controlled)'}</td>
+            </tr>
+            <tr>
+              <td className="text-gray-500 pr-3">Exit window</td>
+              <td>{formatSeconds(s.unilateral_exit_window_secs)}</td>
+            </tr>
+            <tr>
+              <td
+                className="text-gray-500 pr-3"
+                title="Vault account balance. Outbound MPC-CKD calls (vault.request_master → mpc.request_app_private_key) burn gas from this balance. Top up if low."
+              >
+                Balance
+              </td>
+              <td>
+                {(Number(report.amountYocto) / 1e24).toFixed(4)} NEAR
+                {BigInt(report.amountYocto) < VAULT_LOW_BALANCE_YOCTO && (
+                  <span className="ml-2 text-amber-700 font-medium">
+                    ⚠ low — top up below
+                  </span>
+                )}
+              </td>
+            </tr>
+            <tr>
+              <td
+                className="text-gray-500 pr-3"
+                title="Custody wallets minted under this vault via POST /register {vault_id} and PUT /api-key (sub-agents). Each wallet has its own wk_ API key and a distinct derived address; all share the per-vault master inside the keystore TEE."
+              >
+                Custody wallets
+              </td>
+              <td>
+                {report.walletCount === null ? (
+                  <span className="text-gray-400">unknown (coordinator lookup failed)</span>
+                ) : (
+                  <>
+                    <strong>{report.walletCount}</strong>
+                    {report.walletCount === 0 && (
+                      <span className="text-gray-500"> — none minted yet; <code>POST /register {`{"vault_id":"${report.vaultId}"}`}</code></span>
+                    )}
+                  </>
+                )}
+              </td>
+            </tr>
+            <tr>
+              <td
+                className="text-gray-500 pr-3"
+                title="The initial TEE function-call key the customer installed via AddKey in the atomic deploy. finalize_recovery deletes this (plus all registered_tee_keys) atomically when the customer hands the vault to a sovereign key."
+              >
+                Initial TEE key
+              </td>
+              <td>
+                {s.initial_tee_key ? (
+                  <code className="text-[10px] break-all">{s.initial_tee_key}</code>
+                ) : (
+                  <span className="text-gray-400">(none — legacy vault)</span>
+                )}
+              </td>
+            </tr>
+            <tr>
+              <td
+                className="text-gray-500 pr-3"
+                title="DAO-rotated TEE keys added via propose_tee_key. finalize_recovery deletes all of these atomically together with the initial TEE key."
+              >
+                Registered TEE keys (DAO rotated)
+              </td>
+              <td>
+                {s.registered_tee_keys.length}
+                {s.registered_tee_keys.length === 0 && report.safe && (
+                  <span className="text-gray-400"> — none rotated; initial TEE key (above) is the active one</span>
+                )}
+              </td>
+            </tr>
+            {s.recovery && (
+              <tr>
+                <td className="text-gray-500 pr-3">Recovery</td>
+                <td>
+                  {s.recovery.trigger} — finalize after{' '}
+                  {nsToDate(s.recovery.finalize_after).toLocaleString()}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      )}
+
+      {/* Agent integration hint — only shown for safe vaults to avoid
+          pointing customers at a vault they shouldn't yet use. */}
+      {report.safe && (
+        <div className="bg-blue-50 border border-blue-200 rounded p-3 mb-3 text-xs">
+          <div className="font-medium text-blue-900 mb-1">Use this vault with an AI agent</div>
+          <p className="text-gray-700 mb-2">
+            Drop the{' '}
+            <a
+              href="https://skills.outlayer.ai/agent-custody/SKILL.md"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-700 underline hover:text-blue-900"
+            >
+              agent-custody skill
+            </a>{' '}
+            into your agent (Claude, Cursor, your own LLM tool). It teaches the
+            agent how to mint a custody wallet under <code>{report.vaultId}</code>
+            {' '}via <code>POST /register</code>, derive on-chain addresses,
+            sign messages, send transfers and cross-chain swaps, all
+            backed by your per-customer master inside the keystore TEE.
+            The agent will not be able to deploy or recover the vault
+            itself — those are user actions — but it can use any number
+            of derived custody wallets you authorise it to mint.
+          </p>
+        </div>
+      )}
+
+      {/* Top-up prompt — shown whenever the vault balance is low. The
+          gas to refresh the per-customer master via MPC-CKD is paid
+          out of this balance, so an empty vault wedges the keystore's
+          ability to keep serving derived keys for this customer until
+          the parent (or anyone, NEAR transfers are permissionless)
+          tops it up. */}
+      {report.exists && BigInt(report.amountYocto) < VAULT_LOW_BALANCE_YOCTO && (
+        <div className="bg-amber-50 border border-amber-300 rounded p-3 mb-3 text-sm">
+          <div className="font-medium text-amber-900 mb-1">⚠ Vault balance is low</div>
+          <p className="text-gray-700 mb-2">
+            <code>{report.vaultId}</code> has{' '}
+            <strong>{(Number(report.amountYocto) / 1e24).toFixed(4)} NEAR</strong>.
+            Outbound MPC-CKD calls (<code>vault.request_master</code>) burn gas
+            from this account. Once the balance goes below storage stake the
+            keystore stops being able to refresh your master, and any
+            derived-key request that requires re-fetching it will stall.
+          </p>
+          <p className="text-gray-700 mb-2">
+            Top up by transferring NEAR to <code>{report.vaultId}</code> from
+            any account — it&rsquo;s a plain on-chain transfer, no contract
+            method. Suggested:{' '}
+            <strong>{(Number(VAULT_TOPUP_SUGGESTED_YOCTO) / 1e24).toFixed(2)} NEAR</strong>{' '}
+            (~100 MPC calls of headroom).
+          </p>
+          <pre className="text-xs bg-white border border-gray-200 rounded p-2 mt-2 overflow-x-auto">
+{`# CLI:
+near send <your_account> ${report.vaultId} ${(Number(VAULT_TOPUP_SUGGESTED_YOCTO) / 1e24).toFixed(2)}
+
+# or any wallet — Send NEAR to ${report.vaultId}`}
+          </pre>
+        </div>
+      )}
+
+      {/* Recovery, exit-window changes, post-unlock key installation
+          are intentionally CLI-only. The recovery flow assumes
+          OutLayer's web infra may be unreliable (the whole point of
+          self-custody is to not depend on us), so trusting the
+          dashboard with the sovereignty handover would defeat the
+          design. Tools:
+            * `outlayer vault {initiate-unilateral-recovery,
+              initiate-recovery, finalize-recovery, set-exit-window,
+              unlocked-add-key}` — single ops.
+            * `scripts/customer-recovery/walkthrough.sh` — end-to-end
+              keygen → initiate → wait → finalize → master-recovery. */}
+      {(s?.recovery || s?.unlocked) && (
+        <div className="border border-amber-200 bg-amber-50 rounded p-2 mb-3 text-xs text-amber-900">
+          {s.recovery ? (
+            <>
+              <strong>Recovery in progress.</strong>{' '}
+              Finalize with{' '}
+              <code className="bg-white px-1 rounded">
+                outlayer vault finalize-recovery {report.vaultId} &lt;your_new_pubkey&gt;
+              </code>{' '}
+              after the timer elapses. Generate the keypair locally via{' '}
+              <code className="bg-white px-1 rounded">
+                customer-recovery generate-key
+              </code>.
+            </>
+          ) : (
+            <>
+              <strong>Vault is unlocked.</strong>{' '}
+              Recover the per-vault master locally with{' '}
+              <code className="bg-white px-1 rounded">
+                customer-recovery --vault-id {report.vaultId} --from-chain
+              </code>{' '}
+              if you haven&rsquo;t already.
+            </>
+          )}
+        </div>
+      )}
+      <div className="text-xs text-gray-500 mt-2">
+        Recovery, exit-window, and post-unlock key operations are CLI-only
+        — see{' '}
+        <code className="bg-gray-100 px-1 rounded">outlayer vault --help</code>{' '}
+        and{' '}
+        <a
+          className="underline hover:text-gray-900"
+          href="https://github.com/out-layer/near-offshore/tree/main/scripts/customer-recovery"
+          target="_blank"
+          rel="noopener noreferrer"
+        >scripts/customer-recovery/</a>.
+      </div>
+    </div>
+  );
+}

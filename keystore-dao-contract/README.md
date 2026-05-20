@@ -39,6 +39,9 @@ cargo near build
 # Deploy contract
 near contract deploy dao.outlayer.testnet use-file res/keystore_dao_contract.wasm without-init-call network-config testnet sign-with-keychain send
 
+# Migrate contract
+near contract call-function as-transaction dao.outlayer.testnet migrate json-args {} prepaid-gas '30.0 Tgas' attached-deposit '0 NEAR' sign-as dao.outlayer.testnet network-config testnet sign-with-keychain send
+
 # Initialize with DAO members
 
 near call dao.outlayer.testnet new '{"owner_id": "owner.outlayer.testnet", "init_account_id": "init-keystore.outlayer.testnet", "dao

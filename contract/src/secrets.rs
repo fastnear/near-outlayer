@@ -1,6 +1,6 @@
 use crate::*;
 use crate::payment::SystemEvent;
-use near_sdk::env;
+use near_sdk::{env, require};
 use near_sdk::json_types::U128;
 
 /// Storage cost per byte in NEAR
@@ -8,16 +8,35 @@ pub const STORAGE_PRICE_PER_BYTE: Balance = 10_000_000_000_000_000_000; // 0.000
 
 #[near_bindgen]
 impl Contract {
-    /// Store secrets with access control
+    /// Store secrets with access control.
     ///
-    /// User must attach storage deposit to cover the cost of storing secrets.
-    /// The deposit will be refunded when secrets are deleted.
+    /// User must attach storage deposit to cover the cost of storing
+    /// secrets. The deposit is refunded when secrets are deleted.
     ///
     /// # Arguments
-    /// * `accessor` - What code can access these secrets (Repo or WasmHash)
+    /// * `accessor` - What code can access these secrets (Repo /
+    ///   WasmHash / Project / System)
     /// * `profile` - Profile name (e.g., "default", "premium", "staging")
     /// * `encrypted_secrets_base64` - Base64-encoded encrypted secrets
     /// * `access` - Access control rules
+    /// * `vault_id` - Optional per-customer vault binding.
+    ///   * `null` — secret was encrypted with the default OutLayer
+    ///     master. **Existing vault bindings on the same `(accessor,
+    ///     profile, owner)` key are LEFT UNTOUCHED** so a re-store
+    ///     that just rotates the ciphertext does not silently break
+    ///     decryption. To opt out of an existing binding call
+    ///     [`Contract::unbind_secret_vault`] explicitly (typically
+    ///     paired with re-encrypting under the default master).
+    ///   * `"vault.alice.near"` — secret was encrypted with that
+    ///     vault's master. The worker resolves the master through MPC
+    ///     CKD using the vault account id as the signer.
+    ///
+    /// Storage deposit cost includes the binding entry when
+    /// `vault_id = Some(_)`.
+    ///
+    /// **Off-chain callers MUST pass `vault_id` explicitly** (set to
+    /// `null` for the default-master path). near-sdk's argument
+    /// deserialiser rejects JSON that omits a required `Option` field.
     #[payable]
     pub fn store_secrets(
         &mut self,
@@ -25,6 +44,7 @@ impl Contract {
         profile: String,
         encrypted_secrets_base64: String,
         access: types::AccessCondition,
+        vault_id: Option<AccountId>,
     ) {
         let caller = env::predecessor_account_id();
 
@@ -85,8 +105,21 @@ impl Contract {
             owner: caller.clone(),
         };
 
-        // Calculate storage cost
-        let storage_usage = self.calculate_secret_storage_size(&key, &encrypted_secrets_base64, &access);
+        // Calculate storage cost. The size MUST reflect the
+        // post-call state of the side-table, not the delta — otherwise
+        // an update from `Some(v) → None` (binding survives per the
+        // B-3 invariant) would re-quote the size as if the binding
+        // were gone, refund the binding overhead to the caller, and
+        // leave the entry sitting on chain unfunded. Same trap on
+        // `Some(v1) → Some(v2)` rebinds.
+        let vault_bound_after_call =
+            vault_id.is_some() || self.secret_vault_bindings.get(&key).is_some();
+        let storage_usage = self.calculate_secret_storage_size(
+            &key,
+            &encrypted_secrets_base64,
+            &access,
+            vault_bound_after_call,
+        );
         let required_deposit = storage_usage as u128 * STORAGE_PRICE_PER_BYTE;
         let attached_deposit = env::attached_deposit().as_yoctonear();
 
@@ -145,6 +178,21 @@ impl Contract {
         };
 
         self.secrets_storage.insert(&key, &profile_data);
+
+        // Side-table for the optional vault binding.
+        //
+        // Semantics:
+        //   * `Some(v)` → set/overwrite the binding to vault `v`.
+        //   * `None`    → DO NOT TOUCH the side-table. An existing
+        //     binding survives the update; that is the back-compat
+        //     contract for legacy callers that never pass `vault_id`.
+        //     If a customer wants to opt out of an existing binding
+        //     they must call `unbind_secret_vault(...)` explicitly,
+        //     usually paired with re-encrypting the ciphertext under
+        //     the default master.
+        if let Some(v) = vault_id {
+            self.secret_vault_bindings.insert(&key, &v);
+        }
 
         // Add to user index if new
         if is_new {
@@ -223,6 +271,10 @@ impl Contract {
         // Remove from storage
         self.secrets_storage.remove(&key);
 
+        // Drop the vault binding alongside the secret. Idempotent
+        // — `remove()` on a missing key is a no-op.
+        self.secret_vault_bindings.remove(&key);
+
         // Remove from user index
         if let Some(mut user_secrets) = self.user_secrets_index.get(caller) {
             user_secrets.remove(&key);
@@ -240,6 +292,30 @@ impl Contract {
                 .transfer(NearToken::from_yoctonear(profile_data.storage_deposit));
             log!("Refunded {} yoctoNEAR", profile_data.storage_deposit);
         }
+    }
+
+    /// Drop the vault binding for an existing secret without touching
+    /// the ciphertext.
+    ///
+    /// Use this when re-encrypting a secret under the default OutLayer
+    /// master after it had previously been bound to a vault. Calling
+    /// `store_secrets(..., vault_id: None)` does NOT clear an existing
+    /// binding (that's the back-compat invariant for legacy callers);
+    /// this method is the explicit opt-out.
+    ///
+    /// Idempotent: succeeds silently if no binding exists.
+    pub fn unbind_secret_vault(&mut self, accessor: SecretAccessor, profile: String) {
+        let caller = env::predecessor_account_id();
+        let key = SecretKey {
+            accessor,
+            profile,
+            owner: caller,
+        };
+        require!(
+            self.secrets_storage.get(&key).is_some(),
+            "secret not found or not owned by caller"
+        );
+        self.secret_vault_bindings.remove(&key);
     }
 
     /// Update access control rules for existing secrets
@@ -278,12 +354,17 @@ impl Contract {
         );
     }
 
-    /// Calculate storage size for secrets (in bytes)
+    /// Calculate storage size for secrets (in bytes).
+    ///
+    /// `vault_bound` toggles the side-table contribution: when true,
+    /// the cost of a `secret_vault_bindings` entry (a duplicate of the
+    /// SecretKey plus an AccountId value) is added to the result.
     fn calculate_secret_storage_size(
         &self,
         key: &SecretKey,
         encrypted_secrets: &str,
         access: &types::AccessCondition,
+        vault_bound: bool,
     ) -> u64 {
         // Storage calculation:
         // - SecretKey: key_type (enum) + profile + owner (Borsh serialized)
@@ -338,24 +419,39 @@ impl Contract {
             0 // Updating existing entry, no new index entry
         };
 
-        BASE_STORAGE_OVERHEAD + key_size + value_size + index_overhead
+        // Side-table entry for the optional vault binding. The
+        // `secret_vault_bindings: LookupMap<SecretKey, AccountId>` map
+        // re-stores the full SecretKey as its key plus an AccountId
+        // value, so the contribution mirrors `key_size` plus a small
+        // AccountId payload. Plus its own LookupMap entry overhead.
+        let binding_overhead = if vault_bound {
+            BASE_STORAGE_OVERHEAD + key_size + 4 + 64 // AccountId max ~64 bytes (String length-prefixed)
+        } else {
+            0
+        };
+
+        BASE_STORAGE_OVERHEAD + key_size + value_size + index_overhead + binding_overhead
     }
 }
 
 // View methods
 #[near_bindgen]
 impl Contract {
-    /// Estimate storage cost for secrets (before storing)
+    /// Estimate storage cost for secrets (before storing).
     ///
-    /// Returns cost in yoctoNEAR. Call this before `store_secrets` to know
-    /// the exact deposit amount required.
+    /// Returns cost in yoctoNEAR. Call this before `store_secrets` to
+    /// know the exact deposit amount required.
     ///
     /// # Arguments
-    /// * `accessor` - What code can access these secrets (Repo or WasmHash)
+    /// * `accessor` - What code can access these secrets
     /// * `profile` - Profile name
     /// * `owner` - Account that will own the secrets
     /// * `encrypted_secrets_base64` - Base64-encoded encrypted secrets
     /// * `access` - Access control rules
+    /// * `vault_id` - Match the value the caller will pass to
+    ///   `store_secrets`. `Some(_)` includes the side-table binding
+    ///   entry in the cost; `None` excludes it. Off-chain callers MUST
+    ///   pass this explicitly (no missing-field-as-default).
     pub fn estimate_storage_cost(
         &self,
         accessor: SecretAccessor,
@@ -363,14 +459,25 @@ impl Contract {
         owner: AccountId,
         encrypted_secrets_base64: String,
         access: types::AccessCondition,
+        vault_id: Option<AccountId>,
     ) -> U128 {
         let key = SecretKey {
             accessor,
             profile,
             owner,
         };
-
-        let storage_bytes = self.calculate_secret_storage_size(&key, &encrypted_secrets_base64, &access);
+        // Match the post-call state of the side-table, not the delta.
+        // See `internal_store_secrets` for the rationale — the same
+        // bug would surface here as inaccurate quotes for updates
+        // that keep an existing binding implicitly.
+        let vault_bound_after_call =
+            vault_id.is_some() || self.secret_vault_bindings.get(&key).is_some();
+        let storage_bytes = self.calculate_secret_storage_size(
+            &key,
+            &encrypted_secrets_base64,
+            &access,
+            vault_bound_after_call,
+        );
         U128((storage_bytes as u128) * STORAGE_PRICE_PER_BYTE)
     }
 
@@ -449,6 +556,76 @@ impl Contract {
         profiles
     }
 
+    /// View — return the vault binding for a given secret, if any.
+    ///
+    /// A `Some(v)` result means the secret was
+    /// encrypted with vault `v`'s master and the keystore-worker MUST
+    /// resolve `v`'s per-vault master to decrypt it. `None` means the
+    /// secret was encrypted with the default OutLayer master (legacy
+    /// path).
+    ///
+    /// Off-chain consumers (keystore-worker, dashboards) typically want
+    /// both `SecretProfile` and the binding in one shot; use
+    /// [`Contract::get_secret_with_vault`] to save a round-trip.
+    pub fn get_secret_vault(
+        &self,
+        accessor: SecretAccessor,
+        profile: String,
+        owner: AccountId,
+    ) -> Option<AccountId> {
+        let key = SecretKey {
+            accessor,
+            profile,
+            owner,
+        };
+        self.secret_vault_bindings.get(&key)
+    }
+
+    /// View — combined secret profile + vault binding lookup. Saves an
+    /// RPC round-trip for the keystore-worker, which always needs both
+    /// fields together to decide which master to use for decryption.
+    ///
+    /// `profile.is_none()` and `vault_id.is_none()` are independent —
+    /// a missing secret returns `profile = None`, while
+    /// `vault_id = None` simply means "default master".
+    pub fn get_secret_with_vault(
+        &self,
+        accessor: SecretAccessor,
+        profile: String,
+        owner: AccountId,
+    ) -> SecretWithVault {
+        let key = SecretKey {
+            accessor: accessor.clone(),
+            profile: profile.clone(),
+            owner: owner.clone(),
+        };
+
+        // Reuse get_secrets' wildcard-fallback behaviour for Repo entries
+        // by calling it directly. The vault binding is keyed against the
+        // exact-match SecretKey first, falling back to the wildcard if
+        // that's where the actual secret lives.
+        let secret = self.get_secrets(accessor, profile, owner);
+
+        let vault_id = if let Some(ref view) = secret {
+            // get_secrets may have returned a wildcard match. Re-key the
+            // binding lookup using whatever accessor it actually
+            // resolved to.
+            let resolved_key = SecretKey {
+                accessor: view.accessor.clone(),
+                profile: key.profile.clone(),
+                owner: key.owner.clone(),
+            };
+            self.secret_vault_bindings.get(&resolved_key)
+        } else {
+            None
+        };
+
+        SecretWithVault {
+            profile: secret,
+            vault_id,
+        }
+    }
+
     /// Check if secrets exist for a given key
     ///
     /// # Arguments
@@ -495,6 +672,17 @@ impl Contract {
             None => vec![],
         }
     }
+}
+
+/// Combined response for [`Contract::get_secret_with_vault`]. Returning
+/// both fields in one structure lets the keystore-worker make a single
+/// RPC call to learn (a) whether a secret exists and what its profile
+/// looks like, and (b) which master should be used to decrypt it.
+#[derive(Clone, Debug)]
+#[near(serializers = [json])]
+pub struct SecretWithVault {
+    pub profile: Option<SecretProfileView>,
+    pub vault_id: Option<AccountId>,
 }
 
 /// Project secrets storage info
@@ -556,6 +744,7 @@ mod tests {
             "default".to_string(),
             "base64encodeddata".to_string(),
             types::AccessCondition::AllowAll,
+            None,
         );
 
         // Verify secrets exist
@@ -591,6 +780,7 @@ mod tests {
             "default".to_string(),
             "base64encodeddata".to_string(),
             types::AccessCondition::AllowAll,
+            None,
         );
 
         // Verify secrets exist
@@ -634,6 +824,7 @@ mod tests {
             "default".to_string(),
             "base64encodeddata".to_string(),
             types::AccessCondition::AllowAll,
+            None,
         );
     }
 
@@ -659,6 +850,7 @@ mod tests {
             "invalid profile!".to_string(), // Invalid characters
             "base64encodeddata".to_string(),
             types::AccessCondition::AllowAll,
+            None,
         );
     }
 
@@ -684,6 +876,7 @@ mod tests {
             "default".to_string(),
             "base64encodeddata".to_string(),
             types::AccessCondition::AllowAll,
+            None,
         );
 
         // Delete secrets
@@ -728,6 +921,7 @@ mod tests {
             "default".to_string(),
             "base64encodeddata".to_string(),
             types::AccessCondition::AllowAll,
+            None,
         );
 
         // Delete secrets
@@ -746,6 +940,405 @@ mod tests {
             "default".to_string(),
             user.clone(),
         ));
+    }
+
+    // ===== Per-customer vault binding =====
+
+    #[test]
+    fn store_secrets_with_vault_id_records_binding() {
+        let owner = accounts(0);
+        let user = accounts(2);
+
+        testing_env!(get_context(owner.clone(), NearToken::from_near(0)).build());
+        let mut contract = Contract::new(owner.clone(), None, None, None);
+
+        testing_env!(get_context(user.clone(), NearToken::from_near(1)).build());
+        let vault: AccountId = "vault.alice.near".parse().unwrap();
+        contract.store_secrets(
+            SecretAccessor::Repo {
+                repo: "github.com/alice/p".to_string(),
+                branch: None,
+            },
+            "default".to_string(),
+            "ciphertext".to_string(),
+            types::AccessCondition::AllowAll,
+            Some(vault.clone()),
+        );
+
+        let bound = contract.get_secret_vault(
+            SecretAccessor::Repo {
+                repo: "github.com/alice/p".to_string(),
+                branch: None,
+            },
+            "default".to_string(),
+            user.clone(),
+        );
+        assert_eq!(bound, Some(vault));
+    }
+
+    #[test]
+    fn store_secrets_without_vault_id_records_no_binding() {
+        let owner = accounts(0);
+        let user = accounts(2);
+
+        testing_env!(get_context(owner.clone(), NearToken::from_near(0)).build());
+        let mut contract = Contract::new(owner.clone(), None, None, None);
+
+        testing_env!(get_context(user.clone(), NearToken::from_near(1)).build());
+        contract.store_secrets(
+            SecretAccessor::Repo {
+                repo: "github.com/alice/p".to_string(),
+                branch: None,
+            },
+            "default".to_string(),
+            "ciphertext".to_string(),
+            types::AccessCondition::AllowAll,
+            None,
+        );
+
+        let bound = contract.get_secret_vault(
+            SecretAccessor::Repo {
+                repo: "github.com/alice/p".to_string(),
+                branch: None,
+            },
+            "default".to_string(),
+            user.clone(),
+        );
+        assert!(bound.is_none(), "no binding expected for default-master secret");
+    }
+
+    #[test]
+    fn update_with_vault_id_none_keeps_binding_overhead_funded() {
+        // Round-2 audit B-NEW-1 regression. Customer initially binds
+        // to a vault, then updates the ciphertext with `vault_id: None`
+        // (B-3 says the binding survives). The contract MUST quote
+        // storage cost for the *post-call* state — i.e. with the
+        // binding still on chain — otherwise the binding side-table
+        // entry stays funded by nothing.
+        //
+        // The invariant we check: after the update, the deposit
+        // recorded on the secret matches what `estimate_storage_cost`
+        // says the cost is RIGHT NOW (binding present). If the bug
+        // were back, the actual deposit (post-update) would be
+        // smaller than the estimate — i.e. the contract under-funded
+        // itself by the binding overhead.
+        let owner = accounts(0);
+        let user = accounts(2);
+
+        testing_env!(get_context(owner.clone(), NearToken::from_near(0)).build());
+        let mut contract = Contract::new(owner.clone(), None, None, None);
+
+        let vault: AccountId = "vault.alice.near".parse().unwrap();
+        let accessor = SecretAccessor::Repo {
+            repo: "github.com/alice/p".to_string(),
+            branch: None,
+        };
+        let ciphertext = "ciphertext".to_string();
+
+        testing_env!(get_context(user.clone(), NearToken::from_near(1)).build());
+        contract.store_secrets(
+            accessor.clone(),
+            "default".to_string(),
+            ciphertext.clone(),
+            types::AccessCondition::AllowAll,
+            Some(vault.clone()),
+        );
+        // Sanity: binding really is in the side-table after the first
+        // store. Pre-condition for the post-call check at
+        // `internal_store_secrets` to see `vault_bound_after_call =
+        // true` on the update.
+        assert_eq!(
+            contract.get_secret_vault(accessor.clone(), "default".to_string(), user.clone()),
+            Some(vault.clone())
+        );
+
+        testing_env!(get_context(user.clone(), NearToken::from_near(1)).build());
+        contract.store_secrets(
+            accessor.clone(),
+            "default".to_string(),
+            ciphertext.clone(),
+            types::AccessCondition::AllowAll,
+            None,
+        );
+
+        // The deposit AFTER the no-op-on-binding update must match
+        // what an estimate-with-vault-still-present would quote. If
+        // the bug regressed, the actual post-update deposit would be
+        // smaller than this estimate by the binding overhead.
+        let post_update_deposit = contract
+            .get_secrets(accessor.clone(), "default".to_string(), user.clone())
+            .unwrap()
+            .storage_deposit
+            .0;
+        let estimate_with_binding = contract
+            .estimate_storage_cost(
+                accessor,
+                "default".to_string(),
+                user,
+                ciphertext,
+                types::AccessCondition::AllowAll,
+                None, // vault_id arg = None — binding-existence comes from side-table check
+            )
+            .0;
+        assert_eq!(
+            post_update_deposit, estimate_with_binding,
+            "storage_deposit must match the post-call estimate (which sees the existing binding); \
+             stored={post_update_deposit}, estimated={estimate_with_binding}"
+        );
+    }
+
+    #[test]
+    fn restore_with_vault_id_none_preserves_existing_binding() {
+        // Plan back-compat invariant: an update that re-stores the
+        // ciphertext but passes `vault_id: None` must NOT silently
+        // clear an existing binding. Otherwise a forgetful caller
+        // (legacy dashboard, half-migrated CLI) would brick decryption
+        // by walking the binding back to default-master while the
+        // ciphertext still requires the vault master.
+        let owner = accounts(0);
+        let user = accounts(2);
+
+        testing_env!(get_context(owner.clone(), NearToken::from_near(0)).build());
+        let mut contract = Contract::new(owner.clone(), None, None, None);
+
+        testing_env!(get_context(user.clone(), NearToken::from_near(1)).build());
+        let vault: AccountId = "vault.alice.near".parse().unwrap();
+        contract.store_secrets(
+            SecretAccessor::Repo {
+                repo: "github.com/alice/p".to_string(),
+                branch: None,
+            },
+            "default".to_string(),
+            "ciphertext".to_string(),
+            types::AccessCondition::AllowAll,
+            Some(vault.clone()),
+        );
+
+        // Update with vault_id = None — binding must persist.
+        testing_env!(get_context(user.clone(), NearToken::from_near(1)).build());
+        contract.store_secrets(
+            SecretAccessor::Repo {
+                repo: "github.com/alice/p".to_string(),
+                branch: None,
+            },
+            "default".to_string(),
+            "ciphertext_v2".to_string(),
+            types::AccessCondition::AllowAll,
+            None,
+        );
+
+        let bound = contract.get_secret_vault(
+            SecretAccessor::Repo {
+                repo: "github.com/alice/p".to_string(),
+                branch: None,
+            },
+            "default".to_string(),
+            user.clone(),
+        );
+        assert_eq!(
+            bound,
+            Some(vault),
+            "existing vault binding must survive a vault_id=None update"
+        );
+    }
+
+    #[test]
+    fn unbind_secret_vault_clears_existing_binding() {
+        // Explicit opt-out path: customer wants to re-encrypt under
+        // the default master and drop the vault binding.
+        let owner = accounts(0);
+        let user = accounts(2);
+
+        testing_env!(get_context(owner.clone(), NearToken::from_near(0)).build());
+        let mut contract = Contract::new(owner.clone(), None, None, None);
+
+        testing_env!(get_context(user.clone(), NearToken::from_near(1)).build());
+        let vault: AccountId = "vault.alice.near".parse().unwrap();
+        contract.store_secrets(
+            SecretAccessor::Repo {
+                repo: "github.com/alice/p".to_string(),
+                branch: None,
+            },
+            "default".to_string(),
+            "ciphertext".to_string(),
+            types::AccessCondition::AllowAll,
+            Some(vault.clone()),
+        );
+
+        testing_env!(get_context(user.clone(), NearToken::from_near(0)).build());
+        contract.unbind_secret_vault(
+            SecretAccessor::Repo {
+                repo: "github.com/alice/p".to_string(),
+                branch: None,
+            },
+            "default".to_string(),
+        );
+
+        let bound = contract.get_secret_vault(
+            SecretAccessor::Repo {
+                repo: "github.com/alice/p".to_string(),
+                branch: None,
+            },
+            "default".to_string(),
+            user.clone(),
+        );
+        assert!(bound.is_none(), "unbind_secret_vault must clear the binding");
+    }
+
+    #[test]
+    #[should_panic(expected = "secret not found or not owned by caller")]
+    fn unbind_secret_vault_panics_on_missing_secret() {
+        let owner = accounts(0);
+        let user = accounts(2);
+
+        testing_env!(get_context(owner.clone(), NearToken::from_near(0)).build());
+        let mut contract = Contract::new(owner.clone(), None, None, None);
+
+        testing_env!(get_context(user.clone(), NearToken::from_near(0)).build());
+        contract.unbind_secret_vault(
+            SecretAccessor::Repo {
+                repo: "github.com/alice/p".to_string(),
+                branch: None,
+            },
+            "default".to_string(),
+        );
+    }
+
+    #[test]
+    fn delete_secrets_cleans_up_binding() {
+        let owner = accounts(0);
+        let user = accounts(2);
+
+        testing_env!(get_context(owner.clone(), NearToken::from_near(0)).build());
+        let mut contract = Contract::new(owner.clone(), None, None, None);
+
+        testing_env!(get_context(user.clone(), NearToken::from_near(1)).build());
+        let vault: AccountId = "vault.alice.near".parse().unwrap();
+        contract.store_secrets(
+            SecretAccessor::Repo {
+                repo: "github.com/alice/p".to_string(),
+                branch: None,
+            },
+            "default".to_string(),
+            "ciphertext".to_string(),
+            types::AccessCondition::AllowAll,
+            Some(vault),
+        );
+
+        contract.delete_secrets(
+            SecretAccessor::Repo {
+                repo: "github.com/alice/p".to_string(),
+                branch: None,
+            },
+            "default".to_string(),
+        );
+
+        let bound = contract.get_secret_vault(
+            SecretAccessor::Repo {
+                repo: "github.com/alice/p".to_string(),
+                branch: None,
+            },
+            "default".to_string(),
+            user.clone(),
+        );
+        assert!(bound.is_none(), "delete must remove the binding");
+    }
+
+    #[test]
+    fn get_secret_with_vault_combined_returns_both_fields() {
+        let owner = accounts(0);
+        let user = accounts(2);
+
+        testing_env!(get_context(owner.clone(), NearToken::from_near(0)).build());
+        let mut contract = Contract::new(owner.clone(), None, None, None);
+
+        testing_env!(get_context(user.clone(), NearToken::from_near(1)).build());
+        let vault: AccountId = "vault.alice.near".parse().unwrap();
+        contract.store_secrets(
+            SecretAccessor::Repo {
+                repo: "github.com/alice/p".to_string(),
+                branch: None,
+            },
+            "default".to_string(),
+            "ciphertext".to_string(),
+            types::AccessCondition::AllowAll,
+            Some(vault.clone()),
+        );
+
+        let combined = contract.get_secret_with_vault(
+            SecretAccessor::Repo {
+                repo: "github.com/alice/p".to_string(),
+                branch: None,
+            },
+            "default".to_string(),
+            user.clone(),
+        );
+        assert!(combined.profile.is_some());
+        assert_eq!(combined.vault_id, Some(vault));
+    }
+
+    #[test]
+    fn pre_migration_secret_returns_no_vault_via_combined_view() {
+        // Back-compat invariant. Secrets stored without a vault
+        // binding have no entry in `secret_vault_bindings`. The
+        // combined view must report `vault_id = None` for them so
+        // the keystore-worker falls through to the default OutLayer
+        // master.
+        let owner = accounts(0);
+        let user = accounts(2);
+
+        testing_env!(get_context(owner.clone(), NearToken::from_near(0)).build());
+        let mut contract = Contract::new(owner.clone(), None, None, None);
+
+        // Simulate "stored before migration" by calling store_secrets
+        // with vault_id = None (post-migration the side-table entry is
+        // simply absent for this key, which is exactly the
+        // pre-migration state).
+        testing_env!(get_context(user.clone(), NearToken::from_near(1)).build());
+        contract.store_secrets(
+            SecretAccessor::Repo {
+                repo: "github.com/legacy/p".to_string(),
+                branch: None,
+            },
+            "default".to_string(),
+            "ciphertext".to_string(),
+            types::AccessCondition::AllowAll,
+            None,
+        );
+
+        let combined = contract.get_secret_with_vault(
+            SecretAccessor::Repo {
+                repo: "github.com/legacy/p".to_string(),
+                branch: None,
+            },
+            "default".to_string(),
+            user.clone(),
+        );
+        assert!(combined.profile.is_some(), "secret must exist");
+        assert!(
+            combined.vault_id.is_none(),
+            "pre-migration / unbound secret must report vault_id = None"
+        );
+    }
+
+    #[test]
+    fn get_secret_with_vault_returns_no_profile_for_missing_secret() {
+        let owner = accounts(0);
+        let user = accounts(2);
+
+        testing_env!(get_context(owner.clone(), NearToken::from_near(0)).build());
+        let contract = Contract::new(owner.clone(), None, None, None);
+
+        let combined = contract.get_secret_with_vault(
+            SecretAccessor::Repo {
+                repo: "github.com/alice/p".to_string(),
+                branch: None,
+            },
+            "default".to_string(),
+            user.clone(),
+        );
+        assert!(combined.profile.is_none());
+        assert!(combined.vault_id.is_none());
     }
 
     #[test]
@@ -770,6 +1363,7 @@ mod tests {
             "default".to_string(),
             "base64encodeddata".to_string(),
             types::AccessCondition::AllowAll,
+            None,
         );
 
         let wasm_hash = "c".repeat(64);
@@ -780,6 +1374,7 @@ mod tests {
             "production".to_string(),
             "base64encodeddata2".to_string(),
             types::AccessCondition::AllowAll,
+            None,
         );
 
         // List user secrets

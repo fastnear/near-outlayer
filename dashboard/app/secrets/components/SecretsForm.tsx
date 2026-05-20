@@ -6,6 +6,7 @@ import { AccessConditionBuilder } from './AccessConditionBuilder';
 import { AccessCondition, FormData, SecretSourceType } from './types';
 import { convertAccessToContractFormat } from './utils';
 import { useNearWallet } from '@/contexts/NearWalletContext';
+import { VaultScopeToggle } from '@/components/VaultScopeToggle';
 
 // Update mode for existing secrets - preserves PROTECTED_ secrets
 type UpdateMode = 'append' | 'reset';
@@ -33,6 +34,23 @@ interface SecretsFormProps {
       project_id?: string;
     };
     profile: string;
+    /**
+     * Phase 7 audit H3: vault binding of the existing on-chain
+     * secret. Threaded through so update mode preserves the binding
+     * — without it, every update would silently re-bind the secret
+     * to the OutLayer default master, breaking the recovery story
+     * for vault-bound secrets. Set to `null` for legacy/unbound
+     * secrets, set to the on-chain vault id for vault-bound ones.
+     * The form locks the scope toggle to this value in update mode.
+     *
+     * `undefined` (vs `null`) means "I don't know — please look it
+     * up from the contract before attempting to re-encrypt": the
+     * form will issue a `get_secret_vault` view-call and use the
+     * result. `null` means "definitely default master, no need to
+     * look up". `Some("vault.alice.near")` means "definitely this
+     * vault".
+     */
+    vaultId: string | null | undefined;
   };
   onUpdateComplete?: () => void;
   onCancelUpdate?: () => void;
@@ -71,11 +89,15 @@ export function SecretsForm({
   // Determine if we're in update mode (preserve PROTECTED_ secrets)
   const isUpdateMode = !!updateMode;
 
+  const { network } = useNearWallet();
+
   const [sourceType, setSourceType] = useState<SecretSourceType>('repo');
   const [repo, setRepo] = useState('');
   const [branch, setBranch] = useState('');
   const [wasmHash, setWasmHash] = useState('');
   const [projectId, setProjectId] = useState('');
+  // Phase 7 F2: vault scope. `null` = OutLayer default master.
+  const [vaultId, setVaultId] = useState<string | null>(null);
   const [userProjects, setUserProjects] = useState<{ project_id: string; name: string }[]>([]);
   const [loadingProjects, setLoadingProjects] = useState(false);
   const [profile, setProfile] = useState('default');
@@ -124,11 +146,62 @@ export function SecretsForm({
       }
       setProfile(updateMode.profile);
       setPlaintextSecrets('{\n  "API_KEY": "your-new-api-key"\n}');
+      // Phase 7 audit H3: inherit the existing on-chain vault
+      // binding so re-encryption uses the same master and the
+      // updated `store_secrets` carries the same `vault_id`. If the
+      // caller provided an explicit value (null included), use it.
+      // If `vaultId` is `undefined`, the caller delegated lookup to
+      // us — handled by the separate effect below.
+      if (updateMode.vaultId !== undefined) {
+        setVaultId(updateMode.vaultId);
+      }
     }
   }, [updateMode]);
 
   // Get viewMethod and contractId from wallet context for loading projects
   const { viewMethod, contractId } = useNearWallet();
+
+  // Phase 7 audit H3: when update-mode is entered without an
+  // explicit vault binding, fetch the existing on-chain binding so
+  // we don't silently re-bind a vault-scoped secret to the default
+  // master. Runs after the main update-mode effect; the form
+  // disables submission until this lookup settles.
+  const [updateModeVaultLookupPending, setUpdateModeVaultLookupPending] = useState(false);
+  useEffect(() => {
+    if (!updateMode || updateMode.vaultId !== undefined || !accountId) return;
+    let cancelled = false;
+    setUpdateModeVaultLookupPending(true);
+    const accessor =
+      updateMode.accessor.type === 'Repo'
+        ? { Repo: { repo: updateMode.accessor.repo, branch: updateMode.accessor.branch ?? null } }
+        : updateMode.accessor.type === 'WasmHash'
+          ? { WasmHash: { hash: updateMode.accessor.hash } }
+          : { Project: { project_id: updateMode.accessor.project_id } };
+    viewMethod({
+      contractId,
+      method: 'get_secret_vault',
+      args: { accessor, profile: updateMode.profile, owner: accountId },
+    })
+      .then((result) => {
+        if (cancelled) return;
+        // Contract returns Option<AccountId>: string for Some, null for None.
+        setVaultId(typeof result === 'string' ? result : null);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        // If the lookup fails, default to null but make the failure
+        // visible in the form so the user can decide whether to
+        // proceed (a manual vault selection still works).
+        console.warn('get_secret_vault lookup failed, defaulting to null', e);
+        setVaultId(null);
+      })
+      .finally(() => {
+        if (!cancelled) setUpdateModeVaultLookupPending(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [updateMode, accountId, viewMethod, contractId]);
 
   // Load user's projects when source type is 'project'
   const loadProjects = useCallback(async () => {
@@ -291,10 +364,17 @@ export function SecretsForm({
             ? { type: 'Project', project_id: projectId.trim() }
             : { type: 'Repo', repo: repo.trim(), branch: branch.trim() || null };
 
-          // Get public key and encrypt
+          // Get public key and encrypt. Phase 7 F2: when the user
+          // selected a vault, forward `X-Customer-Vault` so the
+          // keystore derives the encryption pubkey from the per-vault
+          // master instead of the OutLayer default master.
+          const pubkeyHeaders: Record<string, string> = {
+            'Content-Type': 'application/json',
+          };
+          if (vaultId) pubkeyHeaders['X-Customer-Vault'] = vaultId;
           const pubkeyResp = await fetch(`${coordinatorUrl}/secrets/pubkey`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: pubkeyHeaders,
             body: JSON.stringify({
               accessor,
               owner: accountId,
@@ -390,6 +470,7 @@ export function SecretsForm({
           projectId: projectIdNormalized,
           profile: profile.trim(),
           access: contractAccess,
+          vaultId,
         };
 
         await onSubmit(formData, encryptedArray);
@@ -414,9 +495,14 @@ export function SecretsForm({
           ? { type: 'Project', project_id: projectId.trim() }
           : { type: 'Repo', repo: repo.trim(), branch: branch.trim() || null };
 
+        // Same vault-scope forwarding as the manual-secrets path above.
+        const pubkeyHeaders2: Record<string, string> = {
+          'Content-Type': 'application/json',
+        };
+        if (vaultId) pubkeyHeaders2['X-Customer-Vault'] = vaultId;
         const pubkeyResp = await fetch(`${coordinatorUrl}/secrets/pubkey`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: pubkeyHeaders2,
           body: JSON.stringify({
             accessor,
             owner: accountId,
@@ -452,6 +538,7 @@ export function SecretsForm({
           projectId: projectId.trim(),
           profile: profile.trim(),
           access: contractAccess,
+          vaultId,
         };
 
         await onSubmit(formData, encryptedArray);
@@ -626,6 +713,7 @@ export function SecretsForm({
         sourceType,
         repo: repo.trim(),
         branch: branch.trim() || null,
+        vaultId,
         wasmHash: wasmHash.trim(),
         projectId: projectId.trim(),
         profile: profile.trim(),
@@ -785,6 +873,23 @@ export function SecretsForm({
               : 'Bind secrets to a project (shared across all versions)'}
           </p>
         </div>
+
+        {/* Vault scope (Phase 7 F2). Default is OutLayer master; if
+            the user picks a vault, both the encryption pubkey fetch
+            and the on-chain `store_secrets {vault_id}` use it. The
+            toggle is hidden in update mode because re-binding an
+            existing secret to a different vault would orphan the
+            on-chain ciphertext. */}
+        {!isUpdateMode && (
+          <VaultScopeToggle
+            network={network}
+            owner={accountId}
+            value={vaultId}
+            onChange={setVaultId}
+            disabled={encrypting}
+            label="Encryption master"
+          />
+        )}
 
         {/* Warning when accessor changed in update mode */}
         {accessorChanged && (
@@ -1063,7 +1168,16 @@ export function SecretsForm({
           <div className="flex items-center justify-between">
             <button
               onClick={isUpdateMode ? handleUpdateWithSignature : handleEncryptAndSubmit}
-              disabled={!isConnected || encrypting}
+              // Phase 7 audit H3: in update mode, block submission
+              // until the existing on-chain vault binding has been
+              // looked up. Otherwise the user could click before the
+              // async fetch settles and we'd default to `null`,
+              // re-binding the secret to the default master.
+              disabled={
+                !isConnected ||
+                encrypting ||
+                (isUpdateMode && updateModeVaultLookupPending)
+              }
               className={`inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:bg-gray-300 disabled:cursor-not-allowed ${
                 isUpdateMode
                   ? 'bg-purple-600 hover:bg-purple-700 focus:ring-purple-500'

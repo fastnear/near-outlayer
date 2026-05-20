@@ -32,6 +32,7 @@ fn test_estimate_storage_cost() {
         accounts(1),
         small_data.to_string(),
         types::AccessCondition::AllowAll,
+        None,
     );
 
     // Should be non-zero
@@ -60,6 +61,7 @@ fn test_storage_deposit_theft_attack_large_to_small() {
         accounts(1),
         large_data.clone(),
         types::AccessCondition::AllowAll,
+        None,
     );
 
     println!("Large secret cost: {} yoctoNEAR", cost_large.0);
@@ -74,6 +76,7 @@ fn test_storage_deposit_theft_attack_large_to_small() {
         "test".to_string(),
         large_data,
         types::AccessCondition::AllowAll,
+        None,
     );
 
     // Verify stored deposit
@@ -98,6 +101,7 @@ fn test_storage_deposit_theft_attack_large_to_small() {
         accounts(1),
         small_data.to_string(),
         types::AccessCondition::AllowAll,
+        None,
     );
 
     println!("Small secret cost: {} yoctoNEAR", cost_small.0);
@@ -113,6 +117,7 @@ fn test_storage_deposit_theft_attack_large_to_small() {
         "test".to_string(),
         small_data.to_string(),
         types::AccessCondition::AllowAll,
+        None,
     );
 
     // 3. Check result: storage_deposit should now be cost_small (NOT cost_large!)
@@ -153,6 +158,7 @@ fn test_storage_deposit_increase_requires_payment() {
         accounts(1),
         small_data.to_string(),
         types::AccessCondition::AllowAll,
+        None,
     );
 
     testing_env!(context.attached_deposit(NearToken::from_yoctonear(cost_small.0)).build());
@@ -164,6 +170,7 @@ fn test_storage_deposit_increase_requires_payment() {
         "test".to_string(),
         small_data.to_string(),
         types::AccessCondition::AllowAll,
+        None,
     );
 
     // 2. Try to update to large secret with 0 deposit - should FAIL
@@ -177,6 +184,7 @@ fn test_storage_deposit_increase_requires_payment() {
         accounts(1),
         large_data.clone(),
         types::AccessCondition::AllowAll,
+        None,
     );
 
     println!("Small cost: {}, Large cost: {}", cost_small.0, cost_large.0);
@@ -193,6 +201,7 @@ fn test_storage_deposit_increase_requires_payment() {
             "test".to_string(),
             large_data.clone(),
             types::AccessCondition::AllowAll,
+            None,
         );
     }));
 
@@ -209,6 +218,7 @@ fn test_storage_deposit_increase_requires_payment() {
         "test".to_string(),
         large_data,
         types::AccessCondition::AllowAll,
+        None,
     );
 
     // Verify new cost is stored
@@ -241,6 +251,7 @@ fn test_multiple_secrets_separate_deposits() {
         accounts(1),
         data1.to_string(),
         types::AccessCondition::AllowAll,
+        None,
     );
 
     testing_env!(context.attached_deposit(NearToken::from_yoctonear(cost1.0)).build());
@@ -252,6 +263,7 @@ fn test_multiple_secrets_separate_deposits() {
         "profile1".to_string(),
         data1.to_string(),
         types::AccessCondition::AllowAll,
+        None,
     );
 
     // Create secret 2: repo2/dev/profile2
@@ -265,6 +277,7 @@ fn test_multiple_secrets_separate_deposits() {
         accounts(1),
         data2.to_string(),
         types::AccessCondition::AllowAll,
+        None,
     );
 
     testing_env!(context.attached_deposit(NearToken::from_yoctonear(cost2.0)).build());
@@ -276,6 +289,7 @@ fn test_multiple_secrets_separate_deposits() {
         "profile2".to_string(),
         data2.to_string(),
         types::AccessCondition::AllowAll,
+        None,
     );
 
     // Verify both exist with correct deposits
@@ -350,6 +364,7 @@ fn test_delete_refunds_exact_amount() {
         accounts(1),
         data.to_string(),
         types::AccessCondition::AllowAll,
+        None,
     );
 
     testing_env!(context.attached_deposit(NearToken::from_yoctonear(cost.0)).build());
@@ -361,6 +376,7 @@ fn test_delete_refunds_exact_amount() {
         "test".to_string(),
         data.to_string(),
         types::AccessCondition::AllowAll,
+        None,
     );
 
     // Delete and check refund
@@ -405,6 +421,7 @@ fn test_access_condition_size_affects_cost() {
         accounts(1),
         data.to_string(),
         types::AccessCondition::AllowAll,
+        None,
     );
 
     // Cost with complex access condition (Whitelist with many accounts)
@@ -427,6 +444,7 @@ fn test_access_condition_size_affects_cost() {
         accounts(1),
         data.to_string(),
         complex_access,
+        None,
     );
 
     println!("Simple access cost: {}, Complex access cost: {}", cost_simple.0, cost_complex.0);

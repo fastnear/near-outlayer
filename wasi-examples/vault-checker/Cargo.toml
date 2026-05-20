@@ -1,0 +1,25 @@
+[package]
+name = "vault-checker"
+version = "0.1.0"
+edition = "2021"
+description = "Phase 3 of per-vault master plan: WASI agent that off-chain verifies a vault account's state and asks the keystore-worker to mark it verified on-chain."
+
+[[bin]]
+name = "vault-checker"
+path = "src/main.rs"
+
+[dependencies]
+wit-bindgen = "0.36"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# Phase 7 audit F1: outbound HTTP from inside the WASI agent so the
+# 5-check verifier can forward to the keystore-worker's
+# `/sign-vault-verification` endpoint after a PASS. Same library
+# used by every other OutLayer wasip2 example (oracle-ark, weather-ark).
+wasi-http-client = "0.2"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1

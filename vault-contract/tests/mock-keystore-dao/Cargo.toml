@@ -1,0 +1,24 @@
+[package]
+name = "mock-keystore-dao"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+
+# This crate is its own workspace so it does not inherit from the parent
+# `vault-contract` Cargo workspace. The parent excludes this directory; the
+# explicit `[workspace]` here makes the isolation symmetric.
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk = { version = "= 5.9.0", features = ["legacy"] }
+
+[profile.release]
+codegen-units = 1
+opt-level = "s"
+lto = true
+debug = false
+panic = "abort"
+overflow-checks = true

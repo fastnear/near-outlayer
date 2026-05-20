@@ -51,6 +51,20 @@ export default function AgentCustodyPage() {
             No single party, not even the infrastructure operator, can extract keys or bypass policy rules.
           </p>
         </div>
+
+        <div className="bg-blue-50 border-l-4 border-blue-500 p-4 mb-6">
+          <p className="text-sm text-gray-700">
+            <strong>Optional: sovereign vaults.</strong> Custody wallets are derived from a shared OutLayer master by default
+            &mdash; convenient and recovery-free. If your application&rsquo;s value-at-risk justifies an extra setup step,
+            you can deploy a per-customer{' '}
+            <Link href="/docs/vaults" className="text-[#cc6600] hover:underline">
+              sovereign vault
+            </Link>
+            : the wallet&rsquo;s keys are then derived from a master that&rsquo;s recoverable by you through DAO cessation
+            or your own unilateral exit, even if OutLayer ceases. The agent code does not change &mdash; the API key
+            fully determines which master is used.
+          </p>
+        </div>
       </section>
 
       {/* How It Works */}
@@ -747,8 +761,9 @@ curl -s -X POST -H "Content-Type: application/json" \\
 
         <p className="text-gray-700 mb-4">
           For servers, bots, and agents with a NEAR account: create wallets that require <strong>zero per-user key storage</strong>.
-          The wallet ID is derived from <code className="bg-gray-100 px-1 rounded">(account_id, seed)</code> &mdash; same inputs always produce the same wallet.
+          The wallet ID is derived from <code className="bg-gray-100 px-1 rounded">(account_id, seed, vault_or_none)</code> &mdash; same inputs always produce the same wallet, and different vault scopes legitimately mint independent sub-wallets under the same seed.
           Auth uses NEAR ed25519 signatures on every request instead of stored API keys.
+          Seed format: <code className="bg-gray-100 px-1 rounded">[a-zA-Z0-9._-]</code>, 1-256 chars.
         </p>
 
         <div className="bg-blue-50 border-l-4 border-blue-500 p-4 mb-6">
@@ -854,15 +869,20 @@ curl -s -X POST -H "Content-Type: application/json" \\
 
         <h3 className="text-lg font-semibold mt-6 mb-2">Bearer near: token format</h3>
         <p className="text-gray-700 mb-2">
-          Base64url-encode a JSON object. The signed message is <code className="bg-gray-100 px-1 rounded">auth:&lt;seed&gt;:&lt;timestamp&gt;</code> (±30s window).
+          Base64url-encode a JSON object. The signed message format depends on whether you include a vault scope (±30s window):
         </p>
+        <ul className="list-disc pl-6 text-gray-700 mb-2 text-sm space-y-1">
+          <li>No vault: <code className="bg-gray-100 px-1 rounded">auth:&lt;seed&gt;:&lt;timestamp&gt;</code></li>
+          <li>With vault: <code className="bg-gray-100 px-1 rounded">auth:&lt;seed&gt;:&lt;timestamp&gt;:&lt;vault_id&gt;</code> — vault_id MUST be inside the signed message (not only in JSON), otherwise verify fails with 401.</li>
+        </ul>
         <SyntaxHighlighter language="json" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
 {`{
   "account_id": "my-bot.near",
   "seed": "user-42",
   "pubkey": "ed25519:<base58>",
   "timestamp": 1712000000,
-  "signature": "<base58>"
+  "signature": "<base58>",
+  "vault_id": "vault.my-bot.near"   // optional; include in signed message too
 }`}
         </SyntaxHighlighter>
 
@@ -890,7 +910,7 @@ curl -H "Authorization: Bearer wk_derived_key_here" \\
         <h3 className="text-lg font-semibold mt-6 mb-2">Key rotation</h3>
         <p className="text-gray-700 mb-4">
           No endpoint needed. Add a new key to your NEAR account, start signing with it, remove the old key.
-          Old key access is revoked within 60 seconds (cache TTL). Wallet identity is tied to <code className="bg-gray-100 px-1 rounded">(account_id, seed)</code>, not to which key signs.
+          Old key access is revoked within 60 seconds (cache TTL). Wallet identity is tied to <code className="bg-gray-100 px-1 rounded">(account_id, seed, vault_or_none)</code>, not to which key signs.
         </p>
       </section>
 

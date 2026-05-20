@@ -41,14 +41,36 @@ export default function SecretsPage() {
       });
 
       // Filter out System accessor (Payment Keys) - those are managed on /payment-keys page
-      const filteredSecrets = (Array.isArray(secrets) ? secrets : []).filter(
+      const filteredSecrets: UserSecret[] = (Array.isArray(secrets) ? secrets : []).filter(
         (s: UserSecret) => {
           if (!s.accessor || typeof s.accessor !== 'object') return true;
           return !('System' in s.accessor);
         }
       );
 
+      // Show the list immediately so the page isn't blocked on vault
+      // lookups, then enrich each entry in parallel with its on-chain
+      // vault-id binding. `get_secret_vault` returns null for legacy
+      // default-master secrets and the vault account id for vault-bound
+      // ones; the result back-fills the badge in `SecretCard` without
+      // re-rendering anything else.
       setUserSecrets(filteredSecrets);
+
+      const enriched = await Promise.all(
+        filteredSecrets.map(async (s) => {
+          try {
+            const v = await viewMethod({
+              contractId,
+              method: 'get_secret_vault',
+              args: { accessor: s.accessor, profile: s.profile, owner: accountId },
+            });
+            return { ...s, vault_id: typeof v === 'string' ? v : null };
+          } catch {
+            return { ...s, vault_id: null };
+          }
+        }),
+      );
+      setUserSecrets(enriched);
     } catch (err) {
       console.error('Failed to load user secrets:', err);
       setError(`Failed to load secrets: ${(err as Error).message}`);
@@ -104,6 +126,11 @@ export default function SecretsPage() {
         profile: formData.profile,
         encrypted_secrets_base64: encryptedBase64,
         access: formData.access,
+        // Phase 7 F2: vault scope from the form's <VaultScopeToggle>.
+        // `null` ⇒ legacy / default-master (current behaviour).
+        // Set ⇒ on-chain binding to a customer-owned vault, so the
+        // worker's `decrypt` path knows which per-vault master to use.
+        vault_id: formData.vaultId,
       };
       const estimateArgs = {
         accessor,
@@ -111,6 +138,9 @@ export default function SecretsPage() {
         owner: accountId,
         encrypted_secrets_base64: encryptedBase64,
         access: formData.access,
+        // Must mirror `transactionArgs.vault_id` so the cost estimate
+        // includes (or excludes) the binding-storage overhead.
+        vault_id: formData.vaultId,
       };
 
       // Estimate storage cost via viewMethod
@@ -352,6 +382,12 @@ export default function SecretsPage() {
                         branch: null,
                       },
                   profile: updatingSecret.profile,
+                  // Phase 7 audit H3: pass `undefined` so SecretsForm
+                  // performs the `get_secret_vault` view-call itself
+                  // and inherits the existing binding. Without this,
+                  // an update of a vault-bound secret silently
+                  // re-binds it to the default master.
+                  vaultId: undefined,
                 }
               : undefined
           }

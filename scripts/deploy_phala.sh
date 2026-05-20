@@ -427,13 +427,38 @@ else
     echo -e "${GREEN}✓ CVM restarted (no proposal needed for worker)${NC}"
 fi
 
+# Wait for CVM to come back to "running" after restart, then fetch identifiers.
+# instance_id is empty while the CVM is restarting, so we poll for up to ~60s.
+APP_ID=""
+INSTANCE_ID=""
+GATEWAY_DOMAIN=""
+DAPP_URL=""
+for _ in $(seq 1 30); do
+    CVM_DETAILS=$(phala cvms get "$CVM_NAME" --json 2>/dev/null || echo "{}")
+    POST_STATUS=$(echo "$CVM_DETAILS" | jq -r '.status // empty')
+    APP_ID=$(echo "$CVM_DETAILS" | jq -r '.app_id // empty')
+    INSTANCE_ID=$(echo "$CVM_DETAILS" | jq -r '.instance_id // empty')
+    GATEWAY_DOMAIN=$(echo "$CVM_DETAILS" | jq -r '.gateway_domain // empty')
+    DAPP_URL=$(echo "$CVM_DETAILS" | jq -r '.dapp_dashboard_url // empty')
+    if [ "$POST_STATUS" = "running" ] && [ -n "$INSTANCE_ID" ]; then
+        break
+    fi
+    sleep 2
+done
+# Extract cluster (e.g. dstack-pha-prod5) by stripping trailing .phala.network
+CLUSTER="${GATEWAY_DOMAIN%.phala.network}"
+
 # Done
 echo ""
 echo -e "${CYAN}========================================${NC}"
 echo -e "${CYAN}✅ Deployment Complete!${NC}"
 echo -e "${CYAN}========================================${NC}"
 echo ""
-echo -e "CVM Name: ${GREEN}${CVM_NAME}${NC}"
+echo -e "CVM Name:    ${GREEN}${CVM_NAME}${NC}"
+echo -e "App ID:      ${GREEN}${APP_ID}${NC}"
+echo -e "Instance ID: ${GREEN}${INSTANCE_ID}${NC}"
+echo -e "Cluster:     ${GREEN}${CLUSTER}${NC}"
+echo -e "Worker URL:  ${GREEN}${DAPP_URL}${NC}"
 echo -e "MRTD:     ${GREEN}${MRTD}${NC}"
 echo -e "RTMR0:    ${GREEN}${RTMR0}${NC}"
 echo -e "RTMR1:    ${GREEN}${RTMR1}${NC}"

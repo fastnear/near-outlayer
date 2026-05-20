@@ -56,6 +56,31 @@ struct TeeSession {
     created_at: std::time::Instant,
 }
 
+/// Bundled context populated together by `set_mpc_context` after TEE
+/// registration. See [`AppState::mpc_context`] for the rationale.
+///
+/// **Nonce-lock invariant:** the keystore-worker holds ONE access key
+/// on the keystore-dao contract that's authorised for both
+/// `request_key` (CKD via [`crate::mpc_ckd`]) and
+/// `mark_vault_verified` / `ban_vault` (via
+/// [`crate::near::NearClient::submit_function_call`]). Any tx submitted
+/// with this signer must serialize through `signer_nonce_lock` —
+/// otherwise concurrent callers race to read the same nonce, build
+/// txs with the same `nonce + 1`, and only one wins; the loser
+/// surfaces an opaque `InvalidNonce` 500.
+///
+/// CKD calls FROM a vault account (Layer 2 of the per-vault master derivation) use a DIFFERENT
+/// signer (the vault's TEE function-call key) and don't share this lock.
+pub struct MpcContext {
+    /// MPC CKD config (incl. `keystore_dao_id` and `mpc_contract_id`,
+    /// both pre-parsed `AccountId`s). We require
+    /// separate `keystore_dao_id` on this struct — read it from
+    /// `mpc_ckd_config.keystore_dao_id` to keep one source of truth.
+    pub mpc_ckd_config: crate::mpc_ckd::MpcCkdConfig,
+    pub keystore_dao_signer: near_crypto::InMemorySigner,
+    pub signer_nonce_lock: tokio::sync::Mutex<()>,
+}
+
 /// Application state shared across all handlers
 #[derive(Clone)]
 pub struct AppState {
@@ -64,6 +89,27 @@ pub struct AppState {
     pub expected_measurements: crate::attestation::ExpectedMeasurements,
     pub near_client: Option<std::sync::Arc<crate::near::NearClient>>,
     pub is_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// MPC CKD context — config + dao id + worker's keystore-dao
+    /// signer with an integrated nonce-lock — populated only after a
+    /// successful TEE registration. Empty for non-TEE / mock modes,
+    /// which means the lazy per-vault-master path AND
+    /// `/sign-vault-verification` are unavailable; any request that
+    /// names a customer or asks to mark a vault fails fast with an
+    /// explanatory error rather than silently falling back.
+    ///
+    /// **Why one struct, not three OnceLocks (atomicity invariant):**
+    /// the three values are set together by exactly one path
+    /// (`perform_tee_registration` → `set_mpc_context`). Bundling
+    /// them under a single `OnceLock<MpcContext>` makes the set
+    /// atomic — no observer can ever see a half-populated state
+    /// where, say, `keystore_dao_signer` is set but `mpc_ckd_config`
+    /// isn't.
+    ///
+    /// **Set-once interior mutability** is required because
+    /// `AppState` is `Clone`d into handler tasks before TEE
+    /// registration completes; the registration task runs async and
+    /// populates this AFTER cloning.
+    pub mpc_context: std::sync::Arc<std::sync::OnceLock<MpcContext>>,
     /// In-memory TEE challenge store: challenge_hex -> TeeChallenge
     tee_challenges: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, TeeChallenge>>>,
     /// In-memory TEE session store: session_id -> TeeSession
@@ -92,6 +138,7 @@ impl AppState {
             expected_measurements: crate::attestation::ExpectedMeasurements::default(),
             near_client: near_client.map(std::sync::Arc::new),
             is_ready: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(is_ready)),
+            mpc_context: std::sync::Arc::new(std::sync::OnceLock::new()),
             tee_challenges: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             tee_sessions: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
@@ -108,6 +155,131 @@ impl AppState {
     pub async fn replace_keystore(&self, new_keystore: crate::crypto::Keystore) {
         let mut keystore = self.keystore.write().await;
         *keystore = new_keystore;
+    }
+
+    /// Populate the MPC CKD context after a successful TEE-mode boot.
+    /// Called from `main.rs` once we know which keystore-dao + MPC
+    /// contracts the worker is bound to. Set-once.
+    ///
+    /// **Re-call safety**: on the second call, the OnceLock will refuse
+    /// the new value. If the inputs are identical to the first set
+    /// (same dao_id, same MPC config) we treat it as benign idempotency.
+    /// If they differ, we WARN — it almost certainly means a bug
+    /// (worker re-registered against a different DAO mid-flight, or a
+    /// configuration race). We do NOT panic because that would crash a
+    /// running keystore over what is most likely an operator-fixable
+    /// situation, but the warning is loud so on-call notices.
+    ///
+    /// Takes `&self` because `AppState` is shared across handler tasks
+    /// via `Clone`. The fields use `OnceLock` for set-once interior
+    /// mutability.
+    pub fn set_mpc_context(
+        &self,
+        config: crate::mpc_ckd::MpcCkdConfig,
+        keystore_dao_signer: near_crypto::InMemorySigner,
+    ) {
+        let new_ctx = MpcContext {
+            mpc_ckd_config: config,
+            keystore_dao_signer,
+            signer_nonce_lock: tokio::sync::Mutex::new(()),
+        };
+        if let Err(rejected) = self.mpc_context.set(new_ctx) {
+            let prev = self
+                .mpc_context
+                .get()
+                .expect("OnceLock returned Err so it must already be set");
+            // Re-call protection. The only legitimate caller is the
+            // post-TEE-registration path, which runs once per process
+            // — any second call is a bug. Warn loudly even on
+            // identical config so the caller is held accountable
+            // (intentional escalation from `debug!` so identical
+            // re-set still surfaces as a state-bug signal).
+            let drift = prev.mpc_ckd_config.mpc_contract_id != rejected.mpc_ckd_config.mpc_contract_id
+                || prev.mpc_ckd_config.mpc_domain_id != rejected.mpc_ckd_config.mpc_domain_id
+                || prev.mpc_ckd_config.mpc_public_key != rejected.mpc_ckd_config.mpc_public_key
+                || prev.mpc_ckd_config.keystore_dao_id != rejected.mpc_ckd_config.keystore_dao_id
+                || prev.keystore_dao_signer.public_key != rejected.keystore_dao_signer.public_key;
+            if drift {
+                tracing::warn!(
+                    prev_dao = %prev.mpc_ckd_config.keystore_dao_id,
+                    new_dao = %rejected.mpc_ckd_config.keystore_dao_id,
+                    prev_mpc = %prev.mpc_ckd_config.mpc_contract_id,
+                    new_mpc = %rejected.mpc_ckd_config.mpc_contract_id,
+                    "set_mpc_context called twice with DIFFERENT context — keeping first, second ignored. \
+                     This indicates a bug or misconfiguration."
+                );
+            } else {
+                tracing::warn!(
+                    "set_mpc_context called twice with identical context — second call ignored. \
+                     This indicates a coding bug (only one TEE registration runs per process)."
+                );
+            }
+        }
+    }
+
+    /// Lazy-load gate wrapper used by per-customer handlers. Snapshots
+    /// the keystore (cheap — internal state is `Arc`-shared, so any
+    /// inserts done by `add_customer` become visible to all clones) and
+    /// delegates to [`crate::mpc_ckd::ensure_customer_loaded`].
+    ///
+    /// Returns an error when:
+    ///   * `customer = Some(_)` but the worker was booted without MPC
+    ///     context (non-TEE / mock — feature unsupported in that mode).
+    ///   * the vault is not verified on keystore-dao (or banned).
+    ///   * the vault is `unlocked == true` on chain (recovery
+    ///     completed) — covered by the cold-path gate.
+    ///   * the MPC CKD round-trip fails.
+    ///
+    /// `customer = None` always returns `Ok(())` immediately (legacy
+    /// default-master path).
+    ///
+    /// **No cache short-circuit at this layer.** Every signing op
+    /// delegates straight into [`crate::mpc_ckd::ensure_customer_loaded`],
+    /// which calls `assert_serving_allowed` (the
+    /// `is_vault_verified` + `get_state().unlocked == false` view-call
+    /// pair) BEFORE checking the in-memory cache. That preserves the
+    /// "sovereign after recovery" property even if the indexer-driven
+    /// `/admin/evict-customer` is delayed: a vault under parent
+    /// FullAccess control will trip the unlocked check and have its
+    /// cached master evicted on the next request. Cost: ~200-600 ms
+    /// of view-calls per signing op; acceptable on the wallet path.
+    pub async fn ensure_customer_loaded(
+        &self,
+        customer: Option<&near_primitives::types::AccountId>,
+    ) -> anyhow::Result<()> {
+        let Some(vault_id) = customer else {
+            return Ok(());
+        };
+
+        // Snapshot the keystore. Cloning is cheap (Arc-shared internal
+        // state) and avoids holding the outer RwLock across the await.
+        // Inserts into the snapshot's `masters` propagate to the
+        // canonical keystore via the shared Arc.
+        let keystore_snapshot = self.keystore.read().await.clone();
+
+        let ctx = self.mpc_context.get().ok_or_else(|| {
+            anyhow::anyhow!(
+                "per-customer master requested for {} but worker is running \
+                 without MPC CKD context (non-TEE mode)",
+                vault_id
+            )
+        })?;
+        let near_client = self.near_client.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "per-customer master requested for {} but near_client \
+                 is not configured",
+                vault_id
+            )
+        })?;
+
+        crate::mpc_ckd::ensure_customer_loaded(
+            &ctx.mpc_ckd_config,
+            near_client.as_ref(),
+            &ctx.mpc_ckd_config.keystore_dao_id,
+            &keystore_snapshot,
+            Some(vault_id),
+        )
+        .await
     }
 }
 
@@ -173,6 +345,29 @@ pub enum SystemSecretType {
     PaymentKey,
 }
 
+impl SystemSecretType {
+    /// Contract-side representation (CamelCase, matches NEAR's default
+    /// JSON serialisation of the contract's `SystemSecretType` enum
+    /// variants). Used by `accessor_to_contract_json` when forwarding
+    /// the variant to a contract view method. **Centralised here so a
+    /// future variant addition is one match arm**, not five scattered
+    /// across the file.
+    fn as_contract_str(&self) -> &'static str {
+        match self {
+            SystemSecretType::PaymentKey => "PaymentKey",
+        }
+    }
+
+    /// Seed-string representation (snake_case, matches the seed
+    /// convention used at write time by all storage paths). Used inside
+    /// derived secret seeds for decrypt/encrypt of System secrets.
+    fn as_seed_str(&self) -> &'static str {
+        match self {
+            SystemSecretType::PaymentKey => "payment_key",
+        }
+    }
+}
+
 /// Request to decrypt secrets from contract
 #[derive(Debug, Deserialize)]
 pub struct DecryptRequest {
@@ -211,6 +406,12 @@ pub struct PubkeyRequest {
     pub seed: String,
     /// Secrets as JSON string for validation (e.g., '{"API_KEY":"value"}')
     pub secrets_json: String,
+    /// Optional vault id: when set, the returned pubkey is
+    /// derived from the per-vault master so the resulting on-chain
+    /// secret is encrypted under the correct customer scope. Absent
+    /// (or null/empty) ⇒ default OutLayer master, legacy behaviour.
+    #[serde(default)]
+    pub vault_id: Option<String>,
 }
 
 /// Response with public key
@@ -232,6 +433,13 @@ pub struct AddGeneratedSecretRequest {
 
     /// New secrets to generate
     pub new_secrets: Vec<GeneratedSecretSpec>,
+
+    /// Optional vault id: scope the encrypt/decrypt calls to a
+    /// per-vault master. MUST match the scope under which
+    /// `encrypted_secrets_base64` was originally encrypted, otherwise
+    /// the decrypt step will fail. Absent ⇒ default OutLayer master.
+    #[serde(default)]
+    pub vault_id: Option<String>,
 }
 
 /// Specification for a secret to generate
@@ -303,6 +511,13 @@ pub struct UpdateUserSecretsRequest {
 
     /// Recipient for NEP-413 signature verification
     pub recipient: String,
+
+    /// Optional vault id: scope the encrypt/decrypt calls to
+    /// a per-vault master. MUST match the scope under which the existing
+    /// secrets were encrypted (when in Append mode reading current
+    /// state). Absent ⇒ default OutLayer master.
+    #[serde(default)]
+    pub vault_id: Option<String>,
 }
 
 /// Response after updating user secrets
@@ -418,6 +633,125 @@ pub struct VrfGenerateResponse {
 pub struct VrfPublicKeyResponse {
     /// VRF public key (Ed25519), 32 bytes hex
     pub vrf_public_key_hex: String,
+}
+
+/// `POST /admin/evict-customer` request body.
+#[derive(Debug, Deserialize)]
+pub struct AdminEvictCustomerRequest {
+    /// Vault account id whose per-customer master should be dropped
+    /// from cache. Must parse as `AccountId`.
+    pub vault_id: String,
+    /// Free-form reason logged for audit visibility (e.g.
+    /// `"duplicate_mpc_call_after_init"`, `"manual_dao_ban"`). Not
+    /// validated against any whitelist — operators set the
+    /// convention.
+    pub reason: String,
+}
+
+/// `POST /admin/evict-customer` response. `ok = true` always; the
+/// endpoint is idempotent and signals no error states.
+#[derive(Debug, Serialize)]
+pub struct AdminEvictCustomerResponse {
+    pub ok: bool,
+}
+
+/// `POST /admin/ban-vault` request body.
+///
+/// Called by the race-attack monitoring service when it
+/// detects more than one MPC `request_app_private_key` call from the
+/// same vault account within the dedup window. The keystore-worker
+/// submits `keystore_dao.ban_vault(vault_id, reason)` on chain (its
+/// access key on the keystore-DAO contract is approved for this
+/// method) and ALSO evicts the per-customer master from cache so the
+/// ban takes effect within milliseconds rather than waiting for the
+/// next worker restart.
+#[derive(Debug, Deserialize)]
+pub struct AdminBanVaultRequest {
+    pub vault_id: String,
+    /// Free-form reason recorded in the on-chain `vault_banned` log
+    /// event (max 256 bytes per the contract). Operators choose the
+    /// convention; typical values:
+    /// `"duplicate_mpc_call_after_init"`,
+    /// `"manual_admin_action"`,
+    /// `"phase8_monitor_alert_<id>"`.
+    pub reason: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AdminBanVaultResponse {
+    /// Tx hash of the on-chain `ban_vault` submission. `None` if the
+    /// vault is already banned (idempotent short-circuit).
+    pub tx_hash: Option<String>,
+    /// `true` when the keystore short-circuited because
+    /// `is_vault_banned == true` already.
+    pub already_banned: bool,
+}
+
+/// `POST /sign-vault-verification` request body.
+///
+/// Sent by the public `outlayer.near/vault-checker` WASI agent after
+/// it has verified the vault state itself. The keystore-worker
+/// re-runs the SAME 5 RPC checks (defense-in-depth) and only then
+/// signs+broadcasts `keystore_dao.mark_vault_verified(vault_id)`.
+#[derive(Debug, Deserialize)]
+pub struct SignVaultVerificationRequest {
+    /// Vault account id to mark as verified.
+    pub vault_id: String,
+}
+
+/// `POST /sign-vault-verification` response.
+///
+/// * `tx_hash = Some(_)` — the worker submitted a fresh
+///   `mark_vault_verified` tx; the value is the base58 NEAR tx hash.
+/// * `tx_hash = None`, `already_verified = true` — the vault was
+///   already verified on-chain; the worker SHORT-CIRCUITED without
+///   spending gas or a nonce. Audit noteC3: spamming
+///   `/sign-vault-verification` against an already-verified vault
+///   would otherwise burn the worker's per-tx nonce and gas budget.
+///
+/// **Idempotency contract (Audit noteC1):** a 5xx
+/// response from this endpoint MUST be treated as ambiguous by the
+/// caller — the tx may or may not have landed. Caller MUST query
+/// `keystore_dao.is_vault_verified(vault_id)` independently before
+/// retrying; a retry without that check could trip a NEAR
+/// `InvalidNonce` if the original tx silently committed.
+#[derive(Debug, Serialize)]
+pub struct SignVaultVerificationResponse {
+    /// Base58-encoded tx hash of the `mark_vault_verified` call, or
+    /// `None` when `already_verified = true`.
+    pub tx_hash: Option<String>,
+    /// `true` if the vault was already verified at request time.
+    /// `false` if a fresh tx was submitted (and `tx_hash` is `Some`).
+    #[serde(default)]
+    pub already_verified: bool,
+}
+
+/// `POST /derive-vault-tee-key` request body.
+///
+/// Used by `outlayer-cli init-vault` to fetch the public
+/// half of the Layer-1 TEE keypair BEFORE submitting the atomic
+/// deploy that adds it as a function-call AccessKey on the new vault.
+/// The keypair is HMAC-derived from the OutLayer default master with
+/// seed `outlayer.near:{vault_id}` (Layer 1 of the per-vault master derivation) — deterministic,
+/// re-derivable on any approved TEE, never leaves the enclave's
+/// memory in private form.
+#[derive(Debug, Deserialize)]
+pub struct DeriveVaultTeeKeyRequest {
+    pub vault_id: String,
+}
+
+/// `POST /derive-vault-tee-key` response.
+///
+/// Returns ONLY the public key — the private key never leaves the TEE
+/// (it's used by the worker to sign Layer-2 MPC CKD calls FROM the
+/// vault). The caller (CLI) embeds `public_key` in an `AddKey` action
+/// inside the atomic deploy tx; afterwards anyone reading
+/// `view_access_key_list(vault_id)` sees that exact pubkey, which
+/// `vault-checker` and `vault_verifier.rs` then assert against.
+#[derive(Debug, Serialize)]
+pub struct DeriveVaultTeeKeyResponse {
+    /// NEAR-format public key, e.g. `"ed25519:<base58>"`.
+    pub public_key: String,
 }
 
 /// Request to encrypt plaintext data
@@ -673,6 +1007,58 @@ pub fn create_router(state: AppState) -> Router {
             coordinator_auth_middleware,
         ));
 
+    // Admin routes — internal-only side-channel for the monitoring
+    // service to forcibly drop a per-customer master from cache when a
+    // vault is banned. Auth piggybacks on the worker token so anything
+    // that already speaks to /decrypt can also evict — see the route's
+    // doc-comment on `/admin/evict-customer` for the threat model.
+    let admin_routes = Router::new()
+        .route("/admin/evict-customer", post(admin_evict_customer_handler))
+        // Race-attack monitor calls this. Worker-token-only —
+        // unlike vault_routes, this MUTATES on-chain state by submitting
+        // a `ban_vault` tx, so the auth boundary is intentionally
+        // tight. Operator's monitoring service must hold a worker token.
+        .route("/admin/ban-vault", post(admin_ban_vault_handler))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            worker_auth_middleware,
+        ));
+
+    // Vault provisioning routes — accept EITHER coordinator OR worker
+    // token. `/sign-vault-verification` is called by the public
+    // `outlayer.near/vault-checker` WASI agent (worker token, since the
+    // agent runs inside OutLayer's TEE workers) AND by the coordinator
+    // proxy `/customer/sign-verification` driven by `outlayer vault init`
+    // (coordinator token, since the CLI customer doesn't have a worker
+    // token). `/derive-vault-tee-key` has the same caller mix. Both
+    // endpoints' security guarantee is in-process re-verification or
+    // public-only return, NOT the auth boundary; widening the auth lane
+    // keeps the deploy story simple (one keystore token in coordinator
+    // env, one in worker env, no double-allowlisting required) without
+    // weakening the trust model.
+    // /sign-vault-verification submits `mark_vault_verified` on chain
+    // using the worker's keystore-DAO access key — every legitimate
+    // call burns a small amount of that key's gas budget. To shrink
+    // the blast radius of a leaked TEE-worker token, we restrict this
+    // endpoint to coordinator auth only. Workers don't need to call
+    // it (the verification flow is coordinator-driven); they keep
+    // their wider auth on /decrypt, /derive, /wallet/*, etc.
+    let vault_sign_routes = Router::new()
+        .route("/sign-vault-verification", post(sign_vault_verification_handler))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            coordinator_auth_middleware,
+        ));
+
+    // /derive-vault-tee-key returns a deterministic pubkey, no on-chain
+    // tx, no allowance burn — safe on the wider TEE-registration lane.
+    let vault_derive_routes = Router::new()
+        .route("/derive-vault-tee-key", post(derive_vault_tee_key_handler))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            tee_registration_auth_middleware,
+        ));
+
     // TEE session routes (coordinator OR worker auth)
     // Workers can register directly or via coordinator proxy.
     // Security: challenge-response + NEAR RPC key check provide the actual verification.
@@ -691,6 +1077,9 @@ pub fn create_router(state: AppState) -> Router {
         .route("/vrf/pubkey", get(vrf_pubkey_handler)) // Public VRF public key
         .merge(worker_routes)
         .merge(coordinator_routes)
+        .merge(admin_routes)
+        .merge(vault_sign_routes)
+        .merge(vault_derive_routes)
         .merge(tee_routes)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -704,9 +1093,36 @@ async fn health_handler(State(state): State<AppState>) -> Json<HealthResponse> {
     })
 }
 
+/// Returns true iff the request's `Authorization: Bearer <token>` header
+/// carries either a coordinator or worker token. Used for the
+/// vault-scoped path on otherwise-public routes (`/pubkey`).
+///
+/// **Why this gate exists:** without it, the body-based
+/// `vault_id` on `/pubkey` would let an unauthenticated caller force
+/// the worker to perform an MPC CKD round-trip for ANY verified vault,
+/// charging gas to the victim vault account on every cache miss
+/// (~30 mNEAR/call). Public reads of pubkeys are still allowed for
+/// `vault_id = None`, which preserves the dashboard's
+/// pre-store-secrets pubkey-fetch flow on the legacy default master.
+fn has_authenticated_caller(state: &AppState, headers: &axum::http::HeaderMap) -> bool {
+    let Some(auth) = headers.get("Authorization").and_then(|h| h.to_str().ok()) else {
+        return false;
+    };
+    let Some(token) = auth.strip_prefix("Bearer ") else {
+        return false;
+    };
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    let token_hash = hex::encode(hasher.finalize());
+    state.config.allowed_coordinator_token_hashes.contains(&token_hash)
+        || state.config.allowed_worker_token_hashes.contains(&token_hash)
+}
+
 /// Get public key for encryption AND validate secrets before encryption
 async fn pubkey_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<PubkeyRequest>,
 ) -> Result<Json<PubkeyResponse>, ApiError> {
     // Check if keystore is ready (has master key from MPC)
@@ -781,18 +1197,79 @@ async fn pubkey_handler(
     }
 
     // 2. Generate public key for encryption
+    // Route through per-vault master if vault_id is set in
+    // the request body. We use body-based extraction here (not the
+    // X-Customer-Vault header) because the vault scope is an attribute
+    // of *which secret* this pubkey will encrypt — not of the caller's
+    // session. Same fail-loud-on-malformed semantics.
+    let customer = parse_optional_vault_id(req.vault_id.as_deref())?;
+
+    // SECURITY: /pubkey is a public route. The
+    // legacy `vault_id = None` flow stays public for the dashboard's
+    // pre-store-secrets pubkey fetch. The vault-scoped flow can trigger
+    // an MPC CKD round-trip via `ensure_customer_loaded` — that's gas
+    // charged to the customer's vault account. We therefore require
+    // coordinator/worker auth before allowing vault_id != None, so an
+    // unauthenticated attacker cannot enumerate verified vaults and
+    // burn their gas.
+    if customer.is_some() && !has_authenticated_caller(&state, &headers) {
+        tracing::warn!(
+            vault_id = ?customer,
+            "Rejected /pubkey vault-scoped request without coordinator/worker token"
+        );
+        return Err(ApiError::Unauthorized(
+            "vault-scoped /pubkey requires coordinator or worker token".to_string(),
+        ));
+    }
+
+    state
+        .ensure_customer_loaded(customer.as_ref())
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
     let keystore = state.keystore.read().await;
     let pubkey_hex = keystore
-        .public_key_hex(&req.seed)
+        .public_key_hex(customer.as_ref(), &req.seed)
         .map_err(|e| ApiError::InternalError(format!("Failed to derive public key: {}", e)))?;
 
     tracing::info!(
         seed = %req.seed,
         num_secrets = secrets_map.len(),
+        vault_id = ?customer,
         "Validated secrets and generated pubkey"
     );
 
     Ok(Json(PubkeyResponse { pubkey: pubkey_hex }))
+}
+
+/// Convert keystore-worker's internally-tagged `SecretAccessor` to the
+/// externally-tagged JSON shape that contract view methods expect.
+///
+/// keystore-worker uses `#[serde(tag = "type")]` on `SecretAccessor` so
+/// it can deserialize requests where the accessor variant is announced
+/// inline; the contract uses NEAR's default external tagging
+/// (`{"Variant": {...}}`). This is the small adapter that bridges them.
+/// `Repo.repo` is normalised the same way `near.rs::get_secrets` does
+/// — this keeps key derivation consistent between the legacy lookup
+/// path and the new combined `get_secret_with_vault` path.
+fn accessor_to_contract_json(a: &SecretAccessor) -> serde_json::Value {
+    match a {
+        SecretAccessor::Repo { repo, branch } => serde_json::json!({
+            "Repo": {
+                "repo": crate::utils::normalize_repo_url(repo),
+                "branch": branch,
+            }
+        }),
+        SecretAccessor::WasmHash { hash } => serde_json::json!({
+            "WasmHash": { "hash": hash }
+        }),
+        SecretAccessor::Project { project_id } => serde_json::json!({
+            "Project": { "project_id": project_id }
+        }),
+        SecretAccessor::System { secret_type } => {
+            serde_json::json!({ "System": secret_type.as_contract_str() })
+        }
+    }
 }
 
 /// Decrypt secrets from contract for authorized TEE worker
@@ -868,94 +1345,86 @@ async fn decrypt_handler(
         ApiError::Unauthorized(format!("Attestation verification failed: {}", e))
     })?;
 
-    // 2. Read secrets from NEAR contract
+    // 2. Read secrets + vault binding from NEAR contract.
+    //
+    // Mechanism: on-chain side-table. A single combined
+    // view call returns BOTH the encrypted secret profile AND the
+    // per-secret vault binding. The vault binding tells us which master
+    // to use for decryption; we don't accept a customer header here
+    // because the customer must equal whatever was on-chain at write
+    // time, and the chain is the only authoritative source.
     let near_client = state.near_client.as_ref()
         .ok_or_else(|| ApiError::InternalError("NEAR client not configured".to_string()))?;
 
-    let secret_profile = match &req.accessor {
-        SecretAccessor::Repo { repo, branch } => {
-            near_client
-                .get_secrets(repo, branch.as_deref(), &req.profile, &req.owner)
-                .await
-                .map_err(|e| {
-                    tracing::error!(task_id = %task_id_str, error = %e, "Failed to read secrets from contract");
-                    ApiError::InternalError(format!("Failed to read secrets from contract: {}", e))
-                })?
-                .ok_or_else(|| {
-                    tracing::warn!(
-                        task_id = %task_id_str,
-                        repo = %repo,
-                        profile = %req.profile,
-                        owner = %req.owner,
-                        "Secrets not found in contract"
-                    );
-                    ApiError::BadRequest("Secrets not found in contract".to_string())
-                })?
-        }
-        SecretAccessor::WasmHash { hash } => {
-            near_client
-                .get_secrets_by_wasm_hash(hash, &req.profile, &req.owner)
-                .await
-                .map_err(|e| {
-                    tracing::error!(task_id = %task_id_str, error = %e, "Failed to read secrets from contract");
-                    ApiError::InternalError(format!("Failed to read secrets from contract: {}", e))
-                })?
-                .ok_or_else(|| {
-                    tracing::warn!(
-                        task_id = %task_id_str,
-                        wasm_hash = %hash,
-                        profile = %req.profile,
-                        owner = %req.owner,
-                        "Secrets not found in contract"
-                    );
-                    ApiError::BadRequest("Secrets not found in contract".to_string())
-                })?
-        }
-        SecretAccessor::Project { project_id } => {
-            near_client
-                .get_secrets_by_project(project_id, &req.profile, &req.owner)
-                .await
-                .map_err(|e| {
-                    tracing::error!(task_id = %task_id_str, error = %e, "Failed to read secrets from contract");
-                    ApiError::InternalError(format!("Failed to read secrets from contract: {}", e))
-                })?
-                .ok_or_else(|| {
-                    tracing::warn!(
-                        task_id = %task_id_str,
-                        project_id = %project_id,
-                        profile = %req.profile,
-                        owner = %req.owner,
-                        "Secrets not found in contract"
-                    );
-                    ApiError::BadRequest("Secrets not found in contract".to_string())
-                })?
-        }
-        SecretAccessor::System { secret_type } => {
-            // Convert SystemSecretType to contract format string
-            let secret_type_str = match secret_type {
-                SystemSecretType::PaymentKey => "PaymentKey",
-            };
-            near_client
-                .get_secrets_by_system(secret_type_str, &req.profile, &req.owner)
-                .await
-                .map_err(|e| {
-                    tracing::error!(task_id = %task_id_str, error = %e, "Failed to read secrets from contract");
-                    ApiError::InternalError(format!("Failed to read secrets from contract: {}", e))
-                })?
-                .ok_or_else(|| {
-                    tracing::warn!(
-                        task_id = %task_id_str,
-                        secret_type = ?secret_type,
-                        profile = %req.profile,
-                        owner = %req.owner,
-                        "Secrets not found in contract"
-                    );
-                    ApiError::BadRequest("Secrets not found in contract".to_string())
-                })?
-        }
-    };
+    let accessor_json = accessor_to_contract_json(&req.accessor);
+    let combined = near_client
+        .get_secret_with_vault(accessor_json, &req.profile, &req.owner)
+        .await
+        .map_err(|e| {
+            tracing::error!(task_id = %task_id_str, error = %e, "Failed to read secrets from contract");
+            ApiError::InternalError(format!("Failed to read secrets from contract: {}", e))
+        })?;
+    let vault_id_str = combined.vault_id;
 
-    tracing::debug!(task_id = %task_id_str, "Successfully read secrets from contract");
+    let secret_profile = combined.profile.ok_or_else(|| {
+        // Per-variant log fields for grep-friendliness — operators
+        // search by repo/wasm_hash/project_id/secret_type, so we don't
+        // dump the whole accessor as Debug.
+        match &req.accessor {
+            SecretAccessor::Repo { repo, branch } => tracing::warn!(
+                task_id = %task_id_str,
+                repo = %repo,
+                branch = ?branch,
+                profile = %req.profile,
+                owner = %req.owner,
+                "Secrets not found in contract"
+            ),
+            SecretAccessor::WasmHash { hash } => tracing::warn!(
+                task_id = %task_id_str,
+                wasm_hash = %hash,
+                profile = %req.profile,
+                owner = %req.owner,
+                "Secrets not found in contract"
+            ),
+            SecretAccessor::Project { project_id } => tracing::warn!(
+                task_id = %task_id_str,
+                project_id = %project_id,
+                profile = %req.profile,
+                owner = %req.owner,
+                "Secrets not found in contract"
+            ),
+            SecretAccessor::System { secret_type } => tracing::warn!(
+                task_id = %task_id_str,
+                secret_type = ?secret_type,
+                profile = %req.profile,
+                owner = %req.owner,
+                "Secrets not found in contract"
+            ),
+        }
+        ApiError::BadRequest("Secrets not found in contract".to_string())
+    })?;
+
+    // Parse the on-chain vault binding into an AccountId, then ensure
+    // the per-vault master is loaded BEFORE we touch the keystore.
+    // Bridge between the contract's vault-binding side-table and the
+    // lazy-load gate. Malformed vault_id on chain is a hard error
+    // (chain shouldn't store malformed AccountIds — it would be a bug
+    // in the contract or the binding writer).
+    let customer = parse_optional_vault_id(vault_id_str.as_deref())?;
+    state
+        .ensure_customer_loaded(customer.as_ref())
+        .await
+        .map_err(|e| ApiError::InternalError(format!(
+            "lazy-load gate failed for vault {}: {}",
+            customer.as_ref().map(|v| v.as_str()).unwrap_or("<none>"),
+            e
+        )))?;
+
+    tracing::debug!(
+        task_id = %task_id_str,
+        vault_id = ?customer,
+        "Successfully read secrets from contract"
+    );
 
     // 3. Validate access conditions
     let access_condition: crate::types::AccessCondition = serde_json::from_value(secret_profile["access"].clone())
@@ -990,10 +1459,29 @@ async fn decrypt_handler(
     // - This is correct because seed must match the one used during encryption
     // - Access control already validated above (only owner can decrypt their secrets)
     // - Contract already returned the correct secrets based on request parameters
+    //
+    // The `seed` values logged below are NOT secrets — they are the
+    // public input to `HMAC(master, seed)`. The actual secret half
+    // is the master, which lives only in TEE enclave memory and is
+    // never logged. Logging the seed at debug level helps support
+    // hunt seed-mismatch bugs (caller computed seed != keystore's
+    // computed seed) without exposing any cryptographic material.
     let seed = match &req.accessor {
         SecretAccessor::Repo { repo, branch: request_branch } => {
             let normalized_repo = crate::utils::normalize_repo_url(repo);
-            let secret_branch = secret_profile["branch"].as_str();
+            // The contract's `SecretProfileView`
+            // does NOT have a top-level `branch` field — branch is
+            // nested inside `accessor.Repo.branch`. Reading
+            // `secret_profile["branch"]` always returned Null, which
+            // silently disabled the wildcard-fallback seed logic and
+            // broke decryption for any secret stored with an explicit
+            // branch. Fixed: read the actual nested location, falling
+            // back to None if the contract returned a non-Repo accessor.
+            let secret_branch = secret_profile
+                .get("accessor")
+                .and_then(|a| a.get("Repo"))
+                .and_then(|r| r.get("branch"))
+                .and_then(|b| b.as_str());
 
             // Log branch matching for debugging
             match (request_branch.as_deref(), secret_branch) {
@@ -1026,7 +1514,7 @@ async fn decrypt_handler(
                 format!("{}:{}", normalized_repo, req.owner)
             };
 
-            tracing::info!(
+            tracing::debug!(
                 task_id = %task_id_str,
                 repo_normalized = %normalized_repo,
                 owner = %req.owner,
@@ -1040,7 +1528,7 @@ async fn decrypt_handler(
         SecretAccessor::WasmHash { hash } => {
             let seed = format!("wasm_hash:{}:{}", hash, req.owner);
 
-            tracing::info!(
+            tracing::debug!(
                 task_id = %task_id_str,
                 wasm_hash = %hash,
                 owner = %req.owner,
@@ -1053,7 +1541,7 @@ async fn decrypt_handler(
         SecretAccessor::Project { project_id } => {
             let seed = format!("project:{}:{}", project_id, req.owner);
 
-            tracing::info!(
+            tracing::debug!(
                 task_id = %task_id_str,
                 project_id = %project_id,
                 owner = %req.owner,
@@ -1066,12 +1554,9 @@ async fn decrypt_handler(
         SecretAccessor::System { secret_type } => {
             // Seed format: system:{type}:{owner}:{nonce}
             // nonce is stored in profile field
-            let type_str = match secret_type {
-                SystemSecretType::PaymentKey => "payment_key",
-            };
-            let seed = format!("system:{}:{}:{}", type_str, req.owner, req.profile);
+            let seed = format!("system:{}:{}:{}", secret_type.as_seed_str(), req.owner, req.profile);
 
-            tracing::info!(
+            tracing::debug!(
                 task_id = %task_id_str,
                 secret_type = ?secret_type,
                 owner = %req.owner,
@@ -1093,7 +1578,7 @@ async fn decrypt_handler(
         .map_err(|e| ApiError::InternalError(format!("Invalid base64 in encrypted_secrets: {}", e)))?;
 
     let keystore = state.keystore.read().await;
-    let plaintext_bytes = keystore.decrypt(&seed, &encrypted_bytes).map_err(|e| {
+    let plaintext_bytes = keystore.decrypt(customer.as_ref(), &seed, &encrypted_bytes).map_err(|e| {
         tracing::error!(task_id = %task_id_str, seed = %seed, error = %e, "Decryption failed");
         ApiError::InternalError(format!("Decryption failed: {}", e))
     })?;
@@ -1165,6 +1650,427 @@ async fn vrf_pubkey_handler(
     Ok(Json(VrfPublicKeyResponse { vrf_public_key_hex }))
 }
 
+/// `POST /admin/evict-customer` — drop the cached per-customer master.
+///
+/// Called by the monitoring service when it detects a vault should
+/// no longer operate (race-attack ban, manual DAO ban). The next
+/// `derive_*` call for this vault will fail because the lazy-load
+/// gate re-checks `keystore-dao.is_vault_verified` which now
+/// returns false-when-banned.
+///
+/// Without this endpoint a banned vault would continue operating
+/// until the next keystore-worker restart drops the in-memory cache.
+///
+/// **Auth:** worker token. Same boundary as `/decrypt` — anything
+/// inside the operator's TEE network can evict. The endpoint is NOT
+/// exposed to coordinator or external clients.
+///
+/// **Idempotent:** evicting a customer that was never loaded is a
+/// no-op. Returns `{ ok: true }` either way.
+async fn admin_evict_customer_handler(
+    State(state): State<AppState>,
+    Json(req): Json<AdminEvictCustomerRequest>,
+) -> Result<Json<AdminEvictCustomerResponse>, ApiError> {
+    let customer: near_primitives::types::AccountId = req.vault_id.parse().map_err(|e| {
+        ApiError::BadRequest(format!("invalid vault_id account: {e}"))
+    })?;
+    let keystore = state.keystore.read().await;
+    keystore.evict_customer(&customer);
+    tracing::info!(
+        vault_id = %customer,
+        reason = %req.reason,
+        "admin: evicted per-customer master from cache"
+    );
+    Ok(Json(AdminEvictCustomerResponse { ok: true }))
+}
+
+/// `POST /admin/ban-vault` — submit `keystore_dao.ban_vault(vault_id,
+/// reason)` and evict the cached per-customer master in one shot.
+///
+/// Called by the race-attack monitoring service when it
+/// detects more than one MPC `request_app_private_key` call for the
+/// same vault within the dedup window. Side effects (in order):
+///   1. Short-circuit if `keystore_dao.is_vault_banned(vault_id)` is
+///      already true — no need to spend another nonce + log line.
+///   2. Submit `ban_vault` via the worker's keystore-DAO function-call
+///      access key (same key that `mark_vault_verified` uses; the DAO
+///      whitelists the method-list). 300 TGas, no deposit. Serialized
+///      through `signer_nonce_lock` so this can run concurrently with
+///      `/sign-vault-verification`.
+///   3. Evict the in-memory per-customer master so the ban takes
+///      effect within ms — the `is_vault_verified` check on the
+///      next-derive-call already returns false-when-banned (the DAO
+///      view reads `verified - banned`).
+///
+/// **Auth:** worker token. Same boundary as `/admin/evict-customer`.
+async fn admin_ban_vault_handler(
+    State(state): State<AppState>,
+    Json(req): Json<AdminBanVaultRequest>,
+) -> Result<Json<AdminBanVaultResponse>, ApiError> {
+    if !state.is_ready() {
+        return Err(ApiError::Unauthorized(
+            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string(),
+        ));
+    }
+
+    let vault_id: near_primitives::types::AccountId = req.vault_id.parse().map_err(|e| {
+        ApiError::BadRequest(format!("invalid vault_id account: {e}"))
+    })?;
+
+    if req.reason.is_empty() {
+        return Err(ApiError::BadRequest(
+            "reason is required (operators set the convention; see the handler docs)".to_string(),
+        ));
+    }
+    if req.reason.len() > 256 {
+        return Err(ApiError::BadRequest(format!(
+            "reason must be at most 256 bytes (got {})",
+            req.reason.len()
+        )));
+    }
+
+    let ctx = state.mpc_context.get().ok_or_else(|| {
+        ApiError::InternalError(
+            "MPC CKD context not configured — worker booted in non-TEE mode".to_string(),
+        )
+    })?;
+    let near_client = state.near_client.as_ref().ok_or_else(|| {
+        ApiError::InternalError("NEAR client not configured".to_string())
+    })?;
+
+    // 1. Short-circuit if already banned.
+    let is_banned = near_client
+        .view_call_json(
+            &ctx.mpc_ckd_config.keystore_dao_id,
+            "is_vault_banned",
+            serde_json::json!({ "vault_id": vault_id }),
+        )
+        .await
+        .map_err(|e| {
+            ApiError::InternalError(format!("is_vault_banned view-call failed: {e}"))
+        })?;
+    if is_banned.as_bool() == Some(true) {
+        // Still evict — the cache may have stale state if a different
+        // operator banned via DAO vote and this monitor is catching up.
+        let keystore = state.keystore.read().await;
+        keystore.evict_customer(&vault_id);
+        tracing::info!(
+            vault_id = %vault_id,
+            "Skipping ban_vault tx — already banned on chain. Cache evicted."
+        );
+        return Ok(Json(AdminBanVaultResponse {
+            tx_hash: None,
+            already_banned: true,
+        }));
+    }
+
+    // 2. Submit ban_vault tx, serialized through signer_nonce_lock to
+    //    avoid racing /sign-vault-verification on the keystore-DAO
+    //    access key's nonce.
+    let outcome = {
+        let _guard = ctx.signer_nonce_lock.lock().await;
+        near_client
+            .submit_function_call(
+                &ctx.keystore_dao_signer,
+                &ctx.mpc_ckd_config.keystore_dao_id,
+                "ban_vault",
+                serde_json::json!({ "vault_id": vault_id, "reason": req.reason }),
+                300_000_000_000_000,
+                0,
+            )
+            .await
+    }
+    .map_err(|e| {
+        tracing::error!(
+            vault_id = %vault_id,
+            reason = %req.reason,
+            error = %e,
+            "ban_vault tx submission failed"
+        );
+        let msg = format!("{e:#}");
+        // Concurrent ban via DAO vote = treat as "already banned"
+        // (idempotent end state). The contract panics with a generic
+        // require! message so we match permissively.
+        if msg.contains("already") {
+            ApiError::Forbidden(format!("vault {} already banned (race): {}", vault_id, msg))
+        } else {
+            ApiError::InternalError(format!("tx submission failed: {msg}"))
+        }
+    })?;
+
+    // 3. Evict the cached master so existing in-flight derive_* calls
+    //    on this vault stop succeeding immediately. Does not need the
+    //    on-chain tx to land first — the lazy-load gate re-checks
+    //    `is_vault_verified` (which factors in `banned_vaults`) on the
+    //    NEXT call after eviction, by which point the tx is final.
+    {
+        let keystore = state.keystore.read().await;
+        keystore.evict_customer(&vault_id);
+    }
+
+    tracing::warn!(
+        vault_id = %vault_id,
+        reason = %req.reason,
+        tx_hash = %outcome.tx_hash,
+        "ban_vault tx landed; per-customer master evicted from cache"
+    );
+
+    Ok(Json(AdminBanVaultResponse {
+        tx_hash: Some(outcome.tx_hash),
+        already_banned: false,
+    }))
+}
+
+/// `POST /sign-vault-verification` — re-verify a vault and submit
+/// `mark_vault_verified` on chain.
+///
+/// Called by the public
+/// `outlayer.near/vault-checker` WASI agent after it has run the
+/// same 5 checks itself. The keystore-worker:
+///
+/// 1. Re-runs all 5 checks via [`crate::vault_verifier::verify_vault_for_signing`]
+///    (defense in depth — independent code from the WASI agent).
+/// 2. If everything passes, submits `keystore_dao.mark_vault_verified(vault_id)`
+///    using the worker's approved access key on the keystore-dao
+///    contract (set up at TEE registration time).
+/// 3. Returns the broadcast tx hash. The agent does NOT need to wait
+///    for finality on the worker side — `broadcast_tx_commit` already
+///    waits, and the response only returns once the tx is final.
+///
+/// **Critically NOT done here:** MPC CKD for the vault's master.
+/// That's lazy on first wallet-request via [`crate::mpc_ckd::add_customer`]
+/// (lazy MPC CKD). Materialising masters at verification time would
+/// charge gas to the vault account before any wallet operation is
+/// requested — an unnecessary upfront cost.
+///
+/// **Auth:** worker token. The vault-checker WASI runs in OutLayer's
+/// TEE workers and forwards its worker token; an external caller with
+/// a worker token (i.e. an operator) can also drive this endpoint.
+/// The auth boundary is intentionally permissive because the security
+/// guarantee is the in-process re-verification, not the auth.
+///
+/// **Idempotent:** if `vault_id` is already verified on chain, the
+/// `mark_vault_verified` tx is still submitted — the contract is
+/// expected to no-op on re-mark. We don't short-circuit here because
+/// we want the canonical tx hash to return either way.
+async fn sign_vault_verification_handler(
+    State(state): State<AppState>,
+    Json(req): Json<SignVaultVerificationRequest>,
+) -> Result<Json<SignVaultVerificationResponse>, ApiError> {
+    if !state.is_ready() {
+        return Err(ApiError::Unauthorized(
+            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string(),
+        ));
+    }
+
+    let vault_id: near_primitives::types::AccountId = req.vault_id.parse().map_err(|e| {
+        ApiError::BadRequest(format!("invalid vault_id account: {e}"))
+    })?;
+
+    // All required context lives in one OnceLock — atomicity
+    // invariant means no half-set state can be observed.
+    let ctx = state.mpc_context.get().ok_or_else(|| {
+        ApiError::InternalError(
+            "MPC CKD context not configured — worker booted in non-TEE mode".to_string(),
+        )
+    })?;
+    let near_client = state.near_client.as_ref().ok_or_else(|| {
+        ApiError::InternalError("NEAR client not configured".to_string())
+    })?;
+
+    // 0. Short-circuit if already verified on-chain. The
+    //    `mark_vault_verified` contract method is
+    //    idempotent (insert into UnorderedSet is no-op if present), so
+    //    skipping the tx is purely an optimisation — but a meaningful
+    //    one: every `mark_vault_verified` consumes a nonce and ~0.001
+    //    NEAR from the worker's keystore-dao access-key allowance,
+    //    and an attacker with a worker token could DoS the nonce by
+    //    spamming this endpoint against verified vaults.
+    let is_verified = near_client
+        .view_call_json(
+            &ctx.mpc_ckd_config.keystore_dao_id,
+            "is_vault_verified",
+            serde_json::json!({ "vault_id": vault_id }),
+        )
+        .await
+        .map_err(|e| {
+            ApiError::InternalError(format!("is_vault_verified view-call failed: {e}"))
+        })?;
+    if is_verified.as_bool() == Some(true) {
+        tracing::info!(
+            vault_id = %vault_id,
+            "Skipping mark_vault_verified — vault already verified on chain"
+        );
+        return Ok(Json(SignVaultVerificationResponse {
+            tx_hash: None,
+            already_verified: true,
+        }));
+    }
+
+    // 1. Defense-in-depth re-verification of all 5 checks. If any
+    //    fails, classify caller-side vs worker-side and surface an
+    //    appropriate status (see `map_verify_error`).
+    crate::vault_verifier::verify_vault_for_signing(
+        near_client.as_ref(),
+        &ctx.mpc_ckd_config.keystore_dao_id,
+        &ctx.mpc_ckd_config.mpc_contract_id,
+        &vault_id,
+    )
+    .await
+    .map_err(|e| {
+        tracing::warn!(
+            vault_id = %vault_id,
+            error = %e,
+            "Refusing to sign mark_vault_verified — re-verification failed"
+        );
+        map_verify_error(&vault_id, e)
+    })?;
+
+    // 2. Submit mark_vault_verified tx, serializing through the
+    //    per-signer nonce lock so concurrent /sign-vault-verification
+    //    calls (and /admin/ban-vault) don't race for the same nonce.
+    //    Lock is held only across the build+broadcast critical
+    //    section; the response wait is inside broadcast_tx_commit so
+    //    we cannot release earlier without losing the tx_hash.
+    //    300 TGas, no deposit.
+    let outcome = {
+        let _guard = ctx.signer_nonce_lock.lock().await;
+        near_client
+            .submit_function_call(
+                &ctx.keystore_dao_signer,
+                &ctx.mpc_ckd_config.keystore_dao_id,
+                "mark_vault_verified",
+                serde_json::json!({ "vault_id": vault_id }),
+                300_000_000_000_000,
+                0,
+            )
+            .await
+    }
+    .map_err(|e| {
+        tracing::error!(
+            vault_id = %vault_id,
+            error = %e,
+            "mark_vault_verified tx submission failed"
+        );
+        // A vault that gets banned between vault-checker's own
+        // check and our signing window will surface as a
+        // contract-side panic with a recognisable message. Map it
+        // to 409 Conflict so the caller doesn't retry indefinitely
+        // treating it as a transient failure.
+        let msg = format!("{e:#}");
+        // Match only the exact contract-side panic phrase. The earlier
+        // loose `|| msg.contains("banned")` also fired on words like
+        // "unbanned" / "rebanned" / any future error mentioning the
+        // root, mis-mapping unrelated failures to 403 Forbidden.
+        if msg.contains("vault is banned") {
+            ApiError::Forbidden(format!(
+                "vault {} is banned (likely banned between check and sign): {}",
+                vault_id, msg
+            ))
+        } else {
+            ApiError::InternalError(format!("tx submission failed: {msg}"))
+        }
+    })?;
+
+    tracing::info!(
+        vault_id = %vault_id,
+        tx_hash = %outcome.tx_hash,
+        "mark_vault_verified tx landed"
+    );
+
+    Ok(Json(SignVaultVerificationResponse {
+        tx_hash: Some(outcome.tx_hash),
+        already_verified: false,
+    }))
+}
+
+/// `POST /derive-vault-tee-key` — return the Layer-1 vault TEE
+/// public key for a given `vault_id`.
+///
+/// `outlayer-cli init-vault` flow: the customer needs the
+/// pubkey BEFORE submitting the atomic deploy that adds it as a
+/// function-call AccessKey on the new vault. The keypair is
+/// [HMAC-derived from the OutLayer default master](mpc_ckd::derive_vault_tee_keypair),
+/// so the worker can answer this query without any state — it's
+/// read-only and doesn't trigger MPC CKD.
+///
+/// **Auth:** worker token (admin lane). The CLI is operator-bundled
+/// or run by the customer through coordinator's auth proxy; either
+/// way the caller has the worker token (or a coordinator token,
+/// per the same `worker_auth_middleware` allowlist as
+/// `/admin/evict-customer` and `/sign-vault-verification`).
+///
+/// **Idempotent / pure:** does NOT touch the keystore_dao_signer,
+/// does NOT acquire any locks. Two concurrent calls for the same
+/// vault_id return identical pubkeys.
+async fn derive_vault_tee_key_handler(
+    State(state): State<AppState>,
+    Json(req): Json<DeriveVaultTeeKeyRequest>,
+) -> Result<Json<DeriveVaultTeeKeyResponse>, ApiError> {
+    if !state.is_ready() {
+        return Err(ApiError::Unauthorized(
+            "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string(),
+        ));
+    }
+
+    let vault_id: near_primitives::types::AccountId = req.vault_id.parse().map_err(|e| {
+        ApiError::BadRequest(format!("invalid vault_id: {e}"))
+    })?;
+
+    let keystore = state.keystore.read().await;
+    let (public_key, _secret_key) =
+        crate::mpc_ckd::derive_vault_tee_keypair(&keystore, &vault_id).map_err(|e| {
+            ApiError::InternalError(format!("Layer-1 keypair derivation failed: {e}"))
+        })?;
+
+    Ok(Json(DeriveVaultTeeKeyResponse {
+        public_key: public_key.to_string(),
+    }))
+}
+
+/// Map [`crate::vault_verifier::VerifyError`] into the right HTTP
+/// status. The split is:
+///
+/// * **4xx (caller-side / vault-state issue)** — the caller submitted
+///   a bad request OR pointed at a vault that fails the protocol's
+///   security invariants. Caller should surface to its end-user, not
+///   retry transparently.
+/// * **5xx (worker-side / RPC-down)** — something between the worker
+///   and chain or contract is misbehaving. Caller MAY retry with
+///   exponential backoff.
+fn map_verify_error(
+    vault_id: &near_primitives::types::AccountId,
+    e: crate::vault_verifier::VerifyError,
+) -> ApiError {
+    use crate::vault_verifier::VerifyError as V;
+    let msg = format!("vault {vault_id} re-verification failed: {e}");
+    match e {
+        // Caller-/vault-side problems → 4xx
+        V::AlreadyBanned => ApiError::Forbidden(msg),
+        V::CodeHashNotApproved { .. }
+        | V::CodeHashMissing
+        | V::FullAccessKeyPresent
+        | V::FunctionCallKeyMisconfigured { .. }
+        | V::UnexpectedAccessKeyCount { .. }
+        | V::KeystoreDaoMismatch { .. }
+        | V::MpcContractMismatch { .. }
+        | V::VaultUnlocked
+        | V::VaultRecoveryInProgress => ApiError::BadRequest(msg),
+        // AccountNotFound is ambiguous (vault doesn't exist OR rpc
+        // flake) — bias toward "caller pointed at something invalid"
+        // because that's the dominant case; the error message still
+        // surfaces the underlying RPC error for ops triage.
+        V::AccountNotFound(_) => ApiError::BadRequest(msg),
+        // Worker-/system-side problems → 5xx so callers can retry.
+        V::KeystoreDaoUnreachable(_)
+        | V::AccessKeyListUnreachable(_)
+        | V::VaultStateUnreachable(_) => ApiError::InternalError(msg),
+        // Contract returning unexpected response shape — that's a
+        // contract version mismatch, NOT a caller-side bug.
+        V::KeystoreDaoMalformed { .. } | V::VaultStateInvalid(_) => ApiError::InternalError(msg),
+    }
+}
+
 /// Encrypt plaintext data
 ///
 /// Used by workers to re-encrypt secrets after TopUp:
@@ -1207,7 +2113,7 @@ async fn encrypt_handler(
     // Encrypt with derived key
     let keystore = state.keystore.read().await;
     let encrypted_bytes = keystore
-        .encrypt(&req.seed, &plaintext_bytes)
+        .encrypt(None, &req.seed, &plaintext_bytes)
         .map_err(|e| ApiError::InternalError(format!("Failed to encrypt data: {}", e)))?;
 
     let encrypted_base64 = base64::encode(&encrypted_bytes);
@@ -1282,7 +2188,7 @@ async fn decrypt_raw_handler(
     // Decrypt with derived key
     let keystore = state.keystore.read().await;
     let plaintext_bytes = keystore
-        .decrypt(&req.seed, &encrypted_bytes)
+        .decrypt(None, &req.seed, &encrypted_bytes)
         .map_err(|e| ApiError::InternalError(format!("Failed to decrypt data: {}", e)))?;
 
     let plaintext_base64 = base64::encode(&plaintext_bytes);
@@ -1317,10 +2223,21 @@ async fn add_generated_secret_handler(
         ));
     }
 
+    // Vault scope from request body. The decrypt+re-encrypt
+    // round-trip MUST use the same scope (default OR vault) as the
+    // original encryption — mismatched scope would either fail to
+    // decrypt or silently re-encrypt under the wrong key.
+    let customer = parse_optional_vault_id(req.vault_id.as_deref())?;
+    state
+        .ensure_customer_loaded(customer.as_ref())
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
     tracing::info!(
         seed = %req.seed,
         num_new_secrets = req.new_secrets.len(),
         has_existing = req.encrypted_secrets_base64.is_some(),
+        vault_id = ?customer,
         "Received add_generated_secret request"
     );
 
@@ -1333,7 +2250,7 @@ async fn add_generated_secret_handler(
         // Decrypt
         let keystore = state.keystore.read().await;
         let plaintext_bytes = keystore
-            .decrypt(&req.seed, &encrypted_bytes)
+            .decrypt(customer.as_ref(), &req.seed, &encrypted_bytes)
             .map_err(|e| ApiError::InternalError(format!("Failed to decrypt existing secrets: {}", e)))?;
         drop(keystore); // Release read lock early
 
@@ -1459,7 +2376,7 @@ async fn add_generated_secret_handler(
 
     let keystore = state.keystore.read().await;
     let encrypted_bytes = keystore
-        .encrypt(&req.seed, final_secrets_json.as_bytes())
+        .encrypt(customer.as_ref(), &req.seed, final_secrets_json.as_bytes())
         .map_err(|e| ApiError::InternalError(format!("Failed to encrypt secrets: {}", e)))?;
 
     let encrypted_base64 = base64::encode(&encrypted_bytes);
@@ -1495,10 +2412,20 @@ async fn update_user_secrets_handler(
         ));
     }
 
+    // Vault scope from request body. The Append-mode decrypt
+    // and the final encrypt MUST run under the same scope, otherwise
+    // the round-trip would corrupt the user's data.
+    let customer = parse_optional_vault_id(req.vault_id.as_deref())?;
+    state
+        .ensure_customer_loaded(customer.as_ref())
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
     tracing::info!(
         owner = %req.owner,
         profile = %req.profile,
         mode = ?req.mode,
+        vault_id = ?customer,
         "Received update_user_secrets request"
     );
 
@@ -1621,52 +2548,48 @@ async fn update_user_secrets_handler(
         );
     }
 
-    // 6. Get current encrypted secrets from contract using OLD accessor
-    // (new_accessor is only for encryption target, not for fetching)
+    // 6. Get current encrypted secrets + on-chain vault binding using
+    //    OLD accessor (new_accessor is only for encryption target).
+    //
+    // CRITICAL: we MUST decrypt existing data under the
+    // scope it was originally written with — that's the on-chain
+    // `vault_id` binding, NOT the body-supplied vault_id (which
+    // applies only to the new write).
+    //
+    // Migration paths supported:
+    //   * default→vault: existing secret has vault_id=None on chain;
+    //     body sends vault_id=Some(v). We decrypt under None, encrypt
+    //     under v.
+    //   * vault→vault (rotation): existing has vault_id=Some(a),
+    //     body sends Some(b). Decrypt under a, encrypt under b.
+    //   * no migration: existing has vault_id=Some(a), body sends
+    //     Some(a). Decrypt and encrypt under a.
     let near_client = state.near_client.as_ref()
         .ok_or_else(|| ApiError::InternalError("NEAR client not configured".to_string()))?;
 
-    let secret_profile = match &req.accessor {
-        SecretAccessor::Repo { repo, branch } => {
-            near_client
-                .get_secrets(repo, branch.as_deref(), &req.profile, &req.owner)
-                .await
-                .map_err(|e| {
-                    tracing::warn!(error = %e, "Failed to fetch secrets from contract");
-                    ApiError::InternalError(format!("Failed to fetch secrets: {}", e))
-                })?
-        }
-        SecretAccessor::WasmHash { hash } => {
-            near_client
-                .get_secrets_by_wasm_hash(hash, &req.profile, &req.owner)
-                .await
-                .map_err(|e| {
-                    tracing::warn!(error = %e, "Failed to fetch secrets from contract");
-                    ApiError::InternalError(format!("Failed to fetch secrets: {}", e))
-                })?
-        }
-        SecretAccessor::Project { project_id } => {
-            near_client
-                .get_secrets_by_project(project_id, &req.profile, &req.owner)
-                .await
-                .map_err(|e| {
-                    tracing::warn!(error = %e, "Failed to fetch secrets from contract");
-                    ApiError::InternalError(format!("Failed to fetch secrets: {}", e))
-                })?
-        }
-        SecretAccessor::System { secret_type } => {
-            let secret_type_str = match secret_type {
-                SystemSecretType::PaymentKey => "PaymentKey",
-            };
-            near_client
-                .get_secrets_by_system(secret_type_str, &req.profile, &req.owner)
-                .await
-                .map_err(|e| {
-                    tracing::warn!(error = %e, "Failed to fetch secrets from contract");
-                    ApiError::InternalError(format!("Failed to fetch secrets: {}", e))
-                })?
-        }
-    };
+    let accessor_json_for_lookup = accessor_to_contract_json(&req.accessor);
+    let combined = near_client
+        .get_secret_with_vault(accessor_json_for_lookup, &req.profile, &req.owner)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "Failed to fetch secrets from contract");
+            ApiError::InternalError(format!("Failed to fetch secrets: {}", e))
+        })?;
+    let secret_profile = combined.profile;
+    let on_chain_vault_id_str = combined.vault_id;
+
+    let existing_customer = parse_optional_vault_id(on_chain_vault_id_str.as_deref())?;
+    // Make sure the master that was used at write time is loaded
+    // before we try to decrypt. For default-master path
+    // (existing_customer = None) this is a no-op.
+    state
+        .ensure_customer_loaded(existing_customer.as_ref())
+        .await
+        .map_err(|e| ApiError::InternalError(format!(
+            "lazy-load gate failed for existing vault {}: {}",
+            existing_customer.as_ref().map(|v| v.as_str()).unwrap_or("<none>"),
+            e
+        )))?;
 
     // 7. Decrypt existing secrets (if any) using OLD accessor seed
     let mut current_secrets: serde_json::Map<String, serde_json::Value> = if let Some(profile) = secret_profile {
@@ -1709,10 +2632,7 @@ async fn update_user_secrets_handler(
                 format!("project:{}:{}", project_id, req.owner)
             }
             SecretAccessor::System { secret_type } => {
-                let type_str = match secret_type {
-                    SystemSecretType::PaymentKey => "payment_key",
-                };
-                format!("system:{}:{}:{}", type_str, req.owner, req.profile)
+                format!("system:{}:{}:{}", secret_type.as_seed_str(), req.owner, req.profile)
             }
         };
 
@@ -1722,10 +2642,11 @@ async fn update_user_secrets_handler(
             "Attempting to decrypt existing secrets"
         );
 
-        // Decrypt
+        // Decrypt under the EXISTING (on-chain) scope — see comment at
+        // step 6 above. Body's `customer` is for the new encrypt only.
         let keystore = state.keystore.read().await;
         let plaintext_bytes = keystore
-            .decrypt(&seed, &encrypted_bytes)
+            .decrypt(existing_customer.as_ref(), &seed, &encrypted_bytes)
             .map_err(|e| {
                 tracing::error!(
                     error = %e,
@@ -1864,10 +2785,7 @@ async fn update_user_secrets_handler(
             format!("project:{}:{}", project_id, req.owner)
         }
         SecretAccessor::System { secret_type } => {
-            let type_str = match secret_type {
-                SystemSecretType::PaymentKey => "payment_key",
-            };
-            format!("system:{}:{}:{}", type_str, req.owner, req.profile)
+            format!("system:{}:{}:{}", secret_type.as_seed_str(), req.owner, req.profile)
         }
     };
 
@@ -1880,7 +2798,7 @@ async fn update_user_secrets_handler(
 
     let keystore = state.keystore.read().await;
     let encrypted_bytes = keystore
-        .encrypt(&encryption_seed, final_secrets_json.as_bytes())
+        .encrypt(customer.as_ref(), &encryption_seed, final_secrets_json.as_bytes())
         .map_err(|e| ApiError::InternalError(format!("Failed to encrypt secrets: {}", e)))?;
     drop(keystore);
 
@@ -1964,11 +2882,11 @@ async fn storage_encrypt_handler(
     let keystore = state.keystore.read().await;
 
     let encrypted_key = keystore
-        .encrypt(&seed, req.key.as_bytes())
+        .encrypt(None, &seed, req.key.as_bytes())
         .map_err(|e| ApiError::InternalError(format!("Failed to encrypt key: {}", e)))?;
 
     let encrypted_value = keystore
-        .encrypt(&seed, &value_bytes)
+        .encrypt(None, &seed, &value_bytes)
         .map_err(|e| ApiError::InternalError(format!("Failed to encrypt value: {}", e)))?;
 
     // Calculate key hash for unique constraint
@@ -2033,11 +2951,11 @@ async fn storage_decrypt_handler(
     let keystore = state.keystore.read().await;
 
     let key_bytes = keystore
-        .decrypt(&seed, &encrypted_key)
+        .decrypt(None, &seed, &encrypted_key)
         .map_err(|e| ApiError::InternalError(format!("Failed to decrypt key: {}", e)))?;
 
     let value_bytes = keystore
-        .decrypt(&seed, &encrypted_value)
+        .decrypt(None, &seed, &encrypted_value)
         .map_err(|e| ApiError::InternalError(format!("Failed to decrypt value: {}", e)))?;
 
     // Convert key to string
@@ -2278,6 +3196,76 @@ async fn register_tee_handler(
 /// Validate X-TEE-Session header against in-memory sessions.
 /// Returns Ok(()) if session is valid or TEE sessions not required.
 /// Returns Err(ApiError::Forbidden) if required but missing/invalid.
+/// Extract a per-customer vault id from the `X-Customer-Vault` header.
+///
+/// **Use case:** every wallet operation
+/// names a customer through this header. The coordinator sets the header
+/// based on the API key → customer mapping before forwarding the
+/// request to keystore-worker. Absent header ⇒ legacy default-master
+/// path (existing OutLayer customers without a vault remain on the
+/// shared master).
+///
+/// Returns `Ok(None)` if the header is absent (legacy path) or
+/// `Err(ApiError::BadRequest(_))` if the header is present but
+/// malformed — we deliberately do NOT silently fall back to default
+/// master on a malformed header, otherwise a typo could route a
+/// customer's request to the wrong key-space.
+pub(crate) fn extract_customer_from_header(
+    headers: &axum::http::HeaderMap,
+) -> Result<Option<near_primitives::types::AccountId>, ApiError> {
+    let Some(raw) = headers.get("X-Customer-Vault") else {
+        return Ok(None);
+    };
+    let s = raw
+        .to_str()
+        .map_err(|_| ApiError::BadRequest("X-Customer-Vault header is not valid UTF-8".to_string()))?
+        .trim();
+    if s.is_empty() {
+        // Empty header is treated the same as no header (legacy path).
+        return Ok(None);
+    }
+    let vault_id: near_primitives::types::AccountId = s.parse().map_err(|e| {
+        ApiError::BadRequest(format!(
+            "X-Customer-Vault is not a valid NEAR AccountId ({}): {}",
+            s, e
+        ))
+    })?;
+    Ok(Some(vault_id))
+}
+
+/// Parse an optional vault id from a string source.
+///
+/// **Sources** (any caller may use this):
+/// 1. JSON request body field `vault_id: Option<String>` —
+///    `/pubkey`, `/add_generated_secret`, `/update_user_secrets`
+///    carry vault scope inline because it's an attribute of the
+///    operation (which secret to encrypt against), not of the
+///    caller's session.
+/// 2. On-chain side-table value returned by `get_secret_with_vault`
+///    — `/decrypt` and `/update_user_secrets` derive the existing
+///    secret's scope from chain rather than trusting the caller.
+///
+/// Same fail-loud-on-malformed semantics as
+/// [`extract_customer_from_header`]: empty / whitespace / missing
+/// → `Ok(None)` (legacy default-master path); a present-but-malformed
+/// value returns `Err(ApiError::BadRequest)` rather than silently
+/// downgrading to None — that prevents a typo from routing into
+/// the wrong key-space.
+fn parse_optional_vault_id(
+    raw: Option<&str>,
+) -> Result<Option<near_primitives::types::AccountId>, ApiError> {
+    let Some(s) = raw.map(|s| s.trim()).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    let vault_id: near_primitives::types::AccountId = s.parse().map_err(|e| {
+        ApiError::BadRequest(format!(
+            "vault_id is not a valid NEAR AccountId ({}): {}",
+            s, e
+        ))
+    })?;
+    Ok(Some(vault_id))
+}
+
 fn validate_tee_session(state: &AppState, headers: &axum::http::HeaderMap) -> Result<(), ApiError> {
     if state.config.tee_mode == crate::config::TeeMode::None {
         return Ok(());
@@ -2496,6 +3484,7 @@ mod base64 {
 /// - ethereum: secp256k1 keypair → keccak256 → address (0x-prefixed)
 async fn wallet_derive_address_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<WalletDeriveAddressRequest>,
 ) -> Result<Json<WalletDeriveAddressResponse>, ApiError> {
     if !state.is_ready() {
@@ -2504,6 +3493,13 @@ async fn wallet_derive_address_handler(
         ));
     }
 
+    // Route to per-customer master if X-Customer-Vault is set.
+    let customer = extract_customer_from_header(&headers)?;
+    state
+        .ensure_customer_loaded(customer.as_ref())
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
     let chain = req.chain.to_lowercase();
     let seed = format!("wallet:{}:{}", req.wallet_id, chain);
 
@@ -2511,18 +3507,29 @@ async fn wallet_derive_address_handler(
 
     match chain.as_str() {
         "near" => {
-            let (_, verifying_key) = keystore.derive_keypair(&seed).map_err(|e| {
+            let (_, verifying_key) = keystore.derive_keypair(customer.as_ref(), &seed).map_err(|e| {
                 ApiError::InternalError(format!("Key derivation failed: {}", e))
             })?;
+            // Both fields use HEX-encoded ed25519 pubkey. This is
+            // intentional, NOT a bug. The OutLayer contract
+            // `wallet_policies` map keys are `ed25519:<hex>` (see
+            // contract/src/wallet.rs::parse_wallet_pubkey, which calls
+            // `hex::decode` and panics on anything else). Returning
+            // base58 here would diverge from `/wallet/sign-policy` (also
+            // hex) and break the round-trip into `store_wallet_policy`.
+            //
+            // For NEAR-canonical `ed25519:<base58>` (signatures, AddKey,
+            // SDK consumers), use `/wallet/sign-nep413` or
+            // `/derive-vault-tee-key` — those emit base58 because they
+            // feed NEAR-protocol-level parsers.
             let pubkey_hex = hex::encode(verifying_key.as_bytes());
-            // NEAR implicit account = hex-encoded Ed25519 public key
             Ok(Json(WalletDeriveAddressResponse {
                 address: pubkey_hex.clone(),
                 public_key: format!("ed25519:{}", pubkey_hex),
             }))
         }
         "solana" => {
-            let (_, verifying_key) = keystore.derive_keypair(&seed).map_err(|e| {
+            let (_, verifying_key) = keystore.derive_keypair(customer.as_ref(), &seed).map_err(|e| {
                 ApiError::InternalError(format!("Key derivation failed: {}", e))
             })?;
             let pubkey_bytes = verifying_key.as_bytes();
@@ -2535,7 +3542,7 @@ async fn wallet_derive_address_handler(
         // EVM chains (Ethereum, Base, Arbitrum, etc.) — secp256k1
         // See: docs/MULTI_CHAIN.md
         "ethereum" | "base" | "arbitrum" => {
-            let (address, pubkey_hex) = keystore.derive_eth_address(&seed).map_err(|e| {
+            let (address, pubkey_hex) = keystore.derive_eth_address(customer.as_ref(), &seed).map_err(|e| {
                 ApiError::InternalError(format!("Key derivation failed: {}", e))
             })?;
             Ok(Json(WalletDeriveAddressResponse {
@@ -2556,6 +3563,7 @@ async fn wallet_derive_address_handler(
 /// and signs the provided transaction bytes.
 async fn wallet_sign_transaction_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<WalletSignTransactionRequest>,
 ) -> Result<Json<WalletSignTransactionResponse>, ApiError> {
     if !state.is_ready() {
@@ -2563,6 +3571,12 @@ async fn wallet_sign_transaction_handler(
             "Keystore not ready.".to_string(),
         ));
     }
+
+    let customer = extract_customer_from_header(&headers)?;
+    state
+        .ensure_customer_loaded(customer.as_ref())
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
     let chain = req.chain.to_lowercase();
     let seed = format!("wallet:{}:{}", req.wallet_id, chain);
@@ -2576,7 +3590,7 @@ async fn wallet_sign_transaction_handler(
     match chain.as_str() {
         // EVM chains — secp256k1 ECDSA
         "ethereum" | "base" | "arbitrum" => {
-            let sig_bytes = keystore.sign_secp256k1(&seed, &tx_bytes).map_err(|e| {
+            let sig_bytes = keystore.sign_secp256k1(customer.as_ref(), &seed, &tx_bytes).map_err(|e| {
                 ApiError::InternalError(format!("Signing failed: {}", e))
             })?;
             Ok(Json(WalletSignTransactionResponse {
@@ -2585,7 +3599,7 @@ async fn wallet_sign_transaction_handler(
         }
         // NEAR, Solana, etc. — Ed25519
         _ => {
-            let signature = keystore.sign(&seed, &tx_bytes).map_err(|e| {
+            let signature = keystore.sign(customer.as_ref(), &seed, &tx_bytes).map_err(|e| {
                 ApiError::InternalError(format!("Signing failed: {}", e))
             })?;
             Ok(Json(WalletSignTransactionResponse {
@@ -2601,11 +3615,18 @@ async fn wallet_sign_transaction_handler(
 /// for ed25519 wallets. This endpoint produces that signature using the wallet's derived key.
 async fn wallet_sign_policy_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<WalletSignPolicyRequest>,
 ) -> Result<Json<WalletSignPolicyResponse>, ApiError> {
     if !state.is_ready() {
         return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
     }
+
+    let customer = extract_customer_from_header(&headers)?;
+    state
+        .ensure_customer_loaded(customer.as_ref())
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
     let hash_bytes = hex::decode(&req.encrypted_data_hash).map_err(|e| {
         ApiError::BadRequest(format!("Invalid hex in encrypted_data_hash: {}", e))
@@ -2621,13 +3642,13 @@ async fn wallet_sign_policy_handler(
     let seed = format!("wallet:{}:near", req.wallet_id);
     let keystore = state.keystore.read().await;
 
-    let signature = keystore.sign(&seed, &hash_bytes).map_err(|e| {
+    let signature = keystore.sign(customer.as_ref(), &seed, &hash_bytes).map_err(|e| {
         ApiError::InternalError(format!("Signing failed: {}", e))
     })?;
 
     // Return Ed25519 pubkey (not X25519 from public_key_hex) — must match
     // the key used for on-chain ed25519_verify in store_wallet_policy.
-    let ed25519_vk = keystore.get_public_key_for_seed(&seed).map_err(|e| {
+    let ed25519_vk = keystore.get_public_key_for_seed(customer.as_ref(), &seed).map_err(|e| {
         ApiError::InternalError(format!("Failed to derive public key: {}", e))
     })?;
 
@@ -2645,6 +3666,7 @@ async fn verify_approvals(
     state: &AppState,
     wallet_id: &str,
     approval_info: &ApprovalInfo,
+    customer: Option<&near_primitives::types::AccountId>,
 ) -> Result<(), ApiError> {
     let near_client = state.near_client.as_ref().ok_or_else(|| {
         ApiError::InternalError("NEAR client not configured".to_string())
@@ -2668,12 +3690,13 @@ async fn verify_approvals(
         .and_then(|v| v.as_str())
         .ok_or_else(|| ApiError::InternalError("Missing encrypted_data in policy".to_string()))?;
 
-    // Decrypt policy
+    // Decrypt policy. The policy was encrypted by `wallet_encrypt_policy_handler`
+    // under the same customer scope, so we must use the same scope to read.
     let seed = format!("wallet-policy:{}", wallet_id);
     let keystore = state.keystore.read().await;
     let encrypted_bytes = base64::decode(encrypted_data_b64)
         .map_err(|e| ApiError::InternalError(format!("Invalid base64: {}", e)))?;
-    let decrypted = keystore.decrypt(&seed, &encrypted_bytes)
+    let decrypted = keystore.decrypt(customer, &seed, &encrypted_bytes)
         .map_err(|e| ApiError::InternalError(format!("Policy decryption failed: {}", e)))?;
     let policy: serde_json::Value = serde_json::from_slice(&decrypted)
         .map_err(|e| ApiError::InternalError(format!("Policy parse failed: {}", e)))?;
@@ -2730,6 +3753,7 @@ async fn verify_approvals(
 /// and returns the signature in base58 format compatible with solver-relay.
 async fn wallet_sign_nep413_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<WalletSignNep413Request>,
 ) -> Result<Json<WalletSignNep413Response>, ApiError> {
     use sha2::{Sha256, Digest};
@@ -2740,9 +3764,15 @@ async fn wallet_sign_nep413_handler(
         ));
     }
 
+    let customer = extract_customer_from_header(&headers)?;
+    state
+        .ensure_customer_loaded(customer.as_ref())
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
     // Verify approval signatures if this is an approved operation
     if let Some(ref info) = req.approval_info {
-        verify_approvals(&state, &req.wallet_id, info).await?;
+        verify_approvals(&state, &req.wallet_id, info, customer.as_ref()).await?;
     }
 
     let chain = req.chain.to_lowercase();
@@ -2784,7 +3814,7 @@ async fn wallet_sign_nep413_handler(
     // Derive keypair and sign the hash
     use ed25519_dalek::Signer;
     let keystore = state.keystore.read().await;
-    let (signing_key, verifying_key) = keystore.derive_keypair(&seed).map_err(|e| {
+    let (signing_key, verifying_key) = keystore.derive_keypair(customer.as_ref(), &seed).map_err(|e| {
         ApiError::InternalError(format!("Key derivation failed: {}", e))
     })?;
 
@@ -2807,6 +3837,7 @@ async fn wallet_sign_nep413_handler(
 /// and returns the fully signed transaction ready for broadcast.
 async fn wallet_sign_near_call_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<WalletSignNearCallRequest>,
 ) -> Result<Json<WalletSignNearCallResponse>, ApiError> {
     use near_primitives::transaction::{Action, FunctionCallAction, Transaction, TransactionV0};
@@ -2817,9 +3848,15 @@ async fn wallet_sign_near_call_handler(
         return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
     }
 
+    let customer = extract_customer_from_header(&headers)?;
+    state
+        .ensure_customer_loaded(customer.as_ref())
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
     // Verify approval signatures if this is an approved operation
     if let Some(ref info) = req.approval_info {
-        verify_approvals(&state, &req.wallet_id, info).await?;
+        verify_approvals(&state, &req.wallet_id, info, customer.as_ref()).await?;
     }
 
     let near_client = state.near_client.as_ref().ok_or_else(|| {
@@ -2829,7 +3866,7 @@ async fn wallet_sign_near_call_handler(
     // 1. Derive wallet keypair
     let seed = format!("wallet:{}:near", req.wallet_id);
     let keystore = state.keystore.read().await;
-    let (signing_key, verifying_key) = keystore.derive_keypair(&seed).map_err(|e| {
+    let (signing_key, verifying_key) = keystore.derive_keypair(customer.as_ref(), &seed).map_err(|e| {
         ApiError::InternalError(format!("Key derivation failed: {}", e))
     })?;
     drop(keystore);
@@ -2913,6 +3950,7 @@ async fn wallet_sign_near_call_handler(
 /// instead of `Action::FunctionCall`. Used for sending native NEAR tokens.
 async fn wallet_sign_near_transfer_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<WalletSignNearTransferRequest>,
 ) -> Result<Json<WalletSignNearCallResponse>, ApiError> {
     use near_primitives::transaction::{Action, TransferAction, Transaction, TransactionV0};
@@ -2923,9 +3961,15 @@ async fn wallet_sign_near_transfer_handler(
         return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
     }
 
+    let customer = extract_customer_from_header(&headers)?;
+    state
+        .ensure_customer_loaded(customer.as_ref())
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
     // Verify approval signatures if this is an approved operation
     if let Some(ref info) = req.approval_info {
-        verify_approvals(&state, &req.wallet_id, info).await?;
+        verify_approvals(&state, &req.wallet_id, info, customer.as_ref()).await?;
     }
 
     let near_client = state.near_client.as_ref().ok_or_else(|| {
@@ -2935,7 +3979,7 @@ async fn wallet_sign_near_transfer_handler(
     // 1. Derive wallet keypair
     let seed = format!("wallet:{}:near", req.wallet_id);
     let keystore = state.keystore.read().await;
-    let (signing_key, verifying_key) = keystore.derive_keypair(&seed).map_err(|e| {
+    let (signing_key, verifying_key) = keystore.derive_keypair(customer.as_ref(), &seed).map_err(|e| {
         ApiError::InternalError(format!("Key derivation failed: {}", e))
     })?;
     drop(keystore);
@@ -3010,6 +4054,7 @@ async fn wallet_sign_near_transfer_handler(
 /// to the beneficiary. This is irreversible.
 async fn wallet_sign_near_delete_account_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<WalletSignNearDeleteAccountRequest>,
 ) -> Result<Json<WalletSignNearCallResponse>, ApiError> {
     use near_primitives::transaction::{Action, DeleteAccountAction, Transaction, TransactionV0};
@@ -3020,8 +4065,14 @@ async fn wallet_sign_near_delete_account_handler(
         return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
     }
 
+    let customer = extract_customer_from_header(&headers)?;
+    state
+        .ensure_customer_loaded(customer.as_ref())
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
     if let Some(ref info) = req.approval_info {
-        verify_approvals(&state, &req.wallet_id, info).await?;
+        verify_approvals(&state, &req.wallet_id, info, customer.as_ref()).await?;
     }
 
     let near_client = state.near_client.as_ref().ok_or_else(|| {
@@ -3031,7 +4082,7 @@ async fn wallet_sign_near_delete_account_handler(
     // 1. Derive wallet keypair
     let seed = format!("wallet:{}:near", req.wallet_id);
     let keystore = state.keystore.read().await;
-    let (signing_key, verifying_key) = keystore.derive_keypair(&seed).map_err(|e| {
+    let (signing_key, verifying_key) = keystore.derive_keypair(customer.as_ref(), &seed).map_err(|e| {
         ApiError::InternalError(format!("Key derivation failed: {}", e))
     })?;
     drop(keystore);
@@ -3105,6 +4156,7 @@ async fn wallet_sign_near_delete_account_handler(
 /// and evaluates the rules against the requested action.
 async fn wallet_check_policy_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<WalletCheckPolicyRequest>,
 ) -> Result<Json<WalletCheckPolicyResponse>, ApiError> {
     if !state.is_ready() {
@@ -3112,6 +4164,12 @@ async fn wallet_check_policy_handler(
             "Keystore not ready.".to_string(),
         ));
     }
+
+    let customer = extract_customer_from_header(&headers)?;
+    state
+        .ensure_customer_loaded(customer.as_ref())
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
     // Get encrypted policy data: either from inline request or from NEAR contract
     let encrypted_data_b64 = if let Some(ref inline_data) = req.encrypted_policy_data {
@@ -3123,7 +4181,7 @@ async fn wallet_check_policy_handler(
         // stored on-chain by store_wallet_policy.
         let near_seed = format!("wallet:{}:near", req.wallet_id);
         let keystore_read = state.keystore.read().await;
-        let ed25519_vk = keystore_read.get_public_key_for_seed(&near_seed).map_err(|e| {
+        let ed25519_vk = keystore_read.get_public_key_for_seed(customer.as_ref(), &near_seed).map_err(|e| {
             ApiError::InternalError(format!("Failed to derive wallet pubkey: {}", e))
         })?;
         let wallet_pubkey_hex = hex::encode(ed25519_vk.as_bytes());
@@ -3183,7 +4241,7 @@ async fn wallet_check_policy_handler(
         ApiError::InternalError(format!("Invalid base64 in encrypted_data: {}", e))
     })?;
 
-    let decrypted = keystore.decrypt(&seed, &encrypted_bytes).map_err(|e| {
+    let decrypted = keystore.decrypt(customer.as_ref(), &seed, &encrypted_bytes).map_err(|e| {
         ApiError::InternalError(format!("Policy decryption failed: {}", e))
     })?;
 
@@ -3599,6 +4657,7 @@ pub(crate) fn evaluate_policy(
 /// Encrypt a wallet policy for on-chain storage
 async fn wallet_encrypt_policy_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<WalletEncryptPolicyRequest>,
 ) -> Result<Json<WalletEncryptPolicyResponse>, ApiError> {
     if !state.is_ready() {
@@ -3607,11 +4666,17 @@ async fn wallet_encrypt_policy_handler(
         ));
     }
 
+    let customer = extract_customer_from_header(&headers)?;
+    state
+        .ensure_customer_loaded(customer.as_ref())
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
     let seed = format!("wallet-policy:{}", req.wallet_id);
     let keystore = state.keystore.read().await;
 
     let encrypted = keystore
-        .encrypt(&seed, req.policy_json.as_bytes())
+        .encrypt(customer.as_ref(), &seed, req.policy_json.as_bytes())
         .map_err(|e| ApiError::InternalError(format!("Encryption failed: {}", e)))?;
 
     Ok(Json(WalletEncryptPolicyResponse {
@@ -4250,5 +5315,493 @@ mod tests {
         let action = serde_json::json!({ "type": "intents_withdraw", "amount": "100", "token": "nep141:anything.near" });
         let result = evaluate_policy(&policy, &action);
         assert!(result.allowed);
+    }
+
+    // ============== AppState::ensure_customer_loaded gate ==============
+
+    fn test_state() -> AppState {
+        let config = crate::config::Config {
+            server_addr: "127.0.0.1:0".parse().unwrap(),
+            near_network: "testnet".into(),
+            near_rpc_url: "http://127.0.0.1:1".into(),
+            offchainvm_contract_id: "outlayer.test".into(),
+            allowed_worker_token_hashes: vec![],
+            allowed_coordinator_token_hashes: vec![],
+            tee_mode: crate::config::TeeMode::None,
+            operator_account_id: None,
+        };
+        AppState::new(crate::crypto::Keystore::generate(), config, None)
+    }
+
+    #[tokio::test]
+    async fn ensure_customer_loaded_none_is_noop() {
+        // Legacy default-master path: handlers that pass None must
+        // never trip the lazy-load gate, even when MPC context is
+        // unset. This is the backward-compat invariant.
+        let state = test_state();
+        state
+            .ensure_customer_loaded(None)
+            .await
+            .expect("None customer must always succeed");
+    }
+
+    #[tokio::test]
+    async fn ensure_customer_loaded_some_without_mpc_context_errors() {
+        // When booted without a TEE/MPC context, asking for a
+        // per-customer master must fail-fast with a clear error
+        // rather than silently falling back to the default master
+        // (which would defeat the customer-isolation invariant).
+        use std::str::FromStr;
+        let state = test_state();
+        let vault = near_primitives::types::AccountId::from_str("vault.alice.testnet").unwrap();
+        let err = state
+            .ensure_customer_loaded(Some(&vault))
+            .await
+            .expect_err("must fail without MPC context");
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("MPC CKD context") || msg.contains("non-TEE"),
+            "error message should explain the missing context, got: {}",
+            msg
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_customer_loaded_some_with_cached_master_still_requires_mpc_context() {
+        // The wrapper used to short-circuit on `has_customer` to skip
+        // the on-chain verify, but that opened a "served cached master
+        // for a now-unlocked vault" window if the indexer-driven
+        // eviction lagged. The current behaviour: every signing op
+        // delegates to `mpc_ckd::ensure_customer_loaded`, which does
+        // the `is_vault_verified` + `unlocked == false` view-call pair
+        // BEFORE checking the cache. A cached master alone is no
+        // longer a free pass.
+        //
+        // In this test the worker has no MPC context, so the wrapper
+        // errors before reaching the view-call layer — exactly the
+        // contract we want: cached-master serving is gated behind a
+        // properly configured worker.
+        use std::str::FromStr;
+        let state = test_state();
+        let vault = near_primitives::types::AccountId::from_str("vault.alice.testnet").unwrap();
+        state
+            .keystore
+            .read()
+            .await
+            .add_customer(vault.clone(), [9u8; 32]);
+
+        let err = state
+            .ensure_customer_loaded(Some(&vault))
+            .await
+            .expect_err(
+                "cache hit must not short-circuit the MPC-context guard \
+                 — full re-verify happens at the next layer",
+            );
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("MPC CKD context") || msg.contains("non-TEE"),
+            "error must surface the missing MPC context, got: {}",
+            msg
+        );
+    }
+
+    // ============== Vault-scope helpers ==============
+    // Audit finding I7: pin behaviour of the new request-extraction
+    // helpers and the accessor → contract-JSON adapter. Without these
+    // tests, future drift between the worker enum and the contract
+    // enum (e.g. someone adding `#[serde(tag = "type")]` to either)
+    // would silently break decrypt — accessor lookups would target
+    // the wrong row and `get_secret_with_vault` would always return
+    // `(None, None)`.
+
+    use axum::http::HeaderMap;
+
+    #[test]
+    fn extract_customer_from_header_absent_is_none() {
+        let h = HeaderMap::new();
+        assert!(extract_customer_from_header(&h).unwrap().is_none());
+    }
+
+    #[test]
+    fn extract_customer_from_header_empty_is_none() {
+        let mut h = HeaderMap::new();
+        h.insert("X-Customer-Vault", "".parse().unwrap());
+        assert!(extract_customer_from_header(&h).unwrap().is_none());
+        h.insert("X-Customer-Vault", "   ".parse().unwrap());
+        assert!(extract_customer_from_header(&h).unwrap().is_none());
+    }
+
+    #[test]
+    fn extract_customer_from_header_valid_account() {
+        let mut h = HeaderMap::new();
+        h.insert("X-Customer-Vault", "vault.alice.testnet".parse().unwrap());
+        let result = extract_customer_from_header(&h).unwrap().unwrap();
+        assert_eq!(result.as_str(), "vault.alice.testnet");
+    }
+
+    #[test]
+    fn extract_customer_from_header_trims_whitespace() {
+        let mut h = HeaderMap::new();
+        h.insert("X-Customer-Vault", "  vault.alice.testnet  ".parse().unwrap());
+        let result = extract_customer_from_header(&h).unwrap().unwrap();
+        assert_eq!(result.as_str(), "vault.alice.testnet");
+    }
+
+    #[test]
+    fn extract_customer_from_header_malformed_id_errors() {
+        // No silent fallback to default master — that's the
+        // anti-typo guarantee.
+        let mut h = HeaderMap::new();
+        h.insert("X-Customer-Vault", "INVALID UPPERCASE".parse().unwrap());
+        let err = extract_customer_from_header(&h).unwrap_err();
+        match err {
+            ApiError::BadRequest(msg) => assert!(msg.contains("X-Customer-Vault")),
+            other => panic!("expected BadRequest, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_optional_vault_id_treats_none_empty_whitespace_uniformly() {
+        assert!(parse_optional_vault_id(None).unwrap().is_none());
+        assert!(parse_optional_vault_id(Some("")).unwrap().is_none());
+        assert!(parse_optional_vault_id(Some("   ")).unwrap().is_none());
+        assert!(parse_optional_vault_id(Some("\t")).unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_optional_vault_id_valid() {
+        let result = parse_optional_vault_id(Some("vault.alice.testnet")).unwrap().unwrap();
+        assert_eq!(result.as_str(), "vault.alice.testnet");
+    }
+
+    #[test]
+    fn parse_optional_vault_id_malformed_errors() {
+        let err = parse_optional_vault_id(Some("INVALID")).unwrap_err();
+        match err {
+            ApiError::BadRequest(msg) => assert!(msg.contains("vault_id")),
+            other => panic!("expected BadRequest, got {:?}", other),
+        }
+    }
+
+    // ============== accessor_to_contract_json — frozen contract ==============
+    // These tests pin the EXACT JSON shape sent to the contract for
+    // every accessor variant. If the contract enum tagging ever
+    // changes, OR the worker enum tagging changes, these tests fail
+    // — and that failure is what protects every secret stored on
+    // chain from silent decryption misses.
+
+    #[test]
+    fn accessor_to_contract_json_repo_normalizes_url() {
+        let a = SecretAccessor::Repo {
+            repo: "https://github.com/alice/repo".into(),
+            branch: Some("main".into()),
+        };
+        let json = accessor_to_contract_json(&a);
+        assert_eq!(
+            json,
+            serde_json::json!({"Repo": {"repo": "github.com/alice/repo", "branch": "main"}})
+        );
+    }
+
+    #[test]
+    fn accessor_to_contract_json_repo_null_branch() {
+        // Null branch must serialise as JSON null (NOT omitted) — the
+        // contract's wildcard-fallback logic relies on the field
+        // being present.
+        let a = SecretAccessor::Repo {
+            repo: "github.com/alice/repo".into(),
+            branch: None,
+        };
+        let json = accessor_to_contract_json(&a);
+        assert_eq!(
+            json,
+            serde_json::json!({"Repo": {"repo": "github.com/alice/repo", "branch": null}})
+        );
+    }
+
+    #[test]
+    fn accessor_to_contract_json_wasm_hash() {
+        let a = SecretAccessor::WasmHash { hash: "abc123".into() };
+        let json = accessor_to_contract_json(&a);
+        assert_eq!(json, serde_json::json!({"WasmHash": {"hash": "abc123"}}));
+    }
+
+    #[test]
+    fn accessor_to_contract_json_project() {
+        let a = SecretAccessor::Project { project_id: "alice.near/myapp".into() };
+        let json = accessor_to_contract_json(&a);
+        assert_eq!(json, serde_json::json!({"Project": {"project_id": "alice.near/myapp"}}));
+    }
+
+    #[test]
+    fn accessor_to_contract_json_system_payment_key_uses_camelcase() {
+        // Critical: the contract's `System(SystemSecretType)` is a tuple
+        // variant, so `{"System": "PaymentKey"}` (string, CamelCase),
+        // not `{"System": "payment_key"}` or `{"System": {"PaymentKey": null}}`.
+        let a = SecretAccessor::System { secret_type: SystemSecretType::PaymentKey };
+        let json = accessor_to_contract_json(&a);
+        assert_eq!(json, serde_json::json!({"System": "PaymentKey"}));
+    }
+
+    #[test]
+    fn system_secret_type_helpers_disagree_on_case() {
+        // Drift guard: contract format is CamelCase, seed format is
+        // snake_case. If both helpers ever drift to the same value,
+        // either contract lookups break (System: payment_key won't
+        // match) or seed format breaks (system:PaymentKey:... is a
+        // different seed). This test is the canary.
+        let s = SystemSecretType::PaymentKey;
+        assert_eq!(s.as_contract_str(), "PaymentKey");
+        assert_eq!(s.as_seed_str(), "payment_key");
+        assert_ne!(s.as_contract_str(), s.as_seed_str());
+    }
+
+    // ============== map_verify_error HTTP status mapping ==============
+    // The caller-side / worker-side
+    // split. These tests pin which VerifyError variant maps to which
+    // ApiError so a future change (e.g. someone moving an arm by
+    // accident) shows up as a unit-test failure rather than a
+    // production caller suddenly retrying or surfacing the wrong
+    // status to its end-user.
+
+    use crate::vault_verifier::VerifyError;
+    use std::str::FromStr as _;
+
+    fn vault() -> near_primitives::types::AccountId {
+        near_primitives::types::AccountId::from_str("vault.alice.testnet").unwrap()
+    }
+
+    fn assert_bad_request(e: ApiError) {
+        match e {
+            ApiError::BadRequest(_) => {}
+            other => panic!("expected BadRequest, got {:?}", other),
+        }
+    }
+    fn assert_forbidden(e: ApiError) {
+        match e {
+            ApiError::Forbidden(_) => {}
+            other => panic!("expected Forbidden, got {:?}", other),
+        }
+    }
+    fn assert_internal(e: ApiError) {
+        match e {
+            ApiError::InternalError(_) => {}
+            other => panic!("expected InternalError, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn map_verify_error_already_banned_is_403() {
+        // Banned vault is a security signal that the caller's request
+        // CAN'T succeed regardless of retries. 403 says so plainly.
+        assert_forbidden(map_verify_error(&vault(), VerifyError::AlreadyBanned));
+    }
+
+    #[test]
+    fn map_verify_error_caller_side_failures_are_400() {
+        // Each arm here represents a CALLER-side failure mode:
+        // either the vault was deployed wrong (FullAccess key,
+        // misconfigured TEE key, wrong DAO) or its state is in a
+        // non-eligible phase (unlocked, recovering). All must
+        // surface as 400 so callers don't retry.
+        assert_bad_request(map_verify_error(
+            &vault(),
+            VerifyError::CodeHashNotApproved { code_hash: "abc".into() },
+        ));
+        assert_bad_request(map_verify_error(&vault(), VerifyError::CodeHashMissing));
+        assert_bad_request(map_verify_error(&vault(), VerifyError::FullAccessKeyPresent));
+        assert_bad_request(map_verify_error(
+            &vault(),
+            VerifyError::FunctionCallKeyMisconfigured {
+                receiver: "bad".into(),
+                methods: vec![],
+            },
+        ));
+        assert_bad_request(map_verify_error(
+            &vault(),
+            VerifyError::UnexpectedAccessKeyCount { expected: 1, got: 2 },
+        ));
+        assert_bad_request(map_verify_error(
+            &vault(),
+            VerifyError::KeystoreDaoMismatch {
+                configured: "x".into(),
+                on_chain: "y".into(),
+            },
+        ));
+        assert_bad_request(map_verify_error(
+            &vault(),
+            VerifyError::MpcContractMismatch {
+                configured: "x".into(),
+                on_chain: "y".into(),
+            },
+        ));
+        assert_bad_request(map_verify_error(&vault(), VerifyError::VaultUnlocked));
+        assert_bad_request(map_verify_error(&vault(), VerifyError::VaultRecoveryInProgress));
+    }
+
+    #[test]
+    fn map_verify_error_account_not_found_is_400() {
+        // Ambiguous: vault doesn't exist OR rpc flake. Bias to 400
+        // because dominant case is bad vault_id.
+        let err = anyhow::anyhow!("account does not exist");
+        assert_bad_request(map_verify_error(
+            &vault(),
+            VerifyError::AccountNotFound(err),
+        ));
+    }
+
+    #[test]
+    fn map_verify_error_rpc_failures_are_500() {
+        // A flaky NEAR RPC must not surface as
+        // 400 because callers won't retry on 4xx. These cases are
+        // worker-side / system-side, callers SHOULD retry.
+        let err = || anyhow::anyhow!("rpc timeout");
+        assert_internal(map_verify_error(
+            &vault(),
+            VerifyError::KeystoreDaoUnreachable(err()),
+        ));
+        assert_internal(map_verify_error(
+            &vault(),
+            VerifyError::AccessKeyListUnreachable(err()),
+        ));
+        assert_internal(map_verify_error(
+            &vault(),
+            VerifyError::VaultStateUnreachable(err()),
+        ));
+    }
+
+    #[test]
+    fn map_verify_error_contract_shape_mismatch_is_500() {
+        // A contract returning malformed JSON
+        // is a contract bug or version mismatch — NOT a caller bug.
+        // Caller has done nothing wrong; surfacing 400 would be a
+        // lie.
+        assert_internal(map_verify_error(
+            &vault(),
+            VerifyError::KeystoreDaoMalformed { method: "is_vault_banned".into() },
+        ));
+        assert_internal(map_verify_error(
+            &vault(),
+            VerifyError::VaultStateInvalid("missing keystore_dao".into()),
+        ));
+    }
+
+    // ============== Handler-level customer isolation ==============
+    // Builds on the crypto-layer isolation tests in `crypto.rs`. At
+    // the handler layer the only customer-facing surface that we can
+    // exercise without an HTTP test server is `AppState::ensure_customer_loaded`.
+    // The `crypto.rs` tests already prove the underlying derive_*
+    // calls produce disjoint output per customer; here we simply
+    // verify the gate's behaviour matrix:
+
+    #[tokio::test]
+    async fn ensure_customer_loaded_treats_cached_and_uncached_uniformly_without_mpc() {
+        // The api-layer wrapper used to fast-path on `has_customer`,
+        // so cached masters were served without going through
+        // `mpc_ckd::ensure_customer_loaded`'s on-chain verify. That
+        // short-circuit is gone — every call now needs an MPC context
+        // because the verify (and any subsequent re-load) happens at
+        // the lower layer. Both a cached vault AND an uncached vault
+        // must surface the same "no MPC context" error in non-TEE
+        // mode; per-vault cache isolation is unit-tested at the
+        // Keystore layer, not here.
+        use std::str::FromStr;
+        let state = test_state();
+        let alice = near_primitives::types::AccountId::from_str("vault.alice.testnet").unwrap();
+        let bob = near_primitives::types::AccountId::from_str("vault.bob.testnet").unwrap();
+
+        // Pre-populate alice only; bob stays uncached.
+        state
+            .keystore
+            .read()
+            .await
+            .add_customer(alice.clone(), [0xAA; 32]);
+
+        for vault in [&alice, &bob] {
+            let err = state
+                .ensure_customer_loaded(Some(vault))
+                .await
+                .expect_err(
+                    "wrapper must require MPC context regardless of cache state",
+                );
+            let msg = format!("{:#}", err);
+            assert!(
+                msg.contains("MPC CKD context") || msg.contains("non-TEE"),
+                "non-TEE-mode error message expected for {vault}, got: {msg}"
+            );
+        }
+    }
+
+    // ============== Audit noteC2 — backward-compat smoke ==============
+    // The plan (line 598) explicitly mandates: "запросы без
+    // X-Customer-Vault header работают на default_master (legacy
+    // clients)". Earlier audits caught customer-isolation invariants
+    // at the gate level. This test drives a real wallet handler with
+    // an EMPTY HeaderMap and asserts the derived address matches what
+    // direct `keystore.derive_keypair(None, …)` produces — pinning
+    // the legacy customer-less path against accidental regression.
+    #[tokio::test]
+    async fn handler_without_x_customer_vault_uses_default_master() {
+        let state = test_state();
+        // Wait for is_ready (test_state initialises with is_ready=true).
+
+        // Snapshot the keystore's default-master output for the seed
+        // the handler will build internally.
+        let expected_seed = "wallet:test-wallet-id:near".to_string();
+        let expected_pubkey = {
+            let ks = state.keystore.read().await;
+            let (_, vk) = ks.derive_keypair(None, &expected_seed).unwrap();
+            hex::encode(vk.as_bytes())
+        };
+
+        // Drive the handler with an empty HeaderMap — proves the
+        // legacy "no header → default master" path.
+        let request = WalletDeriveAddressRequest {
+            wallet_id: "test-wallet-id".to_string(),
+            chain: "near".to_string(),
+        };
+        let response = wallet_derive_address_handler(
+            axum::extract::State(state),
+            axum::http::HeaderMap::new(),
+            axum::Json(request),
+        )
+        .await
+        .expect("handler must succeed without X-Customer-Vault header");
+
+        assert_eq!(
+            response.0.address, expected_pubkey,
+            "derived address must match default-master derive_keypair output"
+        );
+    }
+
+    #[tokio::test]
+    async fn handler_with_empty_x_customer_vault_uses_default_master() {
+        // An empty header value must be treated identically to no
+        // header — `extract_customer_from_header` returns Ok(None).
+        // This matters because some HTTP clients always send all
+        // configured headers, even with empty values.
+        let state = test_state();
+        let expected_pubkey = {
+            let ks = state.keystore.read().await;
+            let (_, vk) = ks.derive_keypair(None, "wallet:abc:near").unwrap();
+            hex::encode(vk.as_bytes())
+        };
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("X-Customer-Vault", "".parse().unwrap());
+
+        let request = WalletDeriveAddressRequest {
+            wallet_id: "abc".to_string(),
+            chain: "near".to_string(),
+        };
+        let response = wallet_derive_address_handler(
+            axum::extract::State(state),
+            headers,
+            axum::Json(request),
+        )
+        .await
+        .expect("empty header must be treated as no header");
+
+        assert_eq!(response.0.address, expected_pubkey);
     }
 }

@@ -26,6 +26,14 @@ export interface UserSecret {
   updated_at: number;
   storage_deposit: string;
   access: unknown; // Contract format (PascalCase)
+  /**
+   * On-chain vault-id binding for this secret, fetched client-side via
+   * `get_secret_vault(accessor, profile, owner)` after the list comes
+   * back. `undefined` = lookup not yet completed; `null` = not bound to
+   * a vault (default OutLayer master); a string = bound to that MPC
+   * vault. Surfaces in the UI as a badge on the secret card.
+   */
+  vault_id?: string | null;
 }
 
 // Form data for creating secrets
@@ -43,6 +51,11 @@ export interface FormData {
   // Common fields
   profile: string;
   access: unknown; // Contract format
+  // Phase 7 F2: vault scope. `null` = OutLayer default master
+  // (legacy / current behaviour). Non-null = secret encrypted with
+  // and bound to this customer-owned vault, recoverable through DAO
+  // cessation or unilateral exit.
+  vaultId: string | null;
 }
 
 // Helper functions for SecretAccessor

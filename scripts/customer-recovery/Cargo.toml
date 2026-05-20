@@ -1,0 +1,53 @@
+[package]
+name = "customer-recovery"
+version = "0.1.0"
+edition = "2021"
+description = "Standalone CKD recovery tool for OutLayer per-customer vaults after finalize_recovery"
+publish = false
+
+[[bin]]
+name = "customer-recovery"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# JSON
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# NEAR — mirror versions used by keystore-worker (Cargo.toml of keystore-worker)
+near-jsonrpc-client = "0.13"
+near-jsonrpc-primitives = "0.26"
+near-primitives = "0.26"
+near-crypto = "0.26"
+
+# Crypto — mirror keystore-worker. CKD math relies on BLS12-381,
+# decrypt uses G1 arithmetic, pairing verification uses blstrs's pairing.
+blstrs = "0.7"
+elliptic-curve = "0.13"
+hkdf = "0.12"
+sha2 = "0.10"
+sha3 = "0.10"
+hmac = "0.12"
+ed25519-dalek = "2"
+chacha20poly1305 = "0.10"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+borsh = "1"
+uuid = "1"
+zeroize = "1"
+
+# Encoding
+base64 = "0.22"
+bs58 = "0.5"
+hex = "0.4"
+
+anyhow = "1"
+rand = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

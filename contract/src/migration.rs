@@ -1,134 +1,130 @@
 //! Contract migration module
 //!
-//! This module handles migration of contract state when storage structures change.
+//! Migration history (each `migrate()` is single-use; once run, the
+//! state shape advances and prior migrate paths cannot be re-applied):
 //!
-//! Migration v4 -> v5: Changed per_ms_fee_usd to per_sec_fee_usd
-//! - Renamed field: per_ms_fee_usd -> per_sec_fee_usd
-//! - USDC has 6 decimals, per_ms pricing was too expensive
+//! * v4 → v5: rename `per_ms_fee_usd` → `per_sec_fee_usd`. (Run.)
+//! * v5 → v6: add `wallet_policies`, `wallet_owner_index`. (Run.)
+//! * **v6 → v7 (current): add `secret_vault_bindings` (Phase 2 of
+//!   per-vault master plan).**
+//!
+//! Versions ≤ v6 are now historical. The `migrate()` entry point in
+//! this file targets v6 → v7 specifically. Production deployments must
+//! be on v6 before calling this migration; an earlier-version
+//! deployment must first run a v4/v5 → v6 migration from a prior code
+//! revision.
 
 use crate::*;
 use near_sdk::borsh::BorshDeserialize;
 use near_sdk::collections::{LookupMap, UnorderedMap, UnorderedSet};
 
-/// Contract state version 4 (before per_sec_fee_usd change)
+/// Pre-Phase-2 contract state (v6). Mirrors the `Contract` struct as it
+/// existed immediately before the per-vault master Phase 2 changes
+/// added `secret_vault_bindings`. All other fields carry over verbatim.
 #[derive(BorshDeserialize)]
 #[borsh(crate = "near_sdk::borsh")]
-#[allow(dead_code)] // Fields needed for Borsh deserialization during migration
-pub struct ContractV4 {
-    // Contract configuration
+#[allow(dead_code)] // fields needed for borsh deserialisation only
+pub struct ContractV6 {
     owner_id: AccountId,
     operator_id: AccountId,
     paused: bool,
-
-    // Event metadata
     event_standard: String,
     event_version: String,
 
-    // Pricing (NEAR)
+    // NEAR pricing
     base_fee: Balance,
     per_million_instructions_fee: Balance,
     per_ms_fee: Balance,
     per_compile_ms_fee: Balance,
 
-    // Pricing (USD) - old field name: per_ms_fee_usd
+    // USD pricing
     base_fee_usd: u128,
     per_million_instructions_fee_usd: u128,
-    per_ms_fee_usd: u128,
+    per_sec_fee_usd: u128,
     per_compile_ms_fee_usd: u128,
 
-    // Payment token
     payment_token_contract: Option<AccountId>,
 
-    // Request tracking
     next_request_id: u64,
     pending_requests: LookupMap<u64, ExecutionRequest>,
 
-    // Statistics
     total_executions: u64,
     total_fees_collected: Balance,
 
-    // Secrets storage
     secrets_storage: LookupMap<SecretKey, SecretProfile>,
     user_secrets_index: LookupMap<AccountId, UnorderedSet<SecretKey>>,
 
-    // Project system
     projects: LookupMap<String, Project>,
     project_versions: LookupMap<String, UnorderedMap<String, VersionInfo>>,
     user_projects_index: LookupMap<AccountId, UnorderedSet<String>>,
     next_project_id: u64,
 
-    // Developer earnings (stablecoin)
     developer_earnings: LookupMap<AccountId, u128>,
-
-    // User stablecoin balances
     user_stablecoin_balances: LookupMap<AccountId, u128>,
+
+    wallet_policies: LookupMap<String, wallet::WalletPolicyEntry>,
+    wallet_owner_index: LookupMap<AccountId, UnorderedSet<String>>,
 }
 
 #[near_bindgen]
 impl Contract {
-    /// Migrate contract from version 4 to version 5 (per_ms_fee_usd -> per_sec_fee_usd)
+    /// Migrate from v6 (pre-Phase-2) to v7 (per-vault master Phase 2).
     ///
-    /// This migration:
-    /// 1. Reads old contract state (v4)
-    /// 2. Preserves all existing data
-    /// 3. Changes per_ms_fee_usd to per_sec_fee_usd with value 1
-    ///
-    /// # Safety
-    /// - Only owner can call this
-    /// - Should only be called once after contract upgrade
+    /// Adds `secret_vault_bindings` as an empty `LookupMap`. All
+    /// existing `SecretProfile` entries deserialise unchanged — old
+    /// secrets without a binding are interpreted by the worker as
+    /// "encrypted with the default OutLayer master". Customers
+    /// migrating to per-vault masters re-encrypt and rebind via
+    /// `update_user_secrets` at their own pace.
     #[private]
     #[init(ignore_state)]
     pub fn migrate() -> Self {
-        let old_state: ContractV4 = env::state_read().expect("Failed to read old state");
+        let v6: ContractV6 = env::state_read().expect("failed to read v6 state");
 
-        // Log migration
         log!(
-            "Migrating contract v4 -> v5 (per_ms_fee_usd -> per_sec_fee_usd): owner={}, total_executions={}",
-            old_state.owner_id,
-            old_state.total_executions
+            "Migrating contract v6 -> v7 (add secret_vault_bindings): owner={}, total_executions={}",
+            v6.owner_id,
+            v6.total_executions
         );
 
         Self {
-            owner_id: old_state.owner_id,
-            operator_id: old_state.operator_id,
-            paused: old_state.paused,
-            event_standard: old_state.event_standard,
-            event_version: old_state.event_version,
-            // NEAR pricing (unchanged)
-            base_fee: old_state.base_fee,
-            per_million_instructions_fee: old_state.per_million_instructions_fee,
-            per_ms_fee: old_state.per_ms_fee,
-            per_compile_ms_fee: old_state.per_compile_ms_fee,
-            // USD pricing (per_ms_fee_usd -> per_sec_fee_usd)
-            base_fee_usd: old_state.base_fee_usd,
-            per_million_instructions_fee_usd: old_state.per_million_instructions_fee_usd,
-            per_sec_fee_usd: 1, // Set to 1 ($0.000001 per second)
-            per_compile_ms_fee_usd: old_state.per_compile_ms_fee_usd,
-            payment_token_contract: old_state.payment_token_contract,
-            next_request_id: old_state.next_request_id,
-            pending_requests: old_state.pending_requests,
-            total_executions: old_state.total_executions,
-            total_fees_collected: old_state.total_fees_collected,
-            secrets_storage: old_state.secrets_storage,
-            user_secrets_index: old_state.user_secrets_index,
-            // Project system
-            projects: old_state.projects,
-            project_versions: old_state.project_versions,
-            user_projects_index: old_state.user_projects_index,
-            next_project_id: old_state.next_project_id,
-            // Developer earnings
-            developer_earnings: old_state.developer_earnings,
-            user_stablecoin_balances: old_state.user_stablecoin_balances,
-            // Wallet policies (new in v6)
-            wallet_policies: LookupMap::new(StorageKey::WalletPolicies),
-            wallet_owner_index: LookupMap::new(StorageKey::WalletOwnerIndex),
+            owner_id: v6.owner_id,
+            operator_id: v6.operator_id,
+            paused: v6.paused,
+            event_standard: v6.event_standard,
+            event_version: v6.event_version,
+            base_fee: v6.base_fee,
+            per_million_instructions_fee: v6.per_million_instructions_fee,
+            per_ms_fee: v6.per_ms_fee,
+            per_compile_ms_fee: v6.per_compile_ms_fee,
+            base_fee_usd: v6.base_fee_usd,
+            per_million_instructions_fee_usd: v6.per_million_instructions_fee_usd,
+            per_sec_fee_usd: v6.per_sec_fee_usd,
+            per_compile_ms_fee_usd: v6.per_compile_ms_fee_usd,
+            payment_token_contract: v6.payment_token_contract,
+            next_request_id: v6.next_request_id,
+            pending_requests: v6.pending_requests,
+            total_executions: v6.total_executions,
+            total_fees_collected: v6.total_fees_collected,
+            secrets_storage: v6.secrets_storage,
+            user_secrets_index: v6.user_secrets_index,
+            projects: v6.projects,
+            project_versions: v6.project_versions,
+            user_projects_index: v6.user_projects_index,
+            next_project_id: v6.next_project_id,
+            developer_earnings: v6.developer_earnings,
+            user_stablecoin_balances: v6.user_stablecoin_balances,
+            wallet_policies: v6.wallet_policies,
+            wallet_owner_index: v6.wallet_owner_index,
+            // ----- v7 -----
+            secret_vault_bindings: LookupMap::new(StorageKey::SecretVaultBindings),
         }
     }
 
-    /// Check if contract needs migration
-    /// Returns the current storage version
+    /// Returns the contract's storage-schema version. Bumped each time
+    /// `migrate()` advances the layout. Off-chain tooling reads this to
+    /// decide whether a deploy needs a migration call.
     pub fn get_storage_version(&self) -> String {
-        // Version 5: per_ms_fee_usd -> per_sec_fee_usd
-        "5".to_string()
+        "7".to_string()
     }
 }

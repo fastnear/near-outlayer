@@ -63,11 +63,26 @@ export function SecretCard({ secret, onEdit, onUpdate, onDelete }: SecretCardPro
             )}
           </div>
 
-          {/* Profile */}
-          <div className="mb-2">
+          {/* Profile + master-key binding */}
+          <div className="mb-2 flex flex-wrap items-center gap-1.5">
             <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
               📦 {secret.profile}
             </span>
+            {secret.vault_id ? (
+              <span
+                className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-50 text-purple-800 border border-purple-200"
+                title={`Encrypted with the per-customer master derived for MPC vault ${secret.vault_id}`}
+              >
+                🔐 MPC vault:&nbsp;<code className="font-mono">{secret.vault_id}</code>
+              </span>
+            ) : secret.vault_id === null ? (
+              <span
+                className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-50 text-gray-600 border border-gray-200"
+                title="Encrypted with the shared OutLayer master (no MPC vault binding)"
+              >
+                OutLayer master
+              </span>
+            ) : null}
           </div>
 
           {/* Access Condition */}
