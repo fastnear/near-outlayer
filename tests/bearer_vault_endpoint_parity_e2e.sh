@@ -206,55 +206,73 @@ echo "  /sign-message          : $A_SIGN" >&2
   fail "Section 1 PARITY BROKEN: /sign-message account_id '$A_SIGN' ≠ /address '$A_ADDR'"
 pass "all 4 endpoints agree on the vault-scoped address: $A_ADDR"
 
-# ─── Section 2: cache-poisoning regression ─────────────────────────
+# ─── Section 2: v2 schema — scope-aware wallet_id eliminates cache collision ──
 #
-# Exact repro of the production bug. A bot's first call for a given
-# (account, seed) happens to be a default-master /address — writes
-# default-master pubkey to wallet_accounts.near_pubkey. Later the bot
-# discovers it has a vault and starts sending vault-scoped tokens.
-# Pre-fix: every endpoint except /address kept returning the poisoned
-# default-master account_id, because the DB cache was first-write-wins
-# and never re-derived.
+# Pre-v2 bug: `wallet_id = hash(account, seed)` was scope-agnostic,
+# so the same (account, seed) under different vault scopes shared one
+# DB row in `wallet_accounts`. The `near_pubkey` column could hold only
+# one scope's address — whichever was written first. /balance read this
+# stale cached value regardless of which scope the caller requested,
+# leading to the production bug (deposit on `8b7a488d...` but /balance
+# returned `9980b32f...`).
+#
+# v2 fix: `wallet_id = hash(account, seed, vault_or_none)`. Each scope
+# now produces a DIFFERENT wallet_id, gets its own DB row, has its own
+# canonical cached pubkey. Cache collision is structurally impossible —
+# the rows live at different primary keys, the writes don't compete.
+#
+# This section verifies the v2 schema by orchestrating what was the
+# poisoning sequence in v1 and asserting the rows stay independent.
 
-log "2. Cache poisoning: default-master /address THEN vault /balance must still be vault-scoped"
+log "2. v2: same (account, seed) under default vs vault produces independent rows"
 SEED_POISON="poison-$(date +%s)-$$"
 
-# Step 1: poison the cache by calling /address with NO vault_id.
+# Step 1: default-master /address writes near_pubkey to row #1 (wallet_id_NV).
 TOK_NV=$(token_for "no vault" "$PARENT" "$PARENT_PRIVKEY" "$SEED_POISON" "")
-ADDR_NV=$(addr_via_address "$TOK_NV")
-echo "  default-master /address (cache write): $ADDR_NV" >&2
+ADDR_NV_RAW=$(curl -sS -G "$COORDINATOR_URL/wallet/v1/address" \
+    --data-urlencode "chain=near" \
+    -H "Authorization: Bearer near:$TOK_NV")
+ADDR_NV=$(echo "$ADDR_NV_RAW" | jq -r '.address // empty')
+WID_NV=$(echo "$ADDR_NV_RAW" | jq -r '.wallet_id // empty')
+echo "  default-master: wallet_id=$WID_NV  addr=$ADDR_NV" >&2
 
-# Step 2: vault-scoped /address — proves the keystore derives differently.
+# Step 2: vault-scoped /address writes near_pubkey to row #2 (wallet_id_VA).
 TOK_VA=$(token_for "vault A" "$PARENT" "$PARENT_PRIVKEY" "$SEED_POISON" "$VAULT_A_ID")
-ADDR_VA=$(addr_via_address "$TOK_VA")
-echo "  vault-scoped /address (ground truth)  : $ADDR_VA" >&2
+ADDR_VA_RAW=$(curl -sS -G "$COORDINATOR_URL/wallet/v1/address" \
+    --data-urlencode "chain=near" \
+    -H "Authorization: Bearer near:$TOK_VA")
+ADDR_VA=$(echo "$ADDR_VA_RAW" | jq -r '.address // empty')
+WID_VA=$(echo "$ADDR_VA_RAW" | jq -r '.wallet_id // empty')
+echo "  vault A:        wallet_id=$WID_VA  addr=$ADDR_VA" >&2
+
+# v2 invariants: distinct wallet_ids AND distinct addresses
+[[ "$WID_NV" != "$WID_VA" ]] || \
+  fail "v2 BROKEN: same wallet_id ($WID_NV) for default-master and vault A — formula did NOT include vault scope"
 [[ "$ADDR_VA" != "$ADDR_NV" ]] || \
-  fail "vault and default-master derived same address — per-vault HMAC broken"
+  fail "v2 BROKEN: same address for default-master and vault A — per-vault HMAC broken"
 
-# Step 3 (the bug): /balance under the vault token MUST return ADDR_VA,
-# not the cached ADDR_NV from step 1.
+# Step 3: /balance and /sign-message under each scope return the right
+# address. Because wallet_ids differ, the DB cache lookup hits the
+# right row in each case — no scope collision possible.
 BAL_VA_I=$(acct_via_balance_intents "$TOK_VA")
-BAL_VA_N=$(acct_via_balance_native  "$TOK_VA")
 SIGN_VA=$(acct_via_sign_message     "$TOK_VA")
+BAL_NV_I=$(acct_via_balance_intents "$TOK_NV")
+SIGN_NV=$(acct_via_sign_message     "$TOK_NV")
 
-echo "  /balance(intents) under vault token  : $BAL_VA_I" >&2
-echo "  /balance(native)  under vault token  : $BAL_VA_N" >&2
-echo "  /sign-message     under vault token  : $SIGN_VA" >&2
+echo "  /balance(intents) vault A : $BAL_VA_I" >&2
+echo "  /sign-message     vault A : $SIGN_VA" >&2
+echo "  /balance(intents) default : $BAL_NV_I" >&2
+echo "  /sign-message     default : $SIGN_NV" >&2
 
 [[ "$BAL_VA_I" == "$ADDR_VA" ]] || \
-  fail "BUG REPRO: /balance(intents) returned poisoned default-master '$BAL_VA_I' instead of vault-scoped '$ADDR_VA' — resolve_wallet_pubkey served stale DB cache"
-[[ "$BAL_VA_N" == "$ADDR_VA" ]] || \
-  fail "BUG REPRO: /balance(native) returned poisoned '$BAL_VA_N' instead of '$ADDR_VA'"
+  fail "/balance(intents) vault A returned '$BAL_VA_I' ≠ /address '$ADDR_VA' — cache for wallet_id_VA wrong"
 [[ "$SIGN_VA"  == "$ADDR_VA" ]] || \
-  fail "BUG REPRO: /sign-message returned poisoned '$SIGN_VA' instead of '$ADDR_VA'"
-pass "cache poisoning defeated: vault token gets vault-scoped account_id across all endpoints"
-
-# Step 4: also verify the no-vault token still gets the default-master
-# address (sanity that the fix didn't break the no-vault path).
-BAL_NV_I=$(acct_via_balance_intents "$TOK_NV")
+  fail "/sign-message vault A returned '$SIGN_VA' ≠ /address '$ADDR_VA'"
 [[ "$BAL_NV_I" == "$ADDR_NV" ]] || \
-  fail "no-vault path regressed: /balance(intents) '$BAL_NV_I' ≠ /address '$ADDR_NV'"
-pass "no-vault path intact: /balance(intents) still reports default-master account_id"
+  fail "/balance(intents) default returned '$BAL_NV_I' ≠ /address '$ADDR_NV'"
+[[ "$SIGN_NV"  == "$ADDR_NV" ]] || \
+  fail "/sign-message default returned '$SIGN_NV' ≠ /address '$ADDR_NV'"
+pass "v2: each scope's wallet_id has its own cached pubkey; no scope collision across endpoints"
 
 # ─── Section 3: cross-vault isolation across endpoints ─────────────
 #

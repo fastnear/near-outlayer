@@ -761,8 +761,9 @@ curl -s -X POST -H "Content-Type: application/json" \\
 
         <p className="text-gray-700 mb-4">
           For servers, bots, and agents with a NEAR account: create wallets that require <strong>zero per-user key storage</strong>.
-          The wallet ID is derived from <code className="bg-gray-100 px-1 rounded">(account_id, seed)</code> &mdash; same inputs always produce the same wallet.
+          The wallet ID is derived from <code className="bg-gray-100 px-1 rounded">(account_id, seed, vault_or_none)</code> &mdash; same inputs always produce the same wallet, and different vault scopes legitimately mint independent sub-wallets under the same seed.
           Auth uses NEAR ed25519 signatures on every request instead of stored API keys.
+          Seed format: <code className="bg-gray-100 px-1 rounded">[a-zA-Z0-9._-]</code>, 1-256 chars.
         </p>
 
         <div className="bg-blue-50 border-l-4 border-blue-500 p-4 mb-6">
@@ -909,7 +910,7 @@ curl -H "Authorization: Bearer wk_derived_key_here" \\
         <h3 className="text-lg font-semibold mt-6 mb-2">Key rotation</h3>
         <p className="text-gray-700 mb-4">
           No endpoint needed. Add a new key to your NEAR account, start signing with it, remove the old key.
-          Old key access is revoked within 60 seconds (cache TTL). Wallet identity is tied to <code className="bg-gray-100 px-1 rounded">(account_id, seed)</code>, not to which key signs.
+          Old key access is revoked within 60 seconds (cache TTL). Wallet identity is tied to <code className="bg-gray-100 px-1 rounded">(account_id, seed, vault_or_none)</code>, not to which key signs.
         </p>
       </section>
 

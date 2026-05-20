@@ -100,7 +100,7 @@ outlayer vault init --name "$VAULT_A_NAME" --exit-window 60s >&2 || \
 
 VAULT_B_NAME="apik-$(date +%s)-b"
 VAULT_B_ID="$VAULT_B_NAME.$PARENT"
-log "1b. Deploying VAULT_B=$VAULT_B_ID (for re-bind negative test)"
+log "1b. Deploying VAULT_B=$VAULT_B_ID (for cross-vault distinct-wallet_id test)"
 outlayer vault init --name "$VAULT_B_NAME" --exit-window 60s >&2 || \
   fail "vault init $VAULT_B_ID failed"
 
@@ -157,18 +157,26 @@ NONCE=$(echo "$SIGN_RESP" | jq -r '.nonce // empty')
   fail "sub-wallet's signature did NOT verify"
 pass "sub-wallet signature verifies under $PUB"
 
-# ─── 4. Re-bind refusal: same seed → different vault ──────────────
+# ─── 4. v2: same seed + different vault → SUCCESS, distinct wallet ───
 #
-# This is the gate added by Round-4 audit: changing the vault scope
-# of an existing (account_id, seed) tuple would silently fork the
-# key derivation. Server refuses with 400.
+# Under v2 the wallet_id hash includes vault_id, so the same (account,
+# seed) under different vaults yields different wallet_ids — there's
+# no shared row to silently fork. The historical "rebind refusal" gate
+# is gone; each scope independently mints its own sub-wallet.
+#
+# Different sub-key is required because reusing the same wk_ hash
+# under a different wallet_id would violate wallet_api_keys's UNIQUE
+# constraint on key_hash. The whole point of v2 is that these are
+# logically distinct wallets.
 
-log "4. Re-bind: PUT same seed with vault_id=$VAULT_B_ID (must 400)"
+SUB_KEY_B=$(new_sub_key)
+
+log "4. PUT same seed with vault_id=$VAULT_B_ID + fresh sub-key — must succeed under v2 (distinct wallet_id)"
 BODY_B=$("$RECOVERY_BIN" sign-api-key-claim \
   --private-key "$PARENT_PRIVKEY" \
   --account-id "$PARENT" \
   --seed "$SEED" \
-  --sub-key "$SUB_KEY" \
+  --sub-key "$SUB_KEY_B" \
   --vault-id "$VAULT_B_ID")
 HTTP=$(curl -sS -o /tmp/apik_rebind.body -w '%{http_code}' \
   -X PUT "$COORDINATOR_URL/wallet/v1/api-key" \
@@ -176,10 +184,16 @@ HTTP=$(curl -sS -o /tmp/apik_rebind.body -w '%{http_code}' \
 REBIND_BODY=$(cat /tmp/apik_rebind.body)
 echo "  HTTP $HTTP" >&2
 echo "  body: $REBIND_BODY" >&2
-if [[ "$HTTP" == "400" ]]; then
-  pass "re-bind correctly refused with 400"
+if [[ "$HTTP" == "200" ]]; then
+  WALLET_ID_B=$(echo "$REBIND_BODY" | jq -r '.wallet_id // empty')
+  GOT_VAULT_B=$(echo "$REBIND_BODY" | jq -r '.vault_id // empty')
+  [[ -n "$WALLET_ID_B" && "$WALLET_ID_B" != "$WALLET_ID" ]] || \
+    fail "v2: same seed under vault B should produce distinct wallet_id from vault A; got '$WALLET_ID_B' == '$WALLET_ID'"
+  [[ "$GOT_VAULT_B" == "$VAULT_B_ID" ]] || \
+    fail "vault_id mismatch in response: '$GOT_VAULT_B' != '$VAULT_B_ID'"
+  pass "v2: cross-vault sub-wallet minted distinct wallet_id=$WALLET_ID_B (A=$WALLET_ID, B=$WALLET_ID_B)"
 else
-  fail "re-bind should have returned 400, got HTTP $HTTP: $REBIND_BODY"
+  fail "v2: expected 200 for cross-vault mint, got HTTP $HTTP: $REBIND_BODY"
 fi
 
 # ─── 5. (Best-effort) cross-account spoof ─────────────────────────
@@ -204,28 +218,32 @@ else
   fail "spoof should have been 4xx, got HTTP $HTTP: $SPOOF_RESP"
 fi
 
-# ─── 6. Negative: re-bind to NO vault (default-master) ────────────
+# ─── 6. v2: same seed + no vault → SUCCESS, third distinct wallet ────
 #
-# Same seed, drop vault_id entirely. Previously bound to VAULT_A,
-# now we'd ask the coordinator to mint without a vault — should
-# also 400 by the same rebind gate.
+# Under v2 no-vault is a third independent scope. Should succeed and
+# produce yet another wallet_id distinct from both vault A and vault B.
 
-log "6. Re-bind: same seed, NO vault_id (must 400)"
+SUB_KEY_NV=$(new_sub_key)
+
+log "6. PUT same seed, NO vault_id + fresh sub-key — must succeed under v2 (distinct wallet_id)"
 BODY_NOVAULT=$("$RECOVERY_BIN" sign-api-key-claim \
   --private-key "$PARENT_PRIVKEY" \
   --account-id "$PARENT" \
   --seed "$SEED" \
-  --sub-key "$SUB_KEY")
+  --sub-key "$SUB_KEY_NV")
 HTTP=$(curl -sS -o /tmp/apik_novault.body -w '%{http_code}' \
   -X PUT "$COORDINATOR_URL/wallet/v1/api-key" \
   -H 'Content-Type: application/json' -d "$BODY_NOVAULT")
 NV_RESP=$(cat /tmp/apik_novault.body)
 echo "  HTTP $HTTP" >&2
 echo "  body: $NV_RESP" >&2
-if [[ "$HTTP" == "400" ]]; then
-  pass "re-bind to no-vault correctly refused with 400"
+if [[ "$HTTP" == "200" ]]; then
+  WALLET_ID_NV=$(echo "$NV_RESP" | jq -r '.wallet_id // empty')
+  [[ -n "$WALLET_ID_NV" && "$WALLET_ID_NV" != "$WALLET_ID" && "$WALLET_ID_NV" != "$WALLET_ID_B" ]] || \
+    fail "v2: no-vault mint should be distinct from both vault A and B; got NV='$WALLET_ID_NV' A='$WALLET_ID' B='$WALLET_ID_B'"
+  pass "v2: no-vault sub-wallet minted distinct wallet_id=$WALLET_ID_NV (three distinct ids for one seed across three scopes)"
 else
-  fail "no-vault re-bind should have been 400, got HTTP $HTTP: $NV_RESP"
+  fail "v2: expected 200 for no-vault mint, got HTTP $HTTP: $NV_RESP"
 fi
 
 # ─── 7. Happy: NEW seed, same account, same vault → success ──────
@@ -336,9 +354,9 @@ fi
 # is a fresh Bearer near: with vault_id inline. Tests the properties
 # the bot operationally relies on.
 
-# Helper: get address for a (parent, seed, vault) trio via Bearer near:
-# Echoes the .address field on stdout, or fails the test.
-bn_address() {
+# Helper: get (address, wallet_id) for a (parent, seed, vault) trio via Bearer near:
+# Prints "address|wallet_id" on stdout. Use IFS='|' read to split.
+bn_address_and_id() {
   local label=$1
   local acct=$2 priv=$3 seed=$4 vault=$5
   local token
@@ -348,27 +366,51 @@ bn_address() {
   resp=$(curl -sS -G "$COORDINATOR_URL/wallet/v1/address" \
     --data-urlencode "chain=near" \
     -H "Authorization: Bearer near:$token")
-  local addr
+  local addr wid
   addr=$(echo "$resp" | jq -r '.address // empty')
+  wid=$(echo "$resp" | jq -r '.wallet_id // empty')
   [[ -n "$addr" ]] || fail "$label: no .address in response: $resp"
-  echo "$addr"
+  [[ -n "$wid"  ]] || fail "$label: no .wallet_id in response: $resp"
+  printf '%s|%s' "$addr" "$wid"
 }
 
-# ─── 9. Vault isolation under Bearer near: ─────────────────────────
-#
-# Same (account_id, seed), different vault_ids → different addresses.
-# This is the core sovereignty proof: keys derive from per-vault
-# master, so vault A and vault B yield disjoint address spaces even
-# for the same caller and same seed.
+# Backward-compat wrapper that returns only address (most callers in this test
+# do not need the wallet_id).
+bn_address() {
+  local pair
+  pair=$(bn_address_and_id "$@")
+  echo "${pair%%|*}"
+}
 
-log "9. Vault isolation: same (acct, seed), vault A vs vault B → distinct addresses"
+# ─── 9. Sovereignty under Bearer near: (v2 — distinct wallet_ids per scope) ──
+#
+# Under v2 each (account_id, seed, scope) tuple is its own logical wallet
+# with its own wallet_id (and therefore its own DB row, trial state,
+# audit log). Same (account_id, seed) under vault A vs vault B vs
+# no-vault produces THREE distinct wallet_ids AND three distinct
+# addresses. The address divergence comes from per-vault HMAC masters
+# in the keystore; the wallet_id divergence comes from the v2 formula
+# `hash(account, seed, vault_or_none)`. Both layers contribute to
+# crypto-level isolation.
+
+log "9. Vault isolation: same (acct, seed) under three scopes → 3 wallet_ids and 3 addresses"
 SHARED_SEED="iso-$(date +%s)-$$"
-ADDR_VA=$(bn_address "vault A" "$PARENT" "$PARENT_PRIVKEY" "$SHARED_SEED" "$VAULT_A_ID")
-ADDR_VB=$(bn_address "vault B" "$PARENT" "$PARENT_PRIVKEY" "$SHARED_SEED" "$VAULT_B_ID")
-ADDR_NV=$(bn_address "no vault" "$PARENT" "$PARENT_PRIVKEY" "$SHARED_SEED" "")
-echo "  vault A: $ADDR_VA" >&2
-echo "  vault B: $ADDR_VB" >&2
-echo "  default: $ADDR_NV" >&2
+PAIR_VA=$(bn_address_and_id "vault A" "$PARENT" "$PARENT_PRIVKEY" "$SHARED_SEED" "$VAULT_A_ID")
+PAIR_VB=$(bn_address_and_id "vault B" "$PARENT" "$PARENT_PRIVKEY" "$SHARED_SEED" "$VAULT_B_ID")
+PAIR_NV=$(bn_address_and_id "no vault" "$PARENT" "$PARENT_PRIVKEY" "$SHARED_SEED" "")
+IFS='|' read -r ADDR_VA WID_VA <<< "$PAIR_VA"
+IFS='|' read -r ADDR_VB WID_VB <<< "$PAIR_VB"
+IFS='|' read -r ADDR_NV WID_NV <<< "$PAIR_NV"
+echo "  vault A: wallet_id=$WID_VA  addr=$ADDR_VA" >&2
+echo "  vault B: wallet_id=$WID_VB  addr=$ADDR_VB" >&2
+echo "  default: wallet_id=$WID_NV  addr=$ADDR_NV" >&2
+[[ "$WID_VA" != "$WID_VB" ]] || \
+  fail "v2: vault A and vault B share wallet_id ($WID_VA) — formula did NOT include vault scope"
+[[ "$WID_VA" != "$WID_NV" ]] || \
+  fail "v2: vault A and default-master share wallet_id"
+[[ "$WID_VB" != "$WID_NV" ]] || \
+  fail "v2: vault B and default-master share wallet_id"
+pass "v2: three distinct wallet_ids for one (acct, seed) across three scopes"
 [[ "$ADDR_VA" != "$ADDR_VB" ]] || \
   fail "vault A and vault B derived the SAME address ($ADDR_VA) — broken vault isolation"
 [[ "$ADDR_VA" != "$ADDR_NV" ]] || \
@@ -775,9 +817,9 @@ pass ""
 pass "  PUT /api-key (Flow 4b, NEAR-sig with key_hash):"
 pass "  - happy path mints sub-wallet under correct vault"
 pass "  - sub-wallet's wk_ works for /address and /sign-message"
-pass "  - cross-vault re-bind refused (400)"
+pass "  - cross-vault PUT mints distinct sub-wallet (200, distinct wallet_id)"
 pass "  - cross-account spoof refused (4xx)"
-pass "  - no-vault re-bind refused (400)"
+pass "  - no-vault PUT mints third distinct sub-wallet (200, distinct wallet_id)"
 pass "  - distinct seeds mint distinct sub-wallets"
 pass ""
 pass "  Stateless Bearer near: (no per-user wk_ provisioning):"
