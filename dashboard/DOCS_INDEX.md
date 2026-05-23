@@ -26,6 +26,8 @@ Both modes provide the same cryptographic proof via Intel TDX attestation.
 - **Examples**: `/wasi-examples/*/README.md` - Source for example documentation
 - **Navigation**: `/dashboard/app/docs/layout.tsx` - Sidebar menu configuration
 - **Vault runbook**: `/docs/LEAVING_OUTLAYER.md` — source-of-truth procedure for taking a vault out from under OutLayer's keystore (linked from `/docs/vaults` page; auditors should treat it as canonical)
+- **API Spec (OpenAPI 3.1)**: [out-layer/api-spec](https://github.com/out-layer/api-spec) — single source of truth for the HTTP API; rendered at https://api.outlayer.fastnear.com/docs (Scalar UI)
+- **TypeScript SDK**: [`@outlayer/sdk`](https://www.npmjs.com/package/@outlayer/sdk) — source at [out-layer/sdk-js](https://github.com/out-layer/sdk-js); covers all wallet, policy, approval, and audit endpoints
 - **Live Site**: https://outlayer.fastnear.com/docs
 
 ## Documentation Structure
@@ -190,7 +192,7 @@ dashboard/app/docs/
 | Dashboard Page | Primary Source | Secondary Sources | Key Topics |
 |----------------|---------------|-------------------|------------|
 | `/docs` | `dashboard/app/docs/page.tsx` | - | Overview, getting started |
-| `/docs/agent-custody` | `dashboard/app/docs/agent-custody/page.tsx` | `.ignore/FIREBLOCKS.md`, `dashboard/public/SKILL.md` | **Agent Custody: multi-chain wallet, policy engine, gasless transfers, MPC security, NEP-413 message signing, CLI integration (wallet-key login)** |
+| `/docs/agent-custody` | `dashboard/app/docs/agent-custody/page.tsx` | `.ignore/FIREBLOCKS.md`, `dashboard/public/SKILL.md`, `CUSTODY.md`, [`@outlayer/sdk`](https://github.com/out-layer/sdk-js) | **Agent Custody: multi-chain wallet, policy engine, gasless transfers, native-NEAR withdrawal (`token=near` unwraps wNEAR via Intents `native_withdraw`), MPC security, NEP-413 message signing, CLI integration (wallet-key login), TypeScript SDK** |
 | `/docs/getting-started` | `dashboard/app/docs/sections/GettingStarted.tsx` | - | **TEE attestation, two integration modes (HTTPS & Blockchain), quick start** |
 | `/docs/web2-integration` | `dashboard/app/docs/web2-integration/page.tsx` | - | HTTPS integration overview, TEE attestation |
 | `/docs/https-api` | `dashboard/app/docs/https-api/page.tsx` | `DESIGN_HTTPS_API.md` | **Full HTTPS API reference, headers, responses** |

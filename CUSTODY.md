@@ -1,6 +1,56 @@
 # Agent Custody — Developer Reference
 
-Institutional-grade custody wallets for AI agents. An agent gets an API key to operate a multi-chain wallet. Private keys live exclusively inside a TEE (Intel TDX). The wallet owner sets policy (spending limits, whitelists, multisig, freeze) — all enforced inside the TEE. Cross-chain transfers via NEAR Intents (gasless).
+Institutional-grade custody wallets for AI agents. An agent gets an API key to operate a NEAR-native wallet whose cross-chain value is custodied on `intents.near`. Private keys live exclusively inside a TEE (Intel TDX). The wallet owner sets policy (spending limits, whitelists, multisig, freeze) — all enforced inside the TEE. Cross-chain deposits/withdrawals via NEAR Intents + the 1Click solver (gasless), like a CEX: deposit, operate, withdraw to an external address. The wallet does not sign native Ethereum/Solana transactions itself (planned, not shipped).
+
+> **⚠️ Only send whitelisted Intents assets — anything else is lost permanently.**
+> Deposits/withdrawals only work for assets in the NEAR Intents / 1Click token
+> catalog (`GET /wallet/v1/tokens`), on the exact chain a deposit address was
+> issued for. Sending an unsupported token, the wrong token, a token on the
+> wrong chain, an NFT, or an unlisted native gas coin to a deposit address is
+> **unrecoverable**. Deposit addresses from `/wallet/v1/deposit-intent` are
+> per-request and expire (30 min) — never reuse one or send after expiry.
+
+---
+
+## Integrating
+
+For most use cases, use the **TypeScript SDK** instead of calling the HTTP API directly:
+
+```bash
+npm install @outlayer/sdk
+```
+
+```ts
+import { OutlayerClient } from '@outlayer/sdk';
+
+// 1. Register a wallet (anonymous, returns API key once)
+const { apiKey, walletId, handoffUrl } = await OutlayerClient.register();
+
+// 2. Use it
+const client = new OutlayerClient({ apiKey });
+const result = await client.withdraw({
+  chain: 'ethereum',
+  to: '0x742d35Cc6634C0532925a3b844Bc9e7595f8b4f5',
+  amount: '1000000',
+  token: 'nep141:usdt.tether-token.near',
+});
+```
+
+- **SDK source**: [out-layer/sdk-js](https://github.com/out-layer/sdk-js) (MIT)
+- **SDK on npm**: [`@outlayer/sdk`](https://www.npmjs.com/package/@outlayer/sdk)
+- **OpenAPI spec**: [out-layer/api-spec](https://github.com/out-layer/api-spec)
+- **Interactive API docs**: https://api.outlayer.fastnear.com/docs (Scalar UI)
+
+The SDK auto-generates types from the OpenAPI spec, adds typed error classes (`PolicyDeniedError`, `WalletFrozenError`, etc.), automatic idempotency keys, and retry with backoff on 5xx + network errors. SDK feature parity with the raw HTTP API; the rest of this document is the reference for both.
+
+For other languages, generate a client from the OpenAPI spec:
+
+```bash
+# Python
+openapi-python-client generate --url https://api.outlayer.fastnear.com/openapi.json
+# Go
+oapi-codegen -generate types https://api.outlayer.fastnear.com/openapi.json > types.go
+```
 
 ---
 
@@ -75,7 +125,7 @@ HTTP API server. Handles auth, routing, usage tracking, webhooks.
 | `intents_deposit()` | — | Deposit FT into intents.near via ft_transfer_call (auto storage deposit) |
 | `swap()` | — | Swap via 1Click: quote → ft_transfer_call to intents.near → mt_transfer → poll |
 | `deposit()` | 857 | Cross-chain deposit via Intents quote |
-| `get_address()` | 345 | Derive address for any chain (keystore call) |
+| `get_address()` | 345 | Derive wallet address. **`chain=near` only** — `validate_chain()` rejects other chains (no native spend path yet; cross-chain value uses Intents). |
 | `encrypt_policy()` | 1155 | Send policy JSON to keystore for encryption |
 | `sign_policy()` | 1199 | Keystore signs encrypted policy SHA256 for on-chain verification |
 | `approve()` | 1447 | Submit multisig approval (NEP-413 signature verification) |
@@ -115,6 +165,14 @@ master_secret (from NEAR MPC network, never leaves TEE)
 ```
 
 Same wallet_id always produces same addresses across chains. Deterministic, stateless.
+
+> The keystore *can* derive and sign for all of the above (secp256k1 for EVM,
+> Ed25519 for NEAR/Solana). But the public `GET /wallet/v1/address` endpoint
+> currently returns the **NEAR** address only — the coordinator has no native
+> tx builder/broadcast for EVM/Solana yet, so it does not hand out fund-able
+> native addresses (that would risk stuck funds). Cross-chain value movement
+> does not need them: it goes through NEAR Intents + the 1Click solver. See
+> [coordinator `docs/MULTI_CHAIN.md`](https://github.com/out-layer/outlayer-coordinator/blob/main/docs/MULTI_CHAIN.md).
 
 #### Policy evaluation flow (inside TEE)
 
@@ -165,8 +223,8 @@ WASI containers can call wallet functions via WIT interface.
 
 ```wit
 get-id() → (string, string)
-get-address(chain) → (string, string)
-withdraw(chain, to, amount, token) → (string, string)         # cross-chain via Intents
+get-address(chain) → (string, string)                         # currently: near only
+withdraw(chain, to, amount, token) → (string, string)         # cross-chain via Intents (whitelisted assets only)
 withdraw-dry-run(chain, to, amount, token) → (string, string)
 get-request-status(request-id) → (string, string)
 list-tokens() → (string, string)
@@ -266,6 +324,16 @@ Agent → POST /wallet/v1/intents/withdraw { to, amount, chain, token }
 ```
 
 **Usage is recorded before execution** — if the backend call fails, velocity limits still accumulate. This prevents bypassing limits by causing intentional failures.
+
+**Token options for `chain=near`** — the `token` field selects what the recipient receives:
+
+| `token` | Recipient receives | Notes |
+|---------|--------------------|-------|
+| omitted / `"near"` / `"native"` | **native NEAR** (default) | intents.near unwraps the wallet's wNEAR and sends native NEAR via the `native_withdraw` intent. Gasless; recipient needs **no** `wrap.near` storage. The recipient account must already exist (or be a 64-char implicit account) — a `native_withdraw` to a non-existent named account burns the wNEAR and is rejected up front. |
+| `"nep141:wrap.near"` (or `"wrap.near"`) | **wNEAR** (NEP-141) | Explicit opt-in. Recipient must be storage-registered on `wrap.near` (`POST /wallet/v1/storage-deposit`). |
+| other `nep141:<token>` | that NEP-141 | Recipient must be storage-registered on that token. |
+
+This solves the "wallet holds only wNEAR, 0 native NEAR" case: it can withdraw native NEAR for gas/staking without first unwrapping. For cross-chain (`chain=ethereum`, etc.) the `token` is the source Intents asset and 1Click delivers the destination chain's native asset.
 
 ### Policy Setup
 

@@ -763,7 +763,7 @@ Base: `https://api.outlayer.fastnear.com`
 |--------|------|------|-------------|
 | POST | `/register` | None | Create wallet → API key + NEAR address |
 | GET | `/wallet/v1/address?chain=` | Bearer | Derive address for any chain |
-| POST | `/wallet/v1/intents/withdraw` | Bearer | Transfer (gasless cross-chain via Intents) |
+| POST | `/wallet/v1/intents/withdraw` | Bearer | Gasless withdraw via Intents. `chain=near`: `token=near`/omitted (default) delivers native NEAR (unwraps wNEAR, no recipient storage), `token=nep141:wrap.near` delivers wNEAR. Other chains delivered native via 1Click |
 | POST | `/wallet/v1/intents/withdraw/dry-run` | Bearer | Simulate withdrawal |
 | POST | `/wallet/v1/call` | Bearer | Native NEAR contract call |
 | GET | `/wallet/v1/requests/{id}` | Bearer | Poll async status |

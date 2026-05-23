@@ -27,8 +27,8 @@ export default function AgentCustodyPage() {
           </div>
           <div className="border border-gray-200 rounded-lg p-5">
             <div className="text-2xl mb-2">&#127760;</div>
-            <h3 className="font-semibold text-gray-900 mb-1">Multi-Chain Addresses</h3>
-            <p className="text-sm text-gray-600">One wallet &mdash; addresses on NEAR, Ethereum, Bitcoin, Solana, and other chains. Cross-chain transfers happen via the <strong>NEAR Intents</strong> protocol. No bridges, no wrapping.</p>
+            <h3 className="font-semibold text-gray-900 mb-1">Cross-Chain Value</h3>
+            <p className="text-sm text-gray-600">One NEAR-native wallet that deposits from and withdraws to NEAR, Ethereum, Bitcoin, Solana, and other chains via the <strong>NEAR Intents</strong> protocol. No bridges, no wrapping. (Native per-chain signing is planned, not yet shipped.)</p>
           </div>
           <div className="border border-gray-200 rounded-lg p-5">
             <div className="text-2xl mb-2">&#128220;</div>
@@ -210,9 +210,9 @@ export default function AgentCustodyPage() {
                 <td className="px-4 py-2 font-mono text-xs">36842e2f73d0b7...</td>
               </tr>
               <tr className="border-b">
-                <td className="px-4 py-2 font-mono">ETH address</td>
-                <td className="px-4 py-2">Derived Ethereum address</td>
-                <td className="px-4 py-2 font-mono text-xs">0x7f3a...</td>
+                <td className="px-4 py-2 font-mono">Intents balance</td>
+                <td className="px-4 py-2">Cross-chain value, held on <code className="bg-gray-100 px-1 rounded">intents.near</code></td>
+                <td className="px-4 py-2 font-mono text-xs">USDC, USDT, ETH, SOL...</td>
               </tr>
             </tbody>
           </table>
@@ -229,8 +229,15 @@ export default function AgentCustodyPage() {
         <AnchorHeading id="multi-chain">Multi-Chain Support</AnchorHeading>
 
         <p className="text-gray-700 mb-4">
-          A single wallet provides addresses on multiple blockchains. All cross-chain transfers go through the <strong>NEAR Intents protocol</strong> &mdash;
-          no bridges, no gas tokens needed on the destination chain.
+          The wallet is <strong>NEAR-native</strong>: its identity and signing key live on NEAR, and its cross-chain value is custodied
+          on <code className="bg-gray-100 px-1 rounded">intents.near</code>. You move value across chains the way you would with a
+          centralized exchange &mdash; deposit in, operate, withdraw out to an external address &mdash; all via the
+          <strong> NEAR Intents protocol</strong> and the 1Click solver network. No bridges, and no gas tokens needed on the destination chain.
+        </p>
+        <p className="text-gray-700 mb-4">
+          The wallet does <strong>not</strong> hand out a native, self-custodied address on Ethereum/Solana/etc. that you sign with directly &mdash;
+          <code className="bg-gray-100 px-1 rounded">GET /wallet/v1/address</code> returns a NEAR address only. Native per-chain signing is a planned
+          extension, not shipped. Cross-chain deposits and withdrawals do not need it.
         </p>
 
         <div className="overflow-x-auto mb-4">
@@ -238,41 +245,41 @@ export default function AgentCustodyPage() {
             <thead className="bg-gray-50">
               <tr>
                 <th className="px-4 py-2 text-left font-semibold border-b">Chain</th>
-                <th className="px-4 py-2 text-left font-semibold border-b">Address Type</th>
+                <th className="px-4 py-2 text-left font-semibold border-b">Deposit</th>
                 <th className="px-4 py-2 text-left font-semibold border-b">Withdraw</th>
-                <th className="px-4 py-2 text-left font-semibold border-b">Contract Calls</th>
+                <th className="px-4 py-2 text-left font-semibold border-b">Native address / contract calls</th>
               </tr>
             </thead>
             <tbody>
               <tr className="border-b">
                 <td className="px-4 py-2 font-semibold">NEAR</td>
-                <td className="px-4 py-2">Ed25519 implicit account</td>
+                <td className="px-4 py-2 text-green-600">&#10003; direct to Intents balance</td>
                 <td className="px-4 py-2 text-green-600">&#10003; via Intents (gasless)</td>
-                <td className="px-4 py-2 text-green-600">&#10003; direct (requires NEAR for gas)</td>
+                <td className="px-4 py-2 text-green-600">&#10003; NEAR address + direct contract calls</td>
               </tr>
               <tr className="border-b">
                 <td className="px-4 py-2 font-semibold">Ethereum</td>
-                <td className="px-4 py-2">secp256k1 address</td>
+                <td className="px-4 py-2 text-green-600">&#10003; deposit-intent (1Click)</td>
                 <td className="px-4 py-2 text-green-600">&#10003; via Intents (gasless)</td>
-                <td className="px-4 py-2 text-gray-400">&mdash;</td>
+                <td className="px-4 py-2 text-gray-400">&mdash; (planned)</td>
               </tr>
               <tr className="border-b">
                 <td className="px-4 py-2 font-semibold">Bitcoin</td>
-                <td className="px-4 py-2">Derived address</td>
+                <td className="px-4 py-2 text-green-600">&#10003; deposit-intent (1Click)</td>
                 <td className="px-4 py-2 text-green-600">&#10003; via Intents (gasless)</td>
-                <td className="px-4 py-2 text-gray-400">&mdash;</td>
+                <td className="px-4 py-2 text-gray-400">&mdash; (planned)</td>
               </tr>
               <tr className="border-b">
                 <td className="px-4 py-2 font-semibold">Solana</td>
-                <td className="px-4 py-2">Ed25519 address</td>
+                <td className="px-4 py-2 text-green-600">&#10003; deposit-intent (1Click)</td>
                 <td className="px-4 py-2 text-green-600">&#10003; via Intents (gasless)</td>
-                <td className="px-4 py-2 text-gray-400">&mdash;</td>
+                <td className="px-4 py-2 text-gray-400">&mdash; (planned)</td>
               </tr>
               <tr>
-                <td className="px-4 py-2 font-semibold">Others</td>
-                <td className="px-4 py-2">Chain-specific</td>
+                <td className="px-4 py-2 font-semibold">Base, Arbitrum, BSC, Polygon, Optimism, Avalanche</td>
+                <td className="px-4 py-2 text-green-600">&#10003; deposit-intent (1Click)</td>
                 <td className="px-4 py-2 text-green-600">&#10003; via Intents (gasless)</td>
-                <td className="px-4 py-2 text-gray-400">&mdash;</td>
+                <td className="px-4 py-2 text-gray-400">&mdash; (planned)</td>
               </tr>
             </tbody>
           </table>
@@ -282,6 +289,16 @@ export default function AgentCustodyPage() {
           <p className="text-sm text-gray-700">
             <strong>Gasless cross-chain:</strong> When the agent calls <code className="bg-blue-100 px-1 rounded">POST /wallet/v1/intents/withdraw</code> to send tokens to Ethereum or Solana,
             it does not need ETH or SOL for gas. The NEAR Intents protocol handles execution and fee settlement natively.
+          </p>
+        </div>
+
+        <div className="bg-red-50 border-l-4 border-red-500 p-4 mb-4">
+          <p className="text-sm text-gray-800 font-semibold mb-1">⚠️ Only send whitelisted Intents assets &mdash; anything else is lost permanently</p>
+          <p className="text-sm text-gray-700">
+            Deposits only work for assets in the NEAR Intents / 1Click token catalog (<code className="bg-red-100 px-1 rounded">GET /wallet/v1/tokens</code>),
+            sent on the exact chain the deposit address was issued for. If you send an unsupported token, the wrong token, a token on the wrong chain,
+            an NFT, or a native gas coin that is not a listed asset, <strong>it cannot be credited or recovered</strong>. Deposit addresses from
+            <code className="bg-red-100 px-1 rounded">/wallet/v1/deposit-intent</code> are per-request and expire (30 min) &mdash; never reuse an old one or send after expiry.
           </p>
         </div>
       </section>
@@ -468,15 +485,20 @@ Approver 2: Signs approval via NEAR wallet (dashboard)
         </SyntaxHighlighter>
         <p className="text-sm text-gray-600 mt-1 mb-4">The <code className="bg-gray-100 px-1 rounded">api_key</code> is shown only once. Store it securely.</p>
 
-        <h3 className="text-lg font-semibold mt-4 mb-2">2. Get addresses</h3>
+        <h3 className="text-lg font-semibold mt-4 mb-2">2. Get address</h3>
         <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
-{`# NEAR address
+{`# NEAR address (wallet identity; chain=near only — native ETH/SOL
+# addresses are not issued, see Multi-Chain Support above)
 curl -s -H "Authorization: Bearer $API_KEY" \\
   "https://api.outlayer.fastnear.com/wallet/v1/address?chain=near"
 
-# Ethereum address
-curl -s -H "Authorization: Bearer $API_KEY" \\
-  "https://api.outlayer.fastnear.com/wallet/v1/address?chain=ethereum"`}
+# To fund from another chain, request a 1Click bridge deposit address.
+# ⚠️ Only send the exact whitelisted token on the exact chain below —
+#    any other asset sent to this address is lost permanently.
+curl -s -X POST -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer $API_KEY" \\
+  -d '{"chain":"ethereum","token":"USDC","amount":"10000000"}' \\
+  "https://api.outlayer.fastnear.com/wallet/v1/deposit-intent"`}
         </SyntaxHighlighter>
 
         <h3 className="text-lg font-semibold mt-4 mb-2">3. Check balance</h3>
@@ -517,10 +539,34 @@ curl -s -X POST -H "Content-Type: application/json" \\
 
         <h3 className="text-lg font-semibold mt-4 mb-2">7. Withdraw (gasless cross-chain via Intents)</h3>
         <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
-{`# Tokens must be in Intents balance first (use /intents/deposit or /swap)
+{`# Tokens must be in Intents balance first (use /intents/deposit or /swap).
+# Only whitelisted Intents assets can be withdrawn (see GET /wallet/v1/tokens).
+
+# Withdraw NATIVE NEAR (default for chain=near): intents.near unwraps your wNEAR
+# and sends native NEAR. Gasless, and the recipient needs NO wrap.near storage.
+# amount is in yoctoNEAR (24 decimals) — 1 NEAR = 1000000000000000000000000.
+curl -s -X POST -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer $API_KEY" \\
+  -d '{"to":"receiver.near","amount":"1000000000000000000000000","token":"near","chain":"near"}' \\
+  "https://api.outlayer.fastnear.com/wallet/v1/intents/withdraw"
+
+# Withdraw wNEAR (NEP-141) instead — explicit opt-in; recipient must be
+# storage-registered on wrap.near (POST /wallet/v1/storage-deposit):
+curl -s -X POST -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer $API_KEY" \\
+  -d '{"to":"receiver.near","amount":"1000000000000000000000000","token":"nep141:wrap.near","chain":"near"}' \\
+  "https://api.outlayer.fastnear.com/wallet/v1/intents/withdraw"
+
+# Withdraw USDT (NEP-141) to a NEAR account (recipient must have usdt storage):
 curl -s -X POST -H "Content-Type: application/json" \\
   -H "Authorization: Bearer $API_KEY" \\
   -d '{"to":"receiver.near","amount":"1000000","token":"usdt.tether-token.near","chain":"near"}' \\
+  "https://api.outlayer.fastnear.com/wallet/v1/intents/withdraw"
+
+# Withdraw cross-chain to an external address (1Click bridges + delivers native):
+curl -s -X POST -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer $API_KEY" \\
+  -d '{"to":"0xRecipient...","amount":"1000000","token":"usdt.tether-token.near","chain":"ethereum"}' \\
   "https://api.outlayer.fastnear.com/wallet/v1/intents/withdraw"`}
         </SyntaxHighlighter>
 

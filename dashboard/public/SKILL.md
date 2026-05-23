@@ -12,6 +12,15 @@ metadata:
 
 Full skill with swap workflows, token reference, and cross-chain patterns: [skills/outlayer-skills/agent-custody/SKILL.md](https://skills.outlayer.ai/agent-custody/SKILL.md)
 
+> **⚠️ Only send whitelisted Intents assets — anything else is lost permanently.**
+> Deposits and withdrawals only work for assets listed in `GET /wallet/v1/tokens`,
+> on the exact chain a deposit address was issued for. Sending an unsupported
+> token, the wrong token, a token on the wrong chain, an NFT, or an unlisted
+> native gas coin to a deposit address is **unrecoverable**. The wallet is
+> NEAR-native: cross-chain value moves via NEAR Intents + the 1Click solver, not
+> via native per-chain addresses. `GET /wallet/v1/address` returns the NEAR
+> address only (`chain=near`); native ETH/SOL/BTC addresses are not issued.
+
 ## Quick Start
 
 ```bash
@@ -28,6 +37,14 @@ curl -s -X POST -H "Content-Type: application/json" \
   -H "Authorization: Bearer $API_KEY" \
   -d '{"token_in":"nep141:wrap.near","token_out":"nep141:usdt.tether-token.near","amount_in":"1000000000000000000000000"}' \
   "https://api.outlayer.fastnear.com/wallet/v1/intents/swap"
+
+# 4. Withdraw NATIVE NEAR (chain=near default): unwraps your wNEAR → native NEAR,
+#    gasless, recipient needs NO wrap.near storage. amount in yoctoNEAR (24 decimals).
+#    Use token:"nep141:wrap.near" instead to deliver wNEAR (recipient needs storage).
+curl -s -X POST -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $API_KEY" \
+  -d '{"to":"receiver.near","amount":"1000000000000000000000000","token":"near","chain":"near"}' \
+  "https://api.outlayer.fastnear.com/wallet/v1/intents/withdraw"
 ```
 
 ## Quick Reference
@@ -38,7 +55,8 @@ curl -s -X POST -H "Content-Type: application/json" \
 | Execute WASI (trial) | POST | `/call/{owner}/{project}` |
 | Trial status | GET | `/trial/status` |
 | Create payment key | POST | `/wallet/v1/create-payment-key` |
-| Get address | GET | `/wallet/v1/address?chain={chain}` |
+| Get address | GET | `/wallet/v1/address?chain=near` (NEAR only) |
+| Cross-chain deposit | POST | `/wallet/v1/deposit-intent` (1Click bridge address) |
 | Get balance | GET | `/wallet/v1/balance?chain={chain}&token={token}` |
 | Get intents balance | GET | `/wallet/v1/balance?token={token}&source=intents` |
 | Transfer NEAR | POST | `/wallet/v1/transfer` |
@@ -46,7 +64,7 @@ curl -s -X POST -H "Content-Type: application/json" \
 | Swap tokens | POST | `/wallet/v1/intents/swap` |
 | Swap quote | POST | `/wallet/v1/intents/swap/quote` |
 | Intents deposit | POST | `/wallet/v1/intents/deposit` |
-| Withdraw (cross-chain) | POST | `/wallet/v1/intents/withdraw` |
+| Withdraw (native NEAR / wNEAR / cross-chain) | POST | `/wallet/v1/intents/withdraw` |
 | Dry-run withdrawal | POST | `/wallet/v1/intents/withdraw/dry-run` |
 | List tokens | GET | `/wallet/v1/tokens` |
 | Request status | GET | `/wallet/v1/requests/{request_id}` |
