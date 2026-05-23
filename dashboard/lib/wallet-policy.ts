@@ -234,7 +234,7 @@ export async function submitPolicy(params: SubmitPolicyParams): Promise<SubmitPo
   // Step 1: Encrypt policy via coordinator
   const encryptResp = await fetch(`${coordinatorUrl}/wallet/v1/encrypt-policy`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
     body: JSON.stringify({ wallet_id: walletId, ...policyData }),
   });
 
