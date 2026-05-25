@@ -85,7 +85,7 @@ cargo build --release
   --wasm ../rpc-test-ark/target/wasm32-wasip2/release/rpc-test-ark.wasm \
   --input '{"test":"all","account_id":"outlayer.testnet"}' \
   --rpc \
-  --rpc-url "https://rpc.testnet.near.org" \
+  --rpc-url "https://rpc.testnet.fastnear.com" \
   --max-instructions 50000000000
 ```
 
@@ -352,7 +352,7 @@ Options:
 
       --rpc-url <RPC_URL>
           NEAR RPC URL for proxy
-          [default: https://rpc.testnet.near.org]
+          [default: https://rpc.testnet.fastnear.com]
 
       --rpc-max-calls <RPC_MAX_CALLS>
           Maximum RPC calls per execution
