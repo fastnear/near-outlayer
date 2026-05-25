@@ -48,7 +48,7 @@ struct Args {
     rpc: bool,
 
     /// NEAR RPC URL for proxy (default: testnet)
-    #[arg(long, default_value = "https://rpc.testnet.near.org")]
+    #[arg(long, default_value = "https://rpc.testnet.fastnear.com")]
     rpc_url: String,
 
     /// Maximum RPC calls per execution
