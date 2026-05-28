@@ -499,7 +499,7 @@ def on_swap(user_id: int, token_in: str, token_out: str, amount: str):
 
 def on_send(user_id: int, receiver: str, amount: str):
     resp = wallet_request(user_id, "POST", "/wallet/v1/transfer", json={
-        "receiver_id": receiver,
+        "to": receiver,
         "amount": amount,
     })
     send_message(user_id, f"Sent: {resp.json()}")
@@ -734,7 +734,7 @@ requests.post(f"{API_BASE}/wallet/v1/intents/swap", headers=headers, json={
 
 # ❌ Transfer to external address — denied by policy
 requests.post(f"{API_BASE}/wallet/v1/transfer", headers=headers, json={
-    "receiver_id": "attacker.near",
+    "to": "attacker.near",
     "amount": "100",
 })
 # → 403 {"error": "Policy denied: transfer not allowed"}

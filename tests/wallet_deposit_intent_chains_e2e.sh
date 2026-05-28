@@ -162,20 +162,97 @@ for chain in "${CHAIN_ARR[@]}"; do
     fi
 done
 
-# ─── Summary ─────────────────────────────────────────────────────────────────
+# ─── NEAR-refund derivation smoke ────────────────────────────────────────────
+# The main loop above never specifies `refund_address`, so it implicitly
+# exercises the default-derivation path (coordinator derives the wallet's
+# own implicit address as the refund target). That covers the happy case
+# but doesn't prove what gets derived for `chain=near` specifically — for
+# EVM/Solana sources the derivation is `keystore_chain` → secp256k1/ed25519
+# address, but for NEAR the answer should be the wallet's own NEAR implicit
+# account. This sub-suite locks that down:
+#
+#   1. explicit refund_address (valid NEAR named account) → should accept
+#      and 1Click should record it verbatim
+#   2. explicit refund_address (valid NEAR implicit hex) → same
+#   3. omitted refund_address with chain=near → derivation must succeed
+#      without 500
+#
+# The response doesn't echo back the refund_address, so we can't directly
+# assert what 1Click recorded. The signal is "request succeeded" — the
+# failure mode this catches is the coordinator panicking or 400-ing on
+# the NEAR derivation path. Recovery from a real bridge-refund event
+# would need a separate test that forces a bridge failure (not feasible
+# without 1Click cooperation).
 echo ""
 echo -e "${CYAN}=================================================${NC}"
-if [ "$FAIL" -eq 0 ]; then
-    echo -e "${GREEN} ALL CHAINS PASSED  (${PASS}/${PASS})${NC}"
+echo -e "${CYAN} NEAR refund-derivation smoke (chain=near)${NC}"
+echo -e "${CYAN}=================================================${NC}"
+
+REFUND_PASS=0
+REFUND_FAIL=0
+REFUND_FAILED_CASES=()
+
+# Helper — POST /wallet/v1/deposit-intent with arbitrary extra fields,
+# return HTTP code in $RC and body in $RB.
+deposit_intent_call() {
+    local extra_json="$1"  # additional top-level keys, e.g. '"refund_address":"x.near"'
+    local body
+    body=$(jq -nc \
+        --arg src "$(source_asset_for_chain near)" \
+        --arg dst "$DEST_ASSET" \
+        --argjson extra "{${extra_json}}" \
+        '{source_asset: $src, destination_asset: $dst, amount: "5000000"} + $extra')
+    local resp
+    resp=$(curl -s -w "\n%{http_code}" -X POST \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer ${WALLET_API_KEY}" \
+        -d "$body" \
+        "${COORDINATOR_URL}/wallet/v1/deposit-intent")
+    RB=$(echo "$resp" | sed '$d')
+    RC=$(echo "$resp" | tail -1)
+}
+
+refund_case() {
+    local label="$1"
+    local extra="$2"
+    deposit_intent_call "$extra"
+    if [ "$RC" = "200" ] && [ -n "$(echo "$RB" | jq -r '.deposit_address // empty')" ]; then
+        echo -e "  [${label}] ${GREEN}PASS${NC} — HTTP 200, deposit_address present"
+        REFUND_PASS=$((REFUND_PASS+1))
+    else
+        echo -e "  [${label}] ${RED}FAIL${NC} — HTTP ${RC}"
+        echo "    body: $(echo "$RB" | jq -c '.' 2>/dev/null || echo "$RB")"
+        REFUND_FAIL=$((REFUND_FAIL+1))
+        REFUND_FAILED_CASES+=("$label")
+    fi
+}
+
+refund_case "named NEAR refund_address" '"refund_address":"zavodil.near"'
+refund_case "implicit-hex NEAR refund_address" '"refund_address":"950c134ec86a21a8525d16d1dbae79258b923cabdaa8d32da284d931f74bdcb2"'
+refund_case "default derivation (no refund_address)" ''
+
+# ─── Summary ─────────────────────────────────────────────────────────────────
+TOTAL_PASS=$((PASS + REFUND_PASS))
+TOTAL_FAIL=$((FAIL + REFUND_FAIL))
+echo ""
+echo -e "${CYAN}=================================================${NC}"
+if [ "$TOTAL_FAIL" -eq 0 ]; then
+    echo -e "${GREEN} ALL PASSED  (chains ${PASS}/${PASS}, refund-derivation ${REFUND_PASS}/${REFUND_PASS})${NC}"
     echo -e "${CYAN}=================================================${NC}"
     exit 0
 else
-    echo -e "${RED} ${FAIL} FAILED  (${PASS} passed)${NC}"
-    echo -e "${RED} failing chains: ${FAILED_CHAINS[*]}${NC}"
+    echo -e "${RED} ${TOTAL_FAIL} FAILED  (${TOTAL_PASS} passed)${NC}"
+    if [ "$FAIL" -ne 0 ]; then
+        echo -e "${RED} failing chains: ${FAILED_CHAINS[*]}${NC}"
+    fi
+    if [ "$REFUND_FAIL" -ne 0 ]; then
+        echo -e "${RED} failing refund cases: ${REFUND_FAILED_CASES[*]}${NC}"
+    fi
     echo -e "${CYAN}=================================================${NC}"
     echo ""
     echo "This is issue #25 Bug A: /wallet/v1/deposit-intent should return"
-    echo "a deposit address on the chain matching source_asset. See"
+    echo "a deposit address on the chain matching source_asset, and the"
+    echo "NEAR-refund derivation path must succeed without 500. See"
     echo "https://github.com/fastnear/near-outlayer/issues/25 for the report."
     exit 1
 fi

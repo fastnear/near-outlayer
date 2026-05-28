@@ -516,7 +516,7 @@ curl -s -H "Authorization: Bearer $API_KEY" \\
         <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
 {`curl -s -X POST -H "Content-Type: application/json" \\
   -H "Authorization: Bearer $API_KEY" \\
-  -d '{"receiver_id":"bob.near","amount":"1000000000000000000000000"}' \\
+  -d '{"to":"bob.near","amount":"1000000000000000000000000"}' \\
   "https://api.outlayer.fastnear.com/wallet/v1/transfer"`}
         </SyntaxHighlighter>
 
