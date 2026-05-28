@@ -271,9 +271,9 @@ cmd_call() {
     # 2. Check NEAR balance via RPC
     echo -e "${CYAN}[2/4] Checking NEAR balance...${NC}"
     if [ "$NETWORK" = "mainnet" ]; then
-        RPC_URL="https://rpc.mainnet.near.org"
+        RPC_URL="https://rpc.mainnet.fastnear.com"
     else
-        RPC_URL="https://rpc.testnet.near.org"
+        RPC_URL="https://rpc.testnet.fastnear.com"
     fi
 
     BALANCE_RESP=$(curl -s "$RPC_URL" \
