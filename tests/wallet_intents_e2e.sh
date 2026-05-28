@@ -436,6 +436,37 @@ cmd_withdraw() {
         echo -e "  ${GREEN}OK${NC} Status: $FINAL_STATUS"
         echo "  Full response:"
         echo "$RESP_BODY" | jq '.'
+
+        # ── Bug #25 regression net — assert result.delivered ─────────────────
+        # Schema: result_data = { intent_hash: "<base58>", delivered: <enum> }
+        #   delivered == "native_near"           when intent type is native_withdraw
+        #   delivered == "nep141:<contract>"     for NEP-141 transfer
+        # See api-spec WithdrawResult schema. Historical bug emitted the legacy
+        # short symbol "wnear" for every NEP-141 withdraw including USDC.
+        # https://github.com/fastnear/near-outlayer/issues/25
+        case "${WITHDRAW_TOKEN:-}" in
+            ""|"near"|"native")
+                EXPECTED_DELIVERED="native_near" ;;
+            nep141:*)
+                EXPECTED_DELIVERED="$WITHDRAW_TOKEN" ;;
+            *)
+                EXPECTED_DELIVERED="nep141:$WITHDRAW_TOKEN" ;;
+        esac
+        ACTUAL_DELIVERED=$(echo "$RESP_BODY" | jq -r '.result.delivered // empty')
+        if [ -z "$ACTUAL_DELIVERED" ]; then
+            if [ "$FINAL_STATUS" = "success" ]; then
+                echo -e "  ${YELLOW}WARN${NC} result.delivered missing from a 'success' status — schema drift?"
+            fi
+        elif [ "$ACTUAL_DELIVERED" = "$EXPECTED_DELIVERED" ]; then
+            echo -e "  ${GREEN}OK${NC} result.delivered = '$ACTUAL_DELIVERED' (matches expected)"
+        elif [ "$ACTUAL_DELIVERED" = "wnear" ]; then
+            echo -e "  ${RED}FAIL${NC} result.delivered = 'wnear' — issue #25 regression!"
+            echo -e "  ${RED}     expected '$EXPECTED_DELIVERED' for token='${WITHDRAW_TOKEN:-(default native)}'${NC}"
+            exit 1
+        else
+            echo -e "  ${RED}FAIL${NC} result.delivered = '$ACTUAL_DELIVERED', expected '$EXPECTED_DELIVERED'"
+            exit 1
+        fi
     else
         echo -e "  ${YELLOW}WARN${NC} Could not fetch request status (HTTP $RESP_CODE)"
     fi

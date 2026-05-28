@@ -22,11 +22,22 @@ NC='\033[0m'
 
 PASSED=0
 FAILED=0
+SKIPPED=0
 TOTAL=0
 
 # ============================================================================
 # Helpers
 # ============================================================================
+
+# Mark a test as skipped (counts toward TOTAL but is not a failure). Used
+# for assertions that need on-chain funds the suite can't provision itself.
+skip_test() {
+    local test_name="$1"
+    local reason="$2"
+    TOTAL=$((TOTAL + 1))
+    SKIPPED=$((SKIPPED + 1))
+    echo -e "  ${YELLOW}SKIP${NC} $test_name ($reason)"
+}
 
 assert_status() {
     local expected="$1"
@@ -147,6 +158,25 @@ assert_json_not_empty "$RESP_BODY" ".address" "address present"
 NEAR_ADDRESS=$(echo "$RESP_BODY" | jq -r '.address')
 echo ""
 
+# Funding precheck — the withdraw tests (5,6,7,8,15) need on-chain funds.
+# A freshly registered wallet has 0 balance, so gate those on real funding
+# (NEAR or Intents) and SKIP them otherwise instead of reporting false
+# failures. Fund $NEAR_ADDRESS on testnet to exercise the full flow.
+parse_response "$(curl_get "/wallet/v1/balance?chain=near")"
+NEAR_BAL=$(echo "$RESP_BODY" | jq -r '.balance // "0"')
+parse_response "$(curl_get "/wallet/v1/balance?chain=near&source=intents&token=nep141:wrap.testnet")"
+INTENTS_BAL=$(echo "$RESP_BODY" | jq -r '.balance // "0"')
+FUNDED=false
+if { [ -n "$NEAR_BAL" ] && [ "$NEAR_BAL" != "0" ] && [ "$NEAR_BAL" != "null" ]; } \
+   || { [ -n "$INTENTS_BAL" ] && [ "$INTENTS_BAL" != "0" ] && [ "$INTENTS_BAL" != "null" ]; }; then
+    FUNDED=true
+fi
+echo "  Balance check: near=$NEAR_BAL intents(wrap.testnet)=$INTENTS_BAL → funded=$FUNDED"
+if [ "$FUNDED" != true ]; then
+    echo -e "  ${YELLOW}NOTE${NC}: wallet unfunded — withdraw tests (5-8,15) will SKIP. Fund $NEAR_ADDRESS to run them."
+fi
+echo ""
+
 # ============================================================================
 # Test 2: Get Ethereum address
 # ============================================================================
@@ -183,8 +213,14 @@ echo ""
 echo "5. Withdraw dry-run (no policy)"
 DRY_RUN_BODY='{"chain":"near","to":"recipient.near","amount":"1000000000000000000000000"}'
 parse_response "$(curl_post "/wallet/v1/intents/withdraw/dry-run" "$DRY_RUN_BODY" "dry-run-$(date +%s)")"
+# The endpoint always returns 200; `would_succeed` reflects balance, so the
+# success assertion only holds for a funded wallet.
 assert_status "200" "$RESP_CODE" "POST /withdraw/dry-run"
-assert_json_field "$RESP_BODY" ".would_succeed" "true" "would_succeed=true (no policy)"
+if [ "$FUNDED" = true ]; then
+    assert_json_field "$RESP_BODY" ".would_succeed" "true" "would_succeed=true (no policy)"
+else
+    skip_test "would_succeed=true (no policy)" "wallet unfunded — would_succeed reflects 0 balance"
+fi
 echo ""
 
 # ============================================================================
@@ -194,12 +230,18 @@ echo ""
 echo "6. Withdraw"
 IDEM_KEY="agent-test-$(date +%s%N)"
 WITHDRAW_BODY='{"chain":"near","to":"recipient.near","amount":"1000000000000000000000000"}'
-parse_response "$(curl_post "/wallet/v1/intents/withdraw" "$WITHDRAW_BODY" "$IDEM_KEY")"
-assert_status "200" "$RESP_CODE" "POST /withdraw"
-assert_json_not_empty "$RESP_BODY" ".request_id" "request_id present"
-REQUEST_ID=$(echo "$RESP_BODY" | jq -r '.request_id')
-WITHDRAW_STATUS=$(echo "$RESP_BODY" | jq -r '.status')
-echo "  request_id=$REQUEST_ID status=$WITHDRAW_STATUS"
+REQUEST_ID=""
+if [ "$FUNDED" = true ]; then
+    parse_response "$(curl_post "/wallet/v1/intents/withdraw" "$WITHDRAW_BODY" "$IDEM_KEY")"
+    assert_status "200" "$RESP_CODE" "POST /withdraw"
+    assert_json_not_empty "$RESP_BODY" ".request_id" "request_id present"
+    REQUEST_ID=$(echo "$RESP_BODY" | jq -r '.request_id')
+    WITHDRAW_STATUS=$(echo "$RESP_BODY" | jq -r '.status')
+    echo "  request_id=$REQUEST_ID status=$WITHDRAW_STATUS"
+else
+    skip_test "POST /withdraw" "wallet unfunded (would return insufficient_balance)"
+    skip_test "request_id present" "wallet unfunded"
+fi
 echo ""
 
 # ============================================================================
@@ -207,9 +249,14 @@ echo ""
 # ============================================================================
 
 echo "7. Idempotent duplicate"
-parse_response "$(curl_post "/wallet/v1/intents/withdraw" "$WITHDRAW_BODY" "$IDEM_KEY")"
-assert_status "200" "$RESP_CODE" "POST /withdraw (duplicate idempotency key)"
-assert_json_field "$RESP_BODY" ".error" "duplicate_idempotency_key" "duplicate detected"
+if [ "$FUNDED" = true ]; then
+    parse_response "$(curl_post "/wallet/v1/intents/withdraw" "$WITHDRAW_BODY" "$IDEM_KEY")"
+    assert_status "200" "$RESP_CODE" "POST /withdraw (duplicate idempotency key)"
+    assert_json_field "$RESP_BODY" ".error" "duplicate_idempotency_key" "duplicate detected"
+else
+    skip_test "POST /withdraw (duplicate idempotency key)" "wallet unfunded — no original request to dedupe"
+    skip_test "duplicate detected" "wallet unfunded"
+fi
 echo ""
 
 # ============================================================================
@@ -217,9 +264,14 @@ echo ""
 # ============================================================================
 
 echo "8. Get request status"
-parse_response "$(curl_get "/wallet/v1/requests/$REQUEST_ID")"
-assert_status "200" "$RESP_CODE" "GET /requests/{id}"
-assert_json_field "$RESP_BODY" ".request_id" "$REQUEST_ID" "matching request_id"
+if [ -n "$REQUEST_ID" ] && [ "$REQUEST_ID" != "null" ]; then
+    parse_response "$(curl_get "/wallet/v1/requests/$REQUEST_ID")"
+    assert_status "200" "$RESP_CODE" "GET /requests/{id}"
+    assert_json_field "$RESP_BODY" ".request_id" "$REQUEST_ID" "matching request_id"
+else
+    skip_test "GET /requests/{id}" "no request created (wallet unfunded)"
+    skip_test "matching request_id" "no request created (wallet unfunded)"
+fi
 echo ""
 
 # ============================================================================
@@ -253,11 +305,13 @@ echo ""
 # Test 12: Deposit
 # ============================================================================
 
-echo "12. Deposit"
-DEPOSIT_BODY='{"source_chain":"near","token":"native","amount":"5000000000000000000000000"}'
-parse_response "$(curl_post "/wallet/v1/deposit" "$DEPOSIT_BODY" "deposit-$(date +%s%N)")"
-assert_status "200" "$RESP_CODE" "POST /deposit"
-assert_json_not_empty "$RESP_BODY" ".deposit_address" "deposit_address present"
+echo "12. Deposit address"
+# There is no POST /wallet/v1/deposit endpoint — a NEAR custody wallet
+# receives funds at its own implicit account, which is the address returned
+# by GET /address. (Cross-chain bridging is a separate /deposit-intent flow.)
+parse_response "$(curl_get "/wallet/v1/address?chain=near")"
+assert_status "200" "$RESP_CODE" "GET /address?chain=near (deposit target)"
+assert_json_not_empty "$RESP_BODY" ".address" "deposit address present"
 echo ""
 
 # ============================================================================
@@ -288,9 +342,13 @@ echo ""
 # Test 15: Missing idempotency key on POST
 # ============================================================================
 
-echo "15. Missing idempotency key (currently allowed)"
-parse_response "$(curl_post "/wallet/v1/intents/withdraw" "$WITHDRAW_BODY" "")"
-assert_status "200" "$RESP_CODE" "no idempotency key -> 200 (allowed)"
+echo "15. Missing idempotency key (server auto-generates one → request proceeds)"
+if [ "$FUNDED" = true ]; then
+    parse_response "$(curl_post "/wallet/v1/intents/withdraw" "$WITHDRAW_BODY" "")"
+    assert_status "200" "$RESP_CODE" "no idempotency key -> 200 (auto-generated)"
+else
+    skip_test "no idempotency key -> 200 (auto-generated)" "wallet unfunded — withdraw needs balance regardless of key"
+fi
 echo ""
 
 # ============================================================================
@@ -326,7 +384,10 @@ echo ""
 # ============================================================================
 
 echo "============================================="
-echo "Results: $PASSED/$TOTAL passed, $FAILED failed"
+echo "Results: $PASSED/$TOTAL passed, $FAILED failed, $SKIPPED skipped"
+if [ "$SKIPPED" -gt 0 ]; then
+    echo -e "${YELLOW}$SKIPPED test(s) skipped — fund the wallet to exercise the withdraw flow${NC}"
+fi
 if [ "$FAILED" -eq 0 ]; then
     echo -e "${GREEN}All tests passed!${NC}"
 else
