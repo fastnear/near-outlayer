@@ -122,7 +122,7 @@ HTTP API server. Handles auth, routing, usage tracking, webhooks.
 | `call()` | 2186 | Native NEAR function call: policy check → keystore sign → broadcast |
 | `transfer()` | 2621 | Chain-agnostic transfer (chain param, currently near only): policy → keystore sign → broadcast |
 | `get_balance()` | 2983 | Chain-agnostic balance query (chain param, currently near only) via RPC |
-| `intents_deposit()` | — | Deposit FT into intents.near via ft_transfer_call (auto storage deposit) |
+| `intents_deposit()` | — | Deposit FT into intents.near via `ft_transfer_call` (intents.near auto-registers callers via its own `ft_on_transfer` hook — no NEP-145 `storage_deposit` issued) |
 | `swap()` | — | Swap via 1Click: quote → ft_transfer_call to intents.near → mt_transfer → poll |
 | `deposit()` | 857 | Cross-chain deposit via Intents quote |
 | `get_address()` | 345 | Derive wallet address. **`chain=near` only** — `validate_chain()` rejects other chains (no native spend path yet; cross-chain value uses Intents). |
@@ -456,7 +456,7 @@ Base: `https://api.outlayer.fastnear.com`
 | GET | `/wallet/v1/balance?chain={chain}&token={token}` | Chain-agnostic balance (defaults to near) |
 | POST | `/wallet/v1/intents/deposit` | Deposit FT into intents.near (for manual intents operations) |
 | POST | `/wallet/v1/intents/swap` | Swap via 1Click: quote → deposit to intents.near → mt_transfer → poll |
-| POST | `/wallet/v1/deposit` | Cross-chain deposit (Intents quote) |
+| POST | `/wallet/v1/deposit-intent` | Cross-chain deposit (1Click bridge address; `source_asset` or `chain`+`token` shape) |
 | GET | `/wallet/v1/requests/{id}` | Poll async operation status |
 | GET | `/wallet/v1/requests` | List operations (filter: type, status, limit) |
 | GET | `/wallet/v1/tokens` | List available tokens (Intents proxy) |

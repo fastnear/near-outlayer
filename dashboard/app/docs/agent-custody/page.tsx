@@ -493,12 +493,20 @@ curl -s -H "Authorization: Bearer $API_KEY" \\
   "https://api.outlayer.fastnear.com/wallet/v1/address?chain=near"
 
 # To fund from another chain, request a 1Click bridge deposit address.
+# Pass a defuse \`source_asset\` from GET /wallet/v1/tokens — the source
+# chain is derived from its prefix (e.g. \`eth-…\` → Ethereum).
 # ⚠️ Only send the exact whitelisted token on the exact chain below —
 #    any other asset sent to this address is lost permanently.
 curl -s -X POST -H "Content-Type: application/json" \\
   -H "Authorization: Bearer $API_KEY" \\
-  -d '{"chain":"ethereum","token":"USDC","amount":"10000000"}' \\
-  "https://api.outlayer.fastnear.com/wallet/v1/deposit-intent"`}
+  -d '{"source_asset":"nep141:eth-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.omft.near","amount":"10000000"}' \\
+  "https://api.outlayer.fastnear.com/wallet/v1/deposit-intent"
+
+# Returned \`deposit_address\` format depends on the source chain:
+# NEAR — 64-char hex implicit account; EVM — 0x + 40 hex;
+# Solana — base58; Bitcoin — bc1…/1…/3….
+# For NEAR-source funds prefer POST /wallet/v1/intents/deposit
+# (one direct ft_transfer_call, ~3s, no solver hop).`}
         </SyntaxHighlighter>
 
         <h3 className="text-lg font-semibold mt-4 mb-2">3. Check balance</h3>
@@ -1012,7 +1020,7 @@ curl -H "Authorization: Bearer wk_derived_key_here" \\
 
         <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
 {`# Fetch the skill file
-curl -s https://outlayer.fastnear.com/SKILL.md`}
+curl -s https://skills.outlayer.ai/agent-custody/SKILL.md`}
         </SyntaxHighlighter>
 
         <p className="text-gray-700 mt-2 mb-4">

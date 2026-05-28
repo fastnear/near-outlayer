@@ -192,7 +192,7 @@ dashboard/app/docs/
 | Dashboard Page | Primary Source | Secondary Sources | Key Topics |
 |----------------|---------------|-------------------|------------|
 | `/docs` | `dashboard/app/docs/page.tsx` | - | Overview, getting started |
-| `/docs/agent-custody` | `dashboard/app/docs/agent-custody/page.tsx` | `.ignore/FIREBLOCKS.md`, `dashboard/public/SKILL.md`, `CUSTODY.md`, [`@outlayer/sdk`](https://github.com/out-layer/sdk-js) | **Agent Custody: multi-chain wallet, policy engine, gasless transfers, native-NEAR withdrawal (`token=near` unwraps wNEAR via Intents `native_withdraw`), MPC security, NEP-413 message signing, CLI integration (wallet-key login), TypeScript SDK** |
+| `/docs/agent-custody` | `dashboard/app/docs/agent-custody/page.tsx` | `.ignore/FIREBLOCKS.md`, `CUSTODY.md`, canonical AI-agent skill at [`out-layer/outlayer-skills/agent-custody/SKILL.md`](https://github.com/out-layer/outlayer-skills/blob/main/agent-custody/SKILL.md) (hosted at https://skills.outlayer.ai/agent-custody/SKILL.md), [`@outlayer/sdk`](https://github.com/out-layer/sdk-js) | **Agent Custody: multi-chain wallet, policy engine, gasless transfers, native-NEAR withdrawal (`token=near` unwraps wNEAR via Intents `native_withdraw`), MPC security, NEP-413 message signing, CLI integration (wallet-key login), TypeScript SDK** |
 | `/docs/getting-started` | `dashboard/app/docs/sections/GettingStarted.tsx` | - | **TEE attestation, two integration modes (HTTPS & Blockchain), quick start** |
 | `/docs/web2-integration` | `dashboard/app/docs/web2-integration/page.tsx` | - | HTTPS integration overview, TEE attestation |
 | `/docs/https-api` | `dashboard/app/docs/https-api/page.tsx` | `DESIGN_HTTPS_API.md` | **Full HTTPS API reference, headers, responses** |

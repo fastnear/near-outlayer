@@ -42,7 +42,7 @@ source_asset_for_chain() {
         ethereum) echo "nep141:eth-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.omft.near" ;;
         base)     echo "nep141:base-0x833589fcd6edb6e08f4c7c32d4f71b54bda02913.omft.near" ;;
         arbitrum) echo "nep141:arb-0xaf88d065e77c8cc2239327c5edb3a432268e5831.omft.near" ;;
-        solana)   echo "nep141:sol-EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v.omft.near" ;;
+        solana)   echo "nep141:sol-5ce3bf3a31af18be40ba30f721101b4341690186.omft.near" ;;
         bitcoin)  echo "nep141:btc.omft.near" ;;  # BTC — no USDC on Bitcoin
         *)        echo "" ;;
     esac
@@ -123,8 +123,20 @@ for chain in "${CHAIN_ARR[@]}"; do
         continue
     fi
     expected=$(expected_format_label "$chain")
-    body=$(jq -n --arg src "$src" --arg dst "$DEST_ASSET" \
-        '{source_asset: $src, destination_asset: $dst, amount: "5000000"}')
+    # Keystore-worker doesn't yet derive Bitcoin (secp256k1 + bc1 segwit)
+    # addresses for refund_to — see `keystore_chain()` in
+    # coordinator/src/wallet/cross_chain.rs vs the keystore's accepted
+    # chain list (`near, ethereum, solana`). For BTC, pass an explicit
+    # `refund_address` so the auto-derivation path is skipped; for every
+    # other chain, omit it to exercise the derivation path.
+    if [ "$chain" = "bitcoin" ]; then
+        body=$(jq -n --arg src "$src" --arg dst "$DEST_ASSET" \
+            '{source_asset: $src, destination_asset: $dst, amount: "5000000",
+              refund_address: "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"}')
+    else
+        body=$(jq -n --arg src "$src" --arg dst "$DEST_ASSET" \
+            '{source_asset: $src, destination_asset: $dst, amount: "5000000"}')
+    fi
     RESP=$(curl -s -w "\n%{http_code}" -X POST \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer ${WALLET_API_KEY}" \
