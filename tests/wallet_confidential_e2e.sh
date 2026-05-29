@@ -172,11 +172,18 @@ report_op() {
 }
 
 # Poll a request to terminal. Returns 0=success, 1=failed/refunded, 2=timeout.
+#
+# Bumped from 30 to 90 iterations (= ~3 min wall-clock) because UNSHIELD
+# direction reliably moves the funds on-chain in seconds but its upstream
+# /v0/status sometimes stays "processing" for >60 s before flipping to
+# "success" — the solver fills `nearTxHashes` lazily for the unshield leg.
+# Most ops settle in < 15 iterations; the headroom protects against the slow
+# UNSHIELD path without slowing the fast ones.
 poll_request() {
     local rid="$1" i status
     [ -n "$rid" ] || { echo -e "  ${YELLOW}no request_id to poll${NC}"; return 2; }
     echo -e "${CYAN}  polling request $rid …${NC}"
-    for i in $(seq 1 30); do
+    for i in $(seq 1 90); do
         parse_response "$(curl_get "/wallet/v1/requests/$rid")"
         status=$(echo "$RESP_BODY" | jq -r '.status // "?"')
         echo "    [$i] status=$status"
@@ -253,7 +260,10 @@ cmd_roundtrip() {
     echo "  confidential balance before: $cf_before"
 
     echo -e "${CYAN}[1/4] SHIELD…${NC}"
-    parse_response "$(curl_post "/wallet/v1/confidential/deposit" "{\"token\":\"$SHIELD_TOKEN\",\"amount\":\"$SHIELD_AMOUNT\"}" "shield-$(date +%s)-$$")"
+    # Body built in a variable to dodge bash brace-expansion inside `$(...)` which
+    # otherwise splits `{"a":"X","b":"Y"}` into two function calls.
+    local shield_body; shield_body=$(printf '{"token":"%s","amount":"%s"}' "$SHIELD_TOKEN" "$SHIELD_AMOUNT")
+    parse_response "$(curl_post "/wallet/v1/confidential/deposit" "$shield_body" "shield-$(date +%s)-$$")"
     report_op
     assert_settled "${LAST_REQUEST_ID:-}" "SHIELD"
 
@@ -267,7 +277,8 @@ cmd_roundtrip() {
     fi
 
     echo -e "${CYAN}[3/4] UNSHIELD…${NC}"
-    parse_response "$(curl_post "/wallet/v1/confidential/unshield" "{\"token\":\"$SHIELD_TOKEN\",\"amount\":\"$SHIELD_AMOUNT\"}" "unshield-$(date +%s)-$$")"
+    local unshield_body; unshield_body=$(printf '{"token":"%s","amount":"%s"}' "$SHIELD_TOKEN" "$SHIELD_AMOUNT")
+    parse_response "$(curl_post "/wallet/v1/confidential/unshield" "$unshield_body" "unshield-$(date +%s)-$$")"
     report_op
     assert_settled "${LAST_REQUEST_ID:-}" "UNSHIELD"
 
@@ -285,7 +296,8 @@ cmd_roundtrip() {
 cmd_shield() {
     require_confidential_enabled; require_api_key; check_coordinator
     echo -e "${CYAN}== SHIELD $SHIELD_AMOUNT of $SHIELD_TOKEN ==${NC}"
-    parse_response "$(curl_post "/wallet/v1/confidential/deposit" "{\"token\":\"$SHIELD_TOKEN\",\"amount\":\"$SHIELD_AMOUNT\"}" "shield-$(date +%s)-$$")"
+    local body; body=$(printf '{"token":"%s","amount":"%s"}' "$SHIELD_TOKEN" "$SHIELD_AMOUNT")
+    parse_response "$(curl_post "/wallet/v1/confidential/deposit" "$body" "shield-$(date +%s)-$$")"
     report_op
     assert_settled "${LAST_REQUEST_ID:-}" "SHIELD"
 }
@@ -293,7 +305,8 @@ cmd_shield() {
 cmd_unshield() {
     require_confidential_enabled; require_api_key; check_coordinator
     echo -e "${CYAN}== UNSHIELD $SHIELD_AMOUNT of $SHIELD_TOKEN ==${NC}"
-    parse_response "$(curl_post "/wallet/v1/confidential/unshield" "{\"token\":\"$SHIELD_TOKEN\",\"amount\":\"$SHIELD_AMOUNT\"}" "unshield-$(date +%s)-$$")"
+    local body; body=$(printf '{"token":"%s","amount":"%s"}' "$SHIELD_TOKEN" "$SHIELD_AMOUNT")
+    parse_response "$(curl_post "/wallet/v1/confidential/unshield" "$body" "unshield-$(date +%s)-$$")"
     report_op
     assert_settled "${LAST_REQUEST_ID:-}" "UNSHIELD"
 }
@@ -310,7 +323,8 @@ cmd_balance() {
 cmd_deposit_intent() {
     require_confidential_enabled; require_api_key; check_coordinator
     echo -e "${CYAN}== Cross-chain DEPOSIT intent (quote only): $DEPOSIT_SOURCE_ASSET → confidential ==${NC}"
-    parse_response "$(curl_post "/wallet/v1/confidential/deposit-intent" "{\"source_asset\":\"$DEPOSIT_SOURCE_ASSET\",\"amount\":\"$DEPOSIT_AMOUNT\"}")"
+    local body; body=$(printf '{"source_asset":"%s","amount":"%s"}' "$DEPOSIT_SOURCE_ASSET" "$DEPOSIT_AMOUNT")
+    parse_response "$(curl_post "/wallet/v1/confidential/deposit-intent" "$body")"
     echo -e "  HTTP $RESP_CODE"
     [ "$RESP_CODE" = "200" ] || { echo "  $(echo "$RESP_BODY" | jq -c '.' 2>/dev/null || echo "$RESP_BODY")"; exit 1; }
     echo "  $(echo "$RESP_BODY" | jq -c '.')"

@@ -172,7 +172,7 @@ Same wallet_id always produces same addresses across chains. Deterministic, stat
 > tx builder/broadcast for EVM/Solana yet, so it does not hand out fund-able
 > native addresses (that would risk stuck funds). Cross-chain value movement
 > does not need them: it goes through NEAR Intents + the 1Click solver. See
-> [coordinator `docs/MULTI_CHAIN.md`](https://github.com/out-layer/outlayer-coordinator/blob/main/docs/MULTI_CHAIN.md).
+> [coordinator `docs/MULTI_CHAIN.md`](https://github.com/out-layer/coordinator/blob/main/docs/MULTI_CHAIN.md).
 
 #### Policy evaluation flow (inside TEE)
 
@@ -490,7 +490,7 @@ Base: `https://api.outlayer.fastnear.com`
 ## Confidential Intents
 
 > **Building an agent?** See the integration guide
-> [`CONFIDENTIAL_INTENTS.md`](https://github.com/out-layer/outlayer-coordinator/blob/main/docs/CONFIDENTIAL_INTENTS.md)
+> [`CONFIDENTIAL_INTENTS.md`](https://github.com/out-layer/coordinator/blob/main/docs/CONFIDENTIAL_INTENTS.md)
 > in the coordinator repo — it covers the mental model (private on-chain shard,
 > same-wallet identity, what privacy you actually get) + all methods, written
 > for agent developers. This section is the operator/architecture summary.

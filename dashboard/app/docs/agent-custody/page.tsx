@@ -730,7 +730,7 @@ curl -s -X POST -H "Content-Type: application/json" \\
           <code className="bg-gray-100 px-1 rounded">intents.far</code> contract on a private NEAR
           shard with no public RPC: balances are <strong>real on-chain state</strong> there, just
           not publicly readable. Full integration guide:{' '}
-          <a className="text-blue-600 underline" href="https://github.com/out-layer/outlayer-coordinator/blob/main/docs/CONFIDENTIAL_INTENTS.md">
+          <a className="text-blue-600 underline" href="https://github.com/out-layer/coordinator/blob/main/docs/CONFIDENTIAL_INTENTS.md">
             CONFIDENTIAL_INTENTS.md
           </a>.
         </p>
