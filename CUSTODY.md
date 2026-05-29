@@ -459,7 +459,7 @@ Base: `https://api.outlayer.fastnear.com`
 | POST | `/wallet/v1/deposit-intent` | Cross-chain deposit (1Click bridge address; `source_asset` or `chain`+`token` shape) |
 | POST | `/wallet/v1/confidential/deposit` | SHIELD: public intents → confidential shard (503 if not enabled) |
 | POST | `/wallet/v1/confidential/unshield` | Confidential → public intents |
-| POST | `/wallet/v1/confidential/withdraw` | Confidential → external chain (rejects `chain=near`) |
+| POST | `/wallet/v1/confidential/withdraw` | Confidential → external chain (or `chain="near"` for **native NEAR** delivery via `intents.near native_withdraw`) |
 | POST | `/wallet/v1/confidential/withdraw/dry-run` | Quote a confidential withdraw |
 | POST | `/wallet/v1/confidential/transfer` | Private confidential → confidential transfer |
 | POST | `/wallet/v1/confidential/swap` | Confidential swap (distinct assets) |

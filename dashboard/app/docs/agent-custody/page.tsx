@@ -738,7 +738,7 @@ curl -s -X POST -H "Content-Type: application/json" \\
         <ul className="list-disc list-inside text-gray-700 space-y-1 mb-4">
           <li><code className="bg-gray-100 px-1 rounded">POST /confidential/deposit</code> — SHIELD: public intents → confidential</li>
           <li><code className="bg-gray-100 px-1 rounded">POST /confidential/unshield</code> — confidential → public intents</li>
-          <li><code className="bg-gray-100 px-1 rounded">POST /confidential/withdraw</code> — confidential → external chain (rejects <code className="bg-gray-100 px-1 rounded">chain=near</code>)</li>
+          <li><code className="bg-gray-100 px-1 rounded">POST /confidential/withdraw</code> — confidential → external chain (or <code className="bg-gray-100 px-1 rounded">chain=&quot;near&quot;</code> for native NEAR delivery via <code className="bg-gray-100 px-1 rounded">native_withdraw</code>)</li>
           <li><code className="bg-gray-100 px-1 rounded">POST /confidential/transfer</code> — private confidential → confidential transfer</li>
           <li><code className="bg-gray-100 px-1 rounded">POST /confidential/swap</code> (+ <code className="bg-gray-100 px-1 rounded">/swap/quote</code>, <code className="bg-gray-100 px-1 rounded">/withdraw/dry-run</code>)</li>
           <li><code className="bg-gray-100 px-1 rounded">POST /confidential/deposit-intent</code> — cross-chain deposit (bridge address)</li>
