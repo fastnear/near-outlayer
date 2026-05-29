@@ -20,6 +20,7 @@ const pageStructure = {
     { id: 'multisig', title: 'Multisig Approval' },
     { id: 'quick-start', title: 'Quick Start' },
     { id: 'api-reference', title: 'API Reference' },
+    { id: 'confidential-intents', title: 'Confidential Intents' },
     { id: 'sign-message', title: 'Sign Message (NEP-413)' },
     { id: 'security', title: 'Security Model' },
     { id: 'ai-skill', title: 'AI Agent Skill File' },

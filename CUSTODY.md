@@ -457,6 +457,15 @@ Base: `https://api.outlayer.fastnear.com`
 | POST | `/wallet/v1/intents/deposit` | Deposit FT into intents.near (for manual intents operations) |
 | POST | `/wallet/v1/intents/swap` | Swap via 1Click: quote → deposit to intents.near → mt_transfer → poll |
 | POST | `/wallet/v1/deposit-intent` | Cross-chain deposit (1Click bridge address; `source_asset` or `chain`+`token` shape) |
+| POST | `/wallet/v1/confidential/deposit` | SHIELD: public intents → confidential shard (503 if not enabled) |
+| POST | `/wallet/v1/confidential/unshield` | Confidential → public intents |
+| POST | `/wallet/v1/confidential/withdraw` | Confidential → external chain (rejects `chain=near`) |
+| POST | `/wallet/v1/confidential/withdraw/dry-run` | Quote a confidential withdraw |
+| POST | `/wallet/v1/confidential/transfer` | Private confidential → confidential transfer |
+| POST | `/wallet/v1/confidential/swap` | Confidential swap (distinct assets) |
+| POST | `/wallet/v1/confidential/swap/quote` | Quote a confidential swap |
+| POST | `/wallet/v1/confidential/deposit-intent` | Cross-chain deposit into confidential (bridge address) |
+| GET | `/wallet/v1/confidential/balance` | Read confidential balances (private shard `intents.far`, no public RPC) |
 | GET | `/wallet/v1/requests/{id}` | Poll async operation status |
 | GET | `/wallet/v1/requests` | List operations (filter: type, status, limit) |
 | GET | `/wallet/v1/tokens` | List available tokens (Intents proxy) |
@@ -475,6 +484,51 @@ Base: `https://api.outlayer.fastnear.com`
 |--------|------|-------------|
 | POST | `/internal/wallet-check` | Policy check for WASI execution |
 | POST | `/internal/wallet-audit` | Record audit event from WASI |
+
+---
+
+## Confidential Intents
+
+> **Building an agent?** See the integration guide
+> [`CONFIDENTIAL_INTENTS.md`](https://github.com/out-layer/outlayer-coordinator/blob/main/docs/CONFIDENTIAL_INTENTS.md)
+> in the coordinator repo — it covers the mental model (private on-chain shard,
+> same-wallet identity, what privacy you actually get) + all methods, written
+> for agent developers. This section is the operator/architecture summary.
+
+The `/wallet/v1/confidential/*` routes mirror `/wallet/v1/intents/*` but operate
+on the Defuse **confidential** shard — a separate PRIVATE shard (the
+`intents.far` contract), distinct from public `intents.near`. Disabled by default —
+gated by `ENABLE_CONFIDENTIAL_INTENTS` plus a **separate** Defuse partner
+agreement (`ONECLICK_CONFIDENTIAL_BASE_URL` + `ONECLICK_CONFIDENTIAL_JWT`, which
+**must differ** from the public `ONECLICK_JWT`). When unconfigured, every
+confidential route returns **HTTP 503** `confidential_unavailable`.
+
+Pipeline per op: NEP-413 challenge → per-account JWT (cached in Redis
+`wallet:{id}:cfjwt`, 14 min) → 1Click quote → generate-intent → sign via
+keystore → submit-intent. Ops are async; status is refreshed on read of
+`GET /wallet/v1/requests/{id}` until terminal.
+
+**Privacy** (must be disclosed to users):
+
+- Confidential balances are **real on-chain state** on the private `intents.far`
+  shard — not off-chain, not a solver database. The privacy is that this shard
+  has **no public RPC**: you cannot read it (verified — `intents.far` resolves to
+  `UNKNOWN_ACCOUNT` on public mainnet RPC). It is an auditable smart contract:
+  the operator/Defuse, auditors, or law enforcement with a warrant CAN read it.
+- Internal moves (confidential transfer/swap) leave **no public-chain trace** —
+  they settle on the private shard. Only the edges touch the public chain.
+- **SHIELD/UNSHIELD link the wallet on-chain** (entry/exit reveal); cross-chain
+  DEPOSIT/WITHDRAW only expose the external-chain sender/receiver (public on that
+  chain), not the confidential shard's internal moves.
+- **Not hidden, ever**: the Defuse/1Click solver layer (sees plaintext intents),
+  the `partner_id` mapping, and the source-chain identity.
+- **Cross-chain DEPOSIT/WITHDRAW are still correlatable by timing and amount**:
+  the source-chain deposit (at T) and destination-chain delivery (at T+N, e.g.
+  0.5 in / 0.44 out after bridge fee) are both visible on their public chains
+  and join trivially. True unlinkability needs jitter delays + amount splitting.
+
+Each wallet has a single confidential identity (the custody wallet itself);
+there is no separate or unlinkable confidential identity.
 
 ---
 

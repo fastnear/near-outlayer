@@ -192,7 +192,7 @@ dashboard/app/docs/
 | Dashboard Page | Primary Source | Secondary Sources | Key Topics |
 |----------------|---------------|-------------------|------------|
 | `/docs` | `dashboard/app/docs/page.tsx` | - | Overview, getting started |
-| `/docs/agent-custody` | `dashboard/app/docs/agent-custody/page.tsx` | `.ignore/FIREBLOCKS.md`, `CUSTODY.md`, canonical AI-agent skill at [`out-layer/outlayer-skills/agent-custody/SKILL.md`](https://github.com/out-layer/outlayer-skills/blob/main/agent-custody/SKILL.md) (hosted at https://skills.outlayer.ai/agent-custody/SKILL.md), [`@outlayer/sdk`](https://github.com/out-layer/sdk-js) | **Agent Custody: multi-chain wallet, policy engine, gasless transfers, native-NEAR withdrawal (`token=near` unwraps wNEAR via Intents `native_withdraw`), MPC security, NEP-413 message signing, CLI integration (wallet-key login), TypeScript SDK** |
+| `/docs/agent-custody` | `dashboard/app/docs/agent-custody/page.tsx` | `.ignore/FIREBLOCKS.md`, `CUSTODY.md`, canonical AI-agent skill at [`out-layer/outlayer-skills/agent-custody/SKILL.md`](https://github.com/out-layer/outlayer-skills/blob/main/agent-custody/SKILL.md) (hosted at https://skills.outlayer.ai/agent-custody/SKILL.md), **confidential-intents agent integration guide** at [`out-layer/outlayer-coordinator/docs/CONFIDENTIAL_INTENTS.md`](https://github.com/out-layer/outlayer-coordinator/blob/main/docs/CONFIDENTIAL_INTENTS.md), [`@outlayer/sdk`](https://github.com/out-layer/sdk-js) | **Agent Custody: multi-chain wallet, policy engine, gasless transfers, native-NEAR withdrawal (`token=near` unwraps wNEAR via Intents `native_withdraw`), MPC security, NEP-413 message signing, confidential intents (private shard `intents.far` — on-chain balances with no public RPC; shield/unshield/withdraw/transfer/swap + privacy disclosure, see `#confidential-intents`), CLI integration (wallet-key login), TypeScript SDK** |
 | `/docs/getting-started` | `dashboard/app/docs/sections/GettingStarted.tsx` | - | **TEE attestation, two integration modes (HTTPS & Blockchain), quick start** |
 | `/docs/web2-integration` | `dashboard/app/docs/web2-integration/page.tsx` | - | HTTPS integration overview, TEE attestation |
 | `/docs/https-api` | `dashboard/app/docs/https-api/page.tsx` | `DESIGN_HTTPS_API.md` | **Full HTTPS API reference, headers, responses** |
@@ -240,6 +240,7 @@ const pageStructure = {
     { id: 'quick-start', title: 'Quick Start' },
     { id: 'api-reference', title: 'API Reference' },
     { id: 'security', title: 'Security Model' },
+    { id: 'confidential-intents', title: 'Confidential Intents' },  // private shard intents.far; integration guide at /docs/CONFIDENTIAL_INTENTS.md in the coordinator repo
     { id: 'ai-skill', title: 'AI Agent Skill File' },
     { id: 'comparison', title: 'Comparison' },
     { id: 'dashboard', title: 'Dashboard' },

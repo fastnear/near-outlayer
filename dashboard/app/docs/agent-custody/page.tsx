@@ -715,6 +715,73 @@ curl -s -X POST -H "Content-Type: application/json" \\
         </p>
       </section>
 
+      {/* Confidential Intents */}
+      <section id="confidential-intents" className="mb-10 scroll-mt-4">
+        <AnchorHeading id="confidential-intents">Confidential Intents</AnchorHeading>
+
+        <p className="text-gray-700 mb-4">
+          Move balances between your <strong>public</strong> intents shard, a{' '}
+          <strong>confidential</strong> shielded-pool shard, and external chains — same
+          TEE-mediated signing, a different shard. The{' '}
+          <code className="bg-gray-100 px-1 rounded">/wallet/v1/confidential/*</code> routes mirror{' '}
+          <code className="bg-gray-100 px-1 rounded">/wallet/v1/intents/*</code>. They return{' '}
+          <code className="bg-gray-100 px-1 rounded">HTTP 503</code> unless the deployment has
+          confidential intents enabled. The confidential shard is the{' '}
+          <code className="bg-gray-100 px-1 rounded">intents.far</code> contract on a private NEAR
+          shard with no public RPC: balances are <strong>real on-chain state</strong> there, just
+          not publicly readable. Full integration guide:{' '}
+          <a className="text-blue-600 underline" href="https://github.com/out-layer/outlayer-coordinator/blob/main/docs/CONFIDENTIAL_INTENTS.md">
+            CONFIDENTIAL_INTENTS.md
+          </a>.
+        </p>
+
+        <ul className="list-disc list-inside text-gray-700 space-y-1 mb-4">
+          <li><code className="bg-gray-100 px-1 rounded">POST /confidential/deposit</code> — SHIELD: public intents → confidential</li>
+          <li><code className="bg-gray-100 px-1 rounded">POST /confidential/unshield</code> — confidential → public intents</li>
+          <li><code className="bg-gray-100 px-1 rounded">POST /confidential/withdraw</code> — confidential → external chain (rejects <code className="bg-gray-100 px-1 rounded">chain=near</code>)</li>
+          <li><code className="bg-gray-100 px-1 rounded">POST /confidential/transfer</code> — private confidential → confidential transfer</li>
+          <li><code className="bg-gray-100 px-1 rounded">POST /confidential/swap</code> (+ <code className="bg-gray-100 px-1 rounded">/swap/quote</code>, <code className="bg-gray-100 px-1 rounded">/withdraw/dry-run</code>)</li>
+          <li><code className="bg-gray-100 px-1 rounded">POST /confidential/deposit-intent</code> — cross-chain deposit (bridge address)</li>
+          <li><code className="bg-gray-100 px-1 rounded">GET /confidential/balance</code> — read confidential balances</li>
+        </ul>
+
+        <p className="text-gray-700 mb-4">
+          Action routes are asynchronous — they return{' '}
+          <code className="bg-gray-100 px-1 rounded">request_id</code> with status{' '}
+          <code className="bg-gray-100 px-1 rounded">pending_deposit</code>; poll{' '}
+          <code className="bg-gray-100 px-1 rounded">GET /wallet/v1/requests/&#123;id&#125;</code> until terminal.
+        </p>
+
+        <div className="bg-amber-50 border-l-4 border-amber-500 p-4 mb-4">
+          <p className="text-sm text-gray-700">
+            <strong>Privacy is nuanced.</strong> Confidential balances are <strong>real on-chain
+            state on a private shard</strong> (<code className="bg-amber-100 px-1 rounded">intents.far</code>)
+            with no public RPC — chain-graph bots cannot read them. <strong>SHIELD/UNSHIELD link
+            your wallet on the public chain</strong> (entry/exit reveal). Cross-chain
+            deposit/withdraw keep your NEAR wallet off the public chain — only the external-chain
+            sender/receiver is public, on that chain. <strong>Never hidden:</strong> the shard
+            itself is an auditable smart contract — the Defuse/1Click solver layer (sees plaintext
+            intents), the partner mapping, your source-chain identity, and the shard operator /
+            auditors / law enforcement with a warrant can all see confidential state.{' '}
+            <strong>For unlinkability</strong>, fund via cross-chain deposit and exit via
+            cross-chain withdraw rather than SHIELD/UNSHIELD — only one confidential identity per
+            wallet, so multi-op unlinkability is not achievable today.
+          </p>
+        </div>
+
+        <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
+{`# SHIELD 0.01 wNEAR into the confidential shard
+curl -s -X POST -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer $API_KEY" \\
+  -d '{"token":"nep141:wrap.near","amount":"10000000000000000000000"}' \\
+  "https://api.outlayer.fastnear.com/wallet/v1/confidential/deposit"
+
+# Read confidential balances
+curl -s -H "Authorization: Bearer $API_KEY" \\
+  "https://api.outlayer.fastnear.com/wallet/v1/confidential/balance"`}
+        </SyntaxHighlighter>
+      </section>
+
       {/* Delete Wallet */}
       <section id="delete-wallet" className="mb-10 scroll-mt-4">
         <AnchorHeading id="delete-wallet">Delete Wallet</AnchorHeading>
