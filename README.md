@@ -7,8 +7,10 @@ OutLayer lets smart contracts execute arbitrary code off-chain and receive verif
 ## Quick Links
 
 - **Dashboard & Docs**: [outlayer.fastnear.com](https://outlayer.fastnear.com/dashboard)
-- **HTTPS API**: `https://api.outlayer.fastnear.com/call/{owner}/{project}`
-- **Contract (mainnet)**: `outlayer.near`
+- **HTTPS API (mainnet)**: `https://api.outlayer.fastnear.com` → `/call/{owner}/{project}`
+- **HTTPS API (testnet)**: `https://testnet-api.outlayer.fastnear.com` → `/call/{owner}/{project}`
+- **Contract**: `outlayer.near` (mainnet) / `outlayer.testnet` (testnet)
+- **API reference**: [API.md](API.md) — endpoints, base URLs, and source-availability notes
 - **Production App**: [near.email](https://near.email) — blockchain-native email built on OutLayer
 
 ## How It Works

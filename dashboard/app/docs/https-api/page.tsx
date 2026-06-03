@@ -76,6 +76,38 @@ curl -X POST https://api.outlayer.fastnear.com/call/alice.near/my-assistant \\
           Example: <code>POST https://api.outlayer.fastnear.com/call/alice.near/weather-api</code>
         </p>
 
+        <AnchorHeading id="base-urls" level={3}>Base URLs (Networks)</AnchorHeading>
+
+        <p className="text-gray-700 mb-4">
+          OutLayer runs on two networks. Pick the base URL that matches the network your
+          project is deployed on — the path (<code>/call/...</code>, <code>/wallet/v1/...</code>,
+          <code>/vrf/...</code>, etc.) is identical on both.
+        </p>
+
+        <div className="overflow-x-auto mb-6">
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Network</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Base URL</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Contract</th>
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              <tr>
+                <td className="px-4 py-3 text-sm font-semibold text-gray-900">Mainnet</td>
+                <td className="px-4 py-3 text-sm font-mono"><code>https://api.outlayer.fastnear.com</code></td>
+                <td className="px-4 py-3 text-sm font-mono">outlayer.near</td>
+              </tr>
+              <tr className="bg-yellow-50">
+                <td className="px-4 py-3 text-sm font-semibold text-gray-900">Testnet</td>
+                <td className="px-4 py-3 text-sm font-mono"><code>https://testnet-api.outlayer.fastnear.com</code></td>
+                <td className="px-4 py-3 text-sm font-mono">outlayer.testnet</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
         <AnchorHeading id="headers" level={3}>Request Headers</AnchorHeading>
 
         <div className="overflow-x-auto mb-6">

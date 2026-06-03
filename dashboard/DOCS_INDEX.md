@@ -26,6 +26,7 @@ Both modes provide the same cryptographic proof via Intel TDX attestation.
 - **Examples**: `/wasi-examples/*/README.md` - Source for example documentation
 - **Navigation**: `/dashboard/app/docs/layout.tsx` - Sidebar menu configuration
 - **Vault runbook**: `/docs/LEAVING_OUTLAYER.md` — source-of-truth procedure for taking a vault out from under OutLayer's keystore (linked from `/docs/vaults` page; auditors should treat it as canonical)
+- **API Base URLs**: mainnet `https://api.outlayer.fastnear.com` · testnet `https://testnet-api.outlayer.fastnear.com` (same paths on both; documented on `/docs/https-api#base-urls` and in [`API.md`](../API.md))
 - **API Spec (OpenAPI 3.1)**: [out-layer/api-spec](https://github.com/out-layer/api-spec) — single source of truth for the HTTP API; rendered at https://api.outlayer.fastnear.com/docs (Scalar UI)
 - **TypeScript SDK**: [`@outlayer/sdk`](https://www.npmjs.com/package/@outlayer/sdk) — source at [out-layer/sdk-js](https://github.com/out-layer/sdk-js); covers all wallet, policy, approval, and audit endpoints
 - **Live Site**: https://outlayer.fastnear.com/docs

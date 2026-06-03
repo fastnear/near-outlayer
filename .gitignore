@@ -57,3 +57,4 @@ docker/.phala
 docker/.env.*
 .ignore
 package-lock.json
+.research

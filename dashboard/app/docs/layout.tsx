@@ -71,6 +71,7 @@ const pageStructure = {
   '/docs/https-api': [
     { id: 'overview', title: 'Overview' },
     { id: 'request-format', title: 'Request Format' },
+    { id: 'base-urls', title: 'Base URLs (Networks)' },
     { id: 'headers', title: 'Request Headers' },
     { id: 'body', title: 'Request Body' },
     { id: 'response-format', title: 'Response Format' },

@@ -710,9 +710,24 @@ curl -s -X POST -H "Content-Type: application/json" \\
           </table>
         </div>
 
-        <p className="text-gray-700">
-          Base URL: <code className="bg-gray-100 px-1 rounded">https://api.outlayer.fastnear.com</code>
+        <p className="text-gray-700 mb-3">
+          Base URL: <code className="bg-gray-100 px-1 rounded">https://api.outlayer.fastnear.com</code> (mainnet)
+          {' · '}
+          <code className="bg-gray-100 px-1 rounded">https://testnet-api.outlayer.fastnear.com</code> (testnet)
         </p>
+
+        <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 text-sm text-gray-700">
+          <strong>NEAR Intents is mainnet-only.</strong> The testnet API does not run the
+          Intents solver network, so the intents-dependent endpoints are <strong>not
+          available on testnet</strong> — namely{' '}
+          <code className="bg-gray-100 px-1 rounded">/wallet/v1/intents/*</code>{' '}
+          (deposit, withdraw, ft-withdraw, swap, and their quote / dry-run variants),
+          cross-chain gasless withdrawals, and all{' '}
+          <code className="bg-gray-100 px-1 rounded">/wallet/v1/confidential/*</code> routes.
+          Test these against the <strong>mainnet</strong> API only. Account, address,
+          balance, transfer, contract <code className="bg-gray-100 px-1 rounded">call</code>,
+          message signing, policy, and approval endpoints work on both networks.
+        </div>
       </section>
 
       {/* Confidential Intents */}
