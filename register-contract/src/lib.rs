@@ -173,7 +173,7 @@ impl RegisterContract {
         // 2. Check full measurements are approved
         assert!(
             self.approved_measurements.contains(&measurements),
-            "Worker measurements not approved. MRTD={}, RTMR0={}, RTMR1={}, RTMR2={}, RTMR3={}. Contact admin to add via add_approved_measurements.",
+            "Worker measurements not approved. MRTD={}, RTMR0={}, RTMR1={}, RTMR2={}, RTMR3={}.",
             measurements.mrtd, measurements.rtmr0, measurements.rtmr1,
             measurements.rtmr2, measurements.rtmr3
         );

@@ -433,7 +433,7 @@ impl KeystoreDao {
         // CRITICAL: Check if measurements are in approved list
         assert!(
             self.approved_measurements.contains(&measurements),
-            "Worker measurements not approved. MRTD={}, RTMR0={}, RTMR1={}, RTMR2={}, RTMR3={}. Contact admin to add via add_approved_measurements.",
+            "Worker measurements not approved. MRTD={}, RTMR0={}, RTMR1={}, RTMR2={}, RTMR3={}.",
             measurements.mrtd, measurements.rtmr0, measurements.rtmr1,
             measurements.rtmr2, measurements.rtmr3
         );
@@ -693,6 +693,11 @@ impl KeystoreDao {
     /// This function makes a cross-contract call to the MPC contract to derive a private key
     /// The request must come from an approved keystore with a valid access key
     pub fn request_key(&self, request: CKDRequestArgs) -> PromiseOrValue<CKDResponse> {
+        require!(
+            env::predecessor_account_id() == env::current_account_id(),
+            "must be called via an approved-keystore access key on this contract"
+        );
+
         // Make cross-contract call to MPC contract
         // Attach all gas and 1 yoctoNEAR as required by MPC contract
         let promise = ext_mpc::ext(self.mpc_contract_id.clone())
@@ -1703,6 +1708,23 @@ mod tests {
         dao.ban_vault(vault_a(), "test ban".to_string());
         assert!(!dao.is_vault_verified(vault_a()));
         assert!(dao.is_vault_banned(vault_a()));
+    }
+
+    // ===== request_key (CKD proxy authorization) =====
+
+    #[test]
+    #[should_panic(expected = "must be called via an approved-keystore access key")]
+    fn request_key_rejects_external_caller() {
+        // An outside account calling request_key directly arrives with
+        // predecessor != current_account_id and must be rejected — otherwise it
+        // could obtain a CKD share encrypted to an attacker-supplied app key.
+        let dao = fresh_dao();
+        testing_env!(ctx(outsider()).build());
+        let _ = dao.request_key(CKDRequestArgs {
+            derivation_path: String::new(),
+            app_public_key: dtos::Bls12381G1PublicKey("attacker-supplied".to_string()),
+            domain_id: DomainId(0),
+        });
     }
 
     // ===== ban_vault / unban_vault =====
