@@ -235,10 +235,24 @@ impl RegisterContract {
             .expect("Failed to parse collateral");
 
         // Verify quote with Intel's cryptographic signature
-        // Uses dcap_qvl 0.3.2 with "contract" feature (NEAR-compatible, same as MPC Node)
+        // Uses dcap_qvl 0.3.11 with "contract" feature (NEAR-compatible, same as MPC Node)
         let now = env::block_timestamp() / 1_000_000_000; // Convert to seconds
         let result = verify::verify(&quote_bytes, collateral.inner(), now)
             .expect("TDX quote verification failed - invalid signature or expired TCB");
+
+        // Reject anything but an up-to-date platform: dcap-qvl's verify() returns Ok
+        // for OutOfDate / ConfigurationNeeded / SWHardeningNeeded — only Revoked errors.
+        assert_eq!(
+            result.status.as_str(),
+            "UpToDate",
+            "TDX TCB status not acceptable: {} (platform needs a firmware/microcode update)",
+            result.status
+        );
+        assert!(
+            result.advisory_ids.is_empty(),
+            "TDX platform has outstanding security advisories: {}",
+            result.advisory_ids.join(", ")
+        );
 
         // Extract all measurements from TDX report (MRTD + RTMR0-3)
         let td10 = result
