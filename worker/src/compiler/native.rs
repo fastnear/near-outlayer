@@ -131,13 +131,57 @@ async fn run_git_with_timeout(
     }
 }
 
+/// Reject argument/transport injection and clone-time SSRF before the value
+/// reaches `git`. A repo like `ext::sh -c …` is arbitrary command execution via
+/// git's `ext` transport; `file://` reads the host FS; a leading `-` is parsed
+/// by git as an option (`--upload-pack=…`); and an arbitrary `https://<host>`
+/// would let a guest clone from internal/attacker hosts. We require a plain
+/// https URL pinned to github.com.
+pub(crate) fn validate_repo_url(repo: &str) -> Result<()> {
+    let rest = repo
+        .strip_prefix("https://")
+        .ok_or_else(|| anyhow::anyhow!("Invalid repo URL (must start with https://): {}", repo))?;
+    if repo.len() > 512 || repo.contains(|c: char| c.is_whitespace() || c.is_control()) {
+        anyhow::bail!("Invalid repo URL (too long or contains whitespace/control chars)");
+    }
+    // Authority = text before the first '/', after any `user@`, minus `:port`.
+    // (`github.com@evil.com` correctly resolves to host evil.com and is rejected.)
+    let authority = rest.split('/').next().unwrap_or("");
+    let host = authority.rsplit('@').next().unwrap_or(authority);
+    let host = host.split(':').next().unwrap_or(host);
+    if host != "github.com" && host != "codeload.github.com" {
+        anyhow::bail!("Invalid repo host (only github.com is allowed): {}", repo);
+    }
+    Ok(())
+}
+
+/// A git ref (branch/tag/commit) must not start with `-` (option injection) and
+/// must use a safe charset.
+pub(crate) fn validate_git_ref(r: &str) -> Result<()> {
+    if r.is_empty() || r.starts_with('-') {
+        anyhow::bail!("Invalid git ref (empty or starts with '-'): {}", r);
+    }
+    if r.len() > 256
+        || r.contains("..")
+        || !r.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | '-' | '+'))
+    {
+        anyhow::bail!("Invalid git ref (illegal characters): {}", r);
+    }
+    Ok(())
+}
+
 /// Clone Git repository
 async fn clone_repo(repo: &str, commit: &str, work_dir: &Path) -> Result<()> {
+    // Validate untrusted inputs before they reach git (see fns above).
+    validate_repo_url(repo)?;
+    validate_git_ref(commit)?;
+
     info!("📥 Cloning {} @ {}", repo, commit);
 
-    // Try shallow clone at the specific ref first (works for branches and tags)
+    // Try shallow clone at the specific ref first (works for branches and tags).
+    // `--` terminates option parsing so `repo` can never be read as a flag.
     let output = run_git_with_timeout(
-        &["clone", "--depth", "1", "--branch", commit, repo, "."],
+        &["clone", "--depth", "1", "--branch", commit, "--", repo, "."],
         work_dir,
         GIT_SHALLOW_CLONE_TIMEOUT,
         "clone --branch",
@@ -573,5 +617,54 @@ serde_json = "1.0"
         let (category, msg) = classify_compilation_error("fatal: repository not found", Some(128));
         assert_eq!(category, "repository_not_found");
         assert!(msg.contains("Repository not found"));
+    }
+
+    #[test]
+    fn validate_repo_url_accepts_https_github() {
+        assert!(validate_repo_url("https://github.com/owner/repo").is_ok());
+        assert!(validate_repo_url("https://github.com/owner/repo.git").is_ok());
+        assert!(validate_repo_url("https://tok@github.com/owner/repo").is_ok());
+    }
+
+    #[test]
+    fn validate_repo_url_rejects_transport_and_option_injection() {
+        // git `ext::` transport = arbitrary command execution
+        assert!(validate_repo_url("ext::sh -c 'touch /tmp/pwned'").is_err());
+        // file:// reads the host filesystem
+        assert!(validate_repo_url("file:///etc/passwd").is_err());
+        // leading '-' is parsed by git as an option
+        assert!(validate_repo_url("--upload-pack=evil").is_err());
+        // non-https / unnormalized forms — validate_repo_url is the gate itself,
+        // it does not depend on normalize() pinning anything
+        assert!(validate_repo_url("git@github.com:owner/repo").is_err());
+        assert!(validate_repo_url("ssh://git@github.com/owner/repo").is_err());
+        assert!(validate_repo_url("http://github.com/owner/repo").is_err());
+        assert!(validate_repo_url("owner/repo").is_err());
+        // whitespace / control chars
+        assert!(validate_repo_url("https://github.com/a repo").is_err());
+        // clone-time SSRF / arbitrary host — must be pinned to github.com
+        assert!(validate_repo_url("https://169.254.169.254/x").is_err());
+        assert!(validate_repo_url("https://attacker.tld/owner/repo").is_err());
+        assert!(validate_repo_url("https://github.com.evil.com/x").is_err());
+        assert!(validate_repo_url("https://github.com@evil.com/x").is_err()); // userinfo confusion
+    }
+
+    #[test]
+    fn validate_git_ref_accepts_normal_refs() {
+        assert!(validate_git_ref("main").is_ok());
+        assert!(validate_git_ref("v1.2.3").is_ok());
+        assert!(validate_git_ref("release/2024-01").is_ok());
+        assert!(validate_git_ref("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0").is_ok()); // 40-hex sha
+    }
+
+    #[test]
+    fn validate_git_ref_rejects_option_injection_and_bad_chars() {
+        assert!(validate_git_ref("--upload-pack=evil").is_err()); // option injection (fetch fallback)
+        assert!(validate_git_ref("-x").is_err());
+        assert!(validate_git_ref("").is_err());
+        assert!(validate_git_ref("a b").is_err()); // space
+        assert!(validate_git_ref("foo;bar").is_err()); // outside safe charset
+        assert!(validate_git_ref("foo$(id)").is_err());
+        assert!(validate_git_ref("../../etc/passwd").is_err()); // '..'
     }
 }

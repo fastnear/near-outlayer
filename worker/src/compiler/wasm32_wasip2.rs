@@ -51,10 +51,13 @@ echo "ℹ️  Using wasm32-wasip2 (WASI Preview 2)"
 rustup target add wasm32-wasip2
 echo "🔧 TARGET: wasm32-wasip2"
 
-# Clone repository
-git clone $REPO repo
+# Clone repository. Quote so the env values can't word-split into git options,
+# and `--` on clone stops the URL being read as a flag. Inputs are also validated
+# host-side (compiler/mod.rs) before reaching this script. (checkout takes a ref,
+# not a pathspec, so it is quoted but NOT given `--`.)
+git clone -- "$REPO" repo
 cd repo
-git checkout $COMMIT
+git checkout "$COMMIT"
 
 # Build WASM component with cargo
 cargo build --release --target wasm32-wasip2

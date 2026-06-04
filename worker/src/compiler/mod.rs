@@ -235,6 +235,12 @@ impl Compiler {
     async fn compile_from_github(&self, repo: &str, commit: &str, build_target: &str) -> Result<Vec<u8>> {
         info!("Compiling {} @ {} for target {}", repo, commit, build_target);
 
+        // Validate untrusted repo/commit at the single choke point so BOTH the
+        // native and docker backends are covered (the docker scripts interpolate
+        // these into a shell where unvalidated input is git-arg / ext injection).
+        native::validate_repo_url(repo)?;
+        native::validate_git_ref(commit)?;
+
         // Validate and normalize build target
         let normalized_target = self.validate_build_target(build_target)?;
 
