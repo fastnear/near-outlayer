@@ -84,8 +84,8 @@ function WalletHandoffContent() {
   const [approvalRequired, setApprovalRequired] = useState('1');
   const [additionalApprovers, setAdditionalApprovers] = useState('');
   // Which types require approval (unchecked = excluded_types)
-  const allTxTypes = ['transfer', 'call', 'delete', 'intents_withdraw', 'intents_swap', 'intents_deposit'] as const;
-  const [approvalTypes, setApprovalTypes] = useState<Set<string>>(new Set(['transfer', 'call', 'delete', 'intents_withdraw']));
+  const allTxTypes = ['transfer', 'call', 'delete', 'intents_withdraw', 'intents_swap', 'cross_chain_withdraw'] as const;
+  const [approvalTypes, setApprovalTypes] = useState<Set<string>>(new Set(['transfer', 'call', 'delete', 'intents_withdraw', 'cross_chain_withdraw']));
 
   // Policy form with augmentPolicy that adds owner-based approval
   const {
@@ -495,14 +495,14 @@ function WalletHandoffContent() {
                       {(() => {
                         const txTypeLabels: Record<string, string> = {
                           transfer: 'Transfer (send native currency)',
-                          call: 'Contract call',
+                          call: 'Contract call (incl. Deposit to Intents)',
                           delete: 'Delete wallet',
-                          intents_withdraw: 'Send cross-chain',
+                          intents_withdraw: 'Withdraw (same-chain)',
                           intents_swap: 'Swap',
-                          intents_deposit: 'Deposit to Intents',
+                          cross_chain_withdraw: 'Send cross-chain (bridge off NEAR)',
                         };
                         const directTypes = ['transfer', 'call', 'delete'] as const;
-                        const intentsTypes = ['intents_withdraw', 'intents_swap', 'intents_deposit'] as const;
+                        const intentsTypes = ['intents_withdraw', 'intents_swap', 'cross_chain_withdraw'] as const;
                         const renderCheckbox = (txType: string) => (
                           <label key={txType} className="flex items-center gap-1.5 text-sm cursor-pointer">
                             <input
@@ -538,9 +538,9 @@ function WalletHandoffContent() {
                         );
                       })()}
                       <p className="text-xs text-gray-400 mt-1">Unchecked types execute immediately without approval.</p>
-                      {(approvalTypes.has('intents_swap') || approvalTypes.has('intents_deposit')) && (
+                      {(approvalTypes.has('intents_swap') || approvalTypes.has('cross_chain_withdraw')) && (
                         <p className="text-xs text-red-600 font-medium mt-1 animate-pulse">
-                          Warning: Intents operations (deposit, swap) use expiring quotes — approval delays may cause transaction failures.
+                          Warning: Swap and cross-chain operations use expiring quotes — approval delays may cause transaction failures.
                         </p>
                       )}
                     </div>

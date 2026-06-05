@@ -188,9 +188,12 @@ pass "approval_id=$APPROVAL_ID  request_id=$REQUEST_ID"
 
 DETAILS=$(curl -sS "$COORDINATOR_URL/wallet/v1/approval/$APPROVAL_ID")
 REQUEST_HASH=$(echo "$DETAILS" | jq -r '.request_hash')
+WALLET_PUBKEY=$(echo "$DETAILS" | jq -r '.wallet_pubkey // empty')
 [[ -n "$REQUEST_HASH" && "$REQUEST_HASH" != "null" ]] || fail "no request_hash: $DETAILS"
+[[ -n "$WALLET_PUBKEY" && "$WALLET_PUBKEY" != "null" ]] || fail "no wallet_pubkey: $DETAILS"
 
-APPROVE_MSG="approve:$APPROVAL_ID:$REQUEST_HASH"
+# Wallet-bound approval message (audit fix 2): approve:{id}:{wallet_pubkey}:{request_hash}.
+APPROVE_MSG="approve:$APPROVAL_ID:$WALLET_PUBKEY:$REQUEST_HASH"
 NONCE_B64=$(head -c 32 /dev/urandom | base64 | tr -d '\n')
 APP_SIG_JSON=$("$RECOVERY_BIN" sign-nep413 \
   --private-key "$APPROVER_PRIVKEY" --message "$APPROVE_MSG" \

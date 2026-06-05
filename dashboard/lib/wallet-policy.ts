@@ -20,6 +20,23 @@ export interface PolicyForm {
   webhook_url: string;
   /** Additional authorized API key hashes (one per line, hex SHA256) */
   additional_key_hashes: string;
+  // ── Capabilities (all default-DENY unless enabled; see PolicyFormFields warnings) ──
+  /** raw_sign: sign arbitrary bytes on any enabled chain — bypasses the structured policy. */
+  raw_sign_enabled: boolean;
+  /** Comma-separated chain allowlist for raw_sign; empty = ALL chains (incl. near). */
+  raw_sign_chains: string;
+  raw_sign_requires_approval: boolean;
+  /** confidential: confidential-intents flows. */
+  confidential_enabled: boolean;
+  confidential_requires_approval: boolean;
+  /** payment_check: claimable-link escrow — funds reach an arbitrary holder (whitelist-bypass). */
+  payment_check_enabled: boolean;
+  payment_check_requires_approval: boolean;
+  /** swap: 1Click swap — Trusted (coordinator-supplied quote/route, unbound to policy). */
+  swap_enabled: boolean;
+  swap_requires_approval: boolean;
+  /** sign_message: comma-separated NEP-413 recipient allowlist (default-DENY; never fund-moving). */
+  sign_message_allowed_recipients: string;
 }
 
 export const DEFAULT_POLICY: PolicyForm = {
@@ -30,13 +47,25 @@ export const DEFAULT_POLICY: PolicyForm = {
   allowed_tokens: '*',
   address_mode: 'none',
   addresses: '',
-  transaction_types: 'transfer,call,delete,intents_withdraw,intents_swap,intents_deposit',
+  // cross_chain_withdraw is intentionally NOT a default — it is the riskiest exit and
+  // must be opted in explicitly. intents_deposit folds into `call` (no separate type).
+  transaction_types: 'transfer,call,delete,intents_withdraw,intents_swap',
   allowed_hours_start: '',
   allowed_hours_end: '',
   allowed_days: '',
   max_per_hour: '',
   webhook_url: '',
   additional_key_hashes: '',
+  raw_sign_enabled: false,
+  raw_sign_chains: '',
+  raw_sign_requires_approval: false,
+  confidential_enabled: false,
+  confidential_requires_approval: false,
+  payment_check_enabled: false,
+  payment_check_requires_approval: false,
+  swap_enabled: false,
+  swap_requires_approval: false,
+  sign_message_allowed_recipients: '',
 };
 
 // ============================================================================
@@ -109,8 +138,37 @@ export function buildPolicyRules(
     rules.rate_limit = { max_per_hour: parseInt(form.max_per_hour, 10) };
   }
 
+  // Capabilities — each non-Built primitive is default-DENY; emit a capability only when
+  // the owner opts in (absence = denied by the keystore). sign_message defaults on but its
+  // recipient allowlist is default-DENY, so emit it only when recipients are listed.
+  const capabilities: Record<string, unknown> = {};
+  if (form.raw_sign_enabled) {
+    const rs: Record<string, unknown> = { allowed: true, requires_approval: form.raw_sign_requires_approval };
+    const chains = form.raw_sign_chains.split(',').map((c) => c.trim()).filter(Boolean);
+    if (chains.length > 0) rs.chains = chains;
+    capabilities.raw_sign = rs;
+  }
+  // Trusted capabilities (confidential/payment_check/swap) do NOT emit requires_approval:
+  // the post-approval artifact can't be bound to the approved op, so the keystore rejects
+  // Trusted+multisig — setting it would permanently brick the op. Only raw_sign (HashPinned)
+  // supports requires_approval.
+  if (form.confidential_enabled) {
+    capabilities.confidential = { allowed: true };
+  }
+  if (form.payment_check_enabled) {
+    capabilities.payment_check = { allowed: true };
+  }
+  if (form.swap_enabled) {
+    capabilities.swap = { allowed: true };
+  }
+  const smRecipients = form.sign_message_allowed_recipients.split(',').map((r) => r.trim()).filter(Boolean);
+  if (smRecipients.length > 0) {
+    capabilities.sign_message = { allowed: true, allowed_recipients: smRecipients };
+  }
+
   const policy: Record<string, unknown> = {};
   if (Object.keys(rules).length > 0) policy.rules = rules;
+  if (Object.keys(capabilities).length > 0) policy.capabilities = capabilities;
   if (form.webhook_url) policy.webhook_url = form.webhook_url;
 
   // Merge current API key hash + any additional hashes from form
@@ -149,13 +207,14 @@ export interface ParsedPolicy {
  * `currentApiKeyHash` is excluded from additional_key_hashes (it's auto-included).
  */
 export function parsePolicyResponse(
-  data: { rules?: any; approval?: any; authorized_key_hashes?: string[]; webhook_url?: string },
+  data: { rules?: any; approval?: any; capabilities?: any; authorized_key_hashes?: string[]; webhook_url?: string },
   currentApiKeyHash?: string,
 ): ParsedPolicy {
   const rules = data.rules || {};
   const limits = rules.limits || {};
   const addr = rules.addresses || {};
   const tr = rules.time_restrictions || {};
+  const caps = data.capabilities || {};
 
   const form: PolicyForm = {
     per_transaction_limit: yoctoToNear(limits.per_transaction?.native || limits.per_transaction?.['*'] || ''),
@@ -174,6 +233,16 @@ export function parsePolicyResponse(
     additional_key_hashes: (data.authorized_key_hashes || [])
       .filter((h) => h !== currentApiKeyHash)
       .join('\n'),
+    raw_sign_enabled: caps.raw_sign?.allowed === true,
+    raw_sign_chains: (caps.raw_sign?.chains || []).join(', '),
+    raw_sign_requires_approval: caps.raw_sign?.requires_approval === true,
+    confidential_enabled: caps.confidential?.allowed === true,
+    confidential_requires_approval: caps.confidential?.requires_approval === true,
+    payment_check_enabled: caps.payment_check?.allowed === true,
+    payment_check_requires_approval: caps.payment_check?.requires_approval === true,
+    swap_enabled: caps.swap?.allowed === true,
+    swap_requires_approval: caps.swap?.requires_approval === true,
+    sign_message_allowed_recipients: (caps.sign_message?.allowed_recipients || []).join(', '),
   };
 
   let approval: ParsedPolicy['approval'] = null;
@@ -193,6 +262,7 @@ export function parsePolicyResponse(
   const fullJson: Record<string, unknown> = {};
   if (data.rules) fullJson.rules = data.rules;
   if (data.approval) fullJson.approval = data.approval;
+  if (data.capabilities) fullJson.capabilities = data.capabilities;
   if (data.webhook_url) fullJson.webhook_url = data.webhook_url;
   if (data.authorized_key_hashes?.length) fullJson.authorized_key_hashes = data.authorized_key_hashes;
 

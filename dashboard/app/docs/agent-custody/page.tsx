@@ -369,7 +369,7 @@ export default function AgentCustodyPage() {
               </tr>
               <tr className="border-b">
                 <td className="px-4 py-2 font-semibold">Transaction types</td>
-                <td className="px-4 py-2">Restrict allowed operations (transfer, call, intents_withdraw, intents_swap, intents_deposit, delete)</td>
+                <td className="px-4 py-2">Restrict allowed operations (transfer, call, intents_withdraw, intents_swap, cross_chain_withdraw, delete)</td>
                 <td className="px-4 py-2 font-mono text-xs">call, swap only</td>
               </tr>
               <tr>
@@ -386,6 +386,28 @@ export default function AgentCustodyPage() {
           This means neither the API gateway operator nor the agent can see or tamper with the raw policy rules.
         </p>
 
+        <div className="rounded-lg border border-amber-300 bg-amber-50 p-4 mb-4">
+          <p className="text-sm font-semibold text-amber-900 mb-1">Velocity limits are best-effort under concurrency</p>
+          <p className="text-sm text-amber-900">
+            Per-transaction limits, whitelists, time windows, capabilities, freeze, and the multisig
+            trigger are enforced <strong>exactly</strong> inside the TEE on every signature.
+            The <strong>cumulative</strong> limits &mdash; daily / hourly / monthly spend and the
+            hourly transaction-count (<code>rate_limit</code>) &mdash; are checked against a usage
+            counter the API gateway supplies; the TEE keeps no state of its own. If you fire several
+            requests <strong>concurrently</strong>, they can each read the same pre-spend counter and
+            all pass, so the cumulative caps may be exceeded by the in-flight batch (e.g. a
+            &ldquo;60&nbsp;tx/hour&rdquo; cap could admit a few extra under a burst). Single-threaded
+            agents (one request at a time) are unaffected.
+          </p>
+          <p className="text-sm text-amber-900 mt-2">
+            If exact cumulative enforcement matters to you, either <strong>serialize</strong> your
+            agent&rsquo;s spending requests (don&rsquo;t issue the next until the previous returns),
+            or leave a <strong>safety margin</strong> in the limit to absorb the maximum number of
+            requests you might have in flight at once. For hard stops use the per-transaction limit,
+            multisig, or freeze &mdash; those are exact.
+          </p>
+        </div>
+
         <h3 className="text-lg font-semibold mt-6 mb-2">Example Policy</h3>
         <SyntaxHighlighter language="json" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
 {`{
@@ -395,7 +417,7 @@ export default function AgentCustodyPage() {
       "daily": { "*": "100000000000000000000000000" },
       "hourly": { "*": "50000000000000000000000000" }
     },
-    "transaction_types": ["transfer", "call", "intents_withdraw", "intents_swap", "intents_deposit", "delete"],
+    "transaction_types": ["transfer", "call", "intents_withdraw", "intents_swap", "delete"],
     "addresses": {
       "mode": "whitelist",
       "list": ["bob.near", "dex.near"]

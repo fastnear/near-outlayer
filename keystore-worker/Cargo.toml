@@ -75,3 +75,9 @@ opt-level = 3
 lto = true
 codegen-units = 1
 strip = true
+
+# TEMPORARY (Phase 2 verification only): build against the local shared-tee-helpers
+# working tree, which carries the unpublished `wallet_policy` module. REMOVE this once
+# the crate is pushed and the git rev is bumped (the user owns version bumps/deploys).
+[patch."https://github.com/out-layer/shared-tee-helpers"]
+shared-tee-helpers = { path = "/Users/alice/projects/shared-tee-helpers" }

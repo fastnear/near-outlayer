@@ -120,11 +120,11 @@ export function PolicyFormFields({ policyForm, onChange, apiKeyHash, knownKeyHas
           {(() => {
             const txTypeLabels: Record<string, string> = {
               transfer: 'Transfer (send native token)',
-              call: 'Contract call',
+              call: 'Contract call (incl. Deposit to Intents)',
               delete: 'Delete wallet',
-              intents_withdraw: 'Send cross-chain',
+              intents_withdraw: 'Withdraw (same-chain)',
               intents_swap: 'Swap',
-              intents_deposit: 'Deposit to Intents',
+              cross_chain_withdraw: 'Send cross-chain (bridge off NEAR)',
             };
             const types = policyForm.transaction_types.split(',').map((t) => t.trim()).filter(Boolean);
             const renderCheckbox = (txType: string) => {
@@ -155,12 +155,161 @@ export function PolicyFormFields({ policyForm, onChange, apiKeyHash, knownKeyHas
                 <div>
                   <span className="text-xs text-gray-400">NEAR Intents:</span>
                   <div className="flex flex-col gap-0.5 mt-0.5">
-                    {['intents_withdraw', 'intents_swap', 'intents_deposit'].map(renderCheckbox)}
+                    {['intents_withdraw', 'intents_swap', 'cross_chain_withdraw'].map(renderCheckbox)}
                   </div>
+                  {types.includes('cross_chain_withdraw') && (
+                    <p className="text-xs text-red-600 mt-1">
+                      ⚠ Cross-chain withdraw bridges funds OFF NEAR irreversibly. It is a
+                      separate, opt-in type — enabling it does not require enabling
+                      same-chain withdraw, and vice versa.
+                    </p>
+                  )}
                 </div>
               </div>
             );
           })()}
+        </div>
+      </div>
+
+      {/* Capabilities (advanced, default-DENY) */}
+      <div className="border border-amber-200 bg-amber-50 rounded-lg p-4">
+        <h3 className="text-sm font-semibold text-gray-800 mb-1">Capabilities (advanced)</h3>
+        <p className="text-xs text-gray-500 mb-3">
+          Powerful primitives that bypass parts of the structured policy above. All are
+          OFF by default — enable only with intent. A wallet with NO policy at all trusts
+          the coordinator fully; set a policy before it holds significant value.
+        </p>
+
+        {/* raw_sign */}
+        <div className="mb-3">
+          <label className="flex items-center gap-1.5 text-sm cursor-pointer">
+            <input
+              type="checkbox"
+              checked={policyForm.raw_sign_enabled}
+              onChange={(e) => update({ raw_sign_enabled: e.target.checked })}
+              className="rounded border-gray-300"
+            />
+            <span className="font-medium">raw_sign — sign arbitrary payloads</span>
+          </label>
+          <p className="text-xs text-red-600 mt-0.5 ml-5">
+            ⚠ Lets the agent (and a compromised coordinator) sign raw transactions on the
+            enabled chains, bypassing the transfer/call/limit policy. Leaving chains empty
+            allows ALL chains <strong>including NEAR</strong> (which shares the structured
+            key — a raw NEAR signature can move funds outside this policy).
+          </p>
+          {policyForm.raw_sign_enabled && (
+            <div className="ml-5 mt-1 space-y-1">
+              <input
+                type="text"
+                value={policyForm.raw_sign_chains}
+                onChange={(e) => update({ raw_sign_chains: e.target.value })}
+                placeholder="Chain allowlist, e.g. ethereum, solana (empty = ALL incl. near)"
+                className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+              />
+              <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={policyForm.raw_sign_requires_approval}
+                  onChange={(e) => update({ raw_sign_requires_approval: e.target.checked })}
+                  className="rounded border-gray-300"
+                />
+                Require multisig approval for raw_sign
+              </label>
+            </div>
+          )}
+        </div>
+
+        {/* confidential */}
+        <div className="mb-3">
+          <label className="flex items-center gap-1.5 text-sm cursor-pointer">
+            <input
+              type="checkbox"
+              checked={policyForm.confidential_enabled}
+              onChange={(e) => update({ confidential_enabled: e.target.checked })}
+              className="rounded border-gray-300"
+            />
+            <span className="font-medium">confidential — confidential-intents flows</span>
+          </label>
+          <p className="text-xs text-red-600 mt-0.5 ml-5">
+            ⚠ Trusted: the route/deposit-address/artifact is coordinator-supplied and NOT
+            bound to this policy, so enabling it = full coordinator-trust of this token's
+            balance <strong>even single-sig</strong>. (Shield / unshield / confidential
+            withdraw, transfer, swap on the Defuse confidential shard.)
+          </p>
+          {policyForm.confidential_enabled && (
+            <p className="text-xs text-gray-400 ml-5 mt-1">
+              Multisig approval is not available for trusted ops (the post-approval artifact
+              can't be bound to the approved op) — gate with limits + capability instead.
+            </p>
+          )}
+        </div>
+
+        {/* swap */}
+        <div className="mb-3">
+          <label className="flex items-center gap-1.5 text-sm cursor-pointer">
+            <input
+              type="checkbox"
+              checked={policyForm.swap_enabled}
+              onChange={(e) => update({ swap_enabled: e.target.checked })}
+              className="rounded border-gray-300"
+            />
+            <span className="font-medium">swap — 1Click token swaps</span>
+          </label>
+          <p className="text-xs text-red-600 mt-0.5 ml-5">
+            ⚠ Trusted: the quote/route/deposit-address is coordinator-supplied and NOT bound
+            to this policy, so enabling it = full coordinator-trust of the input token's
+            balance <strong>even single-sig</strong>. Default-OFF — without this, swaps are
+            denied regardless of the transaction-type list.
+          </p>
+          {policyForm.swap_enabled && (
+            <p className="text-xs text-gray-400 ml-5 mt-1">
+              Multisig approval is not available for trusted ops — gate with limits +
+              capability instead.
+            </p>
+          )}
+        </div>
+
+        {/* payment_check */}
+        <div className="mb-3">
+          <label className="flex items-center gap-1.5 text-sm cursor-pointer">
+            <input
+              type="checkbox"
+              checked={policyForm.payment_check_enabled}
+              onChange={(e) => update({ payment_check_enabled: e.target.checked })}
+              className="rounded border-gray-300"
+            />
+            <span className="font-medium">payment_check — claimable payment links</span>
+          </label>
+          <p className="text-xs text-red-600 mt-0.5 ml-5">
+            ⚠ Whitelist-bypass: funds move into an escrow that ANY holder of the link can
+            claim, so the address whitelist does NOT constrain the final recipient. Gated
+            only by the per-transaction amount limit (set one above).
+          </p>
+          {policyForm.payment_check_enabled && (
+            <p className="text-xs text-gray-400 ml-5 mt-1">
+              Multisig approval is not available for trusted ops — gate with the
+              per-transaction amount limit instead.
+            </p>
+          )}
+        </div>
+
+        {/* sign_message recipients */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            sign_message — allowed NEP-413 recipients
+          </label>
+          <input
+            type="text"
+            value={policyForm.sign_message_allowed_recipients}
+            onChange={(e) => update({ sign_message_allowed_recipients: e.target.value })}
+            placeholder="comma-separated, e.g. app.example.near (empty = sign_message denied)"
+            className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+          />
+          <p className="text-xs text-red-600 mt-0.5">
+            ⚠ Default-DENY allowlist. Only list non-fund-moving verifiers (e.g. a dApp
+            login contract). NEVER list a fund-moving verifier like <code>intents.near</code> —
+            a login signature could then be replayed to move funds.
+          </p>
         </div>
       </div>
 

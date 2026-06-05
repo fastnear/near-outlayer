@@ -790,20 +790,6 @@ pub struct WalletDeriveAddressResponse {
     pub public_key: String,
 }
 
-/// Request to sign a transaction
-#[derive(Debug, Deserialize)]
-pub struct WalletSignTransactionRequest {
-    pub wallet_id: String,
-    pub chain: String,
-    pub tx_bytes_base64: String,
-}
-
-/// Response with signature
-#[derive(Debug, Serialize)]
-pub struct WalletSignTransactionResponse {
-    pub signature_base64: String,
-}
-
 /// Request to sign encrypted policy data (for on-chain store_wallet_policy)
 #[derive(Debug, Deserialize)]
 pub struct WalletSignPolicyRequest {
@@ -818,120 +804,159 @@ pub struct WalletSignPolicyResponse {
     pub public_key_hex: String, // ed25519 public key (32 bytes hex)
 }
 
-/// Approval info passed from coordinator for keystore verification
+/// A single approver's NEP-413 signature over `approve:{approval_id}:{request_hash}`.
+#[derive(Debug, Deserialize)]
+pub struct ApproverSig {
+    pub approver_id: String, // NEAR account id; must be in the wallet policy's approvers
+    pub public_key: String,  // ed25519:base58
+    pub signature: String,   // base64 (64 bytes)
+    pub nonce: String,       // base64 (32 bytes) — the NEP-413 nonce the approver used
+}
+
+/// Approval bundle forwarded by the coordinator. It carries the real approver
+/// signatures (not just names) so the keystore verifies them itself — the
+/// coordinator transports them but cannot forge them. The keystore derives the
+/// `request_hash` itself from the canonical `op` (binding is automatic), so the
+/// coordinator can neither pick the hash nor bind approvals to a different op.
 #[derive(Debug, Deserialize)]
 pub struct ApprovalInfo {
-    pub approver_ids: Vec<String>,
-    pub request_hash: String,
-}
-
-/// Request to sign a NEP-413 intent message
-#[derive(Debug, Deserialize)]
-pub struct WalletSignNep413Request {
-    pub wallet_id: String,
-    pub chain: String,
-    pub message: String,
-    pub nonce_base64: String,
+    pub approval_id: String,
+    /// NEP-413 `recipient` the approvers signed against; asserted == this keystore's contract.
     pub recipient: String,
+    /// YES votes — NEP-413 sigs over `approve:{approval_id}:{request_hash}`.
+    pub approvals: Vec<ApproverSig>,
+    /// NO votes (vetoes) — NEP-413 sigs over `reject:{approval_id}:{request_hash}`. Any
+    /// vote from a REAL policy approver (valid sig + on-chain key + in approver set)
+    /// vetoes the operation; non-approver rejections are ignored. Symmetric with approvals.
     #[serde(default)]
-    pub approval_info: Option<ApprovalInfo>,
+    pub rejections: Vec<ApproverSig>,
 }
 
-/// Response with NEP-413 signature
+/// Unified wallet signing request (the single `/wallet/sign` endpoint).
+///
+/// `op` is the canonical operation. The keystore derives
+/// `request_hash = sha256(canonical_json(op))`, evaluates the on-chain policy,
+/// verifies approver signatures when required, then produces the artifact per the
+/// op's bind mode — for `Built` kinds it CONSTRUCTS the artifact from the op (never
+/// accepts a ready one), so what it signs always equals what was approved.
+#[derive(Debug, Deserialize)]
+pub struct WalletSignRequest {
+    pub wallet_id: String,
+    pub op: shared_tee_helpers::wallet_policy::Op,
+    #[serde(default)]
+    pub approval_info: Option<ApprovalInfo>,
+    /// Supplementary material the keystore cannot derive from `op`:
+    /// - Hash-pinned `raw`: the exact bytes to sign (`bytes_base64`); signed iff
+    ///   `sha256(bytes) == op.payload_hash`.
+    /// - Hash-pinned `sign_message`: the plaintext `message` + `nonce_base64`. The
+    ///   recipient comes from `op` (bound into the signature → domain separation).
+    /// - Trusted `swap`/`confidential`: the externally-generated NEP-413 `message`
+    ///   + `nonce_base64` + `recipient` (artifact can't exist at approval time).
+    #[serde(default)]
+    pub artifact: Option<SignArtifact>,
+    /// Stateful usage state (per-token daily/hourly/monthly spend + hourly_tx_count),
+    /// in the coordinator's `current_usage` JSON shape. The keystore is the sole policy
+    /// evaluator; the coordinator merely SUPPLIES this state (it cannot decrypt the
+    /// policy). Absent → only the stateless subset is enforced. Trusted: a compromised
+    /// coordinator can under-report usage, but the keystore still enforces the stateless
+    /// rules + multisig independently.
+    #[serde(default)]
+    pub usage: Option<serde_json::Value>,
+}
+
+/// Supplementary signing material — see `WalletSignRequest::artifact`.
+#[derive(Debug, Default, Deserialize)]
+pub struct SignArtifact {
+    #[serde(default)]
+    pub bytes_base64: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub nonce_base64: Option<String>,
+    #[serde(default)]
+    pub recipient: Option<String>,
+}
+
+/// Unified wallet signing response. Fields are populated per bind mode; the
+/// `request_hash` is always the canonical hash the keystore signed under.
 #[derive(Debug, Serialize)]
-pub struct WalletSignNep413Response {
-    pub signature_base58: String,
-    pub public_key: String,
+pub struct WalletSignResponse {
+    pub request_hash: String,
+    // --- Built NEAR transaction (transfer / call / delete) ---
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signed_tx_base64: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tx_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signer_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<u64>,
+    // --- NEP-413 intent / message (withdraw / sign_message / swap / confidential) ---
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature_base58: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nonce_base64: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recipient: Option<String>,
+    // --- Raw signature (hash-pinned cross-chain) ---
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature_base64: Option<String>,
+    // --- Auth (raw ed25519 over the coordinator auth string) ---
+    /// The exact signed auth string (`<prefix>:<seed>:<ts>[:<vault>]`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_message: Option<String>,
+    /// The fresh timestamp the keystore embedded in `auth_message`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_timestamp: Option<u64>,
+    /// Raw ed25519 signature, base58 (no `ed25519:` prefix) — what the coordinator's
+    /// `verify_near_auth_fields` `bs58::decode`s.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_signature_base58: Option<String>,
+    // public_key applies to every signing mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
 }
 
-/// Request to build and sign a native NEAR transfer transaction
-#[derive(Debug, Deserialize)]
-pub struct WalletSignNearTransferRequest {
-    pub wallet_id: String,
-    pub receiver_id: String,
-    pub amount: String,
-    #[serde(default)]
-    pub approval_info: Option<ApprovalInfo>,
-}
-
-/// Request to build and sign a NEAR DeleteAccount transaction
-#[derive(Debug, Deserialize)]
-pub struct WalletSignNearDeleteAccountRequest {
-    pub wallet_id: String,
-    pub beneficiary_id: String,
-    #[serde(default)]
-    pub approval_info: Option<ApprovalInfo>,
-}
-
-/// Transaction arguments: Borsh base64, JSON string, or empty (no args).
-/// Variants are tried in order by serde — Base64 and Json first (have required fields),
-/// Empty last (matches anything, used as fallback for no-arg calls).
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-pub enum CallArgs {
-    /// For Borsh-encoded payloads (e.g. FastFS) that can't be represented as JSON.
-    Base64 { args_base64: String },
-    Json { args_json: String },
-    /// No arguments — produces empty bytes (valid NEAR call with no params).
-    Empty {},
-}
-
-impl CallArgs {
-    pub fn into_bytes(self) -> Result<Vec<u8>, ApiError> {
-        match self {
-            CallArgs::Base64 { args_base64 } => {
-                base64::decode(&args_base64).map_err(|e| {
-                    ApiError::BadRequest(format!("Invalid args_base64: {}", e))
-                })
-            }
-            CallArgs::Json { args_json } => Ok(args_json.into_bytes()),
-            CallArgs::Empty {} => Ok(vec![]),
+impl WalletSignResponse {
+    fn new(request_hash: String) -> Self {
+        WalletSignResponse {
+            request_hash,
+            signed_tx_base64: None,
+            tx_hash: None,
+            signer_id: None,
+            nonce: None,
+            signature_base58: None,
+            message: None,
+            nonce_base64: None,
+            recipient: None,
+            signature_base64: None,
+            auth_message: None,
+            auth_timestamp: None,
+            auth_signature_base58: None,
+            public_key: None,
         }
     }
 }
 
-/// Request to build and sign a NEAR function call transaction
-#[derive(Debug, Deserialize)]
-pub struct WalletSignNearCallRequest {
-    pub wallet_id: String,
-    pub receiver_id: String,
-    pub method_name: String,
-    #[serde(flatten)]
-    pub args: CallArgs,
-    pub gas: u64,
-    pub deposit: String,
-    #[serde(default)]
-    pub approval_info: Option<ApprovalInfo>,
-    /// Override the nonce instead of querying RPC.
-    /// Used when sending multiple transactions sequentially (e.g. swap flow)
-    /// to avoid nonce conflicts due to RPC finality lag.
-    #[serde(default)]
-    pub override_nonce: Option<u64>,
-}
-
-/// Response with signed NEAR transaction
-#[derive(Debug, Serialize)]
-pub struct WalletSignNearCallResponse {
-    pub signed_tx_base64: String,
-    pub tx_hash: String,
-    pub signer_id: String,
-    pub public_key: String,
-    /// The nonce used in this transaction (callers can pass nonce+1 as override_nonce for the next tx)
-    pub nonce: u64,
-}
-
-/// Request to check policy for a wallet action
+/// Pre-flight policy check for a canonical `op` (the same engine `/wallet/sign` uses).
+/// The keystore is the SOLE policy evaluator; the coordinator supplies `usage`.
 #[derive(Debug, Deserialize)]
 pub struct WalletCheckPolicyRequest {
     pub wallet_id: String,
-    pub action: serde_json::Value,
+    pub op: shared_tee_helpers::wallet_policy::Op,
+    /// Stateful usage state (coordinator `current_usage` shape). Absent → stateless only.
+    #[serde(default)]
+    pub usage: Option<serde_json::Value>,
     /// Optional: encrypted policy data (base64) for local/test policy override.
     /// When provided, skips fetching from NEAR contract.
     #[serde(default)]
     pub encrypted_policy_data: Option<String>,
 }
 
-/// Response from policy check
+/// Response from policy check. The decrypted policy is NEVER returned — it does not
+/// leave the keystore.
 #[derive(Debug, Serialize)]
 pub struct WalletCheckPolicyResponse {
     pub allowed: bool,
@@ -942,8 +967,13 @@ pub struct WalletCheckPolicyResponse {
     pub required_approvals: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Canonical request hash the dashboard signs (`approve:{id}:{request_hash}`).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub policy: Option<serde_json::Value>,
+    pub request_hash: Option<String>,
+    /// Narrow carve-out: the owner's event-delivery URL (NOT a secret). The rest of the
+    /// decrypted policy never leaves the keystore.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub webhook_url: Option<String>,
 }
 
 /// Request to encrypt a wallet policy
@@ -957,6 +987,22 @@ pub struct WalletEncryptPolicyRequest {
 #[derive(Debug, Serialize)]
 pub struct WalletEncryptPolicyResponse {
     pub encrypted_base64: String,
+}
+
+/// Request to DECRYPT a wallet policy for owner-view / config sync (NOT the signing
+/// decision path — `/check-policy` and `/wallet/sign` never return the policy). The
+/// coordinator already caches the result in `wallet_accounts.policy_json`.
+#[derive(Debug, Deserialize)]
+pub struct WalletDecryptPolicyRequest {
+    pub wallet_id: String,
+    /// Encrypted policy blob (base64) read from chain by the caller.
+    pub encrypted_policy_data: String,
+}
+
+/// Response with the decrypted policy JSON.
+#[derive(Debug, Serialize)]
+pub struct WalletDecryptPolicyResponse {
+    pub policy: serde_json::Value,
 }
 
 /// Create the API router with all endpoints
@@ -992,14 +1038,11 @@ pub fn create_router(state: AppState) -> Router {
         .route("/update_user_secrets", post(update_user_secrets_handler)) // + NEP-413 signature
         // Wallet endpoints (coordinator-only)
         .route("/wallet/derive-address", post(wallet_derive_address_handler))
-        .route("/wallet/sign-transaction", post(wallet_sign_transaction_handler))
-        .route("/wallet/sign-nep413", post(wallet_sign_nep413_handler))
-        .route("/wallet/sign-near-call", post(wallet_sign_near_call_handler))
-        .route("/wallet/sign-near-transfer", post(wallet_sign_near_transfer_handler))
-        .route("/wallet/sign-near-delete-account", post(wallet_sign_near_delete_account_handler))
+        .route("/wallet/sign", post(wallet_sign_handler))
         .route("/wallet/sign-policy", post(wallet_sign_policy_handler))
         .route("/wallet/check-policy", post(wallet_check_policy_handler))
         .route("/wallet/encrypt-policy", post(wallet_encrypt_policy_handler))
+        .route("/wallet/decrypt-policy", post(wallet_decrypt_policy_handler))
         // Ephemeral keys — separate module, returns private keys (see ephemeral_keys.rs)
         .merge(crate::ephemeral_keys::ephemeral_key_routes())
         .layer(middleware::from_fn_with_state(
@@ -3557,58 +3600,6 @@ async fn wallet_derive_address_handler(
     }
 }
 
-/// Sign a transaction for a wallet on a specific chain
-///
-/// The keystore derives the signing key from "wallet:{wallet_id}:{chain}"
-/// and signs the provided transaction bytes.
-async fn wallet_sign_transaction_handler(
-    State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
-    Json(req): Json<WalletSignTransactionRequest>,
-) -> Result<Json<WalletSignTransactionResponse>, ApiError> {
-    if !state.is_ready() {
-        return Err(ApiError::Unauthorized(
-            "Keystore not ready.".to_string(),
-        ));
-    }
-
-    let customer = extract_customer_from_header(&headers)?;
-    state
-        .ensure_customer_loaded(customer.as_ref())
-        .await
-        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
-
-    let chain = req.chain.to_lowercase();
-    let seed = format!("wallet:{}:{}", req.wallet_id, chain);
-
-    let tx_bytes = base64::decode(&req.tx_bytes_base64).map_err(|e| {
-        ApiError::BadRequest(format!("Invalid base64 in tx_bytes_base64: {}", e))
-    })?;
-
-    let keystore = state.keystore.read().await;
-
-    match chain.as_str() {
-        // EVM chains — secp256k1 ECDSA
-        "ethereum" | "base" | "arbitrum" => {
-            let sig_bytes = keystore.sign_secp256k1(customer.as_ref(), &seed, &tx_bytes).map_err(|e| {
-                ApiError::InternalError(format!("Signing failed: {}", e))
-            })?;
-            Ok(Json(WalletSignTransactionResponse {
-                signature_base64: base64::encode(&sig_bytes),
-            }))
-        }
-        // NEAR, Solana, etc. — Ed25519
-        _ => {
-            let signature = keystore.sign(customer.as_ref(), &seed, &tx_bytes).map_err(|e| {
-                ApiError::InternalError(format!("Signing failed: {}", e))
-            })?;
-            Ok(Json(WalletSignTransactionResponse {
-                signature_base64: base64::encode(signature.to_bytes()),
-            }))
-        }
-    }
-}
-
 /// Sign encrypted policy data so the NEAR contract can verify wallet ownership.
 ///
 /// The contract's `store_wallet_policy` requires `wallet_signature = sign(sha256(encrypted_data))`
@@ -3658,1000 +3649,1070 @@ async fn wallet_sign_policy_handler(
     }))
 }
 
-/// Verify approval signatures against the wallet's on-chain policy.
+/// Independently verify approver signatures for an operation that the on-chain
+/// policy requires approval for.
 ///
-/// Decrypts the policy, extracts the approvers list and threshold,
-/// checks that enough approver_ids match the policy's approvers.
+/// The trust anchor is the on-chain policy (read + decrypted by `load_wallet_policy`)
+/// and the approvers' real NEP-413 signatures over `approve:{approval_id}:{request_hash}`,
+/// where `request_hash` is derived HERE from the canonical `op` — never supplied by the
+/// coordinator. So a genuine approval bundle cannot be replayed to authorize a different
+/// op (the binding is automatic), and the coordinator transports the signatures but
+/// cannot forge them.
+/// The exact NEP-413 message an approver/rejecter signs. Binds the vote to (a) the approval
+/// id, (b) THIS wallet's on-chain pubkey — so a signature collected for wallet A can never be
+/// replayed onto wallet B — and (c) the canonical request hash. Pure + unit-tested.
+fn approval_vote_message(vote: &str, approval_id: &str, wallet_pubkey: &str, request_hash: &str) -> String {
+    format!("{}:{}:{}:{}", vote, approval_id, wallet_pubkey, request_hash)
+}
+
+/// Trusted-artifact NEP-413 recipients (intents verifiers only). `intents.near` for the
+/// public shard (swap/cross_chain_withdraw/payment_check transfers), `intents.far` for the
+/// confidential shard's generate-intent. Pure + unit-tested.
+fn is_trusted_recipient(recipient: &str) -> bool {
+    matches!(recipient, "intents.near" | "intents.far")
+}
+
 async fn verify_approvals(
     state: &AppState,
-    wallet_id: &str,
-    approval_info: &ApprovalInfo,
-    customer: Option<&near_primitives::types::AccountId>,
+    policy: &shared_tee_helpers::wallet_policy::Policy,
+    wallet_pubkey: &str,
+    request_hash: &str,
+    approval_info: Option<&ApprovalInfo>,
+    threshold: usize,
 ) -> Result<(), ApiError> {
     let near_client = state.near_client.as_ref().ok_or_else(|| {
         ApiError::InternalError("NEAR client not configured".to_string())
     })?;
 
-    let policy_view = near_client
-        .get_wallet_policy(wallet_id)
-        .await
-        .map_err(|e| ApiError::InternalError(format!("Failed to fetch wallet policy: {}", e)))?;
-
-    let policy_view = match policy_view {
-        Some(pv) => pv,
-        None => {
-            // No policy on-chain — skip verification (quick onboarding mode)
-            return Ok(());
-        }
-    };
-
-    let encrypted_data_b64 = policy_view
-        .get("encrypted_data")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| ApiError::InternalError("Missing encrypted_data in policy".to_string()))?;
-
-    // Decrypt policy. The policy was encrypted by `wallet_encrypt_policy_handler`
-    // under the same customer scope, so we must use the same scope to read.
-    let seed = format!("wallet-policy:{}", wallet_id);
-    let keystore = state.keystore.read().await;
-    let encrypted_bytes = base64::decode(encrypted_data_b64)
-        .map_err(|e| ApiError::InternalError(format!("Invalid base64: {}", e)))?;
-    let decrypted = keystore.decrypt(customer, &seed, &encrypted_bytes)
-        .map_err(|e| ApiError::InternalError(format!("Policy decryption failed: {}", e)))?;
-    let policy: serde_json::Value = serde_json::from_slice(&decrypted)
-        .map_err(|e| ApiError::InternalError(format!("Policy parse failed: {}", e)))?;
-
-    // Extract approvers and threshold
-    let approval_config = match policy.get("approval") {
-        Some(c) => c,
-        None => return Ok(()), // No approval config in policy — skip
-    };
-
-    let threshold = approval_config
-        .pointer("/threshold/required")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(2) as usize;
-
-    let approvers = approval_config
-        .get("approvers")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|a| a.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
-                .collect::<Vec<_>>()
+    // The configured approver set from the on-chain policy: (account id, optional PINNED
+    // ed25519 pubkey). When a pubkey is pinned, the signing key MUST match it (a compromised
+    // coordinator can't substitute another key the account also owns); otherwise we fall back
+    // to on-chain key-ownership verification.
+    let approvers: Vec<(&str, Option<&str>)> = policy
+        .approval
+        .as_ref()
+        .and_then(|a| a.approvers.as_ref())
+        .map(|v| {
+            v.iter()
+                .filter_map(|ap| ap.id.as_deref().map(|id| (id, ap.pubkey.as_deref())))
+                .collect()
         })
         .unwrap_or_default();
-
     if approvers.is_empty() {
         return Err(ApiError::Forbidden(format!(
-            "Policy requires {} approvals but no approvers are configured. \
-             Add approvers to the policy before using multisig.",
+            "Policy requires {} approvals but no approvers are configured.",
             threshold
         )));
     }
+    // Pinned-pubkey lookup: a vote from approver `id` whose policy entry pins a pubkey is
+    // only valid if signed by THAT pubkey. Returns Ok(()) when allowed, Err otherwise.
+    let pinned_ok = |id: &str, pubkey: &str| -> bool {
+        match approvers.iter().find(|(aid, _)| *aid == id) {
+            Some((_, Some(pinned))) => *pinned == pubkey,
+            Some((_, None)) => true, // no pin → ownership check below is the gate
+            None => false,           // not a policy approver
+        }
+    };
 
-    // Count valid approvals
-    let valid_count = approval_info
-        .approver_ids
-        .iter()
-        .filter(|id| approvers.iter().any(|a| a == *id))
-        .count();
+    // Multisig is required → approvals MUST be present and valid (no skipping).
+    let info = approval_info.ok_or_else(|| {
+        ApiError::Forbidden(
+            "This wallet requires multisig approval, but none were provided.".to_string(),
+        )
+    })?;
 
-    if valid_count < threshold {
+    // recipient = THIS keystore's contract (the on-chain trust anchor). Assert the
+    // coordinator agrees, so a config mismatch fails loudly instead of looking like a
+    // bad signature on every approval.
+    let recipient = near_client.contract_id().to_string();
+    if info.recipient != recipient {
         return Err(ApiError::Forbidden(format!(
-            "Insufficient valid approvals: {} of {} required ({} total provided, {} matched policy approvers)",
-            valid_count, threshold, approval_info.approver_ids.len(), valid_count
+            "approval recipient '{}' != this keystore's contract '{}'",
+            info.recipient, recipient
+        )));
+    }
+
+    // Each approval must be a valid NEP-413 signature over
+    // `approve:{id}:{wallet_pubkey}:{request_hash}`, signed against THIS keystore's contract,
+    // by a key that belongs to a policy approver's account. The `wallet_pubkey` binds the
+    // vote to THIS wallet — a signature collected for wallet A cannot be replayed onto
+    // wallet B (shared approvers + shared whitelisted destination). Count distinct approvers.
+    let message = approval_vote_message("approve", &info.approval_id, wallet_pubkey, request_hash);
+    let mut approved_by: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for ap in &info.approvals {
+        if approved_by.contains(ap.approver_id.as_str()) {
+            continue;
+        }
+        if !pinned_ok(&ap.approver_id, &ap.public_key) {
+            continue; // not a policy approver, or signed by a non-pinned key
+        }
+        if verify_near_signature(&message, &ap.signature, &ap.public_key, &ap.nonce, &recipient)
+            .is_err()
+        {
+            continue; // invalid signature
+        }
+        // Propagate RPC errors instead of silently dropping a valid approver below
+        // threshold on a transient blip — fail-closed and retryable.
+        near_client
+            .verify_access_key_owner(&ap.approver_id, &ap.public_key)
+            .await
+            .map_err(|e| {
+                ApiError::InternalError(format!(
+                    "could not verify approver {} key ownership: {}",
+                    ap.approver_id, e
+                ))
+            })?;
+        approved_by.insert(ap.approver_id.as_str());
+    }
+
+    // Veto: a NO vote from ANY real policy approver (valid sig over
+    // `reject:{id}:{request_hash}` + on-chain key ownership + in the approver set)
+    // refuses the operation, regardless of how many approvals were collected.
+    // Non-approver rejections are ignored — filtered exactly like non-approver approvals.
+    let reject_message = approval_vote_message("reject", &info.approval_id, wallet_pubkey, request_hash);
+    for rj in &info.rejections {
+        if !pinned_ok(&rj.approver_id, &rj.public_key) {
+            continue; // not a policy approver, or signed by a non-pinned key
+        }
+        if verify_near_signature(&reject_message, &rj.signature, &rj.public_key, &rj.nonce, &recipient)
+            .is_err()
+        {
+            continue; // invalid signature
+        }
+        near_client
+            .verify_access_key_owner(&rj.approver_id, &rj.public_key)
+            .await
+            .map_err(|e| {
+                ApiError::InternalError(format!(
+                    "could not verify rejecter {} key ownership: {}",
+                    rj.approver_id, e
+                ))
+            })?;
+        return Err(ApiError::Forbidden(format!(
+            "Operation vetoed by approver {}",
+            rj.approver_id
+        )));
+    }
+
+    if approved_by.len() < threshold {
+        return Err(ApiError::Forbidden(format!(
+            "Insufficient valid approvals: {} of {} required",
+            approved_by.len(),
+            threshold
         )));
     }
 
     Ok(())
 }
 
-/// Sign a NEP-413 intent message for NEAR Intents protocol
+/// Read + decrypt the wallet's on-chain policy, returning the parsed `Policy`.
 ///
-/// Derives the wallet's Ed25519 keypair, constructs the NEP-413 payload,
-/// and returns the signature in base58 format compatible with solver-relay.
-async fn wallet_sign_nep413_handler(
-    State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
-    Json(req): Json<WalletSignNep413Request>,
-) -> Result<Json<WalletSignNep413Response>, ApiError> {
-    use sha2::{Sha256, Digest};
+/// The policy is keyed on-chain by the wallet's ed25519 pubkey, derived the same way
+/// `/check-policy` does (from `wallet:{wallet_id}:near`) — NOT the raw `wallet_id`,
+/// which would miss the policy entirely. `None` means no policy on-chain → single-sig
+/// wallet, nothing for the keystore to enforce.
+/// Derive the wallet's on-chain ed25519 pubkey ("ed25519:<hex>") from `wallet:{id}:near`.
+/// The single source of truth for the policy key AND the approval-message wallet binding —
+/// both MUST use the identical string, so they share this helper.
+async fn derive_wallet_ed25519_pubkey(
+    state: &AppState,
+    customer: Option<&near_primitives::types::AccountId>,
+    wallet_id: &str,
+) -> Result<String, ApiError> {
+    let near_seed = format!("wallet:{}:near", wallet_id);
+    let keystore = state.keystore.read().await;
+    let ed25519_vk = keystore
+        .get_public_key_for_seed(customer, &near_seed)
+        .map_err(|e| ApiError::InternalError(format!("Failed to derive wallet pubkey: {}", e)))?;
+    Ok(format!("ed25519:{}", hex::encode(ed25519_vk.as_bytes())))
+}
 
-    if !state.is_ready() {
-        return Err(ApiError::Unauthorized(
-            "Keystore not ready.".to_string(),
-        ));
+async fn load_wallet_policy(
+    state: &AppState,
+    wallet_id: &str,
+    customer: Option<&near_primitives::types::AccountId>,
+) -> Result<Option<shared_tee_helpers::wallet_policy::Policy>, ApiError> {
+    let near_client = state.near_client.as_ref().ok_or_else(|| {
+        ApiError::InternalError("NEAR client not configured".to_string())
+    })?;
+
+    let wallet_pubkey = derive_wallet_ed25519_pubkey(state, customer, wallet_id).await?;
+
+    let policy_view = near_client
+        .get_wallet_policy(&wallet_pubkey)
+        .await
+        .map_err(|e| ApiError::InternalError(format!("Failed to fetch wallet policy: {}", e)))?;
+    let policy_view = match policy_view {
+        Some(pv) => pv,
+        None => return Ok(None),
+    };
+
+    // The frozen flag is visible without decryption.
+    let frozen = policy_view
+        .get("frozen")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if frozen {
+        return Ok(Some(shared_tee_helpers::wallet_policy::Policy {
+            frozen: true,
+            ..Default::default()
+        }));
     }
 
+    let encrypted_data_b64 = policy_view
+        .get("encrypted_data")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ApiError::InternalError("Missing encrypted_data in policy".to_string()))?;
+    let seed = format!("wallet-policy:{}", wallet_id);
+    let decrypted = {
+        let keystore = state.keystore.read().await;
+        let encrypted_bytes = base64::decode(encrypted_data_b64)
+            .map_err(|e| ApiError::InternalError(format!("Invalid base64: {}", e)))?;
+        keystore
+            .decrypt(customer, &seed, &encrypted_bytes)
+            .map_err(|e| ApiError::InternalError(format!("Policy decryption failed: {}", e)))?
+    };
+    let mut policy: shared_tee_helpers::wallet_policy::Policy = serde_json::from_slice(&decrypted)
+        .map_err(|e| ApiError::InternalError(format!("Policy parse failed: {}", e)))?;
+    policy.frozen = policy.frozen || frozen;
+    Ok(Some(policy))
+}
+
+/// The wallet's implicit NEAR account id (hex of the derived ed25519 pubkey).
+async fn wallet_implicit_account(
+    state: &AppState,
+    customer: Option<&near_primitives::types::AccountId>,
+    wallet_id: &str,
+) -> Result<String, ApiError> {
+    let seed = format!("wallet:{}:near", wallet_id);
+    let keystore = state.keystore.read().await;
+    let vk = keystore
+        .get_public_key_for_seed(customer, &seed)
+        .map_err(|e| ApiError::InternalError(format!("Failed to derive wallet pubkey: {}", e)))?;
+    Ok(hex::encode(vk.as_bytes()))
+}
+
+/// Format a Unix timestamp (seconds) as an ISO-8601 UTC string
+/// (`YYYY-MM-DDThh:mm:ss.000Z`) — the deadline format the Intents contract expects.
+/// Civil-date conversion via Howard Hinnant's algorithm (no chrono dependency).
+fn unix_to_iso8601(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let (hh, mm, ss) = (rem / 3_600, (rem % 3_600) / 60, rem % 60);
+
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as i64; // [0, 146096]
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { y + 1 } else { y };
+
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.000Z",
+        year, month, d, hh, mm, ss
+    )
+}
+
+/// Build the NEP-413 intent message for an Intents withdrawal OUT (to a NEAR account)
+/// FROM canonical op fields. Native NEAR → `native_withdraw`; NEP-141 token →
+/// `ft_withdraw` (the WITHDRAW-OUT intent; `token` is the UNPREFIXED contract id).
+/// NOT `transfer` — that is an internal move between intents accounts, not a withdrawal.
+/// (Verified against the defuse `Intent` enum in `near/intents`.)
+fn build_withdraw_intent_message(
+    signer_id: &str,
+    to: &str,
+    amount: &str,
+    token: &str,
+    deadline: &str,
+) -> String {
+    let t = token.trim().to_lowercase();
+    if t == "near" || t == "native" || t.is_empty() {
+        serde_json::json!({
+            "signer_id": signer_id,
+            "deadline": deadline,
+            "intents": [{ "intent": "native_withdraw", "receiver_id": to, "amount": amount }]
+        })
+        .to_string()
+    } else {
+        // ft_withdraw's `token` is the bare NEP-141 contract id (no nep141:/nep245: prefix).
+        let token_contract = token
+            .strip_prefix("nep141:")
+            .or_else(|| token.strip_prefix("nep245:"))
+            .unwrap_or(token);
+        serde_json::json!({
+            "signer_id": signer_id,
+            "deadline": deadline,
+            "intents": [{
+                "intent": "ft_withdraw",
+                "token": token_contract,
+                "receiver_id": to,
+                "amount": amount
+            }]
+        })
+        .to_string()
+    }
+}
+
+/// Default-DENY allowlist for `sign_message` recipients. Under a policy, the recipient
+/// must appear in `capabilities.sign_message.allowed_recipients`; anything else is
+/// refused so an auth signature can never target a fund-moving verifier (named or
+/// future). `None` policy = single-sig wallet → unrestricted.
+fn sign_message_recipient_allowed(
+    policy: Option<&shared_tee_helpers::wallet_policy::Policy>,
+    recipient: &str,
+) -> bool {
+    match policy {
+        None => true,
+        Some(policy) => policy
+            .capabilities
+            .as_ref()
+            .and_then(|c| c.sign_message.as_ref())
+            .and_then(|sm| sm.allowed_recipients.as_ref())
+            .map(|list| list.iter().any(|r| r == recipient))
+            .unwrap_or(false),
+    }
+}
+
+/// Sign a NEP-413 payload constructed from `(message, nonce, recipient)` with the
+/// wallet's derived ed25519 key. Returns `(signature_base58, public_key)` in
+/// `ed25519:...` form. The recipient is part of the signed payload, so it binds the
+/// signature to a domain.
+async fn sign_nep413(
+    state: &AppState,
+    customer: Option<&near_primitives::types::AccountId>,
+    wallet_id: &str,
+    message: &str,
+    nonce: [u8; 32],
+    recipient: &str,
+) -> Result<(String, String), ApiError> {
+    use ed25519_dalek::Signer;
+    use sha2::{Digest, Sha256};
+
+    let seed = format!("wallet:{}:near", wallet_id);
+    let keystore = state.keystore.read().await;
+    let (signing_key, verifying_key) = keystore
+        .derive_keypair(customer, &seed)
+        .map_err(|e| ApiError::InternalError(format!("Key derivation failed: {}", e)))?;
+
+    let payload = Nep413Payload {
+        message: message.to_string(),
+        nonce,
+        recipient: recipient.to_string(),
+        callback_url: None,
+    };
+    let payload_bytes = borsh::to_vec(&payload)
+        .map_err(|e| ApiError::InternalError(format!("Failed to serialize NEP-413 payload: {}", e)))?;
+    let mut to_hash = Vec::with_capacity(4 + payload_bytes.len());
+    to_hash.extend_from_slice(&NEP413_TAG.to_le_bytes());
+    to_hash.extend_from_slice(&payload_bytes);
+    let hash = Sha256::digest(&to_hash);
+    let signature = signing_key.sign(&hash);
+
+    Ok((
+        format!("ed25519:{}", bs58::encode(signature.to_bytes()).into_string()),
+        format!("ed25519:{}", bs58::encode(verifying_key.to_bytes()).into_string()),
+    ))
+}
+
+/// Derive the wallet key, query the access-key nonce + block hash, build a NEAR
+/// `Transaction::V0` from the actions produced by `make_tx`, sign it, and return the
+/// signed transaction. The signer is the wallet's implicit account.
+async fn sign_near_transaction<F>(
+    state: &AppState,
+    customer: Option<&near_primitives::types::AccountId>,
+    wallet_id: &str,
+    request_hash: String,
+    make_tx: F,
+) -> Result<WalletSignResponse, ApiError>
+where
+    F: FnOnce(
+        &near_primitives::types::AccountId,
+    ) -> Result<
+        (
+            near_primitives::types::AccountId,
+            Vec<near_primitives::transaction::Action>,
+        ),
+        ApiError,
+    >,
+{
+    use ed25519_dalek::Signer;
+    use near_primitives::transaction::{SignedTransaction, Transaction, TransactionV0};
+    use near_primitives::types::AccountId;
+    use std::str::FromStr;
+
+    let near_client = state.near_client.as_ref().ok_or_else(|| {
+        ApiError::InternalError("NEAR client not configured".to_string())
+    })?;
+
+    let seed = format!("wallet:{}:near", wallet_id);
+    let (signing_key, verifying_key) = {
+        let keystore = state.keystore.read().await;
+        keystore
+            .derive_keypair(customer, &seed)
+            .map_err(|e| ApiError::InternalError(format!("Key derivation failed: {}", e)))?
+    };
+
+    let pubkey_bytes = verifying_key.to_bytes();
+    let signer_id_str = hex::encode(pubkey_bytes);
+    let signer_id = AccountId::from_str(&signer_id_str)
+        .map_err(|e| ApiError::InternalError(format!("Invalid implicit account ID: {}", e)))?;
+    let public_key_str = format!("ed25519:{}", bs58::encode(&pubkey_bytes).into_string());
+    let public_key: near_crypto::PublicKey = public_key_str
+        .parse()
+        .map_err(|e| ApiError::InternalError(format!("Invalid public key: {}", e)))?;
+
+    let (receiver_id, actions) = make_tx(&signer_id)?;
+
+    let (rpc_nonce, block_hash) = near_client
+        .query_access_key(&signer_id_str, &public_key)
+        .await
+        .map_err(|e| ApiError::InternalError(format!("Failed to query access key: {}", e)))?;
+    // Always rpc_nonce + 1 — the keystore keeps no idempotency state, and a caller-chosen
+    // nonce would let one approved op be signed at many nonces.
+    let tx_nonce = rpc_nonce + 1;
+
+    let transaction = Transaction::V0(TransactionV0 {
+        signer_id: signer_id.clone(),
+        public_key: public_key.clone(),
+        nonce: tx_nonce,
+        receiver_id,
+        block_hash,
+        actions,
+    });
+
+    let (tx_hash, _) = transaction.get_hash_and_size();
+    let sig = signing_key.sign(tx_hash.as_ref());
+    let sig_str = format!("ed25519:{}", bs58::encode(sig.to_bytes()).into_string());
+    let signature: near_crypto::Signature = sig_str
+        .parse()
+        .map_err(|e| ApiError::InternalError(format!("Failed to construct signature: {}", e)))?;
+    let signed_tx = SignedTransaction::new(signature, transaction);
+    let signed_tx_bytes = borsh::to_vec(&signed_tx)
+        .map_err(|e| ApiError::InternalError(format!("Failed to serialize signed transaction: {}", e)))?;
+
+    let mut resp = WalletSignResponse::new(request_hash);
+    resp.signed_tx_base64 = Some(base64::encode(&signed_tx_bytes));
+    resp.tx_hash = Some(bs58::encode(tx_hash.as_ref()).into_string());
+    resp.signer_id = Some(signer_id_str);
+    resp.public_key = Some(public_key.to_string());
+    resp.nonce = Some(tx_nonce);
+    Ok(resp)
+}
+
+/// Unified wallet signing endpoint. Evaluates the on-chain policy, verifies approver
+/// signatures when required, and produces the artifact per the op's bind mode:
+/// `Built` constructs the artifact from the op, `HashPinned` signs supplied bytes
+/// pinned by hash, `Trusted` signs an externally-generated artifact.
+async fn wallet_sign_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<WalletSignRequest>,
+) -> Result<Json<WalletSignResponse>, ApiError> {
+    use shared_tee_helpers::wallet_policy::{self, BindMode, Decision};
+
+    if !state.is_ready() {
+        return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
+    }
     let customer = extract_customer_from_header(&headers)?;
     state
         .ensure_customer_loaded(customer.as_ref())
         .await
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
-    // Verify approval signatures if this is an approved operation
-    if let Some(ref info) = req.approval_info {
-        verify_approvals(&state, &req.wallet_id, info, customer.as_ref()).await?;
+    // The canonical hash the keystore signs under — derived from the op, never trusted
+    // from the coordinator. Approver signatures must cover exactly this.
+    let request_hash = wallet_policy::request_hash(&req.op);
+
+    // 1. Evaluate the on-chain policy. The keystore enforces the STATELESS subset
+    //    (usage = None); the coordinator enforces stateful velocity. No policy on-chain
+    //    → single-sig wallet → nothing to enforce.
+    let policy = load_wallet_policy(&state, &req.wallet_id, customer.as_ref()).await?;
+    if let Some(policy) = policy.as_ref() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        // Sole evaluator: full enforcement with coordinator-supplied usage (stateful)
+        // when present; stateless-only otherwise.
+        let usage = req
+            .usage
+            .as_ref()
+            .map(wallet_policy::Usage::from_current_usage);
+        match wallet_policy::evaluate(policy, &req.op, usage.as_ref(), now) {
+            Decision::Frozen => return Err(ApiError::Forbidden("Wallet is frozen".to_string())),
+            Decision::Deny { reason } => return Err(ApiError::Forbidden(reason)),
+            Decision::RequiresApproval { threshold } => {
+                // CRITICAL trust anchor: a Trusted artifact is generated AFTER approval and
+                // is NOT bound to the approved op, so real approver signatures over a benign
+                // op could authorize a swapped-in drain artifact. Trusted ops can therefore
+                // never be safely multisig-authorized. Reject here — the keystore is the
+                // trust anchor; the coordinator's matching upfront reject is only UX. Built/
+                // HashPinned bind by construction/hash and remain valid under multisig.
+                if wallet_policy::bind_mode(&req.op) == BindMode::Trusted {
+                    return Err(ApiError::Forbidden(
+                        "Multisig approval is not supported for trusted-artifact operations \
+                         (swap/confidential/cross_chain_withdraw/payment_check)."
+                            .to_string(),
+                    ));
+                }
+                let wallet_pubkey =
+                    derive_wallet_ed25519_pubkey(&state, customer.as_ref(), &req.wallet_id).await?;
+                verify_approvals(
+                    &state,
+                    policy,
+                    &wallet_pubkey,
+                    &request_hash,
+                    req.approval_info.as_ref(),
+                    threshold.max(1) as usize,
+                )
+                .await?;
+            }
+            Decision::Allow => {}
+        }
     }
 
-    let chain = req.chain.to_lowercase();
-    let seed = format!("wallet:{}:{}", req.wallet_id, chain);
+    // 2. Produce the artifact per bind mode.
+    match wallet_policy::bind_mode(&req.op) {
+        BindMode::Built => sign_built(&state, customer.as_ref(), &req, request_hash).await,
+        BindMode::HashPinned => {
+            sign_hash_pinned(&state, customer.as_ref(), &req, policy.as_ref(), request_hash).await
+        }
+        BindMode::Trusted => sign_trusted(&state, customer.as_ref(), &req, request_hash).await,
+    }
+}
 
-    // Decode nonce from base64 (must be exactly 32 bytes)
-    let nonce_bytes = base64::decode(&req.nonce_base64).map_err(|e| {
-        ApiError::BadRequest(format!("Invalid base64 in nonce_base64: {}", e))
+/// Built kinds: the keystore CONSTRUCTS the artifact from the op fields, so what it
+/// signs always equals what was approved.
+/// Confidential-intents JWT auth challenge deadline horizon: now + 7 days (matches the
+/// live confidential auth flow). The challenge carries an EMPTY `intents` array, so a
+/// long horizon is harmless — it authenticates, it never authorizes a fund move.
+const AUTH_DEADLINE_HORIZON_MS: u64 = 7 * 86_400 * 1_000;
+
+async fn sign_built(
+    state: &AppState,
+    customer: Option<&near_primitives::types::AccountId>,
+    req: &WalletSignRequest,
+    request_hash: String,
+) -> Result<Json<WalletSignResponse>, ApiError> {
+    use near_primitives::transaction::{
+        Action, DeleteAccountAction, FunctionCallAction, TransferAction,
+    };
+    use near_primitives::types::AccountId;
+    use shared_tee_helpers::wallet_policy::Op;
+    use std::str::FromStr;
+
+    match &req.op {
+        Op::Transfer { to, amount } => {
+            let to = to.clone();
+            let deposit: u128 = amount
+                .parse()
+                .map_err(|e| ApiError::BadRequest(format!("Invalid amount: {}", e)))?;
+            let resp = sign_near_transaction(
+                state,
+                customer,
+                &req.wallet_id,
+                request_hash,
+                move |_signer| {
+                    let receiver = AccountId::from_str(&to)
+                        .map_err(|e| ApiError::BadRequest(format!("Invalid 'to': {}", e)))?;
+                    Ok((receiver, vec![Action::Transfer(TransferAction { deposit })]))
+                },
+            )
+            .await?;
+            Ok(Json(resp))
+        }
+        Op::Call {
+            to,
+            method,
+            args_base64,
+            gas,
+            deposit,
+        } => {
+            let to = to.clone();
+            let method = method.clone();
+            let args = base64::decode(args_base64)
+                .map_err(|e| ApiError::BadRequest(format!("Invalid args_base64: {}", e)))?;
+            let gas: u64 = gas
+                .parse()
+                .map_err(|e| ApiError::BadRequest(format!("Invalid gas: {}", e)))?;
+            let deposit: u128 = deposit
+                .parse()
+                .map_err(|e| ApiError::BadRequest(format!("Invalid deposit: {}", e)))?;
+            let resp = sign_near_transaction(
+                state,
+                customer,
+                &req.wallet_id,
+                request_hash,
+                move |_signer| {
+                    let receiver = AccountId::from_str(&to)
+                        .map_err(|e| ApiError::BadRequest(format!("Invalid 'to': {}", e)))?;
+                    Ok((
+                        receiver,
+                        vec![Action::FunctionCall(Box::new(FunctionCallAction {
+                            method_name: method,
+                            args,
+                            gas,
+                            deposit,
+                        }))],
+                    ))
+                },
+            )
+            .await?;
+            Ok(Json(resp))
+        }
+        Op::Delete { beneficiary } => {
+            let beneficiary = beneficiary.clone();
+            let resp = sign_near_transaction(
+                state,
+                customer,
+                &req.wallet_id,
+                request_hash,
+                move |signer| {
+                    let beneficiary_id = AccountId::from_str(&beneficiary)
+                        .map_err(|e| ApiError::BadRequest(format!("Invalid beneficiary: {}", e)))?;
+                    // Deleting own account: receiver == signer.
+                    Ok((
+                        signer.clone(),
+                        vec![Action::DeleteAccount(DeleteAccountAction { beneficiary_id })],
+                    ))
+                },
+            )
+            .await?;
+            Ok(Json(resp))
+        }
+        Op::Withdraw { to, amount, token } => {
+            // Construct the NEP-413 intent message FROM the op (fresh deadline + nonce).
+            let signer_id = wallet_implicit_account(state, customer, &req.wallet_id).await?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let deadline = unix_to_iso8601(now + 300);
+            let message = build_withdraw_intent_message(&signer_id, to, amount, token, &deadline);
+            let mut nonce = [0u8; 32];
+            rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
+            let recipient = "intents.near".to_string();
+            let (signature_base58, public_key) =
+                sign_nep413(state, customer, &req.wallet_id, &message, nonce, &recipient).await?;
+            let mut resp = WalletSignResponse::new(request_hash);
+            resp.signature_base58 = Some(signature_base58);
+            resp.public_key = Some(public_key);
+            resp.message = Some(message);
+            resp.nonce_base64 = Some(base64::encode(nonce));
+            resp.recipient = Some(recipient);
+            Ok(Json(resp))
+        }
+        Op::Auth { purpose, seed, vault_id } if purpose == "jwt" => {
+            // Confidential-intents JWT auth challenge. Unlike the raw schemes below, this
+            // is a NEP-413 signature over `intents.near` — but the keystore BUILDS the
+            // challenge itself with an EMPTY `intents` array (provably non-fund-moving),
+            // so it can never be a fund-moving intent and never goes through
+            // `sign_message`'s recipient allowlist (which would otherwise have to list the
+            // fund-moving `intents.near`). `seed` is unused (the signer is derived);
+            // `vault_id` is not carried.
+            let _ = seed;
+            if vault_id.is_some() {
+                return Err(ApiError::BadRequest(
+                    "auth purpose 'jwt' does not carry vault_id".to_string(),
+                ));
+            }
+            let near_client = state.near_client.as_ref().ok_or_else(|| {
+                ApiError::InternalError("NEAR client not configured".to_string())
+            })?;
+            // signer_id = the wallet's own 64-hex implicit account — derived here, never
+            // trusted from the caller (binds the challenge to this wallet's key).
+            let signer_id = wallet_implicit_account(state, customer, &req.wallet_id).await?;
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            let deadline_ms = now_ms + AUTH_DEADLINE_HORIZON_MS;
+            let issued_ns = now_ms.saturating_mul(1_000_000);
+            let deadline_ns = deadline_ms.saturating_mul(1_000_000);
+
+            // Fresh 4-byte salt from intents.near.current_salt() (JSON-quoted hex string).
+            let intents_id = AccountId::from_str("intents.near")
+                .map_err(|e| ApiError::InternalError(format!("Invalid intents account: {}", e)))?;
+            let salt_val = near_client
+                .view_call_json(&intents_id, "current_salt", serde_json::json!({}))
+                .await
+                .map_err(|e| {
+                    ApiError::InternalError(format!("current_salt fetch failed: {}", e))
+                })?;
+            let salt_hex = salt_val.as_str().ok_or_else(|| {
+                ApiError::InternalError("current_salt did not return a string".to_string())
+            })?;
+            let salt_bytes = hex::decode(salt_hex)
+                .map_err(|e| ApiError::InternalError(format!("current_salt not hex: {}", e)))?;
+            let salt: [u8; 4] = salt_bytes.as_slice().try_into().map_err(|_| {
+                ApiError::InternalError(format!(
+                    "current_salt expected 4 bytes, got {}",
+                    salt_bytes.len()
+                ))
+            })?;
+
+            let mut random = [0u8; 7];
+            rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut random);
+            let nonce = shared_tee_helpers::wallet_policy::build_jwt_versioned_nonce(
+                salt, deadline_ns, issued_ns, random,
+            );
+            let deadline_iso = unix_to_iso8601(deadline_ms / 1000);
+            let message =
+                shared_tee_helpers::wallet_policy::build_jwt_auth_message(&deadline_iso, &signer_id);
+            let recipient = "intents.near".to_string();
+            let (signature_base58, public_key) =
+                sign_nep413(state, customer, &req.wallet_id, &message, nonce, &recipient).await?;
+            let mut resp = WalletSignResponse::new(request_hash);
+            resp.signature_base58 = Some(signature_base58);
+            resp.public_key = Some(public_key);
+            resp.message = Some(message);
+            resp.nonce_base64 = Some(base64::encode(nonce));
+            resp.recipient = Some(recipient);
+            Ok(Json(resp))
+        }
+        Op::Auth { purpose, seed, vault_id } => {
+            // Construct the exact coordinator auth string (fresh timestamp) and sign it
+            // RAW ed25519 — NOT NEP-413. The `auth:`/`register:`/`api-key:` prefix is
+            // domain-separated from a 32-byte tx hash, so this can never forge a tx and
+            // needs no raw_sign capability. Non-fund → evaluate() already allowed it.
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let message = shared_tee_helpers::wallet_policy::build_auth_message(
+                purpose,
+                seed,
+                now,
+                vault_id.as_deref(),
+            )
+            .map_err(ApiError::BadRequest)?;
+
+            use ed25519_dalek::Signer;
+            let seed_path = format!("wallet:{}:near", req.wallet_id);
+            let keystore = state.keystore.read().await;
+            let (signing_key, verifying_key) = keystore
+                .derive_keypair(customer, &seed_path)
+                .map_err(|e| ApiError::InternalError(format!("Key derivation failed: {}", e)))?;
+            let sig = signing_key.sign(message.as_bytes());
+
+            let mut resp = WalletSignResponse::new(request_hash);
+            resp.auth_message = Some(message);
+            resp.auth_timestamp = Some(now);
+            resp.auth_signature_base58 = Some(bs58::encode(sig.to_bytes()).into_string());
+            resp.public_key = Some(format!(
+                "ed25519:{}",
+                bs58::encode(verifying_key.to_bytes()).into_string()
+            ));
+            Ok(Json(resp))
+        }
+        _ => Err(ApiError::InternalError(
+            "sign_built invoked for a non-Built op".to_string(),
+        )),
+    }
+}
+
+/// Hash-pinned kinds: `raw` signs supplied bytes iff `sha256(bytes) == op.payload_hash`;
+/// `sign_message` signs a NEP-413 auth payload built from the supplied message (pinned
+/// by `op.message_hash`) and `op.recipient`. The recipient must be in the policy's
+/// `sign_message.allowed_recipients` allowlist (default-deny under a policy); a wallet
+/// with no on-chain policy is single-sig and unrestricted.
+async fn sign_hash_pinned(
+    state: &AppState,
+    customer: Option<&near_primitives::types::AccountId>,
+    req: &WalletSignRequest,
+    policy: Option<&shared_tee_helpers::wallet_policy::Policy>,
+    request_hash: String,
+) -> Result<Json<WalletSignResponse>, ApiError> {
+    use sha2::{Digest, Sha256};
+    use shared_tee_helpers::wallet_policy::Op;
+
+    let artifact = req.artifact.as_ref();
+    match &req.op {
+        Op::Raw {
+            chain,
+            payload_hash,
+            ..
+        } => {
+            let bytes_b64 = artifact
+                .and_then(|a| a.bytes_base64.as_ref())
+                .ok_or_else(|| {
+                    ApiError::BadRequest("raw op requires artifact.bytes_base64".to_string())
+                })?;
+            let bytes = base64::decode(bytes_b64)
+                .map_err(|e| ApiError::BadRequest(format!("Invalid bytes_base64: {}", e)))?;
+            let computed = hex::encode(Sha256::digest(&bytes));
+            if !computed.eq_ignore_ascii_case(payload_hash) {
+                return Err(ApiError::Forbidden(
+                    "supplied bytes do not match op.payload_hash".to_string(),
+                ));
+            }
+            let chain_l = chain.to_lowercase();
+            let seed = format!("wallet:{}:{}", req.wallet_id, chain_l);
+            let keystore = state.keystore.read().await;
+            let signature_base64 = match chain_l.as_str() {
+                // EVM chains — secp256k1 ECDSA.
+                "ethereum" | "base" | "arbitrum" => {
+                    let sig = keystore
+                        .sign_secp256k1(customer, &seed, &bytes)
+                        .map_err(|e| ApiError::InternalError(format!("Signing failed: {}", e)))?;
+                    base64::encode(&sig)
+                }
+                // NEAR, Solana, etc. — ed25519.
+                _ => {
+                    let sig = keystore
+                        .sign(customer, &seed, &bytes)
+                        .map_err(|e| ApiError::InternalError(format!("Signing failed: {}", e)))?;
+                    base64::encode(sig.to_bytes())
+                }
+            };
+            let mut resp = WalletSignResponse::new(request_hash);
+            resp.signature_base64 = Some(signature_base64);
+            Ok(Json(resp))
+        }
+        Op::SignMessage {
+            message_hash,
+            recipient,
+            ..
+        } => {
+            // Domain separation lives here: a default-DENY allowlist of auth recipients
+            // (see `sign_message_recipient_allowed`).
+            if !sign_message_recipient_allowed(policy, recipient) {
+                return Err(ApiError::Forbidden(format!(
+                    "sign_message recipient '{}' is not in the policy's allowed_recipients (default-deny)",
+                    recipient
+                )));
+            }
+            let artifact = artifact.ok_or_else(|| {
+                ApiError::BadRequest(
+                    "sign_message requires artifact.message + nonce_base64".to_string(),
+                )
+            })?;
+            let message = artifact.message.as_ref().ok_or_else(|| {
+                ApiError::BadRequest("sign_message requires artifact.message".to_string())
+            })?;
+            let nonce_b64 = artifact.nonce_base64.as_ref().ok_or_else(|| {
+                ApiError::BadRequest("sign_message requires artifact.nonce_base64".to_string())
+            })?;
+            // Hash-pin the message to the canonical op.
+            let computed = hex::encode(Sha256::digest(message.as_bytes()));
+            if !computed.eq_ignore_ascii_case(message_hash) {
+                return Err(ApiError::Forbidden(
+                    "supplied message does not match op.message_hash".to_string(),
+                ));
+            }
+            let nonce_bytes = base64::decode(nonce_b64)
+                .map_err(|e| ApiError::BadRequest(format!("Invalid nonce_base64: {}", e)))?;
+            if nonce_bytes.len() != 32 {
+                return Err(ApiError::BadRequest(format!(
+                    "Invalid nonce length: {} (expected 32)",
+                    nonce_bytes.len()
+                )));
+            }
+            let nonce: [u8; 32] = nonce_bytes.try_into().unwrap();
+            // recipient is taken from the canonical op, so it is bound into the payload.
+            let (signature_base58, public_key) =
+                sign_nep413(state, customer, &req.wallet_id, message, nonce, recipient).await?;
+            let mut resp = WalletSignResponse::new(request_hash);
+            resp.signature_base58 = Some(signature_base58);
+            resp.public_key = Some(public_key);
+            resp.message = Some(message.clone());
+            resp.nonce_base64 = Some(nonce_b64.clone());
+            resp.recipient = Some(recipient.clone());
+            Ok(Json(resp))
+        }
+        _ => Err(ApiError::InternalError(
+            "sign_hash_pinned invoked for a non-HashPinned op".to_string(),
+        )),
+    }
+}
+
+/// Trusted kinds (`swap`/`confidential`): the artifact is generated externally (a
+/// 1Click quote / generate-intent) AFTER approval, so it can't be reconstructed from
+/// the op. Capability + policy + multisig were already enforced on the op; the keystore
+/// signs the supplied NEP-413 artifact, trusting the generator.
+async fn sign_trusted(
+    state: &AppState,
+    customer: Option<&near_primitives::types::AccountId>,
+    req: &WalletSignRequest,
+    request_hash: String,
+) -> Result<Json<WalletSignResponse>, ApiError> {
+    let artifact = req.artifact.as_ref().ok_or_else(|| {
+        ApiError::BadRequest(
+            "trusted op requires artifact.message + nonce_base64 + recipient".to_string(),
+        )
     })?;
-
+    let message = artifact
+        .message
+        .as_ref()
+        .ok_or_else(|| ApiError::BadRequest("trusted op requires artifact.message".to_string()))?;
+    let nonce_b64 = artifact
+        .nonce_base64
+        .as_ref()
+        .ok_or_else(|| ApiError::BadRequest("trusted op requires artifact.nonce_base64".to_string()))?;
+    let recipient = artifact
+        .recipient
+        .as_ref()
+        .ok_or_else(|| ApiError::BadRequest("trusted op requires artifact.recipient".to_string()))?;
+    // Pin the NEP-413 recipient to the intents verifiers. Trusted ops are intents-only — all
+    // four kinds route through intents.near (swap/cross_chain_withdraw/payment_check transfer
+    // intents) or intents.far (the confidential shard's generate-intent). Without this, a
+    // Trusted op could emit a NEP-413 signature bound to ANY verifier (the very class
+    // sign_message's allowlist closes). VERIFIED: no Trusted flow uses another recipient.
+    if !is_trusted_recipient(recipient) {
+        return Err(ApiError::Forbidden(format!(
+            "trusted op recipient '{}' is not an intents verifier (intents.near/intents.far)",
+            recipient
+        )));
+    }
+    let nonce_bytes = base64::decode(nonce_b64)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid nonce_base64: {}", e)))?;
     if nonce_bytes.len() != 32 {
         return Err(ApiError::BadRequest(format!(
             "Invalid nonce length: {} (expected 32)",
             nonce_bytes.len()
         )));
     }
-
-    let nonce_array: [u8; 32] = nonce_bytes.try_into().unwrap();
-
-    // Build NEP-413 payload
-    let payload = Nep413Payload {
-        message: req.message,
-        nonce: nonce_array,
-        recipient: req.recipient,
-        callback_url: None,
-    };
-
-    // Borsh serialize
-    let payload_bytes = borsh::to_vec(&payload).map_err(|e| {
-        ApiError::InternalError(format!("Failed to serialize NEP-413 payload: {}", e))
-    })?;
-
-    // Hash: SHA256(NEP413_TAG || borsh_payload)
-    let mut to_hash = Vec::with_capacity(4 + payload_bytes.len());
-    to_hash.extend_from_slice(&NEP413_TAG.to_le_bytes());
-    to_hash.extend_from_slice(&payload_bytes);
-    let hash = Sha256::digest(&to_hash);
-
-    // Derive keypair and sign the hash
-    use ed25519_dalek::Signer;
-    let keystore = state.keystore.read().await;
-    let (signing_key, verifying_key) = keystore.derive_keypair(customer.as_ref(), &seed).map_err(|e| {
-        ApiError::InternalError(format!("Key derivation failed: {}", e))
-    })?;
-
-    let signature = signing_key.sign(&hash);
-
-    // Encode as base58 (compatible with NEAR/intents)
-    let signature_base58 = bs58::encode(signature.to_bytes()).into_string();
-    let public_key_base58 = bs58::encode(verifying_key.to_bytes()).into_string();
-
-    Ok(Json(WalletSignNep413Response {
-        signature_base58: format!("ed25519:{}", signature_base58),
-        public_key: format!("ed25519:{}", public_key_base58),
-    }))
+    let nonce: [u8; 32] = nonce_bytes.try_into().unwrap();
+    let (signature_base58, public_key) =
+        sign_nep413(state, customer, &req.wallet_id, message, nonce, recipient).await?;
+    let mut resp = WalletSignResponse::new(request_hash);
+    resp.signature_base58 = Some(signature_base58);
+    resp.public_key = Some(public_key);
+    resp.message = Some(message.clone());
+    resp.nonce_base64 = Some(nonce_b64.clone());
+    resp.recipient = Some(recipient.clone());
+    Ok(Json(resp))
 }
 
-/// Build and sign a native NEAR function call transaction.
+/// Pre-flight policy check for a canonical `op` — the SAME engine `/wallet/sign` uses.
 ///
-/// The keystore derives the wallet's keypair, queries access key nonce and block hash
-/// from NEAR RPC, constructs a Transaction::V0 with FunctionCall action, signs it,
-/// and returns the fully signed transaction ready for broadcast.
-async fn wallet_sign_near_call_handler(
-    State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
-    Json(req): Json<WalletSignNearCallRequest>,
-) -> Result<Json<WalletSignNearCallResponse>, ApiError> {
-    use near_primitives::transaction::{Action, FunctionCallAction, Transaction, TransactionV0};
-    use near_primitives::types::AccountId;
-    use std::str::FromStr;
-
-    if !state.is_ready() {
-        return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
-    }
-
-    let customer = extract_customer_from_header(&headers)?;
-    state
-        .ensure_customer_loaded(customer.as_ref())
-        .await
-        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
-
-    // Verify approval signatures if this is an approved operation
-    if let Some(ref info) = req.approval_info {
-        verify_approvals(&state, &req.wallet_id, info, customer.as_ref()).await?;
-    }
-
-    let near_client = state.near_client.as_ref().ok_or_else(|| {
-        ApiError::InternalError("NEAR client not configured".to_string())
-    })?;
-
-    // 1. Derive wallet keypair
-    let seed = format!("wallet:{}:near", req.wallet_id);
-    let keystore = state.keystore.read().await;
-    let (signing_key, verifying_key) = keystore.derive_keypair(customer.as_ref(), &seed).map_err(|e| {
-        ApiError::InternalError(format!("Key derivation failed: {}", e))
-    })?;
-    drop(keystore);
-
-    // 2. Compute implicit account ID and public key
-    let pubkey_bytes = verifying_key.to_bytes();
-    let signer_id_str = hex::encode(pubkey_bytes);
-    let signer_id = AccountId::from_str(&signer_id_str).map_err(|e| {
-        ApiError::InternalError(format!("Invalid implicit account ID: {}", e))
-    })?;
-    let public_key_str = format!("ed25519:{}", bs58::encode(&pubkey_bytes).into_string());
-    let public_key: near_crypto::PublicKey = public_key_str.parse().map_err(|e| {
-        ApiError::InternalError(format!("Invalid public key: {}", e))
-    })?;
-
-    // 3. Query access key nonce and block hash (or use override)
-    let (rpc_nonce, block_hash) = near_client
-        .query_access_key(&signer_id_str, &public_key)
-        .await
-        .map_err(|e| {
-            ApiError::InternalError(format!("Failed to query access key: {}", e))
-        })?;
-    // Use override_nonce if provided (for sequential tx chains), otherwise rpc_nonce + 1
-    let tx_nonce = req.override_nonce.unwrap_or(rpc_nonce + 1);
-
-    // 4. Parse request parameters
-    let receiver_id = AccountId::from_str(&req.receiver_id).map_err(|e| {
-        ApiError::BadRequest(format!("Invalid receiver_id: {}", e))
-    })?;
-
-    let deposit: u128 = req.deposit.parse().map_err(|e| {
-        ApiError::BadRequest(format!("Invalid deposit: {}", e))
-    })?;
-
-    let args = req.args.into_bytes()?;
-
-    // 5. Build Transaction::V0
-    let transaction = Transaction::V0(TransactionV0 {
-        signer_id: signer_id.clone(),
-        public_key: public_key.clone(),
-        nonce: tx_nonce,
-        receiver_id,
-        block_hash,
-        actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
-            method_name: req.method_name,
-            args,
-            gas: req.gas,
-            deposit,
-        }))],
-    });
-
-    // 6. Hash and sign
-    let (tx_hash, _) = transaction.get_hash_and_size();
-
-    use ed25519_dalek::Signer;
-    let sig = signing_key.sign(tx_hash.as_ref());
-
-    let sig_str = format!("ed25519:{}", bs58::encode(sig.to_bytes()).into_string());
-    let signature: near_crypto::Signature = sig_str.parse().map_err(|e| {
-        ApiError::InternalError(format!("Failed to construct signature: {}", e))
-    })?;
-
-    // 7. Assemble SignedTransaction
-    let signed_tx = near_primitives::transaction::SignedTransaction::new(signature, transaction);
-    let signed_tx_bytes = borsh::to_vec(&signed_tx).map_err(|e| {
-        ApiError::InternalError(format!("Failed to serialize signed transaction: {}", e))
-    })?;
-
-    Ok(Json(WalletSignNearCallResponse {
-        signed_tx_base64: base64::encode(&signed_tx_bytes),
-        tx_hash: bs58::encode(tx_hash.as_ref()).into_string(),
-        signer_id: signer_id_str,
-        public_key: public_key.to_string(),
-        nonce: tx_nonce,
-    }))
-}
-
-/// Build and sign a native NEAR transfer transaction.
-///
-/// Similar to `wallet_sign_near_call_handler` but uses `Action::Transfer`
-/// instead of `Action::FunctionCall`. Used for sending native NEAR tokens.
-async fn wallet_sign_near_transfer_handler(
-    State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
-    Json(req): Json<WalletSignNearTransferRequest>,
-) -> Result<Json<WalletSignNearCallResponse>, ApiError> {
-    use near_primitives::transaction::{Action, TransferAction, Transaction, TransactionV0};
-    use near_primitives::types::AccountId;
-    use std::str::FromStr;
-
-    if !state.is_ready() {
-        return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
-    }
-
-    let customer = extract_customer_from_header(&headers)?;
-    state
-        .ensure_customer_loaded(customer.as_ref())
-        .await
-        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
-
-    // Verify approval signatures if this is an approved operation
-    if let Some(ref info) = req.approval_info {
-        verify_approvals(&state, &req.wallet_id, info, customer.as_ref()).await?;
-    }
-
-    let near_client = state.near_client.as_ref().ok_or_else(|| {
-        ApiError::InternalError("NEAR client not configured".to_string())
-    })?;
-
-    // 1. Derive wallet keypair
-    let seed = format!("wallet:{}:near", req.wallet_id);
-    let keystore = state.keystore.read().await;
-    let (signing_key, verifying_key) = keystore.derive_keypair(customer.as_ref(), &seed).map_err(|e| {
-        ApiError::InternalError(format!("Key derivation failed: {}", e))
-    })?;
-    drop(keystore);
-
-    // 2. Compute implicit account ID and public key
-    let pubkey_bytes = verifying_key.to_bytes();
-    let signer_id_str = hex::encode(pubkey_bytes);
-    let signer_id = AccountId::from_str(&signer_id_str).map_err(|e| {
-        ApiError::InternalError(format!("Invalid implicit account ID: {}", e))
-    })?;
-    let public_key_str = format!("ed25519:{}", bs58::encode(&pubkey_bytes).into_string());
-    let public_key: near_crypto::PublicKey = public_key_str.parse().map_err(|e| {
-        ApiError::InternalError(format!("Invalid public key: {}", e))
-    })?;
-
-    // 3. Query access key nonce and block hash
-    let (nonce, block_hash) = near_client
-        .query_access_key(&signer_id_str, &public_key)
-        .await
-        .map_err(|e| {
-            ApiError::InternalError(format!("Failed to query access key: {}", e))
-        })?;
-
-    // 4. Parse request parameters
-    let receiver_id = AccountId::from_str(&req.receiver_id).map_err(|e| {
-        ApiError::BadRequest(format!("Invalid receiver_id: {}", e))
-    })?;
-
-    let deposit: u128 = req.amount.parse().map_err(|e| {
-        ApiError::BadRequest(format!("Invalid amount: {}", e))
-    })?;
-
-    // 5. Build Transaction::V0 with Transfer action
-    let transaction = Transaction::V0(TransactionV0 {
-        signer_id: signer_id.clone(),
-        public_key: public_key.clone(),
-        nonce: nonce + 1,
-        receiver_id,
-        block_hash,
-        actions: vec![Action::Transfer(TransferAction { deposit })],
-    });
-
-    // 6. Hash and sign
-    let (tx_hash, _) = transaction.get_hash_and_size();
-
-    use ed25519_dalek::Signer;
-    let sig = signing_key.sign(tx_hash.as_ref());
-
-    let sig_str = format!("ed25519:{}", bs58::encode(sig.to_bytes()).into_string());
-    let signature: near_crypto::Signature = sig_str.parse().map_err(|e| {
-        ApiError::InternalError(format!("Failed to construct signature: {}", e))
-    })?;
-
-    // 7. Assemble SignedTransaction
-    let signed_tx = near_primitives::transaction::SignedTransaction::new(signature, transaction);
-    let signed_tx_bytes = borsh::to_vec(&signed_tx).map_err(|e| {
-        ApiError::InternalError(format!("Failed to serialize signed transaction: {}", e))
-    })?;
-
-    Ok(Json(WalletSignNearCallResponse {
-        signed_tx_base64: base64::encode(&signed_tx_bytes),
-        tx_hash: bs58::encode(tx_hash.as_ref()).into_string(),
-        signer_id: signer_id_str,
-        public_key: public_key.to_string(),
-        nonce: nonce + 1,
-    }))
-}
-
-/// Build and sign a NEAR DeleteAccount transaction.
-///
-/// Deletes the wallet's on-chain account and sends all remaining balance
-/// to the beneficiary. This is irreversible.
-async fn wallet_sign_near_delete_account_handler(
-    State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
-    Json(req): Json<WalletSignNearDeleteAccountRequest>,
-) -> Result<Json<WalletSignNearCallResponse>, ApiError> {
-    use near_primitives::transaction::{Action, DeleteAccountAction, Transaction, TransactionV0};
-    use near_primitives::types::AccountId;
-    use std::str::FromStr;
-
-    if !state.is_ready() {
-        return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
-    }
-
-    let customer = extract_customer_from_header(&headers)?;
-    state
-        .ensure_customer_loaded(customer.as_ref())
-        .await
-        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
-
-    if let Some(ref info) = req.approval_info {
-        verify_approvals(&state, &req.wallet_id, info, customer.as_ref()).await?;
-    }
-
-    let near_client = state.near_client.as_ref().ok_or_else(|| {
-        ApiError::InternalError("NEAR client not configured".to_string())
-    })?;
-
-    // 1. Derive wallet keypair
-    let seed = format!("wallet:{}:near", req.wallet_id);
-    let keystore = state.keystore.read().await;
-    let (signing_key, verifying_key) = keystore.derive_keypair(customer.as_ref(), &seed).map_err(|e| {
-        ApiError::InternalError(format!("Key derivation failed: {}", e))
-    })?;
-    drop(keystore);
-
-    // 2. Compute implicit account ID and public key
-    let pubkey_bytes = verifying_key.to_bytes();
-    let signer_id_str = hex::encode(pubkey_bytes);
-    let signer_id = AccountId::from_str(&signer_id_str).map_err(|e| {
-        ApiError::InternalError(format!("Invalid implicit account ID: {}", e))
-    })?;
-    let public_key_str = format!("ed25519:{}", bs58::encode(&pubkey_bytes).into_string());
-    let public_key: near_crypto::PublicKey = public_key_str.parse().map_err(|e| {
-        ApiError::InternalError(format!("Invalid public key: {}", e))
-    })?;
-
-    // 3. Query access key nonce and block hash
-    let (nonce, block_hash) = near_client
-        .query_access_key(&signer_id_str, &public_key)
-        .await
-        .map_err(|e| {
-            ApiError::InternalError(format!("Failed to query access key: {}", e))
-        })?;
-
-    // 4. Parse beneficiary
-    let beneficiary_id = AccountId::from_str(&req.beneficiary_id).map_err(|e| {
-        ApiError::BadRequest(format!("Invalid beneficiary_id: {}", e))
-    })?;
-
-    // 5. Build Transaction::V0 with DeleteAccount action
-    // receiver_id = signer_id (deleting own account)
-    let transaction = Transaction::V0(TransactionV0 {
-        signer_id: signer_id.clone(),
-        public_key: public_key.clone(),
-        nonce: nonce + 1,
-        receiver_id: signer_id.clone(),
-        block_hash,
-        actions: vec![Action::DeleteAccount(DeleteAccountAction {
-            beneficiary_id,
-        })],
-    });
-
-    // 6. Hash and sign
-    let (tx_hash, _) = transaction.get_hash_and_size();
-
-    use ed25519_dalek::Signer;
-    let sig = signing_key.sign(tx_hash.as_ref());
-
-    let sig_str = format!("ed25519:{}", bs58::encode(sig.to_bytes()).into_string());
-    let signature: near_crypto::Signature = sig_str.parse().map_err(|e| {
-        ApiError::InternalError(format!("Failed to construct signature: {}", e))
-    })?;
-
-    // 7. Assemble SignedTransaction
-    let signed_tx = near_primitives::transaction::SignedTransaction::new(signature, transaction);
-    let signed_tx_bytes = borsh::to_vec(&signed_tx).map_err(|e| {
-        ApiError::InternalError(format!("Failed to serialize signed transaction: {}", e))
-    })?;
-
-    Ok(Json(WalletSignNearCallResponse {
-        signed_tx_base64: base64::encode(&signed_tx_bytes),
-        tx_hash: bs58::encode(tx_hash.as_ref()).into_string(),
-        signer_id: signer_id_str,
-        public_key: public_key.to_string(),
-        nonce: nonce + 1,
-    }))
-}
-
-/// Check wallet policy
-///
-/// Reads the wallet policy entry from the NEAR contract, decrypts it,
-/// and evaluates the rules against the requested action.
+/// Decrypts the on-chain policy (which NEVER leaves the keystore) and runs
+/// `wallet_policy::evaluate(policy, op, usage, now)`. Returns only the decision plus the
+/// canonical `request_hash` the dashboard signs.
 async fn wallet_check_policy_handler(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     Json(req): Json<WalletCheckPolicyRequest>,
 ) -> Result<Json<WalletCheckPolicyResponse>, ApiError> {
-    if !state.is_ready() {
-        return Err(ApiError::Unauthorized(
-            "Keystore not ready.".to_string(),
-        ));
-    }
+    use shared_tee_helpers::wallet_policy::{self, Decision};
 
+    if !state.is_ready() {
+        return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
+    }
     let customer = extract_customer_from_header(&headers)?;
     state
         .ensure_customer_loaded(customer.as_ref())
         .await
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
-    // Get encrypted policy data: either from inline request or from NEAR contract
-    let encrypted_data_b64 = if let Some(ref inline_data) = req.encrypted_policy_data {
-        // Policy override: use inline encrypted data (for testing / local policy)
-        inline_data.clone()
+    let request_hash = wallet_policy::request_hash(&req.op);
+
+    // Decrypt the policy: inline override (testing) or fetch+decrypt from chain.
+    let policy: Option<wallet_policy::Policy> = if let Some(ref inline_data) = req.encrypted_policy_data {
+        let seed = format!("wallet-policy:{}", req.wallet_id);
+        let encrypted_bytes = base64::decode(inline_data)
+            .map_err(|e| ApiError::InternalError(format!("Invalid base64 in encrypted_data: {}", e)))?;
+        let keystore = state.keystore.read().await;
+        let decrypted = keystore
+            .decrypt(customer.as_ref(), &seed, &encrypted_bytes)
+            .map_err(|e| ApiError::InternalError(format!("Policy decryption failed: {}", e)))?;
+        let p: wallet_policy::Policy = serde_json::from_slice(&decrypted)
+            .map_err(|e| ApiError::InternalError(format!("Policy JSON parse failed: {}", e)))?;
+        Some(p)
     } else {
-        // Production path: fetch from NEAR contract
-        // Use Ed25519 pubkey (not X25519 from public_key_hex) — must match the key
-        // stored on-chain by store_wallet_policy.
-        let near_seed = format!("wallet:{}:near", req.wallet_id);
-        let keystore_read = state.keystore.read().await;
-        let ed25519_vk = keystore_read.get_public_key_for_seed(customer.as_ref(), &near_seed).map_err(|e| {
-            ApiError::InternalError(format!("Failed to derive wallet pubkey: {}", e))
-        })?;
-        let wallet_pubkey_hex = hex::encode(ed25519_vk.as_bytes());
-        drop(keystore_read);
-        let wallet_pubkey = format!("ed25519:{}", wallet_pubkey_hex);
-
-        let near_client = state.near_client.as_ref().ok_or_else(|| {
-            ApiError::InternalError("NEAR client not configured".to_string())
-        })?;
-
-        let policy_view = near_client
-            .get_wallet_policy(&wallet_pubkey)
-            .await
-            .map_err(|e| {
-                ApiError::InternalError(format!("Failed to fetch wallet policy: {}", e))
-            })?;
-
-        let policy_view = match policy_view {
-            Some(pv) => pv,
-            None => {
-                // No policy — allow (quick onboarding mode)
-                return Ok(Json(WalletCheckPolicyResponse {
-                    allowed: true,
-                    frozen: false,
-                    requires_approval: None,
-                    required_approvals: None,
-                    reason: None,
-                    policy: None,
-                }));
-            }
-        };
-
-        // Check frozen flag (visible without decryption)
-        if policy_view.get("frozen").and_then(|v| v.as_bool()).unwrap_or(false) {
-            return Ok(Json(WalletCheckPolicyResponse {
-                allowed: false,
-                frozen: true,
-                requires_approval: None,
-                required_approvals: None,
-                reason: Some("Wallet is frozen by controller".to_string()),
-                policy: None,
-            }));
-        }
-
-        policy_view
-            .get("encrypted_data")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ApiError::InternalError("Missing encrypted_data field in policy".to_string()))?
-            .to_string()
+        load_wallet_policy(&state, &req.wallet_id, customer.as_ref()).await?
     };
 
-    // Decrypt policy
-    let seed = format!("wallet-policy:{}", req.wallet_id);
-    let keystore = state.keystore.read().await;
-
-    let encrypted_bytes = base64::decode(&encrypted_data_b64).map_err(|e| {
-        ApiError::InternalError(format!("Invalid base64 in encrypted_data: {}", e))
-    })?;
-
-    let decrypted = keystore.decrypt(customer.as_ref(), &seed, &encrypted_bytes).map_err(|e| {
-        ApiError::InternalError(format!("Policy decryption failed: {}", e))
-    })?;
-
-    let policy: serde_json::Value =
-        serde_json::from_slice(&decrypted).map_err(|e| {
-            ApiError::InternalError(format!("Policy JSON parse failed: {}", e))
-        })?;
-
-    // Evaluate policy rules against the action
-    let decision = evaluate_policy(&policy, &req.action);
-
-    Ok(Json(decision))
-}
-
-/// Evaluate policy rules against a requested action
-pub(crate) fn evaluate_policy(
-    policy: &serde_json::Value,
-    action: &serde_json::Value,
-) -> WalletCheckPolicyResponse {
-    // Check if frozen (in policy JSON)
-    if policy.get("frozen").and_then(|v| v.as_bool()).unwrap_or(false) {
-        return WalletCheckPolicyResponse {
-            allowed: false,
-            frozen: true,
-            requires_approval: None,
-            required_approvals: None,
-            reason: Some("Wallet is frozen".to_string()),
-            policy: Some(policy.clone()),
-        };
-    }
-
-    let rules = match policy.get("rules") {
-        Some(r) => r,
+    // No policy on-chain → allow (single-sig / quick onboarding).
+    let policy = match policy {
+        Some(p) => p,
         None => {
-            return WalletCheckPolicyResponse {
+            return Ok(Json(WalletCheckPolicyResponse {
                 allowed: true,
                 frozen: false,
                 requires_approval: None,
                 required_approvals: None,
                 reason: None,
-                policy: Some(policy.clone()),
-            };
+                request_hash: Some(request_hash),
+                webhook_url: None,
+            }));
         }
     };
 
-    let action_type = action.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    // Narrow carve-out surfaced to the coordinator (the rest of the policy stays here).
+    let webhook_url = policy.webhook_url.clone();
 
-    // Check transaction_types restriction
-    if let Some(allowed_types) = rules.get("transaction_types").and_then(|v| v.as_array()) {
-        let type_allowed = allowed_types
-            .iter()
-            .any(|t| t.as_str() == Some(action_type));
-        if !type_allowed {
-            return WalletCheckPolicyResponse {
-                allowed: false,
-                frozen: false,
-                requires_approval: None,
-                required_approvals: None,
-                reason: Some(format!(
-                    "Transaction type '{}' is not allowed by policy",
-                    action_type
-                )),
-                policy: Some(policy.clone()),
-            };
-        }
-    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let usage = req.usage.as_ref().map(wallet_policy::Usage::from_current_usage);
+    let decision = wallet_policy::evaluate(&policy, &req.op, usage.as_ref(), now);
 
-    // Check allowed_tokens restriction
-    if let Some(allowed_tokens) = rules.get("allowed_tokens").and_then(|v| v.as_array()) {
-        let token = action.get("token").and_then(|v| v.as_str()).unwrap_or("native");
-        let token_allowed = allowed_tokens
-            .iter()
-            .any(|t| t.as_str() == Some(token));
-        if !token_allowed {
-            return WalletCheckPolicyResponse {
-                allowed: false,
-                frozen: false,
-                requires_approval: None,
-                required_approvals: None,
-                reason: Some(format!(
-                    "Token '{}' is not allowed by policy",
-                    token
-                )),
-                policy: Some(policy.clone()),
-            };
-        }
-    }
-
-    // Check address whitelist/blacklist
-    if let Some(addresses) = rules.get("addresses") {
-        let mode = addresses.get("mode").and_then(|v| v.as_str()).unwrap_or("whitelist");
-        let list = addresses
-            .get("list")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-
-        let to = action.get("to").and_then(|v| v.as_str()).unwrap_or("");
-
-        if !to.is_empty() {
-            match mode {
-                "whitelist" => {
-                    if !list.iter().any(|a| *a == to) {
-                        return WalletCheckPolicyResponse {
-                            allowed: false,
-                            frozen: false,
-                            requires_approval: None,
-                            required_approvals: None,
-                            reason: Some(format!(
-                                "Address '{}' is not in whitelist",
-                                to
-                            )),
-                            policy: Some(policy.clone()),
-                        };
-                    }
-                }
-                "blacklist" => {
-                    if list.iter().any(|a| *a == to) {
-                        return WalletCheckPolicyResponse {
-                            allowed: false,
-                            frozen: false,
-                            requires_approval: None,
-                            required_approvals: None,
-                            reason: Some(format!(
-                                "Address '{}' is blacklisted",
-                                to
-                            )),
-                            policy: Some(policy.clone()),
-                        };
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    // Check per-transaction limits and velocity limits (per-token, in raw units)
-    if let Some(limits) = rules.get("limits") {
-        let token = action.get("token").and_then(|v| v.as_str()).unwrap_or("native");
-        let amount_str = action.get("amount").and_then(|v| v.as_str()).unwrap_or("0");
-        let amount: u128 = match amount_str.parse() {
-            Ok(v) => v,
-            Err(_) => {
-                return WalletCheckPolicyResponse {
+    let response = match decision {
+        Decision::Allow => WalletCheckPolicyResponse {
+            allowed: true,
+            frozen: false,
+            requires_approval: None,
+            required_approvals: None,
+            reason: None,
+            request_hash: Some(request_hash),
+            webhook_url,
+        },
+        Decision::Frozen => WalletCheckPolicyResponse {
+            allowed: false,
+            frozen: true,
+            requires_approval: None,
+            required_approvals: None,
+            reason: Some("Wallet is frozen".to_string()),
+            request_hash: Some(request_hash),
+            webhook_url,
+        },
+        Decision::Deny { reason } => WalletCheckPolicyResponse {
+            allowed: false,
+            frozen: false,
+            requires_approval: None,
+            required_approvals: None,
+            reason: Some(reason),
+            request_hash: Some(request_hash),
+            webhook_url,
+        },
+        Decision::RequiresApproval { threshold } => {
+            // Trusted-artifact ops can't be bound to the approved op, so multisig is
+            // unsupported — surface it as a denial in the pre-flight (mirrors the
+            // /wallet/sign trust-anchor reject) instead of advertising requires_approval.
+            if wallet_policy::bind_mode(&req.op) == wallet_policy::BindMode::Trusted {
+                WalletCheckPolicyResponse {
                     allowed: false,
                     frozen: false,
                     requires_approval: None,
                     required_approvals: None,
-                    reason: Some(format!("Invalid amount '{}': must be a valid integer", amount_str)),
-                    policy: Some(policy.clone()),
-                };
-            }
-        };
-
-        if let Some(per_tx) = limits.get("per_transaction") {
-            // Check token-specific limit first, then wildcard
-            let limit_str = per_tx
-                .get(token)
-                .or_else(|| per_tx.get("*"))
-                .and_then(|v| v.as_str());
-
-            if let Some(limit) = limit_str {
-                let limit_val: u128 = limit.parse().unwrap_or(u128::MAX);
-                if amount > limit_val {
-                    return WalletCheckPolicyResponse {
-                        allowed: false,
-                        frozen: false,
-                        requires_approval: None,
-                        required_approvals: None,
-                        reason: Some(format!(
-                            "Per-transaction limit exceeded for {}: {} > {}",
-                            token, amount_str, limit
-                        )),
-                        policy: Some(policy.clone()),
-                    };
+                    reason: Some(
+                        "Multisig approval is not supported for trusted-artifact operations \
+                         (swap/confidential/cross_chain_withdraw/payment_check)."
+                            .to_string(),
+                    ),
+                    request_hash: Some(request_hash),
+                    webhook_url,
                 }
-            }
-        }
-
-        // Check daily velocity limit
-        if let Some(daily) = limits.get("daily") {
-            let limit_str = daily.get(token).or_else(|| daily.get("*")).and_then(|v| v.as_str());
-            if let Some(limit) = limit_str {
-                let limit_val: u128 = limit.parse().unwrap_or(u128::MAX);
-                let current: u128 = action
-                    .pointer(&format!("/current_usage/daily/{}", token))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("0")
-                    .parse()
-                    .unwrap_or(0);
-                if current + amount > limit_val {
-                    return WalletCheckPolicyResponse {
-                        allowed: false,
-                        frozen: false,
-                        requires_approval: None,
-                        required_approvals: None,
-                        reason: Some(format!(
-                            "Daily limit exceeded for {}: {} + {} > {}",
-                            token, current, amount_str, limit
-                        )),
-                        policy: Some(policy.clone()),
-                    };
-                }
-            }
-        }
-
-        // Check hourly velocity limit
-        if let Some(hourly) = limits.get("hourly") {
-            let limit_str = hourly.get(token).or_else(|| hourly.get("*")).and_then(|v| v.as_str());
-            if let Some(limit) = limit_str {
-                let limit_val: u128 = limit.parse().unwrap_or(u128::MAX);
-                let current: u128 = action
-                    .pointer(&format!("/current_usage/hourly/{}", token))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("0")
-                    .parse()
-                    .unwrap_or(0);
-                if current + amount > limit_val {
-                    return WalletCheckPolicyResponse {
-                        allowed: false,
-                        frozen: false,
-                        requires_approval: None,
-                        required_approvals: None,
-                        reason: Some(format!(
-                            "Hourly limit exceeded for {}: {} + {} > {}",
-                            token, current, amount_str, limit
-                        )),
-                        policy: Some(policy.clone()),
-                    };
-                }
-            }
-        }
-
-        // Check monthly velocity limit
-        if let Some(monthly) = limits.get("monthly") {
-            let limit_str = monthly.get(token).or_else(|| monthly.get("*")).and_then(|v| v.as_str());
-            if let Some(limit) = limit_str {
-                let limit_val: u128 = limit.parse().unwrap_or(u128::MAX);
-                let current: u128 = action
-                    .pointer(&format!("/current_usage/monthly/{}", token))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("0")
-                    .parse()
-                    .unwrap_or(0);
-                if current + amount > limit_val {
-                    return WalletCheckPolicyResponse {
-                        allowed: false,
-                        frozen: false,
-                        requires_approval: None,
-                        required_approvals: None,
-                        reason: Some(format!(
-                            "Monthly limit exceeded for {}: {} + {} > {}",
-                            token, current, amount_str, limit
-                        )),
-                        policy: Some(policy.clone()),
-                    };
-                }
-            }
-        }
-    }
-
-    // Check rate limit (max transactions per hour)
-    if let Some(rate_limit) = rules.get("rate_limit") {
-        if let Some(max_per_hour) = rate_limit.get("max_per_hour").and_then(|v| v.as_i64()) {
-            let hourly_tx_count = action
-                .pointer("/current_usage/hourly_tx_count")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-            if hourly_tx_count >= max_per_hour {
-                return WalletCheckPolicyResponse {
-                    allowed: false,
-                    frozen: false,
-                    requires_approval: None,
-                    required_approvals: None,
-                    reason: Some(format!(
-                        "Rate limit exceeded: {} transactions this hour (max: {})",
-                        hourly_tx_count, max_per_hour
-                    )),
-                    policy: Some(policy.clone()),
-                };
-            }
-        }
-    }
-
-    // Check time restrictions (UTC only in v1)
-    if let Some(time_restrictions) = rules.get("time_restrictions") {
-        let timezone = time_restrictions
-            .get("timezone")
-            .and_then(|v| v.as_str())
-            .unwrap_or("UTC");
-
-        // v1: Only UTC is supported. Reject non-UTC timezones to prevent
-        // silent misconfiguration where hours are checked in wrong timezone.
-        if timezone != "UTC" {
-            return WalletCheckPolicyResponse {
-                allowed: false,
-                frozen: false,
-                requires_approval: None,
-                required_approvals: None,
-                reason: Some(format!(
-                    "Unsupported timezone '{}'. Only 'UTC' is supported in v1.",
-                    timezone
-                )),
-                policy: Some(policy.clone()),
-            };
-        }
-
-        // Compute current UTC hour and weekday from Unix timestamp
-        let secs_since_epoch = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let secs_in_day = secs_since_epoch % 86400;
-        let hour = (secs_in_day / 3600) as u32;
-        // Unix epoch (1970-01-01) was a Thursday (day 4).
-        // 1=Mon, 2=Tue, ..., 7=Sun
-        let day_index = ((secs_since_epoch / 86400) + 3) % 7 + 1; // +3 because Thu=4, (0+3)%7+1 = 4
-        let weekday = day_index as u32;
-
-        if let Some(allowed_hours) = time_restrictions.get("allowed_hours").and_then(|v| v.as_array()) {
-            if allowed_hours.len() == 2 {
-                let start = allowed_hours[0].as_u64().unwrap_or(0) as u32;
-                let end = allowed_hours[1].as_u64().unwrap_or(24) as u32;
-                // Handle wrap-around: e.g. [22, 6] means 10 PM to 6 AM
-                let in_range = if start <= end {
-                    // Normal range: [9, 17] means 9:00-16:59
-                    hour >= start && hour < end
-                } else {
-                    // Wrap-around: [22, 6] means 22:00-23:59 or 0:00-5:59
-                    hour >= start || hour < end
-                };
-                if !in_range {
-                    return WalletCheckPolicyResponse {
-                        allowed: false,
-                        frozen: false,
-                        requires_approval: None,
-                        required_approvals: None,
-                        reason: Some(format!(
-                            "Operation not allowed at this hour ({} UTC). Allowed: {}-{}",
-                            hour, start, end
-                        )),
-                        policy: Some(policy.clone()),
-                    };
-                }
-            }
-        }
-
-        if let Some(allowed_days) = time_restrictions.get("allowed_days").and_then(|v| v.as_array()) {
-            let day_allowed = allowed_days
-                .iter()
-                .any(|d| d.as_u64() == Some(weekday as u64));
-            if !day_allowed {
-                return WalletCheckPolicyResponse {
-                    allowed: false,
-                    frozen: false,
-                    requires_approval: None,
-                    required_approvals: None,
-                    reason: Some(format!(
-                        "Operation not allowed on weekday {}",
-                        weekday
-                    )),
-                    policy: Some(policy.clone()),
-                };
-            }
-        }
-    }
-
-    // Check approval threshold
-    if let Some(approval) = policy.get("approval") {
-        // Skip approval for excluded operation types (e.g. intents_deposit, swap —
-        // these rely on Intents quotes that expire quickly and can't wait for multisig)
-        let excluded = approval
-            .get("excluded_types")
-            .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
-            .unwrap_or_default();
-
-        if !excluded.iter().any(|t| *t == action_type) {
-            // Note: above_usd threshold comparison is not implemented yet —
-            // if approval.threshold is configured, ALL non-excluded operations require approval.
-            // Per-amount USD threshold will be added later.
-            let threshold = approval.get("threshold");
-            if let Some(threshold) = threshold {
-                let required = threshold.get("required").and_then(|v| v.as_i64()).unwrap_or(2) as i32;
-
-                return WalletCheckPolicyResponse {
+            } else {
+                WalletCheckPolicyResponse {
                     allowed: true,
                     frozen: false,
                     requires_approval: Some(true),
-                    required_approvals: Some(required),
+                    required_approvals: Some(threshold as i32),
                     reason: None,
-                    policy: Some(policy.clone()),
-                };
+                    request_hash: Some(request_hash),
+                    webhook_url,
+                }
             }
         }
-    }
-
-    // All checks passed
-    WalletCheckPolicyResponse {
-        allowed: true,
-        frozen: false,
-        requires_approval: None,
-        required_approvals: None,
-        reason: None,
-        policy: Some(policy.clone()),
-    }
+    };
+    Ok(Json(response))
 }
 
 /// Encrypt a wallet policy for on-chain storage
@@ -4684,10 +4745,323 @@ async fn wallet_encrypt_policy_handler(
     }))
 }
 
+/// Decrypt a wallet policy for owner-view / config sync. This is NOT the signing
+/// decision path (`/check-policy` and `/wallet/sign` decide WITHOUT returning the
+/// policy). The coordinator caches the result in `wallet_accounts.policy_json` and uses
+/// it for owner display + `authorized_key_hashes` — pre-existing behavior.
+async fn wallet_decrypt_policy_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<WalletDecryptPolicyRequest>,
+) -> Result<Json<WalletDecryptPolicyResponse>, ApiError> {
+    if !state.is_ready() {
+        return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
+    }
+
+    let customer = extract_customer_from_header(&headers)?;
+    state
+        .ensure_customer_loaded(customer.as_ref())
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
+    let seed = format!("wallet-policy:{}", req.wallet_id);
+    let encrypted_bytes = base64::decode(&req.encrypted_policy_data)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid base64 in encrypted_policy_data: {}", e)))?;
+    let decrypted = {
+        let keystore = state.keystore.read().await;
+        keystore
+            .decrypt(customer.as_ref(), &seed, &encrypted_bytes)
+            .map_err(|e| ApiError::InternalError(format!("Policy decryption failed: {}", e)))?
+    };
+    let policy: serde_json::Value = serde_json::from_slice(&decrypted)
+        .map_err(|e| ApiError::InternalError(format!("Policy JSON parse failed: {}", e)))?;
+
+    Ok(Json(WalletDecryptPolicyResponse { policy }))
+}
+
+#[cfg(test)]
+mod wallet_sign_tests {
+    use super::*;
+    use shared_tee_helpers::wallet_policy::{self, Op};
+
+    // --- Domain separation: sign_message recipient is a default-DENY allowlist -----
+
+    #[test]
+    fn sign_message_recipient_allowlist_is_default_deny() {
+        use serde_json::json;
+        let parse = |v: serde_json::Value| -> wallet_policy::Policy {
+            serde_json::from_value(v).expect("policy parse")
+        };
+
+        // No policy → single-sig wallet, unrestricted.
+        assert!(sign_message_recipient_allowed(None, "intents.near"));
+
+        // Policy present but no allowed_recipients → deny EVERYTHING (incl. would-be auth).
+        let bare = parse(json!({ "capabilities": { "sign_message": { "allowed": true } } }));
+        assert!(!sign_message_recipient_allowed(Some(&bare), "auth.app.near"));
+        assert!(!sign_message_recipient_allowed(Some(&bare), "intents.near"));
+
+        // Only explicitly-listed recipients are allowed; a fund-moving verifier that is
+        // NOT listed is refused (the blocklist gap the allowlist closes).
+        let listed = parse(json!({
+            "capabilities": { "sign_message": { "allowed_recipients": ["auth.app.near"] } }
+        }));
+        assert!(sign_message_recipient_allowed(Some(&listed), "auth.app.near"));
+        assert!(!sign_message_recipient_allowed(Some(&listed), "intents.near"));
+        assert!(!sign_message_recipient_allowed(Some(&listed), "some-dex.near")); // unnamed verifier
+        assert!(!sign_message_recipient_allowed(Some(&listed), "auth.app.near.evil")); // no substring match
+    }
+
+    // --- Built: the withdraw artifact is constructed FROM the op fields ------------
+
+    #[test]
+    fn built_withdraw_message_native_binds_op_fields() {
+        let msg = build_withdraw_intent_message(
+            "signer.near",
+            "alice.near",
+            "1000000000000000000000000",
+            "near",
+            "2026-06-04T12:05:00.000Z",
+        );
+        let v: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        assert_eq!(v["signer_id"], "signer.near");
+        assert_eq!(v["deadline"], "2026-06-04T12:05:00.000Z");
+        assert_eq!(v["intents"][0]["intent"], "native_withdraw");
+        assert_eq!(v["intents"][0]["receiver_id"], "alice.near");
+        assert_eq!(v["intents"][0]["amount"], "1000000000000000000000000");
+    }
+
+    #[test]
+    fn built_withdraw_message_ft_uses_ft_withdraw_unprefixed_token() {
+        // FT withdrawal OUT → `ft_withdraw` intent with the UNPREFIXED token contract.
+        let msg = build_withdraw_intent_message(
+            "signer.near",
+            "alice.near",
+            "1000000",
+            "nep141:usdc.near",
+            "2026-06-04T12:05:00.000Z",
+        );
+        let v: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        assert_eq!(v["intents"][0]["intent"], "ft_withdraw");
+        assert_eq!(v["intents"][0]["token"], "usdc.near"); // prefix stripped
+        assert_eq!(v["intents"][0]["receiver_id"], "alice.near");
+        assert_eq!(v["intents"][0]["amount"], "1000000");
+        // No `tokens` map on ft_withdraw.
+        assert!(v["intents"][0]["tokens"].is_null());
+
+        // Bare contract id passes through unchanged.
+        let msg2 = build_withdraw_intent_message(
+            "signer.near",
+            "alice.near",
+            "5",
+            "usdt.near",
+            "2026-06-04T12:05:00.000Z",
+        );
+        let v2: serde_json::Value = serde_json::from_str(&msg2).unwrap();
+        assert_eq!(v2["intents"][0]["intent"], "ft_withdraw");
+        assert_eq!(v2["intents"][0]["token"], "usdt.near");
+    }
+
+    #[test]
+    fn iso8601_matches_known_timestamps() {
+        assert_eq!(unix_to_iso8601(0), "1970-01-01T00:00:00.000Z");
+        assert_eq!(unix_to_iso8601(1_700_000_000), "2023-11-14T22:13:20.000Z");
+    }
+
+    // --- Approval binding: a substituted op cannot reuse genuine approvals ---------
+    //
+    // The keystore derives request_hash from the canonical op and the approvers sign
+    // `approve:{id}:{request_hash}`. If any op field is substituted, request_hash
+    // changes, so a signature collected for the original op fails to verify against
+    // the substituted op's message — the binding is automatic.
+
+    fn sign_vote(
+        verb: &str,
+        signing_key: &ed25519_dalek::SigningKey,
+        approval_id: &str,
+        request_hash: &str,
+        recipient: &str,
+    ) -> (String, String, String) {
+        use ed25519_dalek::Signer;
+        use sha2::{Digest, Sha256};
+        let message = format!("{}:{}:{}", verb, approval_id, request_hash);
+        let nonce = [7u8; 32];
+        let payload = Nep413Payload {
+            message,
+            nonce,
+            recipient: recipient.to_string(),
+            callback_url: None,
+        };
+        let payload_bytes = borsh::to_vec(&payload).unwrap();
+        let mut to_hash = Vec::with_capacity(4 + payload_bytes.len());
+        to_hash.extend_from_slice(&NEP413_TAG.to_le_bytes());
+        to_hash.extend_from_slice(&payload_bytes);
+        let hash = Sha256::digest(&to_hash);
+        let sig = signing_key.sign(&hash);
+        (
+            base64::encode(sig.to_bytes()),
+            format!("ed25519:{}", bs58::encode(signing_key.verifying_key().to_bytes()).into_string()),
+            base64::encode(nonce),
+        )
+    }
+
+    #[test]
+    fn approval_signature_binds_to_exact_op_and_rejects_substitution() {
+        let signing_key = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
+        let pubkey = format!(
+            "ed25519:{}",
+            bs58::encode(signing_key.verifying_key().to_bytes()).into_string()
+        );
+        let recipient = "outlayer.near";
+        let approval_id = "appr-1";
+
+        // Approver approves a 1-NEAR transfer to a vendor.
+        let approved_op = Op::Transfer {
+            to: "vendor.near".into(),
+            amount: "1000000000000000000000000".into(),
+        };
+        let approved_hash = wallet_policy::request_hash(&approved_op);
+        let (sig, sig_pubkey, nonce) = sign_vote("approve", &signing_key, approval_id, &approved_hash, recipient);
+        assert_eq!(sig_pubkey, pubkey);
+
+        // The signature verifies for the op that was actually approved.
+        let good_msg = format!("approve:{}:{}", approval_id, approved_hash);
+        assert!(verify_near_signature(&good_msg, &sig, &pubkey, &nonce, recipient).is_ok());
+
+        // A substituted op (100 NEAR to an attacker) has a different request_hash, so
+        // the genuine signature fails to verify against it.
+        let substituted_op = Op::Transfer {
+            to: "attacker.near".into(),
+            amount: "100000000000000000000000000".into(),
+        };
+        let substituted_hash = wallet_policy::request_hash(&substituted_op);
+        assert_ne!(approved_hash, substituted_hash);
+        let bad_msg = format!("approve:{}:{}", approval_id, substituted_hash);
+        assert!(verify_near_signature(&bad_msg, &sig, &pubkey, &nonce, recipient).is_err());
+    }
+
+    #[test]
+    fn reject_vote_is_domain_separated_from_approve() {
+        // A reject vote signs `reject:{id}:{hash}` — it must NOT verify as an approval
+        // (and vice versa), so an approve sig can't be replayed as a veto or the reverse.
+        let signing_key = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
+        let pubkey = format!(
+            "ed25519:{}",
+            bs58::encode(signing_key.verifying_key().to_bytes()).into_string()
+        );
+        let recipient = "outlayer.near";
+        let id = "appr-1";
+        let op = Op::Transfer { to: "vendor.near".into(), amount: "1".into() };
+        let hash = wallet_policy::request_hash(&op);
+
+        let (rej_sig, _, rej_nonce) = sign_vote("reject", &signing_key, id, &hash, recipient);
+        // Verifies as a reject vote.
+        let reject_msg = format!("reject:{}:{}", id, hash);
+        assert!(verify_near_signature(&reject_msg, &rej_sig, &pubkey, &rej_nonce, recipient).is_ok());
+        // Does NOT verify as an approval (different verb → different signed bytes).
+        let approve_msg = format!("approve:{}:{}", id, hash);
+        assert!(verify_near_signature(&approve_msg, &rej_sig, &pubkey, &rej_nonce, recipient).is_err());
+    }
+
+    // --- Auth: raw ed25519 over the coordinator string, byte-compatible ------------
+
+    #[test]
+    fn auth_signature_is_raw_ed25519_over_the_constructed_string() {
+        use ed25519_dalek::Signer;
+        let signing_key = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
+
+        // Keystore-side construction (fresh ts) for a bearer auth.
+        let ts = 1_700_000_000u64;
+        let message = wallet_policy::build_auth_message("bearer", "default", ts, Some("v1.vault.near")).unwrap();
+        assert_eq!(message, "auth:default:1700000000:v1.vault.near");
+
+        // RAW ed25519 over the message bytes (NOT NEP-413). The coordinator's
+        // verify_near_auth_fields does exactly `verify_strict(message.as_bytes(), sig)`.
+        let sig = signing_key.sign(message.as_bytes());
+        assert!(signing_key
+            .verifying_key()
+            .verify_strict(message.as_bytes(), &sig)
+            .is_ok());
+
+        // Domain separation: the signed bytes are a readable string, never a 32-byte
+        // tx hash, so this signature can't double as a NEAR transaction signature.
+        assert_ne!(message.as_bytes().len(), 32);
+        assert!(message.starts_with("auth:"));
+    }
+
+    // --- Bind-mode mapping for every kind -----------------------------------------
+
+    #[test]
+    fn every_kind_maps_to_expected_bind_mode() {
+        use wallet_policy::{bind_mode, BindMode};
+        assert_eq!(bind_mode(&Op::Transfer { to: "a".into(), amount: "1".into() }), BindMode::Built);
+        assert_eq!(bind_mode(&Op::Delete { beneficiary: "a".into() }), BindMode::Built);
+        assert_eq!(
+            bind_mode(&Op::Withdraw { to: "a".into(), amount: "1".into(), token: "near".into() }),
+            BindMode::Built
+        );
+        assert_eq!(
+            bind_mode(&Op::Raw { chain: "ethereum".into(), payload_hash: "ab".into(), label: None }),
+            BindMode::HashPinned
+        );
+        assert_eq!(
+            bind_mode(&Op::SignMessage { message_hash: "ab".into(), recipient: "app".into(), purpose: None }),
+            BindMode::HashPinned
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::{AccessCondition, LogicOperator};
+
+    // ── Audit fixes: bound approval message, Trusted recipient pin, Trusted multisig guard ──
+
+    #[test]
+    fn approval_message_is_wallet_bound_no_cross_wallet_replay() {
+        let id = "appr-1";
+        let hash = "abc123";
+        let pub_a = "ed25519:AAAA";
+        let pub_b = "ed25519:BBBB";
+        // The wallet pubkey is part of the signed string, so a signature collected for
+        // wallet A's message can never satisfy wallet B's (different message → different sig).
+        let a = approval_vote_message("approve", id, pub_a, hash);
+        let b = approval_vote_message("approve", id, pub_b, hash);
+        assert_ne!(a, b, "approval message must differ per wallet pubkey");
+        assert_eq!(a, "approve:appr-1:ed25519:AAAA:abc123");
+        // approve vs reject are domain-separated for the SAME wallet.
+        assert_ne!(
+            approval_vote_message("approve", id, pub_a, hash),
+            approval_vote_message("reject", id, pub_a, hash)
+        );
+    }
+
+    #[test]
+    fn trusted_recipient_pin_allows_only_intents_verifiers() {
+        assert!(is_trusted_recipient("intents.near"));
+        assert!(is_trusted_recipient("intents.far")); // confidential shard
+        assert!(!is_trusted_recipient("evil.near"));
+        assert!(!is_trusted_recipient("alice.near"));
+        assert!(!is_trusted_recipient(""));
+    }
+
+    #[test]
+    fn trusted_kinds_are_bind_mode_trusted_so_multisig_guard_covers_them() {
+        // The /wallet/sign + /check-policy multisig guards reject when bind_mode == Trusted.
+        // Assert every Trusted kind is classified Trusted, so none can slip past the guard
+        // into verify_approvals (where an unbound artifact would be signed).
+        use shared_tee_helpers::wallet_policy::{bind_mode, BindMode, Op};
+        let trusted = [
+            Op::Swap { token_in: "a".into(), amount_in: "1".into(), token_out: "b".into(), min_out: "1".into() },
+            Op::Confidential { flow: "withdraw".into(), to: Some("x".into()), amount: "1".into(), token: "near".into(), chain: Some("near".into()) },
+            Op::CrossChainWithdraw { to: "0x".into(), amount: "1".into(), token: "nep141:usdc.near".into(), chain: "ethereum".into() },
+            Op::PaymentCheck { amount: "1".into(), token: "nep141:usdc.near".into() },
+        ];
+        for op in &trusted {
+            assert_eq!(bind_mode(op), BindMode::Trusted, "must be Trusted: {:?}", op);
+        }
+    }
 
     /// Test that DecryptRequest correctly includes user_account_id field
     #[test]
@@ -4960,361 +5334,6 @@ mod tests {
         assert_eq!(req.owner, "alice.near");
         assert_eq!(req.user_account_id, "bob.near");
         assert!(req.task_id.is_none());
-    }
-
-    // =========================================================================
-    // evaluate_policy tests
-    // =========================================================================
-
-    #[test]
-    fn test_policy_frozen_wallet() {
-        let policy = serde_json::json!({ "frozen": true });
-        let action = serde_json::json!({ "type": "intents_withdraw" });
-        let result = evaluate_policy(&policy, &action);
-        assert!(!result.allowed);
-        assert!(result.frozen);
-        assert!(result.reason.unwrap().contains("frozen"));
-    }
-
-    #[test]
-    fn test_policy_no_rules() {
-        let policy = serde_json::json!({});
-        let action = serde_json::json!({ "type": "intents_withdraw" });
-        let result = evaluate_policy(&policy, &action);
-        assert!(result.allowed);
-        assert!(!result.frozen);
-    }
-
-    #[test]
-    fn test_policy_empty_rules() {
-        let policy = serde_json::json!({ "rules": {} });
-        let action = serde_json::json!({ "type": "intents_withdraw" });
-        let result = evaluate_policy(&policy, &action);
-        assert!(result.allowed);
-    }
-
-    #[test]
-    fn test_policy_tx_type_allowed() {
-        let policy = serde_json::json!({
-            "rules": { "transaction_types": ["intents_withdraw", "call"] }
-        });
-        let action = serde_json::json!({ "type": "intents_withdraw" });
-        let result = evaluate_policy(&policy, &action);
-        assert!(result.allowed);
-    }
-
-    #[test]
-    fn test_policy_tx_type_denied() {
-        let policy = serde_json::json!({
-            "rules": { "transaction_types": ["intents_withdraw"] }
-        });
-        let action = serde_json::json!({ "type": "transfer" });
-        let result = evaluate_policy(&policy, &action);
-        assert!(!result.allowed);
-        assert!(result.reason.unwrap().contains("not allowed"));
-    }
-
-    #[test]
-    fn test_policy_whitelist_pass() {
-        let policy = serde_json::json!({
-            "rules": {
-                "addresses": { "mode": "whitelist", "list": ["a.near", "b.near"] }
-            }
-        });
-        let action = serde_json::json!({ "type": "intents_withdraw", "to": "a.near" });
-        let result = evaluate_policy(&policy, &action);
-        assert!(result.allowed);
-    }
-
-    #[test]
-    fn test_policy_whitelist_fail() {
-        let policy = serde_json::json!({
-            "rules": {
-                "addresses": { "mode": "whitelist", "list": ["a.near"] }
-            }
-        });
-        let action = serde_json::json!({ "type": "intents_withdraw", "to": "b.near" });
-        let result = evaluate_policy(&policy, &action);
-        assert!(!result.allowed);
-        assert!(result.reason.unwrap().contains("not in whitelist"));
-    }
-
-    #[test]
-    fn test_policy_blacklist_pass() {
-        let policy = serde_json::json!({
-            "rules": {
-                "addresses": { "mode": "blacklist", "list": ["bad.near"] }
-            }
-        });
-        let action = serde_json::json!({ "type": "intents_withdraw", "to": "good.near" });
-        let result = evaluate_policy(&policy, &action);
-        assert!(result.allowed);
-    }
-
-    #[test]
-    fn test_policy_blacklist_fail() {
-        let policy = serde_json::json!({
-            "rules": {
-                "addresses": { "mode": "blacklist", "list": ["bad.near"] }
-            }
-        });
-        let action = serde_json::json!({ "type": "intents_withdraw", "to": "bad.near" });
-        let result = evaluate_policy(&policy, &action);
-        assert!(!result.allowed);
-        assert!(result.reason.unwrap().contains("blacklisted"));
-    }
-
-    #[test]
-    fn test_policy_per_tx_limit_pass() {
-        let policy = serde_json::json!({
-            "rules": { "limits": { "per_transaction": { "native": "100" } } }
-        });
-        let action = serde_json::json!({ "type": "intents_withdraw", "amount": "50", "token": "native" });
-        let result = evaluate_policy(&policy, &action);
-        assert!(result.allowed);
-    }
-
-    #[test]
-    fn test_policy_per_tx_limit_fail() {
-        let policy = serde_json::json!({
-            "rules": { "limits": { "per_transaction": { "native": "100" } } }
-        });
-        let action = serde_json::json!({ "type": "intents_withdraw", "amount": "150", "token": "native" });
-        let result = evaluate_policy(&policy, &action);
-        assert!(!result.allowed);
-        assert!(result.reason.unwrap().contains("Per-transaction limit"));
-    }
-
-    #[test]
-    fn test_policy_per_tx_wildcard() {
-        let policy = serde_json::json!({
-            "rules": { "limits": { "per_transaction": { "*": "100" } } }
-        });
-        let action = serde_json::json!({ "type": "intents_withdraw", "amount": "150", "token": "usdc" });
-        let result = evaluate_policy(&policy, &action);
-        assert!(!result.allowed);
-        assert!(result.reason.unwrap().contains("Per-transaction limit"));
-    }
-
-    #[test]
-    fn test_policy_daily_limit_pass() {
-        let policy = serde_json::json!({
-            "rules": { "limits": { "daily": { "native": "1000" } } }
-        });
-        let action = serde_json::json!({
-            "type": "intents_withdraw", "amount": "100", "token": "native",
-            "current_usage": { "daily": { "native": "500" } }
-        });
-        let result = evaluate_policy(&policy, &action);
-        assert!(result.allowed);
-    }
-
-    #[test]
-    fn test_policy_daily_limit_fail() {
-        let policy = serde_json::json!({
-            "rules": { "limits": { "daily": { "native": "1000" } } }
-        });
-        let action = serde_json::json!({
-            "type": "intents_withdraw", "amount": "100", "token": "native",
-            "current_usage": { "daily": { "native": "950" } }
-        });
-        let result = evaluate_policy(&policy, &action);
-        assert!(!result.allowed);
-        assert!(result.reason.unwrap().contains("Daily limit"));
-    }
-
-    #[test]
-    fn test_policy_hourly_limit_fail() {
-        let policy = serde_json::json!({
-            "rules": { "limits": { "hourly": { "native": "500" } } }
-        });
-        let action = serde_json::json!({
-            "type": "intents_withdraw", "amount": "100", "token": "native",
-            "current_usage": { "hourly": { "native": "450" } }
-        });
-        let result = evaluate_policy(&policy, &action);
-        assert!(!result.allowed);
-        assert!(result.reason.unwrap().contains("Hourly limit"));
-    }
-
-    #[test]
-    fn test_policy_monthly_limit_fail() {
-        let policy = serde_json::json!({
-            "rules": { "limits": { "monthly": { "native": "10000" } } }
-        });
-        let action = serde_json::json!({
-            "type": "intents_withdraw", "amount": "100", "token": "native",
-            "current_usage": { "monthly": { "native": "9950" } }
-        });
-        let result = evaluate_policy(&policy, &action);
-        assert!(!result.allowed);
-        assert!(result.reason.unwrap().contains("Monthly limit"));
-    }
-
-    #[test]
-    fn test_policy_rate_limit_pass() {
-        let policy = serde_json::json!({
-            "rules": { "rate_limit": { "max_per_hour": 10 } }
-        });
-        let action = serde_json::json!({
-            "type": "intents_withdraw", "current_usage": { "hourly_tx_count": 5 }
-        });
-        let result = evaluate_policy(&policy, &action);
-        assert!(result.allowed);
-    }
-
-    #[test]
-    fn test_policy_rate_limit_fail() {
-        let policy = serde_json::json!({
-            "rules": { "rate_limit": { "max_per_hour": 10 } }
-        });
-        let action = serde_json::json!({
-            "type": "intents_withdraw", "current_usage": { "hourly_tx_count": 10 }
-        });
-        let result = evaluate_policy(&policy, &action);
-        assert!(!result.allowed);
-        assert!(result.reason.unwrap().contains("Rate limit"));
-    }
-
-    #[test]
-    fn test_policy_time_restriction_day_denied() {
-        // Weekday 8 doesn't exist (1=Mon..7=Sun), always denied
-        let policy = serde_json::json!({
-            "rules": { "time_restrictions": { "allowed_days": [8] } }
-        });
-        let action = serde_json::json!({ "type": "intents_withdraw" });
-        let result = evaluate_policy(&policy, &action);
-        assert!(!result.allowed);
-        assert!(result.reason.unwrap().contains("weekday"));
-    }
-
-    #[test]
-    fn test_policy_approval_threshold() {
-        let policy = serde_json::json!({
-            "rules": {},
-            "approval": {
-                "above_usd": 100,
-                "threshold": { "required": 3 }
-            }
-        });
-        let action = serde_json::json!({ "type": "intents_withdraw", "amount": "1000" });
-        let result = evaluate_policy(&policy, &action);
-        assert!(result.allowed);
-        assert_eq!(result.requires_approval, Some(true));
-        assert_eq!(result.required_approvals, Some(3));
-    }
-
-    #[test]
-    fn test_policy_approval_excluded_types() {
-        let policy = serde_json::json!({
-            "rules": {},
-            "approval": {
-                "above_usd": 100,
-                "threshold": { "required": 2 },
-                "excluded_types": ["intents_deposit", "intents_swap"]
-            }
-        });
-        // intents_deposit — excluded, no approval
-        let action = serde_json::json!({ "type": "intents_deposit", "amount": "1000" });
-        let result = evaluate_policy(&policy, &action);
-        assert!(result.allowed);
-        assert!(result.requires_approval.is_none());
-
-        // swap — excluded, no approval
-        let action = serde_json::json!({ "type": "intents_swap", "amount": "1000" });
-        let result = evaluate_policy(&policy, &action);
-        assert!(result.allowed);
-        assert!(result.requires_approval.is_none());
-
-        // withdraw — NOT excluded, requires approval
-        let action = serde_json::json!({ "type": "intents_withdraw", "amount": "1000" });
-        let result = evaluate_policy(&policy, &action);
-        assert!(result.allowed);
-        assert_eq!(result.requires_approval, Some(true));
-        assert_eq!(result.required_approvals, Some(2));
-    }
-
-    #[test]
-    fn test_policy_invalid_amount() {
-        let policy = serde_json::json!({
-            "rules": {
-                "limits": {
-                    "per_transaction": { "native": "1000" }
-                }
-            }
-        });
-        let action = serde_json::json!({ "type": "intents_withdraw", "amount": "not_a_number", "token": "native" });
-        let result = evaluate_policy(&policy, &action);
-        assert!(!result.allowed);
-        assert!(result.reason.unwrap().contains("Invalid amount"));
-    }
-
-    #[test]
-    fn test_policy_all_checks_pass() {
-        let policy = serde_json::json!({
-            "rules": {
-                "transaction_types": ["intents_withdraw"],
-                "addresses": { "mode": "whitelist", "list": ["dest.near"] },
-                "limits": {
-                    "per_transaction": { "native": "1000" },
-                    "daily": { "native": "5000" }
-                },
-                "rate_limit": { "max_per_hour": 100 }
-            }
-        });
-        let action = serde_json::json!({
-            "type": "intents_withdraw",
-            "to": "dest.near",
-            "amount": "500",
-            "token": "native",
-            "current_usage": {
-                "daily": { "native": "1000" },
-                "hourly_tx_count": 3
-            }
-        });
-        let result = evaluate_policy(&policy, &action);
-        assert!(result.allowed);
-        assert!(!result.frozen);
-        assert!(result.requires_approval.is_none());
-    }
-
-    #[test]
-    fn test_policy_allowed_tokens() {
-        let policy = serde_json::json!({
-            "rules": {
-                "allowed_tokens": ["native", "nep141:usdt.tether-token.near"]
-            }
-        });
-
-        // native — allowed
-        let action = serde_json::json!({ "type": "intents_withdraw", "amount": "100", "token": "native" });
-        let result = evaluate_policy(&policy, &action);
-        assert!(result.allowed);
-
-        // usdt — allowed
-        let action = serde_json::json!({ "type": "intents_withdraw", "amount": "100", "token": "nep141:usdt.tether-token.near" });
-        let result = evaluate_policy(&policy, &action);
-        assert!(result.allowed);
-
-        // random token — rejected
-        let action = serde_json::json!({ "type": "intents_withdraw", "amount": "100", "token": "nep141:evil.near" });
-        let result = evaluate_policy(&policy, &action);
-        assert!(!result.allowed);
-        assert!(result.reason.unwrap().contains("not allowed"));
-
-        // no token field defaults to "native" — allowed
-        let action = serde_json::json!({ "type": "intents_withdraw", "amount": "100" });
-        let result = evaluate_policy(&policy, &action);
-        assert!(result.allowed);
-    }
-
-    #[test]
-    fn test_policy_no_allowed_tokens_allows_all() {
-        // No allowed_tokens rule — any token should pass
-        let policy = serde_json::json!({ "rules": {} });
-        let action = serde_json::json!({ "type": "intents_withdraw", "amount": "100", "token": "nep141:anything.near" });
-        let result = evaluate_policy(&policy, &action);
-        assert!(result.allowed);
     }
 
     // ============== AppState::ensure_customer_loaded gate ==============

@@ -10,8 +10,12 @@ interface ApprovalDetail {
   id: string;
   wallet_id: string;
   request_type: string;
+  /** Canonical op the keystore will sign — rendered as-is from the API (null for legacy rows). */
+  op: Record<string, unknown> | null;
   request_data: Record<string, unknown>;
   request_hash: string;
+  /** Wallet's on-chain pubkey, bound into the vote message to prevent cross-wallet replay. */
+  wallet_pubkey: string;
   required_approvals: number;
   status: string;
   expires_at: string;
@@ -37,7 +41,7 @@ function ApprovalDetailContent() {
 
   const [approval, setApproval] = useState<ApprovalDetail | null>(null);
   const [loading, setLoading] = useState(false);
-  const [approving, setApproving] = useState(false);
+  const [voting, setVoting] = useState<null | 'approve' | 'reject'>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
@@ -67,15 +71,18 @@ function ApprovalDetailContent() {
     loadApproval();
   }, [loadApproval]);
 
-  const handleApprove = async () => {
+  // Dumb voting: the API supplies `request_hash`; the dashboard only signs the fixed
+  // `{vote}:{approval_id}:{request_hash}` string and posts it. No local policy/canonical/
+  // hash logic — the keystore re-derives and verifies the hash itself.
+  const handleVote = async (vote: 'approve' | 'reject') => {
     if (!approval) return;
 
     if (!isConnected) {
-      setError('Connect your NEAR wallet to approve.');
+      setError(`Connect your NEAR wallet to ${vote}.`);
       return;
     }
 
-    setApproving(true);
+    setVoting(vote);
     setError(null);
 
     try {
@@ -83,8 +90,9 @@ function ApprovalDetailContent() {
       const nonceBytes = crypto.getRandomValues(new Uint8Array(32));
       const nonceBase64 = Buffer.from(nonceBytes).toString('base64');
 
-      // Build message: "approve:{approval_id}:{request_hash}"
-      const message = `approve:${approval.id}:${approval.request_hash}`;
+      // Build message: "{vote}:{approval_id}:{wallet_pubkey}:{request_hash}" (all from the API).
+      // wallet_pubkey binds the vote to THIS wallet (no cross-wallet replay).
+      const message = `${vote}:${approval.id}:${approval.wallet_pubkey}:${approval.request_hash}`;
 
       // Sign with NEAR wallet (NEP-413)
       const signed = await signMessage({
@@ -98,7 +106,7 @@ function ApprovalDetailContent() {
       }
 
       const resp = await fetch(
-        `${coordinatorUrl}/wallet/v1/approve/${approval.id}`,
+        `${coordinatorUrl}/wallet/v1/${vote}/${approval.id}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -113,10 +121,15 @@ function ApprovalDetailContent() {
 
       if (!resp.ok) {
         const errorData = await resp.json().catch(() => ({}));
-        throw new Error(errorData.error || errorData.message || `Approval failed: ${resp.status}`);
+        throw new Error(errorData.error || errorData.message || `${vote} failed: ${resp.status}`);
       }
 
       const result = await resp.json();
+      if (vote === 'reject') {
+        setSuccess('Rejection vote submitted.');
+        setTimeout(() => loadApproval(), 2000);
+        return;
+      }
       if (result.request_id) {
         // Threshold met — redirect to audit page
         router.push('/wallet/audit');
@@ -129,7 +142,7 @@ function ApprovalDetailContent() {
     } catch (err) {
       setError((err as Error).message);
     } finally {
-      setApproving(false);
+      setVoting(null);
     }
   };
 
@@ -215,12 +228,18 @@ function ApprovalDetailContent() {
             </div>
           </div>
 
-          {/* Request data */}
+          {/* Canonical op — what the keystore will actually sign. The signature you
+              produce below covers request_hash = sha256(canonical_json(op)). */}
           <div className="bg-white shadow rounded-lg p-6 border border-gray-200">
-            <h2 className="text-lg font-semibold text-gray-900 mb-3">Request Data</h2>
+            <h2 className="text-lg font-semibold text-gray-900 mb-3">Operation</h2>
             <pre className="bg-gray-50 rounded p-4 text-sm text-gray-700 overflow-x-auto">
-              {JSON.stringify(approval.request_data, null, 2)}
+              {JSON.stringify(approval.op ?? approval.request_data, null, 2)}
             </pre>
+            {!approval.op && (
+              <p className="text-xs text-gray-400 mt-2">
+                Legacy request (no canonical op stored) — showing request data.
+              </p>
+            )}
           </div>
 
           {/* Existing approvers */}
@@ -241,7 +260,7 @@ function ApprovalDetailContent() {
             </div>
           )}
 
-          {/* Approve button */}
+          {/* Approve / Reject buttons */}
           {approval.status === 'pending' && !isExpired && (
             <div className="flex justify-end space-x-3">
               <button
@@ -251,11 +270,18 @@ function ApprovalDetailContent() {
                 Back
               </button>
               <button
-                onClick={handleApprove}
-                disabled={approving || !isConnected}
+                onClick={() => handleVote('reject')}
+                disabled={voting !== null || !isConnected}
+                className="px-6 py-3 border border-red-300 text-red-700 rounded-lg font-medium hover:bg-red-50 disabled:opacity-50"
+              >
+                {voting === 'reject' ? 'Rejecting...' : 'Reject'}
+              </button>
+              <button
+                onClick={() => handleVote('approve')}
+                disabled={voting !== null || !isConnected}
                 className="px-6 py-3 bg-gradient-to-r from-[#cc6600] to-[#d4a017] text-white rounded-lg font-medium hover:from-[#b35900] hover:to-[#c49016] disabled:opacity-50"
               >
-                {approving ? 'Approving...' : 'Approve'}
+                {voting === 'approve' ? 'Approving...' : 'Approve'}
               </button>
             </div>
           )}
