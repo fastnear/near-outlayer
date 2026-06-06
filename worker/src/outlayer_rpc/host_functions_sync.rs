@@ -164,10 +164,10 @@ impl RpcProxy {
         for (key, v) in obj {
             if let Some(s) = v.as_str() {
                 // Validate that the header name is valid HTTP
-                if reqwest::header::HeaderName::from_bytes(key.as_bytes()).is_ok() {
-                    if reqwest::header::HeaderValue::from_str(s).is_ok() {
-                        headers.push((key.clone(), s.to_string()));
-                    }
+                if reqwest::header::HeaderName::from_bytes(key.as_bytes()).is_ok()
+                    && reqwest::header::HeaderValue::from_str(s).is_ok()
+                {
+                    headers.push((key.clone(), s.to_string()));
                 }
             }
         }
