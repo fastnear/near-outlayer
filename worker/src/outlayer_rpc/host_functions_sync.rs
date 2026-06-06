@@ -33,9 +33,6 @@ wasmtime::component::bindgen!({
     world: "rpc-host",
 });
 
-/// Maximum HTTP response body size (1 MB) - prevents OOM from large responses
-const MAX_HTTP_RESPONSE_BYTES: usize = 1024 * 1024;
-
 /// RPC Proxy client with rate limiting (using blocking HTTP)
 pub struct RpcProxy {
     /// HTTP client for RPC requests (blocking)
@@ -178,8 +175,8 @@ impl RpcProxy {
     }
 
     /// HTTP GET request (blocking, with SSRF protection)
-    /// Returns body on success, errors via anyhow (same pattern as call_method)
-    pub fn http_get(&self, url: &str, headers_json: Option<&str>) -> Result<String> {
+    /// Parses response as JSON, returns Value (same as call_method)
+    pub fn http_get(&self, url: &str, headers_json: Option<&str>) -> Result<Value> {
         self.check_rate_limit()?;
         self.validate_url(url)?;
 
@@ -199,16 +196,13 @@ impl RpcProxy {
         }
 
         let body = response.text().context("Failed to read HTTP response body")?;
-        if body.len() > MAX_HTTP_RESPONSE_BYTES {
-            anyhow::bail!("HTTP response too large: {} bytes (max {})", body.len(), MAX_HTTP_RESPONSE_BYTES);
-        }
-        Ok(body)
+        serde_json::from_str(&body).context("HTTP GET response is not valid JSON")
     }
 
     /// HTTP POST request (blocking, with SSRF protection)
-    /// Returns body on success, errors via anyhow (same pattern as call_method)
+    /// Parses response as JSON, returns Value (same as call_method)
     /// Content-Type defaults to application/json; override via headers if needed.
-    pub fn http_post(&self, url: &str, body: &str, headers_json: Option<&str>) -> Result<String> {
+    pub fn http_post(&self, url: &str, body: &str, headers_json: Option<&str>) -> Result<Value> {
         self.check_rate_limit()?;
         self.validate_url(url)?;
 
@@ -234,10 +228,7 @@ impl RpcProxy {
         }
 
         let response_body = response.text().context("Failed to read HTTP response body")?;
-        if response_body.len() > MAX_HTTP_RESPONSE_BYTES {
-            anyhow::bail!("HTTP response too large: {} bytes (max {})", response_body.len(), MAX_HTTP_RESPONSE_BYTES);
-        }
-        Ok(response_body)
+        serde_json::from_str(&response_body).context("HTTP POST response is not valid JSON")
     }
 
     /// SSRF protection: validate URL and resolve DNS to block internal IPs
@@ -911,14 +902,14 @@ impl near::rpc::api::Host for RpcHostState {
 
     fn http_get(&mut self, url: String, headers: Option<String>) -> (String, String) {
         match self.proxy.http_get(&url, headers.as_deref()) {
-            Ok(body) => (body, String::new()),
+            Ok(result) => (serde_json::to_string(&result).unwrap_or_default(), String::new()),
             Err(e) => (String::new(), e.to_string()),
         }
     }
 
     fn http_post(&mut self, url: String, body: String, headers: Option<String>) -> (String, String) {
         match self.proxy.http_post(&url, &body, headers.as_deref()) {
-            Ok(response) => (response, String::new()),
+            Ok(result) => (serde_json::to_string(&result).unwrap_or_default(), String::new()),
             Err(e) => (String::new(), e.to_string()),
         }
     }
