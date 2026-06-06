@@ -178,13 +178,13 @@ impl RpcProxy {
     }
 
     /// HTTP GET request (blocking, with SSRF protection)
-    /// Returns (body, error) tuple - error is empty string on success
-    pub fn http_get(&self, url: &str, headers_json: Option<&str>) -> Result<(String, String)> {
+    /// Returns body on success, errors via anyhow (same pattern as call_method)
+    pub fn http_get(&self, url: &str, headers_json: Option<&str>) -> Result<String> {
         self.check_rate_limit()?;
         self.validate_url(url)?;
 
         let headers = Self::parse_headers_json(headers_json);
-        info!("[HTTP] GET {}", Self::safe_url_display(url));
+        info!("[RPC] HTTP GET {}", Self::safe_url_display(url));
 
         let mut req = self.client.get(url);
         for (name, value) in headers {
@@ -195,40 +195,30 @@ impl RpcProxy {
         let status = response.status();
         if !status.is_success() {
             let error_text = response.text().unwrap_or_default();
-            return Ok((String::new(), format!("HTTP {}: {}", status, error_text)));
+            anyhow::bail!("HTTP GET {}: {}", status, error_text);
         }
 
         let body = response.text().context("Failed to read HTTP response body")?;
         if body.len() > MAX_HTTP_RESPONSE_BYTES {
-            return Ok((String::new(), format!("HTTP response too large: {} bytes (max {})", body.len(), MAX_HTTP_RESPONSE_BYTES)));
+            anyhow::bail!("HTTP response too large: {} bytes (max {})", body.len(), MAX_HTTP_RESPONSE_BYTES);
         }
-        Ok((body, String::new()))
+        Ok(body)
     }
 
     /// HTTP POST request (blocking, with SSRF protection)
-    /// Returns (body, error) tuple - error is empty string on success
-    pub fn http_post(
-        &self,
-        url: &str,
-        body: &str,
-        content_type: &str,
-        headers_json: Option<&str>,
-    ) -> Result<(String, String)> {
+    /// Returns body on success, errors via anyhow (same pattern as call_method)
+    /// Content-Type defaults to application/json; override via headers if needed.
+    pub fn http_post(&self, url: &str, body: &str, headers_json: Option<&str>) -> Result<String> {
         self.check_rate_limit()?;
         self.validate_url(url)?;
 
         let headers = Self::parse_headers_json(headers_json);
-        info!(
-            "[HTTP] POST {} ({} bytes, {})",
-            Self::safe_url_display(url),
-            body.len(),
-            content_type
-        );
+        info!("[RPC] HTTP POST {} ({} bytes)", Self::safe_url_display(url), body.len());
 
         let mut req = self
             .client
             .post(url)
-            .header("Content-Type", content_type);
+            .header("Content-Type", "application/json");
         for (name, value) in headers {
             req = req.header(name, value);
         }
@@ -240,14 +230,14 @@ impl RpcProxy {
         let status = response.status();
         if !status.is_success() {
             let error_text = response.text().unwrap_or_default();
-            return Ok((String::new(), format!("HTTP {}: {}", status, error_text)));
+            anyhow::bail!("HTTP POST {}: {}", status, error_text);
         }
 
         let response_body = response.text().context("Failed to read HTTP response body")?;
         if response_body.len() > MAX_HTTP_RESPONSE_BYTES {
-            return Ok((String::new(), format!("HTTP response too large: {} bytes (max {})", response_body.len(), MAX_HTTP_RESPONSE_BYTES)));
+            anyhow::bail!("HTTP response too large: {} bytes (max {})", response_body.len(), MAX_HTTP_RESPONSE_BYTES);
         }
-        Ok((response_body, String::new()))
+        Ok(response_body)
     }
 
     /// SSRF protection: validate URL and resolve DNS to block internal IPs
@@ -921,21 +911,14 @@ impl near::rpc::api::Host for RpcHostState {
 
     fn http_get(&mut self, url: String, headers: Option<String>) -> (String, String) {
         match self.proxy.http_get(&url, headers.as_deref()) {
-            Ok((body, error)) if error.is_empty() => (body, String::new()),
-            Ok((_, error)) => (String::new(), error),
+            Ok(body) => (body, String::new()),
             Err(e) => (String::new(), e.to_string()),
         }
     }
 
-    fn http_post(&mut self, url: String, body: String, content_type: String, headers: Option<String>) -> (String, String) {
-        let ct = if content_type.is_empty() {
-            "application/json"
-        } else {
-            &content_type
-        };
-        match self.proxy.http_post(&url, &body, ct, headers.as_deref()) {
-            Ok((response, error)) if error.is_empty() => (response, String::new()),
-            Ok((_, error)) => (String::new(), error),
+    fn http_post(&mut self, url: String, body: String, headers: Option<String>) -> (String, String) {
+        match self.proxy.http_post(&url, &body, headers.as_deref()) {
+            Ok(response) => (response, String::new()),
             Err(e) => (String::new(), e.to_string()),
         }
     }

@@ -102,10 +102,11 @@ interface api {
     /// headers: optional JSON object of extra headers, e.g. {"Authorization": "Bearer ...", "Accept": "application/json"}
     http-get: func(url: string, headers: option<string>) -> tuple<string, string>;
 
-    /// HTTP POST request with body, content-type, and optional headers (blocking, with SSRF protection)
+    /// HTTP POST request with body and optional headers (blocking, with SSRF protection)
     /// Returns (body, error) - error is empty string on success
+    /// Content-Type defaults to application/json; override via headers if needed
     /// headers: optional JSON object of extra headers, e.g. {"Authorization": "Bearer ..."}
-    http-post: func(url: string, body: string, content-type: string, headers: option<string>) -> tuple<string, string>;
+    http-post: func(url: string, body: string, headers: option<string>) -> tuple<string, string>;
 }
 
 world rpc-host {
