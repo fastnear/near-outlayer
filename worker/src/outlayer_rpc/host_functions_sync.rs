@@ -151,19 +151,46 @@ impl RpcProxy {
         Ok(body)
     }
 
+    /// Parse a JSON object string like `{"Authorization": "Bearer x", "Accept": "text/plain"}`
+    /// into a list of (name, value) header pairs. Returns empty vec on parse failure (non-fatal).
+    fn parse_headers_json(headers_json: Option<&str>) -> Vec<(String, String)> {
+        let Some(json_str) = headers_json else {
+            return vec![];
+        };
+        let Ok(val) = serde_json::from_str::<Value>(json_str) else {
+            return vec![];
+        };
+        let Some(obj) = val.as_object() else {
+            return vec![];
+        };
+        let mut headers = vec![];
+        for (key, v) in obj {
+            if let Some(s) = v.as_str() {
+                // Validate that the header name is valid HTTP
+                if reqwest::header::HeaderName::from_bytes(key.as_bytes()).is_ok() {
+                    if reqwest::header::HeaderValue::from_str(s).is_ok() {
+                        headers.push((key.clone(), s.to_string()));
+                    }
+                }
+            }
+        }
+        headers
+    }
+
     /// HTTP GET request (blocking, with SSRF protection)
     /// Returns (body, error) tuple - error is empty string on success
-    pub fn http_get(&self, url: &str) -> Result<(String, String)> {
+    pub fn http_get(&self, url: &str, headers_json: Option<&str>) -> Result<(String, String)> {
         self.check_rate_limit()?;
         self.validate_url(url)?;
 
+        let headers = Self::parse_headers_json(headers_json);
         info!("[HTTP] GET {}", Self::safe_url_display(url));
 
-        let response = self
-            .client
-            .get(url)
-            .send()
-            .context("Failed to send HTTP GET request")?;
+        let mut req = self.client.get(url);
+        for (name, value) in headers {
+            req = req.header(name, value);
+        }
+        let response = req.send().context("Failed to send HTTP GET request")?;
 
         let status = response.status();
         if !status.is_success() {
@@ -180,16 +207,32 @@ impl RpcProxy {
 
     /// HTTP POST request (blocking, with SSRF protection)
     /// Returns (body, error) tuple - error is empty string on success
-    pub fn http_post(&self, url: &str, body: &str, content_type: &str) -> Result<(String, String)> {
+    pub fn http_post(
+        &self,
+        url: &str,
+        body: &str,
+        content_type: &str,
+        headers_json: Option<&str>,
+    ) -> Result<(String, String)> {
         self.check_rate_limit()?;
         self.validate_url(url)?;
 
-        info!("[HTTP] POST {} ({} bytes, {})", Self::safe_url_display(url), body.len(), content_type);
+        let headers = Self::parse_headers_json(headers_json);
+        info!(
+            "[HTTP] POST {} ({} bytes, {})",
+            Self::safe_url_display(url),
+            body.len(),
+            content_type
+        );
 
-        let response = self
+        let mut req = self
             .client
             .post(url)
-            .header("Content-Type", content_type)
+            .header("Content-Type", content_type);
+        for (name, value) in headers {
+            req = req.header(name, value);
+        }
+        let response = req
             .body(body.to_string())
             .send()
             .context("Failed to send HTTP POST request")?;
@@ -876,21 +919,21 @@ impl near::rpc::api::Host for RpcHostState {
 
     // ==================== HTTP API ====================
 
-    fn http_get(&mut self, url: String) -> (String, String) {
-        match self.proxy.http_get(&url) {
+    fn http_get(&mut self, url: String, headers: Option<String>) -> (String, String) {
+        match self.proxy.http_get(&url, headers.as_deref()) {
             Ok((body, error)) if error.is_empty() => (body, String::new()),
             Ok((_, error)) => (String::new(), error),
             Err(e) => (String::new(), e.to_string()),
         }
     }
 
-    fn http_post(&mut self, url: String, body: String, content_type: String) -> (String, String) {
+    fn http_post(&mut self, url: String, body: String, content_type: String, headers: Option<String>) -> (String, String) {
         let ct = if content_type.is_empty() {
             "application/json"
         } else {
             &content_type
         };
-        match self.proxy.http_post(&url, &body, ct) {
+        match self.proxy.http_post(&url, &body, ct, headers.as_deref()) {
             Ok((response, error)) if error.is_empty() => (response, String::new()),
             Ok((_, error)) => (String::new(), error),
             Err(e) => (String::new(), e.to_string()),
