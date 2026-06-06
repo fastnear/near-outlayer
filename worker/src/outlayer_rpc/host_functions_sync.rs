@@ -25,11 +25,16 @@ use std::sync::Arc;
 use std::time::Duration;
 use wasmtime::component::Linker;
 
+use crate::executor::wasi_p2::is_blocked_ip;
+
 // Generate bindings from WIT - sync mode for simpler implementation
 wasmtime::component::bindgen!({
     path: "wit",
     world: "rpc-host",
 });
+
+/// Maximum HTTP response body size (1 MB) - prevents OOM from large responses
+const MAX_HTTP_RESPONSE_BYTES: usize = 1024 * 1024;
 
 /// RPC Proxy client with rate limiting (using blocking HTTP)
 pub struct RpcProxy {
@@ -130,7 +135,6 @@ impl RpcProxy {
         let response = self
             .client
             .post(&self.rpc_url)
-            .header("Content-Type", "application/json")
             .json(&request)
             .send()
             .context("Failed to send RPC request")?;
@@ -145,6 +149,108 @@ impl RpcProxy {
             .json()
             .context("Failed to parse RPC response")?;
         Ok(body)
+    }
+
+    /// HTTP GET request (blocking, with SSRF protection)
+    /// Returns (body, error) tuple - error is empty string on success
+    pub fn http_get(&self, url: &str) -> Result<(String, String)> {
+        self.check_rate_limit()?;
+        self.validate_url(url)?;
+
+        info!("[HTTP] GET {}", Self::safe_url_display(url));
+
+        let response = self
+            .client
+            .get(url)
+            .send()
+            .context("Failed to send HTTP GET request")?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response.text().unwrap_or_default();
+            return Ok((String::new(), format!("HTTP {}: {}", status, error_text)));
+        }
+
+        let body = response.text().context("Failed to read HTTP response body")?;
+        if body.len() > MAX_HTTP_RESPONSE_BYTES {
+            return Ok((String::new(), format!("HTTP response too large: {} bytes (max {})", body.len(), MAX_HTTP_RESPONSE_BYTES)));
+        }
+        Ok((body, String::new()))
+    }
+
+    /// HTTP POST request (blocking, with SSRF protection)
+    /// Returns (body, error) tuple - error is empty string on success
+    pub fn http_post(&self, url: &str, body: &str, content_type: &str) -> Result<(String, String)> {
+        self.check_rate_limit()?;
+        self.validate_url(url)?;
+
+        info!("[HTTP] POST {} ({} bytes, {})", Self::safe_url_display(url), body.len(), content_type);
+
+        let response = self
+            .client
+            .post(url)
+            .header("Content-Type", content_type)
+            .body(body.to_string())
+            .send()
+            .context("Failed to send HTTP POST request")?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response.text().unwrap_or_default();
+            return Ok((String::new(), format!("HTTP {}: {}", status, error_text)));
+        }
+
+        let response_body = response.text().context("Failed to read HTTP response body")?;
+        if response_body.len() > MAX_HTTP_RESPONSE_BYTES {
+            return Ok((String::new(), format!("HTTP response too large: {} bytes (max {})", response_body.len(), MAX_HTTP_RESPONSE_BYTES)));
+        }
+        Ok((response_body, String::new()))
+    }
+
+    /// SSRF protection: validate URL and resolve DNS to block internal IPs
+    fn validate_url(&self, url: &str) -> Result<()> {
+        let parsed = reqwest::Url::parse(url)
+            .with_context(|| format!("Invalid URL: {}", url))?;
+
+        // Check scheme
+        match parsed.scheme() {
+            "https" | "http" => {}
+            scheme => anyhow::bail!("Unsupported URL scheme: {}. Only http and https allowed.", scheme),
+        }
+
+        // Extract host
+        let host = parsed
+            .host_str()
+            .ok_or_else(|| anyhow::anyhow!("URL has no host"))?;
+
+        // Determine port
+        let port = parsed.port().unwrap_or(match parsed.scheme() {
+            "https" => 443,
+            "http" => 80,
+            _ => 80,
+        });
+
+        // DNS lookup with SSRF protection
+        let addrs: Vec<std::net::SocketAddr> = std::net::ToSocketAddrs::to_socket_addrs(&(host, port))
+            .with_context(|| format!("DNS resolution failed for {}:{}", host, port))?
+            .collect();
+
+        if addrs.is_empty() {
+            anyhow::bail!("DNS resolution returned no addresses for {}:{}", host, port);
+        }
+
+        // Block internal/private IPs
+        for addr in &addrs {
+            if is_blocked_ip(addr.ip()) {
+                anyhow::bail!(
+                    "Blocked SSRF attempt: {} resolves to internal/private address {}",
+                    Self::safe_url_display(url),
+                    addr.ip()
+                );
+            }
+        }
+
+        Ok(())
     }
 
     #[allow(dead_code)]
@@ -764,6 +870,29 @@ impl near::rpc::api::Host for RpcHostState {
 
         match self.proxy.call_method(&method, params) {
             Ok(result) => (serde_json::to_string(&result).unwrap_or_default(), String::new()),
+            Err(e) => (String::new(), e.to_string()),
+        }
+    }
+
+    // ==================== HTTP API ====================
+
+    fn http_get(&mut self, url: String) -> (String, String) {
+        match self.proxy.http_get(&url) {
+            Ok((body, error)) if error.is_empty() => (body, String::new()),
+            Ok((_, error)) => (String::new(), error),
+            Err(e) => (String::new(), e.to_string()),
+        }
+    }
+
+    fn http_post(&mut self, url: String, body: String, content_type: String) -> (String, String) {
+        let ct = if content_type.is_empty() {
+            "application/json"
+        } else {
+            &content_type
+        };
+        match self.proxy.http_post(&url, &body, ct) {
+            Ok((response, error)) if error.is_empty() => (response, String::new()),
+            Ok((_, error)) => (String::new(), error),
             Err(e) => (String::new(), e.to_string()),
         }
     }
