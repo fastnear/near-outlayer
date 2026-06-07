@@ -281,14 +281,43 @@ export function PolicyFormFields({ policyForm, onChange, apiKeyHash, knownKeyHas
             <span className="font-medium">payment_check — claimable payment links</span>
           </label>
           <p className="text-xs text-red-600 mt-0.5 ml-5">
-            ⚠ Whitelist-bypass: funds move into an escrow that ANY holder of the link can
-            claim, so the address whitelist does NOT constrain the final recipient. Gated
-            only by the per-transaction amount limit (set one above).
+            ⚠ Whitelist-bypass AND Trusted: funds move into an escrow ANY link holder can
+            claim (the address whitelist does NOT constrain the recipient), and the transfer
+            artifact is coordinator-supplied and NOT bound to this policy — so the
+            per-transaction amount limit only constrains an HONEST coordinator. Enabling this
+            trusts the coordinator with this token's whole balance, even single-sig.
           </p>
           {policyForm.payment_check_enabled && (
             <p className="text-xs text-gray-400 ml-5 mt-1">
-              Multisig approval is not available for trusted ops — gate with the
+              Multisig approval is not available for payment checks — gate with the
               per-transaction amount limit instead.
+            </p>
+          )}
+        </div>
+
+        {/* cross_chain_withdraw */}
+        <div className="mb-3">
+          <label className="flex items-center gap-1.5 text-sm cursor-pointer">
+            <input
+              type="checkbox"
+              checked={policyForm.cross_chain_withdraw_enabled}
+              onChange={(e) => update({ cross_chain_withdraw_enabled: e.target.checked })}
+              className="rounded border-gray-300"
+            />
+            <span className="font-medium">cross_chain_withdraw — bridge funds off NEAR</span>
+          </label>
+          <p className="text-xs text-red-600 mt-0.5 ml-5">
+            ⚠ The riskiest, irreversible exit, AND Trusted. Default-DENY: without this
+            capability, cross-chain withdraw is denied even if listed in the transaction
+            types. The 1Click swap+bridge artifact is coordinator-supplied and NOT bound to
+            this policy, so the amount limit only constrains an HONEST coordinator — enabling
+            this trusts the coordinator with the whole token balance, even single-sig.
+          </p>
+          {policyForm.cross_chain_withdraw_enabled && (
+            <p className="text-xs text-gray-400 ml-5 mt-1">
+              Can require multisig approval: check &quot;Send cross-chain&quot; under &quot;Require
+              approval for&quot; and set a threshold. The quote is re-fetched fresh at execution,
+              so approval delays don&apos;t invalidate it.
             </p>
           )}
         </div>

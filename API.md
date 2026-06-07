@@ -62,10 +62,10 @@ All endpoints require `Authorization: Bearer wk_...`.
 | GET | `/wallet/v1/tokens` | List supported tokens |
 | POST | `/wallet/v1/transfer` | Transfer NEAR / FT |
 | POST | `/wallet/v1/call` | Call a NEAR smart contract |
-| POST | `/wallet/v1/sign-message` | NEP-413 message signing |
+| POST | `/wallet/v1/sign-message` | NEP-413 message signing (`format:"raw"` removed — use `/auth-sign`) |
+| POST | `/wallet/v1/auth-sign` | OutLayer NEAR-key auth signature (`{purpose, seed, vault_id?}`) |
 | POST | `/wallet/v1/intents/deposit` | Deposit FT into Intents balance · **mainnet only** |
-| POST | `/wallet/v1/intents/withdraw` | Cross-chain withdrawal (gasless); `/dry-run` available · **mainnet only** |
-| POST | `/wallet/v1/intents/ft-withdraw` | FT withdrawal; `/dry-run` available · **mainnet only** |
+| POST | `/wallet/v1/intents/withdraw` | Withdrawal — same-chain (native NEAR / NEP-141) or cross-chain (gasless); `/dry-run` available · **mainnet only** |
 | POST | `/wallet/v1/intents/swap` | Swap tokens via Intents; `/swap/quote` for a quote · **mainnet only** |
 | POST | `/wallet/v1/create-payment-key` | Upgrade trial → paid (USDC or NEAR deposit) |
 | POST | `/wallet/v1/policy` · `/sign-policy` · `/encrypt-policy` | Policy engine (spend limits, allowlists) |

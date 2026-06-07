@@ -32,7 +32,7 @@ Every deterministic wallet has the same capabilities as a regular wallet — all
 
 - **Multi-chain addresses** — NEAR, Ethereum, Base, Arbitrum, Solana, Bitcoin derived from one wallet via NEAR MPC network
 - **Gasless swaps** — `/intents/swap` via solver relay, no gas needed on wallet
-- **Cross-chain deposits** — Solana → NEAR via 1Click bridge
+- **Cross-chain deposits** — any source chain (Solana, Ethereum, Bitcoin, EVM L2s) → NEAR via the 1Click bridge (`/deposit-intent`)
 - **On-chain calls** — arbitrary NEAR contract calls (`/call`)
 - **Token transfers** — NEAR native + any NEP-141 token
 - **Policy engine** — spending limits, allowed actions, freeze thresholds, multisig approval
@@ -346,16 +346,33 @@ api_key = f"wk_{hmac_sha256(near_private_key, f'{seed}:0').hex()}"
 | `PUT /wallet/v1/api-key` | Bearer header OR NEAR sig in body | Yes if needed | No (caller knows it) | Register delegate key for sub-agent |
 | `DELETE /wallet/v1/api-key/:key_hash` | `Bearer near:...` or `Bearer wk_...` | No | — | Revoke delegate key (last key protected) |
 
-## POST /wallet/v1/sign-message — format: "raw"
+## OutLayer auth signatures from the wallet key — POST /wallet/v1/auth-sign
 
-Existing endpoint, new optional parameter: `"format": "raw"`.
+To produce OutLayer's own Bearer / register / api-key auth token **from the wallet's TEE key**
+(not from a locally-held NEAR key), use the dedicated `POST /wallet/v1/auth-sign` endpoint.
 
-When `format` is omitted or `"nep413"` — current behavior (NEP-413 envelope).
-When `format` is `"raw"` — signs message bytes directly with ed25519 (no NEP-413 wrapping).
+> The old `POST /wallet/v1/sign-message` `"format": "raw"` parameter is **removed** — calling
+> `/sign-message` with `format:"raw"` now returns an error pointing here. `/sign-message` only
+> produces NEP-413 signatures (and enforces a default-DENY recipient allowlist); it is no longer a
+> raw byte signer.
 
-Uses keystore `/wallet/sign-transaction` endpoint (already exists). Returns `signature` as base58 without prefix.
+Request body: `{ "purpose": "bearer" | "register" | "api-key", "seed": "...", "vault_id": "..." }`
+(`vault_id` is only valid for `bearer`). The keystore **constructs** the exact domain-separated auth
+string with a fresh server timestamp and signs it raw ed25519 (an `Op::Auth` — non-fund, always
+allowed on a non-frozen wallet, never a 32-byte tx hash). Response:
 
-Use cases: custom authentication protocols, off-chain proofs, any integration needing a plain ed25519 signature from the wallet's key.
+```json
+{
+  "auth_message": "auth:<seed>:<timestamp>",   // send verbatim
+  "auth_timestamp": 1712000000,
+  "signature": "<base58, no ed25519: prefix>",
+  "public_key": "ed25519:<base58>"
+}
+```
+
+For an arbitrary plain ed25519 signature over your own bytes (custom auth protocols, off-chain
+proofs on a chain the structured policy doesn't cover), use the `raw` op via `/wallet/sign` — gated
+by the default-DENY `raw_sign` capability (with an optional per-chain allowlist).
 
 ## What to write new
 

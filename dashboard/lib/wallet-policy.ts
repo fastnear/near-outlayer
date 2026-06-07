@@ -35,6 +35,8 @@ export interface PolicyForm {
   /** swap: 1Click swap — Trusted (coordinator-supplied quote/route, unbound to policy). */
   swap_enabled: boolean;
   swap_requires_approval: boolean;
+  /** cross_chain_withdraw: 1Click swap+bridge — Trusted; the riskiest, irreversible exit. */
+  cross_chain_withdraw_enabled: boolean;
   /** sign_message: comma-separated NEP-413 recipient allowlist (default-DENY; never fund-moving). */
   sign_message_allowed_recipients: string;
 }
@@ -65,6 +67,7 @@ export const DEFAULT_POLICY: PolicyForm = {
   payment_check_requires_approval: false,
   swap_enabled: false,
   swap_requires_approval: false,
+  cross_chain_withdraw_enabled: false,
   sign_message_allowed_recipients: '',
 };
 
@@ -161,6 +164,9 @@ export function buildPolicyRules(
   if (form.swap_enabled) {
     capabilities.swap = { allowed: true };
   }
+  if (form.cross_chain_withdraw_enabled) {
+    capabilities.cross_chain_withdraw = { allowed: true };
+  }
   const smRecipients = form.sign_message_allowed_recipients.split(',').map((r) => r.trim()).filter(Boolean);
   if (smRecipients.length > 0) {
     capabilities.sign_message = { allowed: true, allowed_recipients: smRecipients };
@@ -194,7 +200,6 @@ export interface ParsedPolicy {
   form: PolicyForm;
   /** Approval section (page-specific, returned as-is for the caller to handle) */
   approval: {
-    above_usd: string;
     required: string;
     approvers: string; // "account_id, role" lines
   } | null;
@@ -242,6 +247,7 @@ export function parsePolicyResponse(
     payment_check_requires_approval: caps.payment_check?.requires_approval === true,
     swap_enabled: caps.swap?.allowed === true,
     swap_requires_approval: caps.swap?.requires_approval === true,
+    cross_chain_withdraw_enabled: caps.cross_chain_withdraw?.allowed === true,
     sign_message_allowed_recipients: (caps.sign_message?.allowed_recipients || []).join(', '),
   };
 
@@ -252,7 +258,6 @@ export function parsePolicyResponse(
       .map((a: any) => `${a.id}, ${a.role || 'signer'}`)
       .join('\n');
     approval = {
-      above_usd: ap.above_usd?.toString() || '0',
       required: ap.threshold?.required?.toString() || '1',
       approvers: approverLines,
     };

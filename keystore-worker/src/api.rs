@@ -794,7 +794,10 @@ pub struct WalletDeriveAddressResponse {
 #[derive(Debug, Deserialize)]
 pub struct WalletSignPolicyRequest {
     pub wallet_id: String,
-    pub encrypted_data_hash: String, // SHA256 hex of encrypted_data
+    /// The encrypted policy blob (base64 ciphertext), NOT a pre-computed hash. The keystore
+    /// DECRYPT-VALIDATES it (AEAD) before signing `sha256(encrypted_data)` — a caller-supplied
+    /// raw hash, or any non-ciphertext, is rejected (it would be a tx-signing oracle).
+    pub encrypted_data: String,
 }
 
 /// Response with ed25519 signature + public key for contract verification
@@ -3619,21 +3622,57 @@ async fn wallet_sign_policy_handler(
         .await
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
-    let hash_bytes = hex::decode(&req.encrypted_data_hash).map_err(|e| {
-        ApiError::BadRequest(format!("Invalid hex in encrypted_data_hash: {}", e))
-    })?;
-
-    if hash_bytes.len() != 32 {
-        return Err(ApiError::BadRequest(format!(
-            "encrypted_data_hash must be 32 bytes (SHA256), got {}",
-            hash_bytes.len()
-        )));
+    // SECURITY: the signing key here (`wallet:{id}:near`) is ALSO the wallet's NEAR tx key,
+    // and a NEAR tx signature is `sign(sha256(borsh(tx)))`. So we must NEVER sign a
+    // caller-supplied 32-byte hash — that is a universal tx-forging oracle (feed it a tx_hash,
+    // get a valid transaction signature → drain). We take the encrypted policy BLOB (never a
+    // pre-computed hash) and first DECRYPT-VALIDATE it: the ChaCha20-Poly1305 AEAD auth tag
+    // can only verify for a real ciphertext produced under this wallet's policy key, so
+    // arbitrary attacker bytes (e.g. `borsh(tx)`) FAIL decryption and are rejected here. ONLY
+    // after a successful decrypt (to a parseable Policy) do we sign the BARE
+    // `sha256(encrypted_data)` the (unchanged) contract verifies. The decrypt is the gate;
+    // do not weaken, reorder, or skip it.
+    if req.encrypted_data.is_empty() {
+        return Err(ApiError::BadRequest("encrypted_data is required".to_string()));
     }
 
-    let seed = format!("wallet:{}:near", req.wallet_id);
     let keystore = state.keystore.read().await;
 
-    let signature = keystore.sign(customer.as_ref(), &seed, &hash_bytes).map_err(|e| {
+    // 1. Decrypt-validate: prove `encrypted_data` is a real ciphertext under this wallet's
+    //    policy key (same seed as `load_wallet_policy` / `wallet_decrypt_policy_handler`).
+    let policy_seed = format!("wallet-policy:{}", req.wallet_id);
+    let encrypted_bytes = base64::decode(&req.encrypted_data).map_err(|e| {
+        ApiError::BadRequest(format!("encrypted_data is not valid base64: {}", e))
+    })?;
+    let decrypted = keystore
+        .decrypt(customer.as_ref(), &policy_seed, &encrypted_bytes)
+        .map_err(|_| {
+            // AEAD auth-tag failure ⇒ not a genuine policy ciphertext (could be a forged
+            // tx-hash preimage). Refuse — this is the check that closes the oracle.
+            ApiError::Forbidden(
+                "encrypted_data did not decrypt as this wallet's policy — refusing to sign \
+                 (only a genuine policy ciphertext may be attested)".to_string(),
+            )
+        })?;
+    // Defence-in-depth: the plaintext must be a well-formed policy.
+    serde_json::from_slice::<shared_tee_helpers::wallet_policy::Policy>(&decrypted).map_err(|e| {
+        ApiError::Forbidden(format!(
+            "decrypted policy did not parse as a Policy — refusing to sign: {}",
+            e
+        ))
+    })?;
+
+    // 2. Sign the BARE sha256(encrypted_data) — matches the unchanged contract's
+    //    `store_wallet_policy` (`sign(sha256(encrypted_data))`).
+    let message_hash = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(req.encrypted_data.as_bytes());
+        hasher.finalize()
+    };
+
+    let seed = format!("wallet:{}:near", req.wallet_id);
+    let signature = keystore.sign(customer.as_ref(), &seed, &message_hash).map_err(|e| {
         ApiError::InternalError(format!("Signing failed: {}", e))
     })?;
 
@@ -4146,19 +4185,15 @@ async fn wallet_sign_handler(
             Decision::Frozen => return Err(ApiError::Forbidden("Wallet is frozen".to_string())),
             Decision::Deny { reason } => return Err(ApiError::Forbidden(reason)),
             Decision::RequiresApproval { threshold } => {
-                // CRITICAL trust anchor: a Trusted artifact is generated AFTER approval and
-                // is NOT bound to the approved op, so real approver signatures over a benign
-                // op could authorize a swapped-in drain artifact. Trusted ops can therefore
-                // never be safely multisig-authorized. Reject here — the keystore is the
-                // trust anchor; the coordinator's matching upfront reject is only UX. Built/
-                // HashPinned bind by construction/hash and remain valid under multisig.
-                if wallet_policy::bind_mode(&req.op) == BindMode::Trusted {
-                    return Err(ApiError::Forbidden(
-                        "Multisig approval is not supported for trusted-artifact operations \
-                         (swap/confidential/cross_chain_withdraw/payment_check)."
-                            .to_string(),
-                    ));
-                }
+                // Owner-control multisig — for Built/HashPinned AND Trusted kinds. Verify real
+                // approver signatures over exactly this op's request_hash before signing. For
+                // Built/HashPinned the signed artifact is bound to the op by construction/hash.
+                // For Trusted (swap/confidential/cross_chain_withdraw/payment_check) the approval
+                // gates WHETHER the op runs and binds its policy-checked token+amount; the
+                // coordinator supplies the off-chain artifact (e.g. the 1Click deposit address)
+                // at execution and that destination is coordinator-trusted — a documented
+                // tradeoff (we do not defend against a compromised coordinator; it is the access
+                // path). See plan "Trusted ops under multisig".
                 let wallet_pubkey =
                     derive_wallet_ed25519_pubkey(&state, customer.as_ref(), &req.wallet_id).await?;
                 verify_approvals(
@@ -4478,6 +4513,18 @@ async fn sign_hash_pinned(
             recipient,
             ..
         } => {
+            // Hard exclusion of the intents verifiers, ABOVE the owner allowlist: an owner
+            // mis-listing `intents.near`/`intents.far` in allowed_recipients would re-open the
+            // fund path (a "login" signature replayable as a fund-moving NEP-413 intent).
+            // sign_message can NEVER target an intents verifier — those go through the gated
+            // Trusted ops only.
+            if is_trusted_recipient(recipient) {
+                return Err(ApiError::Forbidden(format!(
+                    "sign_message recipient '{}' is a fund-moving intents verifier and is never \
+                     allowed here (even if listed in allowed_recipients)",
+                    recipient
+                )));
+            }
             // Domain separation lives here: a default-DENY allowlist of auth recipients
             // (see `sign_message_recipient_allowed`).
             if !sign_message_recipient_allowed(policy, recipient) {
@@ -4611,7 +4658,22 @@ async fn wallet_check_policy_handler(
 
     let request_hash = wallet_policy::request_hash(&req.op);
 
-    // Decrypt the policy: inline override (testing) or fetch+decrypt from chain.
+    // Decrypt the policy: inline override (TEST-ONLY) or fetch+decrypt from chain.
+    //
+    // The inline path lets the CALLER supply the policy for this pre-flight decision — a
+    // coordinator-fabricated "allowed" could mislead a UI. It is safe for fund movement
+    // (`/wallet/sign` ALWAYS reads + decrypts the on-chain policy via `load_wallet_policy`
+    // and NEVER accepts an inline policy, so a fabricated check-policy can't authorize a
+    // sign), but to keep this advisory endpoint honest in production it is gated behind an
+    // explicit test flag. Default (prod): inline is rejected, on-chain only.
+    if req.encrypted_policy_data.is_some()
+        && std::env::var("KEYSTORE_ALLOW_INLINE_POLICY").map(|v| v == "1" || v == "true").unwrap_or(false) == false
+    {
+        return Err(ApiError::Forbidden(
+            "inline encrypted_policy_data is disabled (set KEYSTORE_ALLOW_INLINE_POLICY=1 for \
+             local testing); check-policy reads the on-chain policy in production".to_string(),
+        ));
+    }
     let policy: Option<wallet_policy::Policy> = if let Some(ref inline_data) = req.encrypted_policy_data {
         let seed = format!("wallet-policy:{}", req.wallet_id);
         let encrypted_bytes = base64::decode(inline_data)
@@ -4682,33 +4744,18 @@ async fn wallet_check_policy_handler(
             webhook_url,
         },
         Decision::RequiresApproval { threshold } => {
-            // Trusted-artifact ops can't be bound to the approved op, so multisig is
-            // unsupported — surface it as a denial in the pre-flight (mirrors the
-            // /wallet/sign trust-anchor reject) instead of advertising requires_approval.
-            if wallet_policy::bind_mode(&req.op) == wallet_policy::BindMode::Trusted {
-                WalletCheckPolicyResponse {
-                    allowed: false,
-                    frozen: false,
-                    requires_approval: None,
-                    required_approvals: None,
-                    reason: Some(
-                        "Multisig approval is not supported for trusted-artifact operations \
-                         (swap/confidential/cross_chain_withdraw/payment_check)."
-                            .to_string(),
-                    ),
-                    request_hash: Some(request_hash),
-                    webhook_url,
-                }
-            } else {
-                WalletCheckPolicyResponse {
-                    allowed: true,
-                    frozen: false,
-                    requires_approval: Some(true),
-                    required_approvals: Some(threshold as i32),
-                    reason: None,
-                    request_hash: Some(request_hash),
-                    webhook_url,
-                }
+            // Owner-control multisig applies to Built/HashPinned AND Trusted kinds. The
+            // coordinator creates a pending approval; a Trusted op is signed against the
+            // coordinator-supplied artifact AFTER approval (off-chain destination stays
+            // coordinator-trusted — documented tradeoff). See plan "Trusted ops under multisig".
+            WalletCheckPolicyResponse {
+                allowed: true,
+                frozen: false,
+                requires_approval: Some(true),
+                required_approvals: Some(threshold as i32),
+                reason: None,
+                request_hash: Some(request_hash),
+                webhook_url,
             }
         }
     };
@@ -5047,14 +5094,14 @@ mod tests {
     }
 
     #[test]
-    fn trusted_kinds_are_bind_mode_trusted_so_multisig_guard_covers_them() {
-        // The /wallet/sign + /check-policy multisig guards reject when bind_mode == Trusted.
-        // Assert every Trusted kind is classified Trusted, so none can slip past the guard
-        // into verify_approvals (where an unbound artifact would be signed).
+    fn trusted_kinds_are_bind_mode_trusted() {
+        // Trusted kinds route to sign_trusted. Under multisig they now pass through
+        // verify_approvals first (owner control); the keystore signs the coordinator-supplied
+        // artifact after approval (off-chain destination stays coordinator-trusted).
         use shared_tee_helpers::wallet_policy::{bind_mode, BindMode, Op};
         let trusted = [
             Op::Swap { token_in: "a".into(), amount_in: "1".into(), token_out: "b".into(), min_out: "1".into() },
-            Op::Confidential { flow: "withdraw".into(), to: Some("x".into()), amount: "1".into(), token: "near".into(), chain: Some("near".into()) },
+            Op::Confidential { flow: "withdraw".into(), to: Some("x".into()), amount: "1".into(), token: "near".into(), chain: Some("near".into()), token_out: None, min_amount_out: None },
             Op::CrossChainWithdraw { to: "0x".into(), amount: "1".into(), token: "nep141:usdc.near".into(), chain: "ethereum".into() },
             Op::PaymentCheck { amount: "1".into(), token: "nep141:usdc.near".into() },
         ];
