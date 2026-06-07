@@ -42,7 +42,7 @@ use crate::outlayer_rpc::RpcProxy;
 use crate::outlayer_storage::client::StorageConfig;
 
 mod wasi_p1;
-mod wasi_p2;
+pub(crate) mod wasi_p2;
 
 /// VRF configuration for host functions
 #[derive(Clone)]
