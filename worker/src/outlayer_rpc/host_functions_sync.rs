@@ -97,6 +97,23 @@ impl RpcProxy {
         Ok(())
     }
 
+    /// Rewrite URL host to a resolved IP address (prevents DNS rebinding).
+    /// Keeps original Host header intact via reqwest's default behavior.
+    fn pin_url_to_addr(url: &str, addr: std::net::SocketAddr) -> String {
+        let parsed = reqwest::Url::parse(url).unwrap_or_else(|_| reqwest::Url::parse("http://0.0.0.0").unwrap());
+        let scheme = parsed.scheme();
+        let path = parsed.path();
+        let query = parsed.query().map(|q| format!("?{}", q)).unwrap_or_default();
+
+        // Build URL with IP address, preserving original port
+        let ip_port = if (scheme == "http" && addr.port() == 80) || (scheme == "https" && addr.port() == 443) {
+            format!("{}://{}{}", scheme, addr.ip(), path)
+        } else {
+            format!("{}://{}:{}{}", scheme, addr.ip(), addr.port(), path)
+        };
+        format!("{}{}", ip_port, query)
+    }
+
     /// Safe display of URL - hides API keys and query parameters
     fn safe_url_display(url: &str) -> String {
         if let Some(question_mark_pos) = url.find('?') {
@@ -178,12 +195,15 @@ impl RpcProxy {
     /// Parses response as JSON, returns Value (same as call_method)
     pub fn http_get(&self, url: &str, headers_json: Option<&str>) -> Result<Value> {
         self.check_rate_limit()?;
-        self.validate_url(url)?;
+        let validated_addr = self.validate_url(url)?;
 
         let headers = Self::parse_headers_json(headers_json);
-        info!("[RPC] HTTP GET {}", Self::safe_url_display(url));
 
-        let mut req = self.client.get(url);
+        // Pin to resolved IP to prevent DNS rebinding (host header preserved)
+        let pinned_url = Self::pin_url_to_addr(url, validated_addr);
+        info!("[RPC] HTTP GET {} (pinned to {})", Self::safe_url_display(url), validated_addr);
+
+        let mut req = self.client.get(&pinned_url);
         for (name, value) in headers {
             req = req.header(name, value);
         }
@@ -204,15 +224,22 @@ impl RpcProxy {
     /// Content-Type defaults to application/json; override via headers if needed.
     pub fn http_post(&self, url: &str, body: &str, headers_json: Option<&str>) -> Result<Value> {
         self.check_rate_limit()?;
-        self.validate_url(url)?;
+        let validated_addr = self.validate_url(url)?;
 
         let headers = Self::parse_headers_json(headers_json);
-        info!("[RPC] HTTP POST {} ({} bytes)", Self::safe_url_display(url), body.len());
+
+        // Pin to resolved IP to prevent DNS rebinding (host header preserved)
+        let pinned_url = Self::pin_url_to_addr(url, validated_addr);
+        info!("[RPC] HTTP POST {} ({} bytes, pinned to {})", Self::safe_url_display(url), body.len(), validated_addr);
 
         let mut req = self
             .client
-            .post(url)
-            .header("Content-Type", "application/json");
+            .post(&pinned_url);
+        // Set default Content-Type only if user didn't override it
+        let has_content_type = headers.iter().any(|(n, _)| n.eq_ignore_ascii_case("content-type"));
+        if !has_content_type {
+            req = req.header("Content-Type", "application/json");
+        }
         for (name, value) in headers {
             req = req.header(name, value);
         }
@@ -232,7 +259,7 @@ impl RpcProxy {
     }
 
     /// SSRF protection: validate URL and resolve DNS to block internal IPs
-    fn validate_url(&self, url: &str) -> Result<()> {
+    fn validate_url(&self, url: &str) -> Result<std::net::SocketAddr> {
         let parsed = reqwest::Url::parse(url)
             .with_context(|| format!("Invalid URL: {}", url))?;
 
@@ -263,7 +290,7 @@ impl RpcProxy {
             anyhow::bail!("DNS resolution returned no addresses for {}:{}", host, port);
         }
 
-        // Block internal/private IPs
+        // Return first non-blocked addr
         for addr in &addrs {
             if is_blocked_ip(addr.ip()) {
                 anyhow::bail!(
@@ -272,9 +299,10 @@ impl RpcProxy {
                     addr.ip()
                 );
             }
+            return Ok(*addr);
         }
 
-        Ok(())
+        unreachable!("addrs is non-empty but no addr passed the IP check")
     }
 
     #[allow(dead_code)]
