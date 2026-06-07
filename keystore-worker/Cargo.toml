@@ -59,7 +59,7 @@ thiserror = "2.0"
 dstack-sdk = "0.1"  # Phala dstack SDK for TDX attestation
 
 # TEE authentication (challenge-response with register-contract)
-shared-tee-helpers = { git = "https://github.com/out-layer/shared-tee-helpers", rev = "0d0250a0f4779a873d3c98cf806cfe5ccfaec881" }
+shared-tee-helpers = { git = "https://github.com/out-layer/shared-tee-helpers", branch = "main" }
 reqwest = { version = "0.11", features = ["json"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
 
