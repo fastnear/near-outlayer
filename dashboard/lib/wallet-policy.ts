@@ -28,13 +28,10 @@ export interface PolicyForm {
   raw_sign_requires_approval: boolean;
   /** confidential: confidential-intents flows. */
   confidential_enabled: boolean;
-  confidential_requires_approval: boolean;
   /** payment_check: claimable-link escrow — funds reach an arbitrary holder (whitelist-bypass). */
   payment_check_enabled: boolean;
-  payment_check_requires_approval: boolean;
   /** swap: 1Click swap — Trusted (coordinator-supplied quote/route, unbound to policy). */
   swap_enabled: boolean;
-  swap_requires_approval: boolean;
   /** cross_chain_withdraw: 1Click swap+bridge — Trusted; the riskiest, irreversible exit. */
   cross_chain_withdraw_enabled: boolean;
   /** sign_message: comma-separated NEP-413 recipient allowlist (default-DENY; never fund-moving). */
@@ -62,11 +59,8 @@ export const DEFAULT_POLICY: PolicyForm = {
   raw_sign_chains: '',
   raw_sign_requires_approval: false,
   confidential_enabled: false,
-  confidential_requires_approval: false,
   payment_check_enabled: false,
-  payment_check_requires_approval: false,
   swap_enabled: false,
-  swap_requires_approval: false,
   cross_chain_withdraw_enabled: false,
   sign_message_allowed_recipients: '',
 };
@@ -151,10 +145,11 @@ export function buildPolicyRules(
     if (chains.length > 0) rs.chains = chains;
     capabilities.raw_sign = rs;
   }
-  // Trusted capabilities (confidential/payment_check/swap) do NOT emit requires_approval:
-  // the post-approval artifact can't be bound to the approved op, so the keystore rejects
-  // Trusted+multisig — setting it would permanently brick the op. Only raw_sign (HashPinned)
-  // supports requires_approval.
+  // Trusted capabilities (confidential/payment_check/swap) are emitted as a bare `allowed`
+  // flag; this form does not surface a per-capability requires_approval for them. Multisig for
+  // these ops comes from the wallet-level `approval` threshold (since the 2026-06-07 reversal
+  // Trusted ops DO participate in multisig: they create a pending approval and execute after the
+  // threshold). Per-capability requires_approval would need its own UI field — not added here.
   if (form.confidential_enabled) {
     capabilities.confidential = { allowed: true };
   }
@@ -242,11 +237,8 @@ export function parsePolicyResponse(
     raw_sign_chains: (caps.raw_sign?.chains || []).join(', '),
     raw_sign_requires_approval: caps.raw_sign?.requires_approval === true,
     confidential_enabled: caps.confidential?.allowed === true,
-    confidential_requires_approval: caps.confidential?.requires_approval === true,
     payment_check_enabled: caps.payment_check?.allowed === true,
-    payment_check_requires_approval: caps.payment_check?.requires_approval === true,
     swap_enabled: caps.swap?.allowed === true,
-    swap_requires_approval: caps.swap?.requires_approval === true,
     cross_chain_withdraw_enabled: caps.cross_chain_withdraw?.allowed === true,
     sign_message_allowed_recipients: (caps.sign_message?.allowed_recipients || []).join(', '),
   };

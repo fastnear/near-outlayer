@@ -807,7 +807,7 @@ pub struct WalletSignPolicyResponse {
     pub public_key_hex: String, // ed25519 public key (32 bytes hex)
 }
 
-/// A single approver's NEP-413 signature over `approve:{approval_id}:{request_hash}`.
+/// A single approver's NEP-413 signature over `approve:{approval_id}:{wallet_pubkey}:{request_hash}`.
 #[derive(Debug, Deserialize)]
 pub struct ApproverSig {
     pub approver_id: String, // NEAR account id; must be in the wallet policy's approvers
@@ -826,9 +826,9 @@ pub struct ApprovalInfo {
     pub approval_id: String,
     /// NEP-413 `recipient` the approvers signed against; asserted == this keystore's contract.
     pub recipient: String,
-    /// YES votes — NEP-413 sigs over `approve:{approval_id}:{request_hash}`.
+    /// YES votes — NEP-413 sigs over `approve:{approval_id}:{wallet_pubkey}:{request_hash}`.
     pub approvals: Vec<ApproverSig>,
-    /// NO votes (vetoes) — NEP-413 sigs over `reject:{approval_id}:{request_hash}`. Any
+    /// NO votes (vetoes) — NEP-413 sigs over `reject:{approval_id}:{wallet_pubkey}:{request_hash}`. Any
     /// vote from a REAL policy approver (valid sig + on-chain key + in approver set)
     /// vetoes the operation; non-approver rejections are ignored. Symmetric with approvals.
     #[serde(default)]
@@ -970,7 +970,7 @@ pub struct WalletCheckPolicyResponse {
     pub required_approvals: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
-    /// Canonical request hash the dashboard signs (`approve:{id}:{request_hash}`).
+    /// Canonical request hash the dashboard signs (`approve:{id}:{wallet_pubkey}:{request_hash}`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_hash: Option<String>,
     /// Narrow carve-out: the owner's event-delivery URL (NOT a secret). The rest of the
@@ -3692,7 +3692,7 @@ async fn wallet_sign_policy_handler(
 /// policy requires approval for.
 ///
 /// The trust anchor is the on-chain policy (read + decrypted by `load_wallet_policy`)
-/// and the approvers' real NEP-413 signatures over `approve:{approval_id}:{request_hash}`,
+/// and the approvers' real NEP-413 signatures over `approve:{approval_id}:{wallet_pubkey}:{request_hash}`,
 /// where `request_hash` is derived HERE from the canonical `op` — never supplied by the
 /// coordinator. So a genuine approval bundle cannot be replayed to authorize a different
 /// op (the binding is automatic), and the coordinator transports the signatures but
@@ -3705,8 +3705,11 @@ fn approval_vote_message(vote: &str, approval_id: &str, wallet_pubkey: &str, req
 }
 
 /// Trusted-artifact NEP-413 recipients (intents verifiers only). `intents.near` for the
-/// public shard (swap/cross_chain_withdraw/payment_check transfers), `intents.far` for the
-/// confidential shard's generate-intent. Pure + unit-tested.
+/// public shard (swap/cross_chain_withdraw/payment_check transfers) and `intents.far` for
+/// the confidential shard's generate-intent. NEAR Intents is mainnet-only (no testnet
+/// solvers), so the keystore only ever signs intents against the mainnet verifiers. The
+/// coordinator still controls the actual recipient; this allowlist is the keystore's
+/// independent backstop. Pure + unit-tested.
 fn is_trusted_recipient(recipient: &str) -> bool {
     matches!(recipient, "intents.near" | "intents.far")
 }
@@ -3805,7 +3808,7 @@ async fn verify_approvals(
     }
 
     // Veto: a NO vote from ANY real policy approver (valid sig over
-    // `reject:{id}:{request_hash}` + on-chain key ownership + in the approver set)
+    // `reject:{id}:{wallet_pubkey}:{request_hash}` + on-chain key ownership + in the approver set)
     // refuses the operation, regardless of how many approvals were collected.
     // Non-approver rejections are ignored — filtered exactly like non-approver approvals.
     let reject_message = approval_vote_message("reject", &info.approval_id, wallet_pubkey, request_hash);
@@ -4330,6 +4333,9 @@ async fn sign_built(
             let message = build_withdraw_intent_message(&signer_id, to, amount, token, &deadline);
             let mut nonce = [0u8; 32];
             rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
+            // NEAR Intents is mainnet-only (no testnet solvers), so the verifier is always
+            // mainnet `intents.near`. The NEP-413 recipient is bound into the signature, so it
+            // must match the verifier the withdraw intent will actually execute against.
             let recipient = "intents.near".to_string();
             let (signature_base58, public_key) =
                 sign_nep413(state, customer, &req.wallet_id, &message, nonce, &recipient).await?;
@@ -4514,10 +4520,10 @@ async fn sign_hash_pinned(
             ..
         } => {
             // Hard exclusion of the intents verifiers, ABOVE the owner allowlist: an owner
-            // mis-listing `intents.near`/`intents.far` in allowed_recipients would re-open the
-            // fund path (a "login" signature replayable as a fund-moving NEP-413 intent).
-            // sign_message can NEVER target an intents verifier — those go through the gated
-            // Trusted ops only.
+            // mis-listing `intents.near`/`intents.far` in allowed_recipients
+            // would re-open the fund path (a "login" signature replayable as a fund-moving
+            // NEP-413 intent). sign_message can NEVER target an intents verifier — those go
+            // through the gated Trusted ops only.
             if is_trusted_recipient(recipient) {
                 return Err(ApiError::Forbidden(format!(
                     "sign_message recipient '{}' is a fund-moving intents verifier and is never \
@@ -4605,10 +4611,11 @@ async fn sign_trusted(
         .as_ref()
         .ok_or_else(|| ApiError::BadRequest("trusted op requires artifact.recipient".to_string()))?;
     // Pin the NEP-413 recipient to the intents verifiers. Trusted ops are intents-only — all
-    // four kinds route through intents.near (swap/cross_chain_withdraw/payment_check transfer
-    // intents) or intents.far (the confidential shard's generate-intent). Without this, a
-    // Trusted op could emit a NEP-413 signature bound to ANY verifier (the very class
-    // sign_message's allowlist closes). VERIFIED: no Trusted flow uses another recipient.
+    // four kinds route through intents.near (the public shard: swap/cross_chain_withdraw/
+    // payment_check transfer intents) or intents.far (the confidential shard's generate-intent).
+    // NEAR Intents is mainnet-only (no testnet solvers), so there is no testnet verifier here.
+    // Without this, a Trusted op could emit a NEP-413 signature bound to ANY verifier (the very
+    // class sign_message's allowlist closes). VERIFIED: no Trusted flow uses another recipient.
     if !is_trusted_recipient(recipient) {
         return Err(ApiError::Forbidden(format!(
             "trusted op recipient '{}' is not an intents verifier (intents.near/intents.far)",
@@ -4918,9 +4925,12 @@ mod wallet_sign_tests {
     // --- Approval binding: a substituted op cannot reuse genuine approvals ---------
     //
     // The keystore derives request_hash from the canonical op and the approvers sign
-    // `approve:{id}:{request_hash}`. If any op field is substituted, request_hash
-    // changes, so a signature collected for the original op fails to verify against
-    // the substituted op's message — the binding is automatic.
+    // `approve:{id}:{wallet_pubkey}:{request_hash}` (see `approval_vote_message`). If any
+    // op field is substituted, request_hash changes, so a signature collected for the
+    // original op fails to verify against the substituted op's message — the binding is
+    // automatic. The `sign_vote` helper below exercises this substitution/domain-separation
+    // property with a simplified message; the wallet-pubkey binding is covered separately by
+    // `approval_message_is_wallet_bound_no_cross_wallet_replay`.
 
     fn sign_vote(
         verb: &str,
@@ -5088,8 +5098,11 @@ mod tests {
     fn trusted_recipient_pin_allows_only_intents_verifiers() {
         assert!(is_trusted_recipient("intents.near"));
         assert!(is_trusted_recipient("intents.far")); // confidential shard
+        // NEAR Intents is mainnet-only: testnet verifier is NOT a trusted recipient.
+        assert!(!is_trusted_recipient("intents.testnet"));
         assert!(!is_trusted_recipient("evil.near"));
         assert!(!is_trusted_recipient("alice.near"));
+        assert!(!is_trusted_recipient("intents.near.evil.near")); // no suffix/substring match
         assert!(!is_trusted_recipient(""));
     }
 

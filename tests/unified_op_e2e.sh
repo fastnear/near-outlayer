@@ -3,28 +3,28 @@
 #
 # Exercises the NEW surface end-to-end against a real testnet coordinator + keystore:
 #   T1  /wallet/v1/auth-sign            — bearer/register/api-key build+sign; jwt rejected
-#   T2  cross_chain_withdraw            — own default-DENY type; denied w/o it, passes gate w/ it,
+#   T2  cross_chain_withdraw [MAINNET]  — own default-DENY type; denied w/o it, passes gate w/ it,
 #                                         blocked on multisig
-#   T3  payment_check                   — default-DENY capability; denied w/o it, allowed+amount-gated w/ it
+#   T3  payment_check       [MAINNET]   — default-DENY capability; denied w/o it, allowed+amount-gated w/ it
 #   T4  dumb approve/reject             — real approver YES executes; real approver NO vetoes;
 #                                         non-approver NO ignored
 #   T5  sign_message allowed_recipients — recipient in allowlist signs; not-in-allowlist denied;
 #                                         intents.near denied (auth path can't sign a fund intent)
-#   T6  FT Op::Withdraw → external      — MUST: nep141 token exits to an EXTERNAL near account via solver
+#   T6  FT Op::Withdraw → external [MAINNET] — MUST: nep141 token exits to an EXTERNAL near account via solver
 #   T7  negatives                       — substituted op (wrong hash) → keystore rejects, no execution;
 #                                         gated op without approvals → stays pending, no tx
-#   T8  swap default-DENY capability     — denied without capabilities.swap even when allowed by type
-#   T9  swap under MULTISIG              — NEW: Trusted swap on a multisig wallet returns pending_approval
+#   T8  swap default-DENY cap [MAINNET]  — denied without capabilities.swap even when allowed by type
+#   T9  swap under MULTISIG  [MAINNET]   — NEW: Trusted swap on a multisig wallet returns pending_approval
 #                                         (not "does not support multisig"); after the threshold the op
 #                                         leaves pending_approval and the keystore signs the Trusted artifact
-#   T10 cross_chain_withdraw under MULTISIG — NEW: Trusted cross-chain bridge-out on a multisig wallet
-#                                         returns pending_approval; after the threshold it leaves
+#   T10 cross_chain_withdraw under MULTISIG [MAINNET] — NEW: Trusted cross-chain bridge-out on a multisig
+#                                         wallet returns pending_approval; after the threshold it leaves
 #                                         pending_approval (keystore signs the approved op)
 #   T11 /wallet/v1/delete (DESTRUCTIVE)    — NEAR DeleteAccount sweeps the FULL balance to a beneficiary;
 #                                         asserts the self-beneficiary + zero-balance guards, then a real
 #                                         destructive delete of a throwaway sub-wallet to a beneficiary we
 #                                         control (asserts success + the beneficiary balance increased)
-#   T12 payment_check claim/reclaim/batch  — extends T3 (which only covers create's capability gate) with the
+#   T12 payment_check claim/reclaim/batch [MAINNET] — extends T3 (which only covers create's capability gate) with the
 #                                         real gasless value flow: CLAIM a check to a SECOND sub-wallet we
 #                                         control (ephemeral-key signed, not keystore) + assert the claimer's
 #                                         intents balance increased; RECLAIM a check (creator gets funds back)
@@ -33,6 +33,11 @@
 #                                         All sub-wallets live under our own vault — value never leaves us.
 #
 # ── Test classes (what each needs) ────────────────────────────────────────────
+#   [MAINNET] NEAR Intents (regular + confidential) are MAINNET-ONLY — there are no testnet solvers and
+#             the coordinator returns HTTP 503 for the public intents endpoints on testnet. The 7 tests
+#             tagged [MAINNET] (T2, T3, T6, T8, T9, T10, T12) drive an intents-dependent endpoint
+#             (deposit/withdraw/swap/cross-chain/payment-check) and therefore clean-SKIP (with a note)
+#             when NETWORK != mainnet. The other 5 (T1, T4, T5, T7, T11) run on testnet.
 #   [POLICY]  testnet + on-chain policy + Bearer-near auth (signed locally by customer-recovery).
 #             NO fund movement beyond the parent's policy-storage stake (~0.1 NEAR/policy) + vault.
 #   [SIG]     additionally needs the APPROVER NEAR keys in ~/.near-credentials (signed locally — headless;
@@ -96,18 +101,31 @@ PASS=0; FAILED=0; FAILED_NAMES=()
 
 want() { [[ -z "$ONLY" ]] || [[ ",$ONLY," == *",$1,"* ]]; }
 
+# NEAR Intents (regular + confidential) are MAINNET-ONLY — there are no testnet solvers, and the
+# coordinator now returns HTTP 503 for the public intents endpoints on testnet. Tests that drive an
+# intents-dependent endpoint (deposit/withdraw/swap/cross-chain/payment-check) therefore only run on
+# mainnet. Use as: `if want TN && intents_mainnet TN; then ...`. Emits a clean skip note (only when
+# `want` already selected the test) and returns non-zero off mainnet so the body is skipped.
+intents_mainnet() {
+  [[ "$NETWORK" == "mainnet" ]] && return 0
+  note "$1 skipped — NEAR Intents are mainnet-only (no testnet solvers; coordinator returns 503 on testnet)"
+  return 1
+}
+
 [[ -n "$PARENT" ]] || { echo "USAGE: PARENT=... MPC_PUBLIC_KEY=... $0 --apply" >&2; exit 1; }
 CREDS_DIR="$HOME/.near-credentials/$NETWORK"
 for tool in jq curl outlayer near python3; do command -v "$tool" >/dev/null || { echo "✗ missing $tool" >&2; exit 1; }; done
 
 if [[ "$APPLY" != true ]]; then
   warn "Dry-run. Pass --apply to deploy a vault + exercise the unified-op surface on $NETWORK."
-  warn "Tests: T1 auth-sign[POLICY] T2 cross_chain_withdraw[POLICY] T3 payment_check[FUNDS]"
-  warn "       T4 approve/reject[SIG] T5 sign_message[POLICY] T6 FT-withdraw→external[FUNDS]"
-  warn "       T7 negatives incl. cross-wallet replay[POLICY/SIG] T8 swap default-DENY capability[POLICY]"
-  warn "       T9 swap-under-multisig→pending_approval+execute[SIG] T10 cross_chain_withdraw-under-multisig[SIG]"
+  warn "Tests: T1 auth-sign[POLICY] T2 cross_chain_withdraw[POLICY][MAINNET] T3 payment_check[FUNDS][MAINNET]"
+  warn "       T4 approve/reject[SIG] T5 sign_message[POLICY] T6 FT-withdraw→external[FUNDS][MAINNET]"
+  warn "       T7 negatives incl. cross-wallet replay[POLICY/SIG] T8 swap default-DENY capability[POLICY][MAINNET]"
+  warn "       T9 swap-under-multisig→pending_approval+execute[SIG][MAINNET] T10 cross_chain_withdraw-under-multisig[SIG][MAINNET]"
   warn "       T11 delete-account: self-beneficiary + zero-balance guards, then a real destructive delete[FUNDS]"
-  warn "       T12 payment-check claim/reclaim/batch-create: real value moves between sub-wallets[FUNDS]"
+  warn "       T12 payment-check claim/reclaim/batch-create: real value moves between sub-wallets[FUNDS][MAINNET]"
+  warn "[MAINNET] = NEAR Intents are mainnet-only (no testnet solvers; coordinator 503s on testnet)."
+  warn "  On NETWORK=$NETWORK those 7 (T2,T3,T6,T8,T9,T10,T12) clean-SKIP; T1,T4,T5,T7,T11 run on testnet."
   warn "raw_sign + confidential are NOT testnet-coordinator-reachable — covered by crate unit tests (see header)."
   exit 0
 fi
@@ -130,16 +148,25 @@ near_tty() {
 }
 
 # ─── shared vault ──────────────────────────────────────────────────────────────
-VAULT_NAME="uop-$(date +%s)"
-VAULT_ID="$VAULT_NAME.$PARENT"
-log "Deploy vault $VAULT_ID"
-INIT_RC=0
-INIT_OUT=$(outlayer vault init --name "$VAULT_NAME" --exit-window 60s 2>&1) || INIT_RC=$?
-if [[ $INIT_RC -ne 0 ]] && echo "$INIT_OUT" | grep -q "outlayer vault resume"; then
-  for _ in 1 2 3 4 5; do sleep 6; if outlayer vault resume "$VAULT_ID" >&2; then INIT_RC=0; break; fi; done
+# Default-vault mode (common case): with NO MPC_PUBLIC_KEY we do NOT deploy a
+# per-vault — VAULT_ID stays empty, so the bearer tokens omit `--vault-id` (mk_token's
+# `${2:+...}`) and the coordinator routes sub-wallets under its DEFAULT vault. Set
+# MPC_PUBLIC_KEY to deploy a dedicated vault instead (the original per-vault path).
+VAULT_ID=""
+if [[ -n "${MPC_PUBLIC_KEY:-}" ]]; then
+  VAULT_NAME="uop-$(date +%s)"
+  VAULT_ID="$VAULT_NAME.$PARENT"
+  log "Deploy vault $VAULT_ID"
+  INIT_RC=0
+  INIT_OUT=$(outlayer vault init --name "$VAULT_NAME" --exit-window 60s 2>&1) || INIT_RC=$?
+  if [[ $INIT_RC -ne 0 ]] && echo "$INIT_OUT" | grep -q "outlayer vault resume"; then
+    for _ in 1 2 3 4 5; do sleep 6; if outlayer vault resume "$VAULT_ID" >&2; then INIT_RC=0; break; fi; done
+  fi
+  [[ $INIT_RC -eq 0 ]] || { echo "✗ vault init failed: $INIT_OUT" >&2; exit 1; }
+  pass "vault $VAULT_ID deployed"
+else
+  log "Default-vault mode (no MPC_PUBLIC_KEY): skipping vault init; tokens omit vault-id → coordinator default vault"
 fi
-[[ $INIT_RC -eq 0 ]] || { echo "✗ vault init failed: $INIT_OUT" >&2; exit 1; }
-pass "vault $VAULT_ID deployed"
 
 mk_token() { "$RECOVERY_BIN" sign-bearer-near --private-key "$PARENT_PRIVKEY" --account-id "$PARENT" --seed "$1" ${2:+--vault-id "$2"}; }
 AUTH() { echo "Authorization: Bearer near:$(mk_token "$1" "$VAULT_ID")"; }
@@ -175,6 +202,20 @@ post() {
   HTTP=$(curl "${args[@]}"); BODY=$(cat /tmp/uop.body)
 }
 
+# assert_funded <label> — call right after a funding `post`. A funding sub-step can return HTTP 200
+# yet settle on-chain as status:"failed" (e.g. the wrap/deposit reverted); without this the failure
+# is silent and only surfaces much later as a confusing "have 0 balance". Treat a "failed" JSON
+# status as a HARD failure here, printing the body so the real cause is visible at the funding step.
+assert_funded() {
+  local label=$1 st
+  st=$(echo "$BODY" | jq -r '.status // empty' 2>/dev/null)
+  if [[ "$st" == "failed" ]]; then
+    fail "$label funding step returned status:\"failed\" — $(echo "$BODY" | head -c200)"
+    return 1
+  fi
+  return 0
+}
+
 fund_near() { near_tty "near tokens $PARENT send-near $1 '$2' network-config $NETWORK sign-with-keychain send"; }
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -203,7 +244,7 @@ fi
 # ════════════════════════════════════════════════════════════════════════════════
 # T2 — cross_chain_withdraw default-DENY own type  [POLICY] (no funds)
 # ════════════════════════════════════════════════════════════════════════════════
-if want T2; then
+if want T2 && intents_mainnet T2; then
   log "T2 [POLICY] cross_chain_withdraw — own default-DENY type"
   XC_BODY='{"chain":"ethereum","to":"0x000000000000000000000000000000000000dEaD","amount":"1000000000000000000000000","token":"nep141:'"$WNEAR"'"}'
 
@@ -245,16 +286,16 @@ fi
 # ════════════════════════════════════════════════════════════════════════════════
 # T3 — payment_check default-DENY capability  [FUNDS] (small intents balance needed)
 # ════════════════════════════════════════════════════════════════════════════════
-if want T3; then
+if want T3 && intents_mainnet T3; then
   log "T3 [FUNDS] payment_check — default-DENY capability + amount limit"
   SEED="t3-$(date +%s)"; read -r WID ADDR < <(new_subwallet "$SEED")
   log "T3 fund sub-wallet ($ADDR) with NEAR + deposit 0.02 wNEAR into intents (so the capability gate is REACHED, not short-circuited by the balance pre-check)"
   fund_near "$ADDR" "0.1 NEAR" || warn "T3 funding failed"
   for _ in $(seq 1 6); do curl -s "$RPC_URL" -X POST -H 'Content-Type: application/json' -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"query\",\"params\":{\"request_type\":\"view_account\",\"finality\":\"final\",\"account_id\":\"$ADDR\"}}" | jq -e '.result.amount' >/dev/null && break; sleep 2; done
   # storage-register the wallet on wrap.testnet + wrap NEAR, then deposit into intents.
-  post POST /wallet/v1/storage-deposit "$SEED" "$(jq -nc --arg t "$WNEAR" '{token:$t}')"; note "T3 storage-deposit: $HTTP"
-  post POST /wallet/v1/call "$SEED" "$(jq -nc --arg t "$WNEAR" '{receiver_id:$t, method_name:"near_deposit", args:{}, gas:"30000000000000", deposit:"20000000000000000000000"}')"; note "T3 wrap near_deposit: $HTTP"
-  post POST /wallet/v1/intents/deposit "$SEED" "$(jq -nc --arg t "nep141:$WNEAR" '{token:$t, amount:"20000000000000000000000"}')"; note "T3 intents deposit: $HTTP $(echo "$BODY"|head -c100)"
+  post POST /wallet/v1/storage-deposit "$SEED" "$(jq -nc --arg t "$WNEAR" '{token:$t}')"; note "T3 storage-deposit: $HTTP"; assert_funded "T3 storage-deposit"
+  post POST /wallet/v1/call "$SEED" "$(jq -nc --arg t "$WNEAR" '{receiver_id:$t, method_name:"near_deposit", args:{}, gas:"30000000000000", deposit:"20000000000000000000000"}')"; note "T3 wrap near_deposit: $HTTP"; assert_funded "T3 wrap near_deposit"
+  post POST /wallet/v1/intents/deposit "$SEED" "$(jq -nc --arg t "nep141:$WNEAR" '{token:$t, amount:"20000000000000000000000"}')"; note "T3 intents deposit: $HTTP $(echo "$BODY"|head -c100)"; assert_funded "T3 intents deposit"
   sleep 4
   CHECK_BODY=$(jq -nc --arg t "nep141:$WNEAR" '{token:$t, amount:"10000000000000000000000"}')  # 0.01 wNEAR, within balance
 
@@ -361,16 +402,19 @@ fi
 # ════════════════════════════════════════════════════════════════════════════════
 # T6 — MUST: FT Op::Withdraw exits to an EXTERNAL near account via the solver  [FUNDS]
 # ════════════════════════════════════════════════════════════════════════════════
-if want T6; then
+if want T6 && intents_mainnet T6; then
   log "T6 [FUNDS] FT Op::Withdraw (nep141:$WNEAR) → EXTERNAL account $EXTERNAL_ACCT via solver (capability the deleted ft-withdraw provided)"
   SEED="t6-$(date +%s)"; read -r WID ADDR < <(new_subwallet "$SEED")
   fund_near "$ADDR" "0.15 NEAR" || warn "T6 funding"
   for _ in $(seq 1 6); do curl -s "$RPC_URL" -X POST -H 'Content-Type: application/json' -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"query\",\"params\":{\"request_type\":\"view_account\",\"finality\":\"final\",\"account_id\":\"$ADDR\"}}" | jq -e '.result.amount' >/dev/null && break; sleep 2; done
-  store_policy "$SEED" "$WID" "$(jq -nc --arg t "nep141:$WNEAR" '{rules:{transaction_types:["intents_withdraw"], limits:{per_transaction:{($t):"1000000000000000000000000000"}}}}')" || fail "T6 store_policy"
+  # Fund FIRST (these are `call`-ops), THEN store the withdraw-only policy. Storing the restrictive
+  # policy before funding would 403 the storage-deposit/near_deposit/intents-deposit `call`-ops
+  # (the policy lists only intents_withdraw, no `call`). Mirrors the T3 fund→store ordering.
   # wrap NEAR → ft into intents
-  post POST /wallet/v1/storage-deposit "$SEED" "$(jq -nc --arg t "$WNEAR" '{token:$t}')"; note "T6 storage-deposit: $HTTP"
-  post POST /wallet/v1/call "$SEED" "$(jq -nc --arg t "$WNEAR" '{receiver_id:$t, method_name:"near_deposit", args:{}, gas:"30000000000000", deposit:"50000000000000000000000"}')"; note "T6 near_deposit: $HTTP"
-  post POST /wallet/v1/intents/deposit "$SEED" "$(jq -nc --arg t "nep141:$WNEAR" '{token:$t, amount:"50000000000000000000000"}')"; note "T6 intents deposit: $HTTP $(echo "$BODY"|head -c100)"
+  post POST /wallet/v1/storage-deposit "$SEED" "$(jq -nc --arg t "$WNEAR" '{token:$t}')"; note "T6 storage-deposit: $HTTP"; assert_funded "T6 storage-deposit"
+  post POST /wallet/v1/call "$SEED" "$(jq -nc --arg t "$WNEAR" '{receiver_id:$t, method_name:"near_deposit", args:{}, gas:"30000000000000", deposit:"50000000000000000000000"}')"; note "T6 near_deposit: $HTTP"; assert_funded "T6 near_deposit"
+  post POST /wallet/v1/intents/deposit "$SEED" "$(jq -nc --arg t "nep141:$WNEAR" '{token:$t, amount:"50000000000000000000000"}')"; note "T6 intents deposit: $HTTP $(echo "$BODY"|head -c100)"; assert_funded "T6 intents deposit"
+  store_policy "$SEED" "$WID" "$(jq -nc --arg t "nep141:$WNEAR" '{rules:{transaction_types:["intents_withdraw"], limits:{per_transaction:{($t):"1000000000000000000000000000"}}}}')" || fail "T6 store_policy"
   sleep 4
   # external recipient must be storage-registered on wrap.testnet (else ft_withdraw is rejected → surfaced as a clear error)
   AMT="30000000000000000000000" # 0.03 wNEAR
@@ -452,7 +496,7 @@ fi
 # ════════════════════════════════════════════════════════════════════════════════
 # T8 — swap default-DENY capability  [POLICY] (audit fix 3)
 # ════════════════════════════════════════════════════════════════════════════════
-if want T8; then
+if want T8 && intents_mainnet T8; then
   log "T8 [POLICY] swap — default-DENY `swap` capability (denied without it even when allowed by transaction_types)"
   SWAP_BODY='{"token_in":"nep141:'"$WNEAR"'","amount_in":"10000000000000000000000","token_out":"nep141:usdc.testnet","min_amount_out":"1"}'
   # 8a: transaction_types allows swap but NO capability → denied at the keystore capability gate.
@@ -483,7 +527,7 @@ fi
 #       NEP-413 vote over the API-provided request_hash, POST /wallet/v1/approve/<aid>,
 #       and polling /wallet/v1/requests/<rid> for the status transition.
 # ════════════════════════════════════════════════════════════════════════════════
-if want T9; then
+if want T9 && intents_mainnet T9; then
   log "T9 [SIG] Trusted swap under MULTISIG — pending_approval on request, then leaves pending_approval after threshold"
   [[ -f "$CREDS_DIR/$APPROVER1.json" ]] || warn "T9 skipped — APPROVER1 creds required"
   if [[ -f "$CREDS_DIR/$APPROVER1.json" ]]; then
@@ -557,7 +601,7 @@ fi
 #       re-fetches the 1Click quote and signs the Trusted transfer-to-deposit artifact (approval
 #       binds token+amount; the off-chain deposit_address routing is coordinator-supplied).
 # ════════════════════════════════════════════════════════════════════════════════
-if want T10; then
+if want T10 && intents_mainnet T10; then
   log "T10 [SIG] Trusted cross_chain_withdraw under MULTISIG — pending_approval on request, then leaves pending_approval after threshold"
   [[ -f "$CREDS_DIR/$APPROVER1.json" ]] || warn "T10 skipped — APPROVER1 creds required"
   if [[ -f "$CREDS_DIR/$APPROVER1.json" ]]; then
@@ -716,7 +760,7 @@ fi
 #       balance. Tiny testnet amounts; both the creators AND the claimer are disposable sub-wallets
 #       under our own vault, so value only ever moves between accounts we control.
 # ════════════════════════════════════════════════════════════════════════════════
-if want T12; then
+if want T12 && intents_mainnet T12; then
   log "T12 [FUNDS] payment_check claim / reclaim / batch-create — real gasless value flow between sub-wallets we control"
 
   # intents balance of a sub-wallet (by its own seed/AUTH) for a defuse token. Echoes the integer
@@ -736,9 +780,9 @@ if want T12; then
     local seed=$1 addr=$2 near_amount=$3 wrap_yocto=$4
     fund_near "$addr" "$near_amount" || warn "T12 funding ($addr) failed"
     for _ in $(seq 1 6); do curl -s "$RPC_URL" -X POST -H 'Content-Type: application/json' -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"query\",\"params\":{\"request_type\":\"view_account\",\"finality\":\"final\",\"account_id\":\"$addr\"}}" | jq -e '.result.amount' >/dev/null && break; sleep 2; done
-    post POST /wallet/v1/storage-deposit "$seed" "$(jq -nc --arg t "$WNEAR" '{token:$t}')"; note "T12 storage-deposit ($addr): $HTTP"
-    post POST /wallet/v1/call "$seed" "$(jq -nc --arg t "$WNEAR" --arg d "$wrap_yocto" '{receiver_id:$t, method_name:"near_deposit", args:{}, gas:"30000000000000", deposit:$d}')"; note "T12 wrap near_deposit ($addr): $HTTP"
-    post POST /wallet/v1/intents/deposit "$seed" "$(jq -nc --arg t "nep141:$WNEAR" --arg a "$wrap_yocto" '{token:$t, amount:$a}')"; note "T12 intents deposit ($addr): $HTTP $(echo "$BODY"|head -c100)"
+    post POST /wallet/v1/storage-deposit "$seed" "$(jq -nc --arg t "$WNEAR" '{token:$t}')"; note "T12 storage-deposit ($addr): $HTTP"; assert_funded "T12 storage-deposit ($addr)"
+    post POST /wallet/v1/call "$seed" "$(jq -nc --arg t "$WNEAR" --arg d "$wrap_yocto" '{receiver_id:$t, method_name:"near_deposit", args:{}, gas:"30000000000000", deposit:$d}')"; note "T12 wrap near_deposit ($addr): $HTTP"; assert_funded "T12 wrap near_deposit ($addr)"
+    post POST /wallet/v1/intents/deposit "$seed" "$(jq -nc --arg t "nep141:$WNEAR" --arg a "$wrap_yocto" '{token:$t, amount:$a}')"; note "T12 intents deposit ($addr): $HTTP $(echo "$BODY"|head -c100)"; assert_funded "T12 intents deposit ($addr)"
     sleep 4
   }
 
@@ -854,5 +898,5 @@ if [[ $FAILED -gt 0 ]]; then
   fail "FAILED: $FAILED"; exit 1
 fi
 pass "ALL UNIFIED-OP E2E CHECKS PASSED"
-warn "Cleanup (optional): $VAULT_ID holds locked NEAR + per-wallet policy storage stakes."
+[[ -n "$VAULT_ID" ]] && warn "Cleanup (optional): $VAULT_ID holds locked NEAR + per-wallet policy storage stakes."
 warn "raw_sign chains + confidential capability are NOT testnet-coordinator-reachable — see header; crate unit tests cover them."

@@ -7,8 +7,9 @@ Institutional-grade custody wallets for AI agents. An agent gets an API key to o
 > catalog (`GET /wallet/v1/tokens`), on the exact chain a deposit address was
 > issued for. Sending an unsupported token, the wrong token, a token on the
 > wrong chain, an NFT, or an unlisted native gas coin to a deposit address is
-> **unrecoverable**. Deposit addresses from `/wallet/v1/deposit-intent` are
-> per-request and expire (30 min) — never reuse one or send after expiry.
+> **unrecoverable**. Deposit addresses from
+> `/wallet/v1/intents/deposit/cross-chain` (legacy alias `/wallet/v1/deposit-intent`)
+> are per-request and expire (30 min) — never reuse one or send after expiry.
 
 ---
 
@@ -168,7 +169,7 @@ allowed to produce the artifact it signs:
 |-----------|-------|-------------------|
 | **Built** | `transfer`, `call`, `delete`, `withdraw` (+ `auth`) | Constructs the NEAR tx / NEP-413 intent / auth string FROM the op fields → artifact == approved op |
 | **Hash-pinned** | `raw`, `sign_message` | Op carries `payload_hash`/`message_hash`; signs the supplied bytes iff `sha256(bytes) == hash` |
-| **Trusted** | `swap`, `confidential`, `cross_chain_withdraw`, `payment_check` | Artifact (e.g. the 1Click quote / deposit address) can't exist at approval time; keystore checks capability + policy + multisig on the op fields, then signs the supplied artifact, trusting the generator. The op's token/amount are still bound; the off-chain deposit address is coordinator-supplied (documented tradeoff) |
+| **Trusted** | `swap`, `confidential`, `cross_chain_withdraw`, `payment_check` | Artifact (e.g. the 1Click quote / deposit address) can't exist at approval time; the keystore checks capability + policy + multisig on the op fields and pins the recipient, then signs the supplied artifact, **trusting the coordinator to have built it from the approved op**. The keystore does NOT itself re-verify the artifact's token/amount against the op — those are bound only by that coordinator-trust, the same trust as the coordinator-supplied off-chain deposit address (documented tradeoff) |
 
 The deposit family (`intents/deposit`, `storage-deposit`, cross-chain deposit) is all
 `Op::Call` — there is no finer deposit policy type. `auth` is non-fund (a domain-separated
@@ -437,16 +438,19 @@ but cannot forge or rebind them.
 
 **Multisig covers Trusted ops too.** On a wallet with an approval threshold, the Trusted kinds —
 `swap`, `confidential`, `cross_chain_withdraw` — also create a pending approval and execute only
-after the approvers confirm. At execution the coordinator fetches the 1Click artifact (quote →
-deposit address) and the keystore signs it **only if** the artifact's `token_in`/`amount_in` match
-the approved op. So approval binds *whether* the op runs and *how much of which token* moves, but
-**not** the off-chain routing: the 1Click deposit address is generated at execution, supplied by
-the coordinator, and is not independently verifiable by the keystore (the 1Click quote signature
-does not cover it) — a documented tradeoff. A `confidential` *swap* additionally carries
-`token_out`/`min_amount_out` in its op, so the output terms are bound like a regular swap.
-`payment_check` is the **exception**: it is NOT wired into the generic multisig trigger — its
-creation is gated by the default-DENY `payment_check` capability + the per-transaction amount cap
-(cap-gated, not approval-gated, even on a multisig wallet).
+after the approvers confirm. What the approval actually binds is narrow: it binds *whether* the op
+runs (the keystore verifies the approver signatures over the canonical op, and pins the recipient).
+It does **not** bind the token/amount through the keystore — at execution the coordinator fetches
+the 1Click artifact (quote → deposit address) and the keystore signs it **without re-verifying** the
+artifact's `token_in`/`amount_in` against the approved op. The artifact matching the op is enforced
+only by trusting the coordinator to have built it from that op — the **same coordinator-trust** as
+the off-chain deposit address (generated at execution, coordinator-supplied, and not independently
+verifiable by the keystore — the 1Click quote signature does not cover it). So: a compromised
+coordinator could substitute the artifact's token/amount/routing post-approval; the on-chain
+guarantees are the recipient pin + the approver signatures, not the value terms — a documented
+tradeoff. `payment_check` is the **exception**: it is NOT wired into the generic multisig trigger —
+its creation is gated by the default-DENY `payment_check` capability + the per-transaction amount
+cap (cap-gated, not approval-gated, even on a multisig wallet).
 
 ---
 
@@ -541,7 +545,13 @@ from the generic approval trigger.
 
 ## API Endpoints
 
-Base: `https://api.outlayer.fastnear.com`
+Base: `https://api.outlayer.fastnear.com` (mainnet) · `https://testnet-api.outlayer.fastnear.com` (testnet)
+
+> **NEAR Intents are mainnet-only.** There are no testnet Intents solvers, so on testnet the
+> coordinator returns **HTTP 503** for every intents-dependent endpoint — the whole
+> `/wallet/v1/intents/*` family (deposit, withdraw, swap, cross-chain deposit, payment-check) **and**
+> all `/wallet/v1/confidential/*` routes. The non-intents surface (address, balance, `transfer`,
+> `call`, `sign-message`, `auth-sign`, policy, approvals, delete) works on both networks.
 
 ### Public
 
@@ -561,15 +571,17 @@ Base: `https://api.outlayer.fastnear.com`
 | GET | `/wallet/v1/balance?chain={chain}&token={token}` | Chain-agnostic balance (defaults to near) |
 | POST | `/wallet/v1/intents/deposit` | Deposit FT into intents.near (for manual intents operations) |
 | POST | `/wallet/v1/intents/swap` | Swap via 1Click: quote → deposit to intents.near → mt_transfer → poll |
-| POST | `/wallet/v1/deposit-intent` | Cross-chain deposit (1Click bridge address; `source_asset` or `chain`+`token` shape) |
-| POST | `/wallet/v1/confidential/deposit` | SHIELD: public intents → confidential shard (503 if not enabled) |
+| POST | `/wallet/v1/intents/deposit/cross-chain` | Cross-chain deposit (via 1Click / NEAR Intents; `source_asset` or `chain`+`token` shape). Legacy alias `/wallet/v1/deposit-intent`, still works |
+| GET | `/wallet/v1/intents/deposit/cross-chain/status?id={intent_id}` | Poll a cross-chain deposit's status. Legacy alias `/wallet/v1/deposit-status`, still works |
+| GET | `/wallet/v1/intents/deposit/cross-chain/list` | List this wallet's cross-chain deposits. Legacy alias `/wallet/v1/deposits`, still works |
+| POST | `/wallet/v1/confidential/shield` | SHIELD: public intents → confidential shard (503 if not enabled). Legacy alias `/wallet/v1/confidential/deposit`, still works |
 | POST | `/wallet/v1/confidential/unshield` | Confidential → public intents |
 | POST | `/wallet/v1/confidential/withdraw` | Confidential → external chain (or `chain="near"` for **native NEAR** delivery via `intents.near native_withdraw`) |
 | POST | `/wallet/v1/confidential/withdraw/dry-run` | Quote a confidential withdraw |
 | POST | `/wallet/v1/confidential/transfer` | Private confidential → confidential transfer |
 | POST | `/wallet/v1/confidential/swap` | Confidential swap (distinct assets) |
 | POST | `/wallet/v1/confidential/swap/quote` | Quote a confidential swap |
-| POST | `/wallet/v1/confidential/deposit-intent` | Cross-chain deposit into confidential (bridge address) |
+| POST | `/wallet/v1/confidential/deposit/cross-chain` | Cross-chain deposit into confidential (via 1Click / NEAR Intents). Legacy alias `/wallet/v1/confidential/deposit-intent`, still works |
 | GET | `/wallet/v1/confidential/balance` | Read confidential balances (private shard `intents.far`, no public RPC) |
 | GET | `/wallet/v1/requests/{id}` | Poll async operation status |
 | GET | `/wallet/v1/requests` | List operations (filter: type, status, limit) |
@@ -608,7 +620,7 @@ on the Defuse **confidential** shard — a separate PRIVATE shard (the
 gated by `ENABLE_CONFIDENTIAL_INTENTS` plus a **separate** Defuse partner
 agreement (`ONECLICK_CONFIDENTIAL_BASE_URL` + `ONECLICK_CONFIDENTIAL_JWT`, which
 **must differ** from the public `ONECLICK_JWT`). When unconfigured, every
-confidential route returns **HTTP 503** `confidential_unavailable`.
+confidential route returns **HTTP 503** `service_unavailable`.
 
 Pipeline per op: NEP-413 challenge → per-account JWT (cached in Redis
 `wallet:{id}:cfjwt`, 14 min) → 1Click quote → generate-intent → sign via
@@ -631,8 +643,9 @@ keystore → submit-intent. Ops are async; status is refreshed on read of
   the `partner_id` mapping, and the source-chain identity.
 - **Cross-chain DEPOSIT/WITHDRAW are still correlatable by timing and amount**:
   the source-chain deposit (at T) and destination-chain delivery (at T+N, e.g.
-  0.5 in / 0.44 out after bridge fee) are both visible on their public chains
-  and join trivially. True unlinkability needs jitter delays + amount splitting.
+  0.5 in / 0.44 out after the 1Click solver fee) are both visible on their public
+  chains and join trivially. True unlinkability needs jitter delays + amount
+  splitting.
 
 Each wallet has a single confidential identity (the custody wallet itself);
 there is no separate or unlinkable confidential identity.

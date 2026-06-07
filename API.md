@@ -80,7 +80,7 @@ All endpoints require `Authorization: Bearer wk_...`.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/wallet/v1/confidential/deposit` | Shield funds into the private shard |
+| POST | `/wallet/v1/confidential/shield` | Shield funds into the private shard (legacy alias `/wallet/v1/confidential/deposit`, still works) |
 | GET | `/wallet/v1/confidential/balance` | Private balance |
 | POST | `/wallet/v1/confidential/transfer` | Private transfer |
 | POST | `/wallet/v1/confidential/swap` | Private swap; `/swap/quote` for a quote |
