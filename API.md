@@ -67,6 +67,7 @@ All endpoints require `Authorization: Bearer wk_...`.
 | POST | `/wallet/v1/intents/deposit` | Deposit FT into Intents balance · **mainnet only** |
 | POST | `/wallet/v1/intents/withdraw` | Withdrawal — same-chain (native NEAR / NEP-141) or cross-chain (gasless); `/dry-run` available · **mainnet only** |
 | POST | `/wallet/v1/intents/swap` | Swap tokens via Intents; `/swap/quote` for a quote · **mainnet only** |
+| POST | `/wallet/v1/intents/deposit/cross-chain` | Cross-chain deposit via 1Click (legacy alias `/wallet/v1/deposit-intent`); `/cross-chain/status` + `/cross-chain/list` available · **mainnet only** |
 | POST | `/wallet/v1/create-payment-key` | Upgrade trial → paid (USDC or NEAR deposit) |
 | POST | `/wallet/v1/policy` · `/sign-policy` · `/encrypt-policy` | Policy engine (spend limits, allowlists) |
 | GET/POST | `/wallet/v1/approval/*` · `/approve/*` · `/reject/*` · `/pending_approvals*` | Multisig approval flow |
@@ -86,6 +87,7 @@ All endpoints require `Authorization: Bearer wk_...`.
 | POST | `/wallet/v1/confidential/swap` | Private swap; `/swap/quote` for a quote |
 | POST | `/wallet/v1/confidential/withdraw` | Withdraw (incl. native NEAR); `/dry-run` available |
 | POST | `/wallet/v1/confidential/unshield` | Move back to public balance |
+| POST | `/wallet/v1/confidential/deposit/cross-chain` | Cross-chain deposit into the confidential shard, quote-only (legacy alias `/wallet/v1/confidential/deposit-intent`) · **mainnet only** |
 
 ### Payment Checks (gasless agent-to-agent payments)
 

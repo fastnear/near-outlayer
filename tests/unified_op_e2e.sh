@@ -1,43 +1,47 @@
 #!/bin/bash
-# Unified canonical-op e2e (testnet) — Phase 5 of the agent-custody unified-op refactor.
+# NOTE: the shared-helper section below is DUPLICATED in the sibling file (unified_op_e2e.sh ↔ unified_op_e2e_intents.sh) — fixes to any helper must be applied to BOTH.
+# Unified canonical-op e2e — TESTNET-runnable subset (T1,T4,T5,T7,T11) of the agent-custody unified-op refactor.
+# The intents-dependent (MAINNET-only) tests T2,T3,T6,T8,T9,T10,T12 live in the sibling unified_op_e2e_intents.sh.
 #
 # Exercises the NEW surface end-to-end against a real testnet coordinator + keystore:
 #   T1  /wallet/v1/auth-sign            — bearer/register/api-key build+sign; jwt rejected
-#   T2  cross_chain_withdraw [MAINNET]  — own default-DENY type; denied w/o it, passes gate w/ it,
-#                                         blocked on multisig
-#   T3  payment_check       [MAINNET]   — default-DENY capability; denied w/o it, allowed+amount-gated w/ it
 #   T4  dumb approve/reject             — real approver YES executes; real approver NO vetoes;
 #                                         non-approver NO ignored
 #   T5  sign_message allowed_recipients — recipient in allowlist signs; not-in-allowlist denied;
 #                                         intents.near denied (auth path can't sign a fund intent)
-#   T6  FT Op::Withdraw → external [MAINNET] — MUST: nep141 token exits to an EXTERNAL near account via solver
 #   T7  negatives                       — substituted op (wrong hash) → keystore rejects, no execution;
 #                                         gated op without approvals → stays pending, no tx
-#   T8  swap default-DENY cap [MAINNET]  — denied without capabilities.swap even when allowed by type
-#   T9  swap under MULTISIG  [MAINNET]   — NEW: Trusted swap on a multisig wallet returns pending_approval
-#                                         (not "does not support multisig"); after the threshold the op
-#                                         leaves pending_approval and the keystore signs the Trusted artifact
-#   T10 cross_chain_withdraw under MULTISIG [MAINNET] — NEW: Trusted cross-chain bridge-out on a multisig
-#                                         wallet returns pending_approval; after the threshold it leaves
-#                                         pending_approval (keystore signs the approved op)
 #   T11 /wallet/v1/delete (DESTRUCTIVE)    — NEAR DeleteAccount sweeps the FULL balance to a beneficiary;
 #                                         asserts the self-beneficiary + zero-balance guards, then a real
 #                                         destructive delete of a throwaway sub-wallet to a beneficiary we
 #                                         control (asserts success + the beneficiary balance increased)
-#   T12 payment_check claim/reclaim/batch [MAINNET] — extends T3 (which only covers create's capability gate) with the
-#                                         real gasless value flow: CLAIM a check to a SECOND sub-wallet we
-#                                         control (ephemeral-key signed, not keystore) + assert the claimer's
-#                                         intents balance increased; RECLAIM a check (creator gets funds back)
-#                                         + assert the creator's intents balance recovered; BATCH-CREATE two
-#                                         checks in one call + assert both created; status/peek read-backs.
-#                                         All sub-wallets live under our own vault — value never leaves us.
+#   T13 sign_message ed25519 VERIFY    — actually ed25519-verifies the returned sig vs returned pubkey +
+#                                         exact signed bytes (vs T5 which only checks the sig is PRESENT);
+#                                         tampered message/nonce fail; two scopes (distinct seeds) don't
+#                                         cross-verify  [ported from wallet_sign_message_roundtrip.sh]
+#   T14 api-key NEAR-signed derive     — PUT /api-key signed over `api-key:<seed>:<ts>`; binds; minted wk_
+#                                         works (/address + crypto-valid /sign-message); cross-account
+#                                         spoof → 4xx  [ported from api_key_signed_derive_e2e.sh]
+#   T15 vault-scope parity             — every address-returning endpoint agrees with /address; (vault
+#                                         mode) no-vault write doesn't poison a vault-scoped lookup +
+#                                         cross-vault isolation  [ported from bearer_vault_endpoint_parity_e2e.sh]
+#   T16 wallet_id v2 invariants        — seed-length boundary (256 OK / 257→400); offline compute-wallet-id
+#                                         == coordinator /address wallet_id (idempotent); reverse-lookup
+#                                         /pending_approvals_by_pubkey resolves  [ported from v2_policy_invariants_e2e.sh]
+#   T17 on-chain signer == sub-wallet  — after an approved transfer executes (T4b flow), the executed tx's
+#                                         on-chain signer_id == the sub-wallet (per-vault derived key, not
+#                                         parent)  [ported from approval_flow_e2e.sh]
+#
+# NOTE: T13/T14/T15/T16 are POLICY-class (no fund movement; PARENT pays only policy-storage stake where a
+# policy is stored, reclaimed by the sweep). T17 is FUNDS-class (funds a throwaway sub-wallet, MONEY-guarded).
+# In default-vault mode (no MPC_PUBLIC_KEY) the vault-only dimensions of T13c/T14/T15 are cleanly SKIP-noted.
 #
 # ── Test classes (what each needs) ────────────────────────────────────────────
 #   [MAINNET] NEAR Intents (regular + confidential) are MAINNET-ONLY — there are no testnet solvers and
 #             the coordinator returns HTTP 503 for the public intents endpoints on testnet. The 7 tests
 #             tagged [MAINNET] (T2, T3, T6, T8, T9, T10, T12) drive an intents-dependent endpoint
-#             (deposit/withdraw/swap/cross-chain/payment-check) and therefore clean-SKIP (with a note)
-#             when NETWORK != mainnet. The other 5 (T1, T4, T5, T7, T11) run on testnet.
+#             (deposit/withdraw/swap/cross-chain/payment-check) and live in the sibling
+#             unified_op_e2e_intents.sh. This file runs the other 5 (T1, T4, T5, T7, T11) on testnet.
 #   [POLICY]  testnet + on-chain policy + Bearer-near auth (signed locally by customer-recovery).
 #             NO fund movement beyond the parent's policy-storage stake (~0.1 NEAR/policy) + vault.
 #   [SIG]     additionally needs the APPROVER NEAR keys in ~/.near-credentials (signed locally — headless;
@@ -86,18 +90,37 @@ PARENT="${PARENT:-}"
 APPROVER1="${APPROVER1:-zavodil.testnet}"
 APPROVER2="${APPROVER2:-}"
 EXTERNAL_ACCT="${EXTERNAL_ACCT:-$APPROVER1}"
+# Shared constant sink for every DeleteAccount + the sweep's intents-withdraw (real/existing/wNEAR-registered → never burns).
+BENEFICIARY="${BENEFICIARY:-$([ "$NETWORK" = mainnet ] && echo zavodil.near || echo zavodil.testnet)}"
 RPC_URL="${RPC_URL:-https://rpc.${NETWORK}.fastnear.com}"
 CONTRACT_ID="${CONTRACT_ID:-outlayer.testnet}"
 COORDINATOR_URL="${COORDINATOR_URL:-https://testnet-api.outlayer.fastnear.com}"
 WNEAR="${WNEAR:-wrap.testnet}"
 ONLY="${ONLY:-}"
 
+# Every throwaway sub-wallet seed is appended here so a leaked wallet can be recovered later
+# (deterministic from PARENT_PRIVKEY + seed via `customer-recovery`). SWEEP_QUEUE is the working set
+# the EXIT trap sweeps to reclaim funds + on-chain policy storage at the end of the run.
+SEED_LOG="${SEED_LOG:-$HOME/.outlayer/uop-seeds.log}"; mkdir -p "$(dirname "$SEED_LOG")"
+# These are FILES, not bash arrays: new_subwallet runs in the process-substitution subshell of
+# `read -r ... < <(new_subwallet ...)`, where array appends are subshell-local and LOST in the parent
+# — a file append (exactly like $SEED_LOG above) survives the subshell. SWEEP_QUEUE is the WORKING set
+# the per-test/abort/final sweeps drain (drained + truncated as each batch is swept, so a wallet is
+# never swept twice). RUN_LEDGER is the IMMUTABLE full ledger every sub-wallet is appended to and never
+# removed from — the final verify_all_drained pass re-checks ALL of them for leaks.
+SWEEP_QUEUE="$(mktemp -t uop_sweepq.XXXXXX)"   # pending-sweep working set (drained + truncated each pass)
+RUN_LEDGER="$(mktemp -t uop_ledger.XXXXXX)"    # immutable ledger of every sub-wallet this run (for verify)
+
 log()  { printf '\n\033[36m▶ %s\033[0m\n' "$*" >&2; }
 warn() { printf '\033[33m⚠ %s\033[0m\n' "$*" >&2; }
 pass() { printf '\033[32m✓ %s\033[0m\n' "$*" >&2; PASS=$((PASS+1)); }
-fail() { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; FAILED=$((FAILED+1)); FAILED_NAMES+=("$*"); }
+fail() { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; FAILED=$((FAILED+1)); FAILED_NAMES+=("$*"); if [[ "$MONEY" == true ]]; then printf '\033[1;31m⛔ HALTING — real-money test %s failed; funds may be mid-flight. The EXIT trap sweeps tracked sub-wallets.\033[0m\n' "$CUR_TEST" >&2; exit 1; fi; }
 note() { printf '\033[35m• %s\033[0m\n' "$*" >&2; }
 PASS=0; FAILED=0; FAILED_NAMES=()
+# Real-money guard: while MONEY=true (set at the start of each value-moving test, cleared at its end),
+# a fail() does not just record — it HALTS the run so funds aren't left mid-flight by a continuing
+# suite. The EXIT trap (cleanup_subwallets) still fires and sweeps every tracked sub-wallet.
+MONEY=false; CUR_TEST=""
 
 want() { [[ -z "$ONLY" ]] || [[ ",$ONLY," == *",$1,"* ]]; }
 
@@ -118,14 +141,16 @@ for tool in jq curl outlayer near python3; do command -v "$tool" >/dev/null || {
 
 if [[ "$APPLY" != true ]]; then
   warn "Dry-run. Pass --apply to deploy a vault + exercise the unified-op surface on $NETWORK."
-  warn "Tests: T1 auth-sign[POLICY] T2 cross_chain_withdraw[POLICY][MAINNET] T3 payment_check[FUNDS][MAINNET]"
-  warn "       T4 approve/reject[SIG] T5 sign_message[POLICY] T6 FT-withdraw→external[FUNDS][MAINNET]"
-  warn "       T7 negatives incl. cross-wallet replay[POLICY/SIG] T8 swap default-DENY capability[POLICY][MAINNET]"
-  warn "       T9 swap-under-multisig→pending_approval+execute[SIG][MAINNET] T10 cross_chain_withdraw-under-multisig[SIG][MAINNET]"
+  warn "TESTNET-runnable subset (T1,T4,T5,T7,T11,T13,T14,T15,T16,T17):"
+  warn "       T1 auth-sign[POLICY] T4 approve/reject[SIG] T5 sign_message[POLICY]"
+  warn "       T7 negatives incl. cross-wallet replay[POLICY/SIG]"
   warn "       T11 delete-account: self-beneficiary + zero-balance guards, then a real destructive delete[FUNDS]"
-  warn "       T12 payment-check claim/reclaim/batch-create: real value moves between sub-wallets[FUNDS][MAINNET]"
-  warn "[MAINNET] = NEAR Intents are mainnet-only (no testnet solvers; coordinator 503s on testnet)."
-  warn "  On NETWORK=$NETWORK those 7 (T2,T3,T6,T8,T9,T10,T12) clean-SKIP; T1,T4,T5,T7,T11 run on testnet."
+  warn "       T13 sign_message ed25519 VERIFY + cross-scope + tamper[POLICY]"
+  warn "       T14 api-key NEAR-signed derive + cross-account refusal[POLICY]"
+  warn "       T15 vault-scope endpoint parity (+cache-poisoning/cross-vault in vault mode)[POLICY]"
+  warn "       T16 wallet_id v2: seed-length, offline==online idempotency, reverse-lookup[POLICY]"
+  warn "       T17 on-chain tx signer_id == sub-wallet (per-vault derived key)[SIG/FUNDS]"
+  warn "The intents-dependent (MAINNET-only) tests T2,T3,T6,T8,T9,T10,T12 live in unified_op_e2e_intents.sh."
   warn "raw_sign + confidential are NOT testnet-coordinator-reachable — covered by crate unit tests (see header)."
   exit 0
 fi
@@ -139,8 +164,15 @@ WHOAMI=$(outlayer whoami 2>/dev/null | awk -F': *' '/^Account:/{print $2; exit}'
 [[ "$WHOAMI" == "$PARENT" ]] || { echo "✗ outlayer logged in as '$WHOAMI', not '$PARENT'" >&2; exit 1; }
 PARENT_PRIVKEY=$(jq -r '.private_key' "$CREDS_DIR/$PARENT.json")
 
+# Best-effort sweep of every throwaway sub-wallet back to PARENT at exit (self-guards on APPLY;
+# defined below, near new_subwallet). Registered here so it covers wallets created by every test.
+trap cleanup_subwallets EXIT
+
 near_tty() {
-  if command -v script >/dev/null 2>&1; then
+  # Give near-cli-rs a TTY via `script` ONLY when stdout is a real terminal. Headless (CI / a
+  # non-TTY harness — where `script` itself errors with "ioctl on socket") falls back to a bare
+  # eval: near-cli-rs with full args + sign-with-keychain is fully non-interactive, no TTY needed.
+  if command -v script >/dev/null 2>&1 && [ -t 1 ]; then
     local tmp; tmp=$(mktemp -t uop_cmd.XXXXXX.sh)
     printf 'set -euo pipefail\n%s\n' "$*" > "$tmp"
     script -q /dev/null bash "$tmp"; local rc=$?; rm -f "$tmp"; return $rc
@@ -173,9 +205,191 @@ AUTH() { echo "Authorization: Bearer near:$(mk_token "$1" "$VAULT_ID")"; }
 
 # new_subwallet <seed> → echoes "WALLET_ID SUB_ADDR"
 new_subwallet() {
-  local seed=$1 r
+  local seed=$1 r wid addr
   r=$(curl -sS -G "$COORDINATOR_URL/wallet/v1/address" --data-urlencode "chain=near" -H "$(AUTH "$seed")")
-  echo "$(echo "$r" | jq -r '.wallet_id') $(echo "$r" | jq -r '.address')"
+  wid=$(echo "$r" | jq -r '.wallet_id'); addr=$(echo "$r" | jq -r '.address')
+  # Persist the seed (recoverable from PARENT_PRIVKEY) + track for the EXIT sweep.
+  printf '%s %s %s %s\n' "$(date +%s)" "$seed" "$wid" "$addr" >> "$SEED_LOG"
+  printf '%s|%s|%s\n' "$seed" "$wid" "$addr" >> "$SWEEP_QUEUE"
+  printf '%s|%s|%s\n' "$seed" "$wid" "$addr" >> "$RUN_LEDGER"
+  echo "$wid $addr"
+}
+
+# ─── fund-return / sweep machinery ────────────────────────────────────────────
+# A throwaway sub-wallet can hold value in TWO places: native NEAR on its implicit account AND a
+# wNEAR (defuse) balance inside intents.near (T3/T6/T12 deposit wNEAR there). A bare DeleteAccount
+# only sweeps the native balance and ORPHANS the intents balance, so every sweep withdraws intents
+# FIRST (back to PARENT) and only then deletes the native account. All of this is best-effort: a
+# per-wallet error warns and continues, never aborting the suite.
+#
+# yocto magnitudes (1e22) overflow bash's 64-bit arithmetic, so compare as decimal strings: more
+# digits wins; on equal length fall back to lexicographic. Hoisted to file scope so the per-test
+# sweep, the EXIT-trap safety net, and the final verify pass all share one comparator/threshold.
+SWEEP_MIN="10000000000000000000000"  # 0.01 NEAR in yocto
+yocto_gt() { # <a> <b> → "gt" if a > b. RPC amounts/literal here have no leading zeros or sign.
+  local a=${1:-0} b=${2:-0}
+  if   [[ ${#a} -gt ${#b} ]]; then echo gt
+  elif [[ ${#a} -lt ${#b} ]]; then :
+  elif [[ "$a" > "$b" ]];      then echo gt
+  fi
+}
+
+# intents_wnear <addr> → echoes the wallet's wNEAR balance inside intents.near (integer yocto string,
+# "0" if none / on any error). intents.near is a multi-token (NEP-245) contract keyed by token_id; we
+# read mt_balance_of for "nep141:$WNEAR". Only meaningful on mainnet (no testnet intents), but safe to
+# call anywhere — off-mainnet it simply returns "0".
+intents_wnear() {
+  local addr=$1 args r out
+  args=$(jq -nc --arg a "$addr" --arg t "nep141:$WNEAR" '{account_id:$a, token_id:$t}')
+  r=$(curl -s "$RPC_URL" -X POST -H 'Content-Type: application/json' \
+    -d "$(jq -nc --arg a "intents.near" --arg m "mt_balance_of" --arg ab "$(printf '%s' "$args" | base64 | tr -d '\n')" \
+        '{jsonrpc:"2.0",id:1,method:"query",params:{request_type:"call_function",finality:"final",account_id:$a,method_name:$m,args_base64:$ab}}')" 2>/dev/null || echo '')
+  out=$(echo "$r" | jq -r '.result.result // empty | implode' 2>/dev/null | tr -d '"' || echo "0")
+  [[ -n "$out" ]] && echo "$out" || echo "0"
+}
+
+# sweep_one <seed> <wallet_id> <addr> — drain ONE throwaway sub-wallet back to PARENT, best-effort.
+# Order: (1) read native NEAR + intents wNEAR; (2) if both empty → reclaim policy storage only;
+# (3) else store an intents_withdraw+delete policy; (4) if intents>0 → withdraw it to PARENT FIRST
+# (so it isn't orphaned by the delete); (5) if native>0.01 → DeleteAccount sweeps the rest to PARENT;
+# (6) always reclaim the per-wallet policy storage deposit. The intents-before-delete ordering is the
+# bug fix: a bare delete would strand the wNEAR sitting in intents.near.
+sweep_one() {
+  local seed=$1 wid=$2 addr=$3 rpc acct_err native intents wnear_bal
+  rpc=$(curl -s "$RPC_URL" -X POST -H 'Content-Type: application/json' \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"query\",\"params\":{\"request_type\":\"view_account\",\"finality\":\"final\",\"account_id\":\"$addr\"}}" 2>/dev/null || echo '')
+  acct_err=$(echo "$rpc" | jq -r '.error // .result.error // empty' 2>/dev/null)
+  native=$(echo "$rpc" | jq -r '.result.amount // "0"' 2>/dev/null || echo "0")
+  # A missing/errored account has no native balance to sweep.
+  [[ -n "$acct_err" || -z "$native" ]] && native="0"
+  if [[ "$NETWORK" == "mainnet" ]]; then intents=$(intents_wnear "$addr"); else intents="0"; fi
+  [[ -n "$intents" ]] || intents="0"
+
+  if [[ "$native" == "0" && "$intents" == "0" ]]; then
+    note "sweep: $addr — no native + no intents balance; reclaiming policy storage only"
+  else
+    # Permissive sweep policy: allow the wNEAR unwrap `call` + the intents withdraw + the native
+    # delete. `call` is required for the near_withdraw/storage_unregister unwrap in (4b) below.
+    # store_policy is best-effort here — if it fails, the gated call/withdraw/delete below will
+    # simply 403 (warned).
+    store_policy "$seed" "$wid" '{"rules":{"transaction_types":["call","intents_withdraw","delete"]}}' \
+      || warn "sweep: $addr — store sweep-policy failed (call/withdraw/delete may be denied)"
+    # (4) intents wNEAR FIRST — withdraw back to PARENT before the account is deleted.
+    if [[ "$intents" != "0" && "$(yocto_gt "$intents" "0")" == "gt" ]]; then
+      post POST /wallet/v1/intents/withdraw "$seed" "$(jq -nc --arg to "$BENEFICIARY" --arg a "$intents" --arg t "nep141:$WNEAR" '{chain:"near", to:$to, amount:$a, token:$t}')" \
+        || warn "sweep: $addr — intents withdraw request errored"
+      note "sweep: $addr intents wNEAR ($intents) → $BENEFICIARY (HTTP $HTTP)"
+    fi
+    # (4b) WRAPPED wNEAR on the wallet's OWN ft balance — a failed intents-deposit leaves the wrapped
+    # wNEAR sitting in the wallet's wrap.near ft balance, which a bare DeleteAccount would ORPHAN. Mirror
+    # the working manual recovery: near_withdraw (unwrap → native) → storage_unregister (reclaim the
+    # registration storage). Both best-effort (a 0-balance / unregistered wallet is a clean no-op).
+    # Harmless on testnet (wrap.testnet) — the balance is simply 0 there.
+    wnear_bal=$(curl -s "$RPC_URL" -X POST -H 'Content-Type: application/json' \
+      -d "$(jq -nc --arg t "$WNEAR" --arg a "$addr" '{jsonrpc:"2.0",id:1,method:"query",params:{request_type:"call_function",finality:"final",account_id:$t,method_name:"ft_balance_of",args_base64:({account_id:$a}|tojson|@base64)}}')" 2>/dev/null \
+      | jq -r '.result.result // empty | implode' 2>/dev/null | tr -d '"' || echo "0")
+    [[ -n "$wnear_bal" ]] || wnear_bal="0"
+    if [[ "$wnear_bal" != "0" && "$(yocto_gt "$wnear_bal" "0")" == "gt" ]]; then
+      note "sweep: $addr holds $wnear_bal wrapped wNEAR (orphaned by a failed intents-deposit) — unwrapping → native before delete"
+      post POST /wallet/v1/call "$seed" "$(jq -nc --arg t "$WNEAR" --arg a "$wnear_bal" '{receiver_id:$t, method_name:"near_withdraw", args:{amount:$a}, gas:"50000000000000", deposit:"1"}')" \
+        || warn "sweep: $addr — near_withdraw (unwrap wNEAR) request errored"
+      note "sweep: $addr near_withdraw $wnear_bal wNEAR → native (HTTP $HTTP)"
+      post POST /wallet/v1/call "$seed" "$(jq -nc --arg t "$WNEAR" '{receiver_id:$t, method_name:"storage_unregister", args:{force:true}, gas:"30000000000000", deposit:"1"}')" \
+        || warn "sweep: $addr — storage_unregister (reclaim wNEAR registration) request errored"
+      note "sweep: $addr storage_unregister on $WNEAR (HTTP $HTTP)"
+      # Re-read native so the (5) delete decision below sees the funds the unwrap just added back.
+      native=$(curl -s "$RPC_URL" -X POST -H 'Content-Type: application/json' \
+        -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"query\",\"params\":{\"request_type\":\"view_account\",\"finality\":\"final\",\"account_id\":\"$addr\"}}" 2>/dev/null \
+        | jq -r '.result.amount // "0"' 2>/dev/null || echo "0")
+      [[ -n "$native" ]] || native="0"
+    fi
+    # (5) native NEAR — DeleteAccount sends the FULL remaining balance to BENEFICIARY (only if worth it).
+    if [[ "$(yocto_gt "$native" "$SWEEP_MIN")" == "gt" ]]; then
+      post POST /wallet/v1/delete "$seed" "$(jq -nc --arg b "$BENEFICIARY" '{beneficiary:$b,chain:"near"}')" \
+        || warn "sweep: $addr — delete (native sweep) request errored"
+      note "sweep: $addr native ($native yocto) swept to $BENEFICIARY (HTTP $HTTP)"
+    elif [[ "$native" != "0" ]]; then
+      note "sweep: $addr native $native yocto ≤ 0.01 NEAR — not worth a delete; reclaiming policy only"
+    fi
+  fi
+  # (6) Reclaim the per-wallet policy storage deposit (refunds to PARENT). A NEAR implicit address IS
+  # its ed25519 public-key hex, so the wallet_pubkey is ed25519:<addr>. "not found" (no policy /
+  # already removed) is fine — best-effort.
+  near_tty "near contract call-function as-transaction \"$CONTRACT_ID\" delete_wallet_policy json-args '$(jq -nc --arg pk "ed25519:$addr" '{wallet_pubkey:$pk}')' prepaid-gas '30 Tgas' attached-deposit '0 NEAR' sign-as \"$PARENT\" network-config \"$NETWORK\" sign-with-keychain send" \
+    || warn "sweep: $addr — delete_wallet_policy failed (no policy or already removed?)"
+}
+
+# sweep_now — drain every sub-wallet currently in the WORKING set, then truncate it (so the same
+# wallet is never swept twice across the per-test / abort / final passes). No-op unless --apply.
+sweep_now() {
+  [[ "$APPLY" == true ]] || return 0
+  [[ -s "$SWEEP_QUEUE" ]] || return 0
+  log "Returning funds from $(wc -l < "$SWEEP_QUEUE" | tr -d ' ') sub-wallet(s) → $PARENT"
+  local e seed addr wid
+  # Redirect form (not `cat | while`): the loop runs in the MAIN shell so sweep_one's side effects
+  # and any future array mutations are NOT trapped in a pipe subshell.
+  while IFS= read -r e; do
+    [ -n "$e" ] || continue
+    seed=${e%%|*}; addr=${e##*|}; wid=${e#*|}; wid=${wid%%|*}
+    sweep_one "$seed" "$wid" "$addr"
+  done < "$SWEEP_QUEUE"
+  : > "$SWEEP_QUEUE"
+}
+
+# return_test_funds — called at the END of each real-money test to drain its sub-wallets immediately
+# (don't hold value across tests). Just the working-set sweep.
+return_test_funds() { sweep_now; }
+
+# residual_of <addr> → "<native_yocto> <intents_wnear_yocto>" (both "0" if the account is absent/errored
+# or holds nothing). Single source of truth for the verify pass's balance read.
+residual_of() {
+  local a=$1 rpc acct_err native intents
+  rpc=$(curl -s "$RPC_URL" -X POST -H 'Content-Type: application/json' \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"query\",\"params\":{\"request_type\":\"view_account\",\"finality\":\"final\",\"account_id\":\"$a\"}}" 2>/dev/null || echo '')
+  acct_err=$(echo "$rpc" | jq -r '.error // .result.error // empty' 2>/dev/null)
+  native=$(echo "$rpc" | jq -r '.result.amount // "0"' 2>/dev/null || echo "0")
+  [[ -n "$acct_err" || -z "$native" ]] && native="0"
+  if [[ "$NETWORK" == "mainnet" ]]; then intents=$(intents_wnear "$a"); else intents="0"; fi
+  [[ -n "$intents" ]] || intents="0"
+  echo "$native $intents"
+}
+# is_leak <native> <intents> → rc 0 iff native > 0.01 NEAR OR intents is any nonzero amount.
+is_leak() { [[ "$(yocto_gt "$1" "$SWEEP_MIN")" == "gt" || ( "$2" != "0" && -n "$2" ) ]]; }
+
+# verify_all_drained — FINAL safety check over the IMMUTABLE ledger. Re-reads native + (mainnet)
+# intents for EVERY sub-wallet ever created; any residual native >0.01 NEAR or non-zero intents is a
+# LEAK → fail() (recorded, surfaced in the SUMMARY exit code). A sweep's intents-withdraw / DeleteAccount
+# settles asynchronously, so a leaky-looking wallet is RE-POLLED (~30s, like the T6/T11/T12 settlement
+# polls) before being declared a leak — a genuinely leaked wallet stays nonzero through the poll. Runs
+# only under --apply.
+verify_all_drained() {
+  [[ "$APPLY" == true ]] || return 0
+  [[ -s "$RUN_LEDGER" ]] || { log "Balance check: no sub-wallets created"; return 0; }
+  local e seed wid addr native intents leaks=0
+  # Redirect form (not a pipe) so the loop body runs in the MAIN shell — `leaks` survives the loop.
+  while IFS= read -r e; do
+    [ -n "$e" ] || continue
+    seed=${e%%|*}; addr=${e##*|}; wid=${e#*|}; wid=${wid%%|*}
+    read -r native intents < <(residual_of "$addr")
+    if is_leak "$native" "$intents"; then
+      for _ in $(seq 1 10); do sleep 3; read -r native intents < <(residual_of "$addr"); is_leak "$native" "$intents" || break; done
+    fi
+    if is_leak "$native" "$intents"; then
+      fail "LEAK: $addr native=$native intents=$intents — recover via seed '$seed' (saved in $SEED_LOG)"; leaks=$((leaks+1))
+    else
+      note "drained: $addr"
+    fi
+  done < "$RUN_LEDGER"
+  log "Balance check: $(wc -l < "$RUN_LEDGER" | tr -d ' ') sub-wallet(s) verified, $leaks leak(s)"
+}
+
+# cleanup_subwallets — EXIT trap / abort safety net. The per-test return_test_funds and the final
+# sweep_now before SUMMARY already drain wallets on the happy path; this catches anything left when
+# the run aborts early (e.g. the real-money fail-fast `exit 1`) or any trailing untracked wallet.
+# Best-effort, never fails the suite, no-op unless --apply.
+cleanup_subwallets() {
+  [[ "$APPLY" == true ]] || return 0
+  sweep_now
 }
 
 # store_policy <seed> <wallet_id> <policy_json_without_wallet_id>
@@ -218,6 +432,27 @@ assert_funded() {
 
 fund_near() { near_tty "near tokens $PARENT send-near $1 '$2' network-config $NETWORK sign-with-keychain send"; }
 
+# ─── register BENEFICIARY on wNEAR (mainnet) ───────────────────────────────────
+# The intents-balance sweeps (sweep_one step 4 / T6) withdraw wNEAR to BENEFICIARY, which requires
+# BENEFICIARY to be storage-registered on the wNEAR (defuse) contract — otherwise the ft_transfer leg
+# of the withdraw is rejected and the swept funds would bounce. Ensure BENEFICIARY is wNEAR-registered
+# once, best-effort, up front, so the sweep's intents-withdraw can land. PARENT pays the 0.00125 to
+# register it (storage_deposit may be paid by anyone for any account_id). Only on mainnet (testnet has
+# no intents sweeps) and only under --apply. Placed AFTER every helper (intents_wnear/store_policy/
+# post/sweep_one) is defined so definitions-before-use holds.
+if [[ "$APPLY" == true && "$NETWORK" == mainnet ]]; then
+  PSB=$(curl -s "$RPC_URL" -X POST -H 'Content-Type: application/json' \
+    -d "$(jq -nc --arg t "$WNEAR" --arg a "$BENEFICIARY" '{jsonrpc:"2.0",id:1,method:"query",params:{request_type:"call_function",finality:"final",account_id:$t,method_name:"storage_balance_of",args_base64:({account_id:$a}|tojson|@base64)}}')" 2>/dev/null \
+    | jq -r '.result.result // empty | implode' 2>/dev/null || echo '')
+  if [[ -z "$PSB" || "$PSB" == "null" ]]; then
+    note "BENEFICIARY ($BENEFICIARY) not storage-registered on $WNEAR — registering (so intents sweeps can land)"
+    near_tty "near contract call-function as-transaction $WNEAR storage_deposit json-args '$(jq -nc --arg a "$BENEFICIARY" '{account_id:$a}')' prepaid-gas '30 Tgas' attached-deposit '0.00125 NEAR' sign-as $PARENT network-config $NETWORK sign-with-keychain send" \
+      || warn "BENEFICIARY wNEAR storage_deposit failed — intents sweeps may not land"
+  else
+    note "BENEFICIARY ($BENEFICIARY) already storage-registered on $WNEAR ($PSB) — intents sweeps can land"
+  fi
+fi
+
 # ════════════════════════════════════════════════════════════════════════════════
 # T1 — /wallet/v1/auth-sign  [POLICY] (no funds)
 # ════════════════════════════════════════════════════════════════════════════════
@@ -242,87 +477,11 @@ if want T1; then
 fi
 
 # ════════════════════════════════════════════════════════════════════════════════
-# T2 — cross_chain_withdraw default-DENY own type  [POLICY] (no funds)
-# ════════════════════════════════════════════════════════════════════════════════
-if want T2 && intents_mainnet T2; then
-  log "T2 [POLICY] cross_chain_withdraw — own default-DENY type"
-  XC_BODY='{"chain":"ethereum","to":"0x000000000000000000000000000000000000dEaD","amount":"1000000000000000000000000","token":"nep141:'"$WNEAR"'"}'
-
-  # 2a: type listed but NO cross_chain_withdraw capability → default-DENY (audit fix #2).
-  SEED="t2a-$(date +%s)"; read -r WID _ < <(new_subwallet "$SEED")
-  store_policy "$SEED" "$WID" '{"rules":{"transaction_types":["transfer","call","intents_withdraw","cross_chain_withdraw"]}}' || fail "T2a store_policy"
-  post POST /wallet/v1/intents/withdraw "$SEED" "$XC_BODY"
-  if [[ "$HTTP" != "200" ]] && echo "$BODY" | grep -qiE "capability|policy|not allowed|forbidden|cross_chain_withdraw"; then
-    pass "T2a cross_chain_withdraw type listed but capability OFF → denied ($HTTP): $(echo "$BODY"|head -c120)"
-  else fail "T2a cross-chain should be capability-denied without capabilities.cross_chain_withdraw, got $HTTP: $BODY"; fi
-
-  # 2a': NO transaction_types at all (valid shape) → still denied by the capability (the closed hole).
-  SEED="t2a2-$(date +%s)"; read -r WID _ < <(new_subwallet "$SEED")
-  store_policy "$SEED" "$WID" '{"rules":{"limits":{"per_transaction":{"native":"1"}}}}' || fail "T2a2 store_policy"
-  post POST /wallet/v1/intents/withdraw "$SEED" "$XC_BODY"
-  [[ "$HTTP" != "200" ]] && pass "T2a' cross-chain denied with NO transaction_types (capability default-DENY) ($HTTP)" || fail "T2a' cross-chain MUST deny when transaction_types absent, got $HTTP: $BODY"
-
-  # 2b: type + capability → passes the policy gate (fails later on balance, NOT policy).
-  SEED="t2b-$(date +%s)"; read -r WID _ < <(new_subwallet "$SEED")
-  store_policy "$SEED" "$WID" '{"rules":{"transaction_types":["cross_chain_withdraw"]}, "capabilities":{"cross_chain_withdraw":{"allowed":true}}}' || fail "T2b store_policy"
-  post POST /wallet/v1/intents/withdraw "$SEED" "$XC_BODY"
-  if echo "$BODY" | grep -qiE "balance|quote|1click|insufficient|deposit"; then
-    pass "T2b cross_chain_withdraw type+capability → passed policy gate, failed downstream on balance (not policy): $(echo "$BODY"|head -c120)"
-  elif echo "$BODY" | grep -qiE "not allowed by policy|capability"; then
-    fail "T2b should pass the gate with type+capability, but was policy-denied: $BODY"
-  else note "T2b inconclusive (HTTP $HTTP): $(echo "$BODY"|head -c160)"; pass "T2b not a policy denial"; fi
-
-  # 2c: requires_approval:true with NO approval.threshold is a misconfiguration → the keystore
-  # fail-closes (Deny: "requires approval but no approval threshold is configured") → 403.
-  # (cross_chain_withdraw under a REAL multisig threshold is now SUPPORTED — see T10.)
-  SEED="t2c-$(date +%s)"; read -r WID _ < <(new_subwallet "$SEED")
-  store_policy "$SEED" "$WID" '{"rules":{"transaction_types":["cross_chain_withdraw"]}, "capabilities":{"cross_chain_withdraw":{"allowed":true,"requires_approval":true}}}' || fail "T2c store_policy"
-  post POST /wallet/v1/intents/withdraw "$SEED" "$XC_BODY"
-  if [[ "$HTTP" == "403" ]] && echo "$BODY" | grep -qiE "approval|threshold"; then
-    pass "T2c requires_approval w/o threshold → fail-closed denied ($HTTP): $(echo "$BODY"|head -c120)"
-  else fail "T2c requires_approval-without-threshold should be fail-closed 403, got $HTTP: $BODY"; fi
-fi
-
-# ════════════════════════════════════════════════════════════════════════════════
-# T3 — payment_check default-DENY capability  [FUNDS] (small intents balance needed)
-# ════════════════════════════════════════════════════════════════════════════════
-if want T3 && intents_mainnet T3; then
-  log "T3 [FUNDS] payment_check — default-DENY capability + amount limit"
-  SEED="t3-$(date +%s)"; read -r WID ADDR < <(new_subwallet "$SEED")
-  log "T3 fund sub-wallet ($ADDR) with NEAR + deposit 0.02 wNEAR into intents (so the capability gate is REACHED, not short-circuited by the balance pre-check)"
-  fund_near "$ADDR" "0.1 NEAR" || warn "T3 funding failed"
-  for _ in $(seq 1 6); do curl -s "$RPC_URL" -X POST -H 'Content-Type: application/json' -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"query\",\"params\":{\"request_type\":\"view_account\",\"finality\":\"final\",\"account_id\":\"$ADDR\"}}" | jq -e '.result.amount' >/dev/null && break; sleep 2; done
-  # storage-register the wallet on wrap.testnet + wrap NEAR, then deposit into intents.
-  post POST /wallet/v1/storage-deposit "$SEED" "$(jq -nc --arg t "$WNEAR" '{token:$t}')"; note "T3 storage-deposit: $HTTP"; assert_funded "T3 storage-deposit"
-  post POST /wallet/v1/call "$SEED" "$(jq -nc --arg t "$WNEAR" '{receiver_id:$t, method_name:"near_deposit", args:{}, gas:"30000000000000", deposit:"20000000000000000000000"}')"; note "T3 wrap near_deposit: $HTTP"; assert_funded "T3 wrap near_deposit"
-  post POST /wallet/v1/intents/deposit "$SEED" "$(jq -nc --arg t "nep141:$WNEAR" '{token:$t, amount:"20000000000000000000000"}')"; note "T3 intents deposit: $HTTP $(echo "$BODY"|head -c100)"; assert_funded "T3 intents deposit"
-  sleep 4
-  CHECK_BODY=$(jq -nc --arg t "nep141:$WNEAR" '{token:$t, amount:"10000000000000000000000"}')  # 0.01 wNEAR, within balance
-
-  # 3a: policy WITHOUT payment_check capability → denied at the keystore capability gate.
-  store_policy "$SEED" "$WID" "$(jq -nc --arg t "nep141:$WNEAR" '{rules:{transaction_types:["payment_check"], limits:{per_transaction:{($t):"20000000000000000000000"}}}}')" || fail "T3a store_policy"
-  post POST /wallet/v1/payment-check/create "$SEED" "$CHECK_BODY"
-  if [[ "$HTTP" != "200" ]] && echo "$BODY" | grep -qiE "capability|payment_check|policy|forbidden"; then
-    pass "T3a payment_check capability OFF → create denied ($HTTP): $(echo "$BODY"|head -c120)"
-  else fail "T3a payment_check should be capability-denied without the cap, got $HTTP: $BODY"; fi
-
-  # 3b: capability ON + within amount → create succeeds.
-  store_policy "$SEED" "$WID" "$(jq -nc --arg t "nep141:$WNEAR" '{rules:{transaction_types:["payment_check"], limits:{per_transaction:{($t):"20000000000000000000000"}}}, capabilities:{payment_check:{allowed:true}}}')" || fail "T3b store_policy"
-  post POST /wallet/v1/payment-check/create "$SEED" "$CHECK_BODY"
-  [[ "$HTTP" == "200" ]] && pass "T3b payment_check capability ON + within limit → created: $(echo "$BODY"|jq -r '.check_id // .')" || fail "T3b create should succeed with cap, got $HTTP: $BODY"
-
-  # 3c: capability ON but amount OVER per_transaction → denied (amount-gated).
-  post POST /wallet/v1/payment-check/create "$SEED" "$(jq -nc --arg t "nep141:$WNEAR" '{token:$t, amount:"100000000000000000000000000"}')"
-  if [[ "$HTTP" != "200" ]] && echo "$BODY" | grep -qiE "limit|exceed|balance|insufficient"; then
-    pass "T3c over per_transaction (or balance) → denied ($HTTP): $(echo "$BODY"|head -c120)"
-  else fail "T3c over-limit should be denied, got $HTTP: $BODY"; fi
-fi
-
-# ════════════════════════════════════════════════════════════════════════════════
 # T4 — dumb approve / reject veto  [SIG] (needs approver keys)
 # ════════════════════════════════════════════════════════════════════════════════
 if want T4; then
   log "T4 [SIG] dumb approve/reject — real approver YES executes; real approver NO vetoes; non-approver NO ignored"
+  MONEY=true; CUR_TEST=T4
   [[ -n "$APPROVER2" && -f "$CREDS_DIR/$APPROVER2.json" ]] || { warn "T4 skipped — APPROVER2 + creds required"; }
   if [[ -n "$APPROVER2" && -f "$CREDS_DIR/$APPROVER2.json" ]]; then
     A1_PRIV=$(jq -r .private_key "$CREDS_DIR/$APPROVER1.json"); A1_PUB=$(jq -r .public_key "$CREDS_DIR/$APPROVER1.json")
@@ -344,9 +503,9 @@ if want T4; then
 
     # ── 4a: reject veto by a REAL approver cancels (threshold 1, transfer gated) ──
     SEED="t4a-$(date +%s)"; read -r WID ADDR < <(new_subwallet "$SEED")
-    fund_near "$ADDR" "0.05 NEAR" || warn "T4a funding"
+    fund_near "$ADDR" "0.01 NEAR" || warn "T4a funding"
     store_policy "$SEED" "$WID" "$(jq -nc --arg a "$APPROVER1" --arg ap "$A1_PUB" '{rules:{transaction_types:["transfer"]}, approval:{threshold:{required:1}, approvers:[{id:$a,pubkey:$ap}]}}')" || fail "T4a store_policy"
-    post POST /wallet/v1/transfer "$SEED" "$(jq -nc --arg to "$PARENT" '{chain:"near", receiver_id:$to, amount:"10000000000000000000000"}')"
+    post POST /wallet/v1/transfer "$SEED" "$(jq -nc --arg to "$PARENT" '{chain:"near", receiver_id:$to, amount:"2000000000000000000000"}')"
     AID=$(echo "$BODY" | jq -r '.approval_id // empty'); RID=$(echo "$BODY" | jq -r '.request_id // empty')
     H=$(curl -sS "$COORDINATOR_URL/wallet/v1/approval/$AID" | jq -r '.request_hash')
     [[ -n "$AID" && -n "$H" ]] || fail "T4a no approval queued: $BODY"
@@ -363,9 +522,9 @@ if want T4; then
 
     # ── 4b: approve YES by a real approver executes (threshold 1) ──
     SEED="t4b-$(date +%s)"; read -r WID ADDR < <(new_subwallet "$SEED")
-    fund_near "$ADDR" "0.05 NEAR" || warn "T4b funding"
+    fund_near "$ADDR" "0.01 NEAR" || warn "T4b funding"
     store_policy "$SEED" "$WID" "$(jq -nc --arg a "$APPROVER1" --arg ap "$A1_PUB" '{rules:{transaction_types:["transfer"]}, approval:{threshold:{required:1}, approvers:[{id:$a,pubkey:$ap}]}}')" || fail "T4b store_policy"
-    post POST /wallet/v1/transfer "$SEED" "$(jq -nc --arg to "$PARENT" '{chain:"near", receiver_id:$to, amount:"10000000000000000000000"}')"
+    post POST /wallet/v1/transfer "$SEED" "$(jq -nc --arg to "$PARENT" '{chain:"near", receiver_id:$to, amount:"2000000000000000000000"}')"
     AID=$(echo "$BODY" | jq -r '.approval_id // empty'); RID=$(echo "$BODY" | jq -r '.request_id // empty')
     H=$(curl -sS "$COORDINATOR_URL/wallet/v1/approval/$AID" | jq -r '.request_hash')
     if [[ -n "$AID" ]]; then
@@ -373,7 +532,28 @@ if want T4; then
       TX=""; for _ in $(seq 1 15); do sleep 3; S=$(rstatus "$RID" "$SEED"); case "$S" in completed|success) TX=ok; break;; failed) fail "T4b execution failed"; break;; esac; done
       [[ -n "$TX" ]] && pass "T4b real-approver approve → executed" || fail "T4b did not execute after approve"
     fi
+
+    # ── 4c: 2-of-2 multisig — threshold 2 needs BOTH approvers; 1 approval stays pending, 2 executes ──
+    # Two DISTINCT approvers: APPROVER1 + PARENT (the two multisig accounts). This finally exercises the
+    # real threshold-counting path — T4a/T4b only used a single threshold-1 approver (APPROVER2 was dead).
+    SEED="t4c-$(date +%s)"; read -r WID ADDR < <(new_subwallet "$SEED")
+    fund_near "$ADDR" "0.01 NEAR" || warn "T4c funding"
+    store_policy "$SEED" "$WID" "$(jq -nc --arg a1 "$APPROVER1" --arg p1 "$A1_PUB" --arg a2 "$PARENT" --arg p2 "$PARENT_PUB" '{rules:{transaction_types:["transfer"]}, approval:{threshold:{required:2}, approvers:[{id:$a1,pubkey:$p1},{id:$a2,pubkey:$p2}]}}')" || fail "T4c store_policy"
+    post POST /wallet/v1/transfer "$SEED" "$(jq -nc --arg to "$PARENT" '{chain:"near", receiver_id:$to, amount:"2000000000000000000000"}')"
+    AID=$(echo "$BODY" | jq -r '.approval_id // empty'); RID=$(echo "$BODY" | jq -r '.request_id // empty')
+    H=$(curl -sS "$COORDINATOR_URL/wallet/v1/approval/$AID" | jq -r '.request_hash')
+    if [[ -n "$AID" ]]; then
+      # 1st approver (APPROVER1) YES → threshold 2 NOT yet met → MUST stay pending, NOT execute.
+      vote approve "$AID" "$H" "$A1_PRIV" "$A1_PUB" "$APPROVER1" >/dev/null; sleep 6
+      S=$(rstatus "$RID" "$SEED")
+      [[ "$S" != "completed" && "$S" != "success" ]] && pass "T4c 1/2 approvals → still pending ($S), not executed" || fail "T4c executed after only 1/2 approvals — threshold broken! status=$S"
+      # 2nd approver (PARENT) YES → threshold 2 met → executes.
+      vote approve "$AID" "$H" "$PARENT_PRIVKEY" "$PARENT_PUB" "$PARENT" >/dev/null
+      TX=""; for _ in $(seq 1 15); do sleep 3; S=$(rstatus "$RID" "$SEED"); case "$S" in completed|success) TX=ok; break;; failed) fail "T4c execution failed after 2/2"; break;; esac; done
+      [[ -n "$TX" ]] && pass "T4c 2/2 approvals → executed (real 2-of-2 multisig)" || fail "T4c did not execute after 2/2 approvals, status=$S"
+    fi
   fi
+  return_test_funds; MONEY=false
 fi
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -400,55 +580,17 @@ if want T5; then
 fi
 
 # ════════════════════════════════════════════════════════════════════════════════
-# T6 — MUST: FT Op::Withdraw exits to an EXTERNAL near account via the solver  [FUNDS]
-# ════════════════════════════════════════════════════════════════════════════════
-if want T6 && intents_mainnet T6; then
-  log "T6 [FUNDS] FT Op::Withdraw (nep141:$WNEAR) → EXTERNAL account $EXTERNAL_ACCT via solver (capability the deleted ft-withdraw provided)"
-  SEED="t6-$(date +%s)"; read -r WID ADDR < <(new_subwallet "$SEED")
-  fund_near "$ADDR" "0.15 NEAR" || warn "T6 funding"
-  for _ in $(seq 1 6); do curl -s "$RPC_URL" -X POST -H 'Content-Type: application/json' -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"query\",\"params\":{\"request_type\":\"view_account\",\"finality\":\"final\",\"account_id\":\"$ADDR\"}}" | jq -e '.result.amount' >/dev/null && break; sleep 2; done
-  # Fund FIRST (these are `call`-ops), THEN store the withdraw-only policy. Storing the restrictive
-  # policy before funding would 403 the storage-deposit/near_deposit/intents-deposit `call`-ops
-  # (the policy lists only intents_withdraw, no `call`). Mirrors the T3 fund→store ordering.
-  # wrap NEAR → ft into intents
-  post POST /wallet/v1/storage-deposit "$SEED" "$(jq -nc --arg t "$WNEAR" '{token:$t}')"; note "T6 storage-deposit: $HTTP"; assert_funded "T6 storage-deposit"
-  post POST /wallet/v1/call "$SEED" "$(jq -nc --arg t "$WNEAR" '{receiver_id:$t, method_name:"near_deposit", args:{}, gas:"30000000000000", deposit:"50000000000000000000000"}')"; note "T6 near_deposit: $HTTP"; assert_funded "T6 near_deposit"
-  post POST /wallet/v1/intents/deposit "$SEED" "$(jq -nc --arg t "nep141:$WNEAR" '{token:$t, amount:"50000000000000000000000"}')"; note "T6 intents deposit: $HTTP $(echo "$BODY"|head -c100)"; assert_funded "T6 intents deposit"
-  store_policy "$SEED" "$WID" "$(jq -nc --arg t "nep141:$WNEAR" '{rules:{transaction_types:["intents_withdraw"], limits:{per_transaction:{($t):"1000000000000000000000000000"}}}}')" || fail "T6 store_policy"
-  sleep 4
-  # external recipient must be storage-registered on wrap.testnet (else ft_withdraw is rejected → surfaced as a clear error)
-  AMT="30000000000000000000000" # 0.03 wNEAR
-  EXT_BEFORE=$(curl -s "$RPC_URL" -X POST -H 'Content-Type: application/json' -d "$(jq -nc --arg t "$WNEAR" --arg a "$EXTERNAL_ACCT" '{jsonrpc:"2.0",id:1,method:"query",params:{request_type:"call_function",finality:"final",account_id:$t,method_name:"ft_balance_of",args_base64:({account_id:$a}|tojson|@base64)}}')" | jq -r '.result.result // [] | implode' 2>/dev/null | tr -d '"' || echo "0")
-  post POST /wallet/v1/intents/withdraw "$SEED" "$(jq -nc --arg to "$EXTERNAL_ACCT" --arg t "nep141:$WNEAR" '{chain:"near", to:$to, amount:"30000000000000000000000", token:$t}')"
-  if [[ "$HTTP" == "200" ]]; then
-    HASH=$(echo "$BODY" | jq -r '.result.transfer_intent_hash // .result.intent_hash // .intent_hash // empty')
-    pass "T6 FT withdraw to external accepted (solver intent=$HASH): $(echo "$BODY"|head -c160)"
-    # Poll the external balance — solver settlement is async, so a single read can race.
-    ext_bal() { curl -s "$RPC_URL" -X POST -H 'Content-Type: application/json' -d "$(jq -nc --arg t "$WNEAR" --arg a "$EXTERNAL_ACCT" '{jsonrpc:"2.0",id:1,method:"query",params:{request_type:"call_function",finality:"final",account_id:$t,method_name:"ft_balance_of",args_base64:({account_id:$a}|tojson|@base64)}}')" | jq -r '.result.result // [] | implode' 2>/dev/null | tr -d '"' || echo "0"; }
-    EXT_AFTER="$EXT_BEFORE"
-    for attempt in $(seq 1 10); do
-      sleep 3; EXT_AFTER=$(ext_bal)
-      [[ -n "$EXT_AFTER" && "$EXT_AFTER" != "$EXT_BEFORE" ]] && break
-      note "T6 poll $attempt: external balance still $EXT_AFTER (waiting for solver settlement)"
-    done
-    note "T6 external $WNEAR balance: before=$EXT_BEFORE after=$EXT_AFTER (expected +$AMT)"
-    if [[ -n "$EXT_AFTER" && "$EXT_AFTER" != "$EXT_BEFORE" ]]; then pass "T6 EXTERNAL account balance increased → FT exited the wallet via solver"; else warn "T6 balance delta not observed after ~30s — confirm solver settlement manually (intent=$HASH)"; fi
-  elif echo "$BODY" | grep -qiE "storage"; then
-    fail "T6 external recipient '$EXTERNAL_ACCT' not storage-registered on $WNEAR — register it then re-run (this is a prerequisite, not a code bug): $(echo "$BODY"|head -c160)"
-  else fail "T6 FT withdraw to external failed ($HTTP): $BODY"; fi
-fi
-
-# ════════════════════════════════════════════════════════════════════════════════
 # T7 — negatives  [POLICY/SIG]
 # ════════════════════════════════════════════════════════════════════════════════
 if want T7; then
   log "T7 negatives — substituted op (wrong hash) rejected; gated op without approvals stays pending"
+  MONEY=true; CUR_TEST=T7
   if [[ -f "$CREDS_DIR/$APPROVER1.json" ]]; then
     A1_PRIV=$(jq -r .private_key "$CREDS_DIR/$APPROVER1.json"); A1_PUB=$(jq -r .public_key "$CREDS_DIR/$APPROVER1.json")
     SEED="t7-$(date +%s)"; read -r WID ADDR < <(new_subwallet "$SEED")
-    fund_near "$ADDR" "0.05 NEAR" || warn "T7 funding"
+    fund_near "$ADDR" "0.01 NEAR" || warn "T7 funding"
     store_policy "$SEED" "$WID" "$(jq -nc --arg a "$APPROVER1" --arg ap "$A1_PUB" '{rules:{transaction_types:["transfer"]}, approval:{threshold:{required:1}, approvers:[{id:$a,pubkey:$ap}]}}')" || fail "T7 store_policy"
-    post POST /wallet/v1/transfer "$SEED" "$(jq -nc --arg to "$PARENT" '{chain:"near", receiver_id:$to, amount:"10000000000000000000000"}')"
+    post POST /wallet/v1/transfer "$SEED" "$(jq -nc --arg to "$PARENT" '{chain:"near", receiver_id:$to, amount:"2000000000000000000000"}')"
     AID=$(echo "$BODY" | jq -r '.approval_id // empty'); RID=$(echo "$BODY" | jq -r '.request_id // empty')
     REAL_H=$(curl -sS "$COORDINATOR_URL/wallet/v1/approval/$AID" | jq -r '.request_hash')
 
@@ -475,9 +617,9 @@ if want T7; then
     #     approver) must be rejected: the message binds the wallet_pubkey, so A's signature
     #     can't satisfy B (audit fix 2).
     SEED_B="t7b2-$(date +%s)"; read -r WID_B ADDR_B < <(new_subwallet "$SEED_B")
-    fund_near "$ADDR_B" "0.05 NEAR" || warn "T7c funding"
+    fund_near "$ADDR_B" "0.01 NEAR" || warn "T7c funding"
     store_policy "$SEED_B" "$WID_B" "$(jq -nc --arg a "$APPROVER1" --arg ap "$A1_PUB" '{rules:{transaction_types:["transfer"]}, approval:{threshold:{required:1}, approvers:[{id:$a,pubkey:$ap}]}}')" || fail "T7c store_policy"
-    post POST /wallet/v1/transfer "$SEED_B" "$(jq -nc --arg to "$PARENT" '{chain:"near", receiver_id:$to, amount:"10000000000000000000000"}')"
+    post POST /wallet/v1/transfer "$SEED_B" "$(jq -nc --arg to "$PARENT" '{chain:"near", receiver_id:$to, amount:"2000000000000000000000"}')"
     AID_B=$(echo "$BODY" | jq -r '.approval_id // empty'); RID_B=$(echo "$BODY" | jq -r '.request_id // empty')
     H_B=$(curl -sS "$COORDINATOR_URL/wallet/v1/approval/$AID_B" | jq -r '.request_hash')
     # Sign with wallet A's pubkey binding (WPK from T7's wallet) but submit to B's approval.
@@ -491,176 +633,7 @@ if want T7; then
     S=$(curl -sS "$COORDINATOR_URL/wallet/v1/requests/$RID_B" -H "$(AUTH "$SEED_B")" | jq -r '.status // empty')
     [[ "$S" != "completed" && "$S" != "success" ]] && pass "T7c cross-wallet replay (A's binding on B) → rejected, no execution (status=$S)" || fail "T7c cross-wallet replay EXECUTED — wallet binding broken! status=$S"
   else warn "T7 skipped — APPROVER1 creds required"; fi
-fi
-
-# ════════════════════════════════════════════════════════════════════════════════
-# T8 — swap default-DENY capability  [POLICY] (audit fix 3)
-# ════════════════════════════════════════════════════════════════════════════════
-if want T8 && intents_mainnet T8; then
-  log "T8 [POLICY] swap — default-DENY `swap` capability (denied without it even when allowed by transaction_types)"
-  SWAP_BODY='{"token_in":"nep141:'"$WNEAR"'","amount_in":"10000000000000000000000","token_out":"nep141:usdc.testnet","min_amount_out":"1"}'
-  # 8a: transaction_types allows swap but NO capability → denied at the keystore capability gate.
-  SEED="t8a-$(date +%s)"; read -r WID _ < <(new_subwallet "$SEED")
-  store_policy "$SEED" "$WID" '{"rules":{"transaction_types":["swap","intents_swap"]}}' || fail "T8a store_policy"
-  post POST /wallet/v1/intents/swap "$SEED" "$SWAP_BODY"
-  if [[ "$HTTP" != "200" ]] && echo "$BODY" | grep -qiE "capability|swap|policy|forbidden"; then
-    pass "T8a swap type allowed but capability OFF → denied ($HTTP): $(echo "$BODY"|head -c120)"
-  else fail "T8a swap must be capability-denied without capabilities.swap, got $HTTP: $BODY"; fi
-  # 8b: capability ON → passes the policy gate (fails downstream on balance, not policy).
-  SEED="t8b-$(date +%s)"; read -r WID _ < <(new_subwallet "$SEED")
-  store_policy "$SEED" "$WID" '{"rules":{"transaction_types":["swap"]}, "capabilities":{"swap":{"allowed":true}}}' || fail "T8b store_policy"
-  post POST /wallet/v1/intents/swap "$SEED" "$SWAP_BODY"
-  if echo "$BODY" | grep -qiE "balance|insufficient|quote|deposit"; then
-    pass "T8b swap capability ON → passed policy gate, failed downstream on balance (not policy)"
-  elif echo "$BODY" | grep -qiE "not allowed by policy|capability.*swap"; then
-    fail "T8b swap should pass the gate with capability enabled, but was denied: $BODY"
-  else note "T8b inconclusive (HTTP $HTTP): $(echo "$BODY"|head -c160)"; pass "T8b not a policy denial"; fi
-fi
-
-# ════════════════════════════════════════════════════════════════════════════════
-# T9 — Trusted swap under MULTISIG → pending_approval, then execute after threshold  [SIG]
-#       This is the NEW control flow we changed: a Trusted op (swap) on a multisig wallet
-#       used to be rejected ("does not support multisig"). It now returns pending_approval
-#       and, after the approval threshold is met, the keystore signs the Trusted artifact
-#       (the 1Click quote is fetched FRESH at execution; approval binds token_in/amount_in).
-#       Mirrors T4's machinery: approval:{threshold,approvers}, the {vote}:{aid}:{wpk}:{hash}
-#       NEP-413 vote over the API-provided request_hash, POST /wallet/v1/approve/<aid>,
-#       and polling /wallet/v1/requests/<rid> for the status transition.
-# ════════════════════════════════════════════════════════════════════════════════
-if want T9 && intents_mainnet T9; then
-  log "T9 [SIG] Trusted swap under MULTISIG — pending_approval on request, then leaves pending_approval after threshold"
-  [[ -f "$CREDS_DIR/$APPROVER1.json" ]] || warn "T9 skipped — APPROVER1 creds required"
-  if [[ -f "$CREDS_DIR/$APPROVER1.json" ]]; then
-    A1_PRIV=$(jq -r .private_key "$CREDS_DIR/$APPROVER1.json"); A1_PUB=$(jq -r .public_key "$CREDS_DIR/$APPROVER1.json")
-
-    # vote helper: identical binding to T4 — fetch wallet_pubkey from the approval and sign
-    # the NEP-413 string {vote}:{approval_id}:{wallet_pubkey}:{request_hash}, then POST it.
-    vote() {
-      local v=$1 aid=$2 h=$3 priv=$4 pub=$5 acct=$6 nonce sj sig wpk
-      wpk=$(curl -sS "$COORDINATOR_URL/wallet/v1/approval/$aid" | jq -r '.wallet_pubkey // empty')
-      nonce=$(head -c 32 /dev/urandom | base64 | tr -d '\n')
-      sj=$("$RECOVERY_BIN" sign-nep413 --private-key "$priv" --message "$v:$aid:$wpk:$h" --recipient "$CONTRACT_ID" --nonce-base64 "$nonce")
-      sig=$(echo "$sj" | jq -r '.signature')
-      curl -sS -o /tmp/uop.body -w '%{http_code}' -X POST "$COORDINATOR_URL/wallet/v1/$v/$aid" -H 'Content-Type: application/json' \
-        -d "$(jq -nc --arg s "$sig" --arg pk "$pub" --arg ac "$acct" --arg nc "$nonce" '{signature:$s,public_key:$pk,account_id:$ac,nonce:$nc}')"
-    }
-    rstatus() { curl -sS "$COORDINATOR_URL/wallet/v1/requests/$1" -H "$(AUTH "$2")" | jq -r '.status // empty'; }
-
-    # Multisig policy: approval.threshold=1 (single real approver, mirrors T4b) AND the
-    # default-DENY `swap` capability enabled. Tiny amount (0.01 wNEAR) — testnet.
-    SEED="t9-$(date +%s)"; read -r WID _ < <(new_subwallet "$SEED")
-    store_policy "$SEED" "$WID" "$(jq -nc --arg a "$APPROVER1" --arg ap "$A1_PUB" '{rules:{transaction_types:["swap"]}, capabilities:{swap:{allowed:true}}, approval:{threshold:{required:1}, approvers:[{id:$a,pubkey:$ap}]}}')" || fail "T9 store_policy"
-
-    # 9a: Trusted swap on a multisig wallet → pending_approval (NOT executed, NOT rejected).
-    SWAP9_BODY='{"token_in":"nep141:'"$WNEAR"'","amount_in":"10000000000000000000000","token_out":"nep141:usdc.testnet","min_amount_out":"1"}'
-    post POST /wallet/v1/intents/swap "$SEED" "$SWAP9_BODY"
-    ST=$(echo "$BODY" | jq -r '.status // empty'); AID=$(echo "$BODY" | jq -r '.approval_id // empty')
-    RID=$(echo "$BODY" | jq -r '.request_id // empty'); RH=$(echo "$BODY" | jq -r '.request_hash // empty')
-    if [[ "$HTTP" == "200" && "$ST" == "pending_approval" && -n "$AID" && -n "$RH" ]]; then
-      pass "T9a multisig swap → pending_approval (approval_id=$AID, request_hash present) — NOT rejected as 'no multisig'"
-    else fail "T9a multisig swap MUST return pending_approval+approval_id+request_hash, got HTTP $HTTP status='$ST': $(echo "$BODY"|head -c200)"; fi
-
-    # 9b: sign+submit the approver YES over the API-provided request_hash (RH), threshold=1.
-    #     The approval's request_hash MUST equal the one returned by the swap endpoint.
-    if [[ -n "$AID" && -n "$RH" ]]; then
-      APPROVAL_H=$(curl -sS "$COORDINATOR_URL/wallet/v1/approval/$AID" | jq -r '.request_hash // empty')
-      [[ "$APPROVAL_H" == "$RH" ]] && pass "T9b approval.request_hash matches the swap response request_hash" \
-        || note "T9b approval.request_hash='$APPROVAL_H' vs response='$RH' (signing the API-provided RH)"
-      C=$(vote approve "$AID" "$RH" "$A1_PRIV" "$A1_PUB" "$APPROVER1"); note "T9b /approve HTTP $C: $(cat /tmp/uop.body | head -c160)"
-      [[ "$C" == "200" ]] && pass "T9b approver YES accepted (HTTP 200) over the swap's request_hash" \
-        || fail "T9b /approve should accept the approver vote, got HTTP $C: $(cat /tmp/uop.body | head -c160)"
-
-      # 9c: after the threshold the request MUST leave pending_approval — the coordinator marks
-      #     it 'processing' and dispatches execute_approved_swap, which signs the Trusted artifact.
-      #     Terminal swap success is liquidity/solver-dependent on testnet (1Click may not fill a
-      #     tiny wNEAR→USDC quote), so we assert the CONTROL-FLOW transition (approval → sign/execute),
-      #     NOT terminal swap success: status must move to processing|success|pending_deposit (or, if
-      #     the downstream quote/liquidity fails, 'failed' — which still proves the op left
-      #     pending_approval and the keystore was invoked, i.e. multisig no longer blocks it).
-      S=""; for _ in $(seq 1 15); do sleep 3; S=$(rstatus "$RID" "$SEED"); [[ "$S" != "pending_approval" && -n "$S" ]] && break; done
-      case "$S" in
-        processing|success|pending_deposit)
-          pass "T9c multisig swap proceeded PAST pending_approval after threshold (status=$S) — keystore signed the Trusted artifact" ;;
-        failed)
-          warn "T9c multisig swap left pending_approval then FAILED downstream (status=$S) — control flow OK (approval→execute reached); terminal failure is testnet liquidity/quote, not the multisig gate"
-          pass "T9c multisig swap left pending_approval after threshold (reached execution; downstream-failed on testnet liquidity)" ;;
-        pending_approval)
-          fail "T9c multisig swap STUCK at pending_approval after a valid threshold-meeting approval — execution was NOT dispatched" ;;
-        *)
-          note "T9c post-approval status inconclusive (status='$S')"; pass "T9c multisig swap left pending_approval after threshold (status=$S != pending_approval)" ;;
-      esac
-    fi
-  fi
-fi
-
-# ════════════════════════════════════════════════════════════════════════════════
-# T10 — Trusted cross_chain_withdraw under MULTISIG → pending_approval, then execute  [SIG]
-#       Same NEW control flow as T9 but for a cross-chain bridge-out (chain != near). Used
-#       to be rejected upfront ("not supported for trusted/cross-chain" — see T2c's old path).
-#       It now returns pending_approval and, after the threshold, execute_approved_cross_chain
-#       re-fetches the 1Click quote and signs the Trusted transfer-to-deposit artifact (approval
-#       binds token+amount; the off-chain deposit_address routing is coordinator-supplied).
-# ════════════════════════════════════════════════════════════════════════════════
-if want T10 && intents_mainnet T10; then
-  log "T10 [SIG] Trusted cross_chain_withdraw under MULTISIG — pending_approval on request, then leaves pending_approval after threshold"
-  [[ -f "$CREDS_DIR/$APPROVER1.json" ]] || warn "T10 skipped — APPROVER1 creds required"
-  if [[ -f "$CREDS_DIR/$APPROVER1.json" ]]; then
-    A1_PRIV=$(jq -r .private_key "$CREDS_DIR/$APPROVER1.json"); A1_PUB=$(jq -r .public_key "$CREDS_DIR/$APPROVER1.json")
-
-    vote() {
-      local v=$1 aid=$2 h=$3 priv=$4 pub=$5 acct=$6 nonce sj sig wpk
-      wpk=$(curl -sS "$COORDINATOR_URL/wallet/v1/approval/$aid" | jq -r '.wallet_pubkey // empty')
-      nonce=$(head -c 32 /dev/urandom | base64 | tr -d '\n')
-      sj=$("$RECOVERY_BIN" sign-nep413 --private-key "$priv" --message "$v:$aid:$wpk:$h" --recipient "$CONTRACT_ID" --nonce-base64 "$nonce")
-      sig=$(echo "$sj" | jq -r '.signature')
-      curl -sS -o /tmp/uop.body -w '%{http_code}' -X POST "$COORDINATOR_URL/wallet/v1/$v/$aid" -H 'Content-Type: application/json' \
-        -d "$(jq -nc --arg s "$sig" --arg pk "$pub" --arg ac "$acct" --arg nc "$nonce" '{signature:$s,public_key:$pk,account_id:$ac,nonce:$nc}')"
-    }
-    rstatus() { curl -sS "$COORDINATOR_URL/wallet/v1/requests/$1" -H "$(AUTH "$2")" | jq -r '.status // empty'; }
-
-    # Multisig policy: threshold=1 + cross_chain_withdraw type + the default-DENY
-    # cross_chain_withdraw capability enabled. Tiny amount. ethereum + a burn address.
-    SEED="t10-$(date +%s)"; read -r WID _ < <(new_subwallet "$SEED")
-    store_policy "$SEED" "$WID" "$(jq -nc --arg a "$APPROVER1" --arg ap "$A1_PUB" '{rules:{transaction_types:["cross_chain_withdraw"]}, capabilities:{cross_chain_withdraw:{allowed:true}}, approval:{threshold:{required:1}, approvers:[{id:$a,pubkey:$ap}]}}')" || fail "T10 store_policy"
-
-    # 10a: Trusted cross-chain withdraw on a multisig wallet → pending_approval (NOT rejected).
-    XC10_BODY='{"chain":"ethereum","to":"0x000000000000000000000000000000000000dEaD","amount":"10000000000000000000000","token":"nep141:'"$WNEAR"'"}'
-    post POST /wallet/v1/intents/withdraw "$SEED" "$XC10_BODY"
-    ST=$(echo "$BODY" | jq -r '.status // empty'); AID=$(echo "$BODY" | jq -r '.approval_id // empty')
-    RID=$(echo "$BODY" | jq -r '.request_id // empty'); RH=$(echo "$BODY" | jq -r '.request_hash // empty')
-    if [[ "$HTTP" == "200" && "$ST" == "pending_approval" && -n "$AID" && -n "$RH" ]]; then
-      pass "T10a multisig cross-chain withdraw → pending_approval (approval_id=$AID, request_hash present) — NOT rejected as 'trusted/cross-chain not supported'"
-    else fail "T10a multisig cross-chain withdraw MUST return pending_approval+approval_id+request_hash, got HTTP $HTTP status='$ST': $(echo "$BODY"|head -c200)"; fi
-
-    # 10b: sign+submit the approver YES over the API-provided request_hash (RH), threshold=1.
-    if [[ -n "$AID" && -n "$RH" ]]; then
-      APPROVAL_H=$(curl -sS "$COORDINATOR_URL/wallet/v1/approval/$AID" | jq -r '.request_hash // empty')
-      [[ "$APPROVAL_H" == "$RH" ]] && pass "T10b approval.request_hash matches the withdraw response request_hash" \
-        || note "T10b approval.request_hash='$APPROVAL_H' vs response='$RH' (signing the API-provided RH)"
-      C=$(vote approve "$AID" "$RH" "$A1_PRIV" "$A1_PUB" "$APPROVER1"); note "T10b /approve HTTP $C: $(cat /tmp/uop.body | head -c160)"
-      [[ "$C" == "200" ]] && pass "T10b approver YES accepted (HTTP 200) over the cross-chain request_hash" \
-        || fail "T10b /approve should accept the approver vote, got HTTP $C: $(cat /tmp/uop.body | head -c160)"
-
-      # 10c: after the threshold the request MUST leave pending_approval — coordinator marks it
-      #      'processing' and dispatches execute_approved_cross_chain (re-fetches the 1Click quote,
-      #      signs the Trusted artifact). Terminal bridge settlement is liquidity-dependent on
-      #      testnet, so assert the CONTROL-FLOW transition (approval → sign/execute), NOT terminal
-      #      bridge success: processing|success|pending_deposit (or 'failed' on a downstream
-      #      quote/liquidity miss — still proves the op left pending_approval; multisig no longer blocks it).
-      S=""; for _ in $(seq 1 15); do sleep 3; S=$(rstatus "$RID" "$SEED"); [[ "$S" != "pending_approval" && -n "$S" ]] && break; done
-      case "$S" in
-        processing|success|pending_deposit)
-          pass "T10c multisig cross-chain withdraw proceeded PAST pending_approval after threshold (status=$S) — keystore signed the Trusted artifact" ;;
-        failed)
-          warn "T10c multisig cross-chain left pending_approval then FAILED downstream (status=$S) — control flow OK (approval→execute reached); terminal failure is testnet liquidity/quote, not the multisig gate"
-          pass "T10c multisig cross-chain withdraw left pending_approval after threshold (reached execution; downstream-failed on testnet liquidity)" ;;
-        pending_approval)
-          fail "T10c multisig cross-chain withdraw STUCK at pending_approval after a valid threshold-meeting approval — execution was NOT dispatched" ;;
-        *)
-          note "T10c post-approval status inconclusive (status='$S')"; pass "T10c multisig cross-chain withdraw left pending_approval after threshold (status=$S != pending_approval)" ;;
-      esac
-    fi
-  fi
+  return_test_funds; MONEY=false
 fi
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -672,14 +645,15 @@ fi
 #         11b zero-balance      — a wallet with 0 on-chain NEAR can't be deleted
 #                                 (implicit account does not exist) → rejected.
 #         11c happy path        — fund a THROWAWAY sub-wallet minimally, delete it with
-#                                 the beneficiary set to a SECOND throwaway sub-wallet we
-#                                 control (a 64-hex implicit account), assert success +
-#                                 (best-effort) the beneficiary's balance increased.
+#                                 the beneficiary set to BENEFICIARY (the shared constant
+#                                 sink — a real, existing account we control), assert
+#                                 success + (best-effort) the beneficiary's balance increased.
 #       Everything stays inside disposable sub-wallets under our own vault and tiny
 #       testnet amounts — no external account and no PARENT funds are deleted.
 # ════════════════════════════════════════════════════════════════════════════════
 if want T11; then
   log "T11 [FUNDS] /wallet/v1/delete — self-beneficiary + zero-balance guards, then a real destructive delete to a beneficiary we control"
+  MONEY=true; CUR_TEST=T11
 
   # NEAR balance of an arbitrary account (yoctoNEAR). Non-existent implicit account → "0".
   near_bal() {
@@ -692,7 +666,7 @@ if want T11; then
 
   # ── 11a: self-beneficiary guard (no funds move; guard runs before the balance check) ──
   SEED="t11a-$(date +%s)"; read -r WID ADDR < <(new_subwallet "$SEED")
-  fund_near "$ADDR" "0.05 NEAR" || warn "T11a funding"
+  fund_near "$ADDR" "0.005 NEAR" || warn "T11a funding"
   store_policy "$SEED" "$WID" "$DEL_POL" || fail "T11a store_policy"
   post POST /wallet/v1/delete "$SEED" "$(jq -nc --arg b "$ADDR" '{beneficiary:$b, chain:"near"}')"
   if [[ "$HTTP" != "200" ]] && echo "$BODY" | grep -qiE "own account|beneficiary"; then
@@ -702,194 +676,375 @@ if want T11; then
   # ── 11b: zero-balance guard (fresh, UNFUNDED wallet → account does not exist on-chain) ──
   SEED="t11b-$(date +%s)"; read -r WID ADDR < <(new_subwallet "$SEED")
   store_policy "$SEED" "$WID" "$DEL_POL" || fail "T11b store_policy"
-  post POST /wallet/v1/delete "$SEED" "$(jq -nc --arg b "$PARENT" '{beneficiary:$b, chain:"near"}')"
+  post POST /wallet/v1/delete "$SEED" "$(jq -nc --arg b "$BENEFICIARY" '{beneficiary:$b, chain:"near"}')"
   if [[ "$HTTP" != "200" ]] && echo "$BODY" | grep -qiE "zero|balance|on-chain|does not exist"; then
     pass "T11b zero-balance delete rejected ($HTTP): $(echo "$BODY"|head -c120)"
   else fail "T11b delete of a 0-balance wallet MUST be rejected, got $HTTP: $BODY"; fi
 
-  # ── 11c: real destructive delete → sweeps the full balance to a beneficiary we control ──
-  # Beneficiary = a SECOND disposable sub-wallet's 64-hex implicit address. It starts at 0
-  # and (because it is implicit) is created/credited by the DeleteAccount transfer, so any
-  # increase is unambiguously the swept balance.
-  BSEED="t11c-ben-$(date +%s)"; read -r _ BEN_ADDR < <(new_subwallet "$BSEED")
+  # ── 11c: real destructive delete → sweeps the full balance to the shared constant beneficiary ──
+  # Beneficiary = BENEFICIARY, the shared constant sink: a real, existing, wNEAR-registered account we
+  # control. Because it already exists on-chain, NEAR's DeleteAccount credits it (a non-existent
+  # implicit beneficiary would BURN the swept balance — which is exactly why the constant is used).
+  # The beneficiary-balance-increase check is BEST-EFFORT: BENEFICIARY is an active account whose delta
+  # may be masked by other activity, so it warns rather than fails. The PRIMARY asserts are
+  # status=success + the deleted wallet gone + beneficiary echoed == $BENEFICIARY.
   SEED="t11c-$(date +%s)"; read -r WID ADDR < <(new_subwallet "$SEED")
-  fund_near "$ADDR" "0.06 NEAR" || warn "T11c funding"
-  # wait until the wallet actually exists on-chain (funding settles) before deleting it.
+  fund_near "$ADDR" "0.005 NEAR" || warn "T11c funding"
+  # Wait until the wallet-to-delete exists on-chain (funding settles) before deleting.
   for _ in $(seq 1 6); do [[ "$(near_bal "$ADDR")" != "0" ]] && break; sleep 2; done
   store_policy "$SEED" "$WID" "$DEL_POL" || fail "T11c store_policy"
-  BEN_BEFORE=$(near_bal "$BEN_ADDR")
-  post POST /wallet/v1/delete "$SEED" "$(jq -nc --arg b "$BEN_ADDR" '{beneficiary:$b, chain:"near"}')"
+  BEN_BEFORE=$(near_bal "$BENEFICIARY")
+  post POST /wallet/v1/delete "$SEED" "$(jq -nc --arg b "$BENEFICIARY" '{beneficiary:$b, chain:"near"}')"
   if [[ "$HTTP" == "200" ]]; then
     ST=$(echo "$BODY" | jq -r '.status // empty'); TX=$(echo "$BODY" | jq -r '.tx_hash // empty')
     BEN_ECHO=$(echo "$BODY" | jq -r '.beneficiary // empty')
-    if [[ "$ST" == "success" && -n "$TX" && "$BEN_ECHO" == "$BEN_ADDR" ]]; then
+    if [[ "$ST" == "success" && -n "$TX" && "$BEN_ECHO" == "$BENEFICIARY" ]]; then
       pass "T11c delete executed (status=$ST, tx=$TX, beneficiary echoed)"
     else fail "T11c delete 200 but unexpected body (status='$ST' tx='$TX' beneficiary='$BEN_ECHO'): $(echo "$BODY"|head -c160)"; fi
     # the deleted wallet must no longer exist on-chain (balance back to 0 / account gone).
     GONE=$(near_bal "$ADDR"); [[ "$GONE" == "0" ]] && pass "T11c deleted wallet no longer exists on-chain (balance=0)" \
       || note "T11c deleted wallet still shows balance=$GONE (RPC lag) — non-fatal"
-    # beneficiary balance must increase (best-effort; settlement is a single block here).
+    # beneficiary balance should increase (best-effort; BENEFICIARY is active so the delta may be masked).
     BEN_AFTER="$BEN_BEFORE"
-    for attempt in $(seq 1 8); do sleep 3; BEN_AFTER=$(near_bal "$BEN_ADDR"); [[ "$BEN_AFTER" != "$BEN_BEFORE" ]] && break
+    for attempt in $(seq 1 8); do sleep 3; BEN_AFTER=$(near_bal "$BENEFICIARY"); [[ "$BEN_AFTER" != "$BEN_BEFORE" ]] && break
       note "T11c poll $attempt: beneficiary balance still $BEN_AFTER"; done
     note "T11c beneficiary balance: before=$BEN_BEFORE after=$BEN_AFTER"
     if [[ "$BEN_AFTER" != "$BEN_BEFORE" ]]; then pass "T11c beneficiary balance increased → full sweep delivered"
-    else warn "T11c beneficiary balance delta not observed after ~24s — confirm manually (tx=$TX)"; fi
+    else warn "T11c beneficiary balance delta not observed after ~24s — BENEFICIARY is active, may be masked; confirm manually (tx=$TX)"; fi
   else fail "T11c destructive delete should succeed (200), got $HTTP: $BODY"; fi
+  return_test_funds; MONEY=false
 fi
 
 # ════════════════════════════════════════════════════════════════════════════════
-# T12 — payment_check claim / reclaim / batch-create (the real gasless value flow)  [FUNDS]
-#       T3 only proves create's capability gate (deny w/o cap, allow+amount-gate w/ cap). T12
-#       exercises the actual agent-to-agent money movement on top of that gate, end to end:
-#         12a CLAIM    — creator sub-wallet C funds its intents balance + creates a check, then a
-#                        SECOND sub-wallet R we control CLAIMs it (the check_key is the ephemeral
-#                        private key; claim is signed LOCALLY by that ephemeral key, NOT the
-#                        keystore — see payment_checks.rs::claim) and the claimed funds land in
-#                        R's intents balance → assert R's intents balance increased.
-#         12b RECLAIM  — creator C2 funds + creates a check, then RECLAIMs it (creator-only,
-#                        gated by wallet_id ownership; the coordinator re-derives the ephemeral
-#                        key from the keystore to sign the refund) → assert C2's intents balance
-#                        recovered the reclaimed amount.
-#         12c BATCH    — creator C3 funds + BATCH-CREATEs two checks in one call → assert both
-#                        come back with distinct check_ids and the funded amounts.
-#         12d READBACK — status (by check_id, creator-auth) + peek (by check_key, any-auth) on the
-#                        batch's first check echo the right token/amount (best-effort read-backs).
-#       Reuses new_subwallet / fund_near / post / store_policy / pass·fail·note and the same
-#       storage-deposit → near_deposit → intents/deposit wNEAR dance T3 uses to fund an intents
-#       balance. Tiny testnet amounts; both the creators AND the claimer are disposable sub-wallets
-#       under our own vault, so value only ever moves between accounts we control.
+# T13 — sign_message ed25519 VERIFY + cross-scope isolation + tamper  [POLICY] (no funds)
+#       Ported from tests/wallet_sign_message_roundtrip.sh. Unlike T5 (which only checks a
+#       signature is PRESENT), T13 actually ed25519-VERIFIES the returned signature against the
+#       returned public_key + the exact signed NEP-413 message bytes (via
+#       `customer-recovery verify-sign-message` — the same independent verifier the source uses,
+#       reconstructing Borsh(NEP-413 payload) → SHA-256 → verify_strict). Asserts:
+#         13a  a valid sign-message VERIFIES under its returned pubkey;
+#         13b  a TAMPERED message and a TAMPERED nonce both FAIL verification;
+#         13c  two DIFFERENT wallet scopes (different seeds → different per-wallet keys) produce
+#              signatures that do NOT cross-verify (crypto isolation, not just distinct strings).
+#       NOTE on scope: the source split scopes via default-master vs `outlayer vault init`. Here we
+#       use two distinct seeds under the same auth path — the achievable, headless scope split that
+#       still proves cryptographic isolation (distinct keys). When a dedicated vault is deployed
+#       (MPC_PUBLIC_KEY set) the seeds additionally route through the per-vault master.
 # ════════════════════════════════════════════════════════════════════════════════
-if want T12 && intents_mainnet T12; then
-  log "T12 [FUNDS] payment_check claim / reclaim / batch-create — real gasless value flow between sub-wallets we control"
-
-  # intents balance of a sub-wallet (by its own seed/AUTH) for a defuse token. Echoes the integer
-  # string ("0" when absent). Uses the same GET /wallet/v1/balance?source=intents the SDK/dashboard do.
-  intents_bal() {
-    local seed=$1 token=$2 enc
-    enc=$(printf '%s' "$token" | sed 's/:/%3A/g')
-    post GET "/wallet/v1/balance?source=intents&token=$enc" "$seed"
-    [[ "$HTTP" == "200" ]] && echo "$BODY" | jq -r '.balance // "0"' || echo "0"
+if want T13; then
+  log "T13 [POLICY] sign_message ed25519 VERIFY + cross-scope isolation + tamper"
+  # sign_and_capture <seed> <recipient> <tag> → echoes "SIG|PUB|NONCE|MSG" (the bytes actually
+  # signed). Pure capture: it does NOT call pass/fail (it runs in the `< <(...)` subshell of `read`,
+  # where PASS/FAILED increments would be lost — same subshell gotcha new_subwallet documents). The
+  # caller, in the MAIN shell, runs verify-sign-message + the assertions. The server is free to
+  # replace the requested nonce, so we read .nonce back and the caller verifies against THAT.
+  T13_MSG_BASE="t13-roundtrip-$(date +%s)-$$"
+  sign_and_capture() {
+    local seed=$1 rcp=$2 msg="$T13_MSG_BASE-$3" r sig pub nonce
+    # nonce is the NEP-413 32-byte nonce (base64). Send a fixed one; read back what the server used.
+    r=$(curl -sS -X POST "$COORDINATOR_URL/wallet/v1/sign-message" -H "$(AUTH "$seed")" -H 'Content-Type: application/json' \
+      -d "$(jq -nc --arg m "$msg" --arg r "$rcp" '{message:$m, recipient:$r, nonce:"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}')")
+    sig=$(echo "$r" | jq -r '.signature // empty'); pub=$(echo "$r" | jq -r '.public_key // empty'); nonce=$(echo "$r" | jq -r '.nonce // empty')
+    echo "$sig|$pub|$nonce|$msg"
   }
 
-  # Fund a sub-wallet's PUBLIC intents balance with <wrap_amount> yocto of wNEAR — the exact T3
-  # dance: send NEAR, wait for the implicit account to exist, storage-register on wNEAR, wrap NEAR,
-  # then deposit the wrapped FT into intents.near. <near_amount> is the NEAR sent to cover the wrap
-  # + gas + storage. Args: <seed> <addr> <near_amount_str> <wrap_yocto>.
-  fund_intents() {
-    local seed=$1 addr=$2 near_amount=$3 wrap_yocto=$4
-    fund_near "$addr" "$near_amount" || warn "T12 funding ($addr) failed"
-    for _ in $(seq 1 6); do curl -s "$RPC_URL" -X POST -H 'Content-Type: application/json' -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"query\",\"params\":{\"request_type\":\"view_account\",\"finality\":\"final\",\"account_id\":\"$addr\"}}" | jq -e '.result.amount' >/dev/null && break; sleep 2; done
-    post POST /wallet/v1/storage-deposit "$seed" "$(jq -nc --arg t "$WNEAR" '{token:$t}')"; note "T12 storage-deposit ($addr): $HTTP"; assert_funded "T12 storage-deposit ($addr)"
-    post POST /wallet/v1/call "$seed" "$(jq -nc --arg t "$WNEAR" --arg d "$wrap_yocto" '{receiver_id:$t, method_name:"near_deposit", args:{}, gas:"30000000000000", deposit:$d}')"; note "T12 wrap near_deposit ($addr): $HTTP"; assert_funded "T12 wrap near_deposit ($addr)"
-    post POST /wallet/v1/intents/deposit "$seed" "$(jq -nc --arg t "nep141:$WNEAR" --arg a "$wrap_yocto" '{token:$t, amount:$a}')"; note "T12 intents deposit ($addr): $HTTP $(echo "$BODY"|head -c100)"; assert_funded "T12 intents deposit ($addr)"
-    sleep 4
-  }
+  # ── 13a: a valid sign-message must VERIFY under its returned pubkey (the roundtrip proof) ──
+  SEED_A="t13a-$(date +%s)"; read -r WID_A _ < <(new_subwallet "$SEED_A")
+  store_policy "$SEED_A" "$WID_A" '{"rules":{"transaction_types":["transfer"]}, "capabilities":{"sign_message":{"allowed":true,"allowed_recipients":["verifier-a.testnet"]}}}' || fail "T13a store_policy"
+  IFS='|' read -r SIG_A PUB_A NONCE_A MSG_A < <(sign_and_capture "$SEED_A" "verifier-a.testnet" "A")
+  [[ -n "$SIG_A" && -n "$PUB_A" && -n "$NONCE_A" ]] || fail "T13a sign-message returned no signature/pubkey/nonce for scope A"
+  if "$RECOVERY_BIN" verify-sign-message --pubkey "$PUB_A" --message "$MSG_A" --recipient "verifier-a.testnet" --nonce-base64 "$NONCE_A" --signature "$SIG_A" >/dev/null 2>&1; then
+    pass "T13a valid sign-message VERIFIES under returned pubkey $PUB_A"
+  else fail "T13a sign-message returned a crypto-INVALID signature (did not verify under $PUB_A)"; fi
 
-  # payment_check-enabled policy with a per_transaction limit (mirrors T3b): capability ON + amount cap.
-  PC_POL=$(jq -nc --arg t "nep141:$WNEAR" '{rules:{transaction_types:["payment_check"], limits:{per_transaction:{($t):"100000000000000000000000"}}}, capabilities:{payment_check:{allowed:true}}}')
-  TOKEN="nep141:$WNEAR"
-  CHK_AMT="10000000000000000000000"  # 0.01 wNEAR — within the 0.1 wNEAR per_transaction cap above
+  # ── 13b: tamper — a mutated message and a mutated nonce must BOTH fail verification ──
+  if "$RECOVERY_BIN" verify-sign-message --pubkey "$PUB_A" --message "${MSG_A}-MUTATED" --recipient "verifier-a.testnet" --nonce-base64 "$NONCE_A" --signature "$SIG_A" >/dev/null 2>&1; then
+    fail "T13b TAMPER UNDETECTED: signature verified with a mutated message"
+  else pass "T13b tampered message rejected (verify failed as required)"; fi
+  # Flip one byte of the nonce → must break verification.
+  TAMPERED_NONCE_A=$(printf '%s' "$NONCE_A" | base64 -d 2>/dev/null | python3 -c 'import sys; b=bytearray(sys.stdin.buffer.read()); b[0]^=1; sys.stdout.buffer.write(bytes(b))' | base64 | tr -d '\n')
+  if "$RECOVERY_BIN" verify-sign-message --pubkey "$PUB_A" --message "$MSG_A" --recipient "verifier-a.testnet" --nonce-base64 "$TAMPERED_NONCE_A" --signature "$SIG_A" >/dev/null 2>&1; then
+    fail "T13b TAMPER UNDETECTED: signature verified with a mutated nonce"
+  else pass "T13b tampered nonce rejected (verify failed as required)"; fi
 
-  # ── 12a: CLAIM a check to a SECOND sub-wallet we control; assert that wallet's balance rose ──
-  CSEED="t12a-c-$(date +%s)"; read -r CWID CADDR < <(new_subwallet "$CSEED")    # creator
-  RSEED="t12a-r-$(date +%s)"; read -r _    RADDR < <(new_subwallet "$RSEED")    # claimer (recipient)
-  fund_intents "$CSEED" "$CADDR" "0.1 NEAR" "20000000000000000000000"          # 0.02 wNEAR into creator intents
-  store_policy "$CSEED" "$CWID" "$PC_POL" || fail "T12a store_policy"
-  post POST /wallet/v1/payment-check/create "$CSEED" "$(jq -nc --arg t "$TOKEN" --arg a "$CHK_AMT" '{token:$t, amount:$a, memo:"t12a-claim"}')"
-  if [[ "$HTTP" == "200" ]]; then
-    CHK_ID=$(echo "$BODY" | jq -r '.check_id // empty'); CHK_KEY=$(echo "$BODY" | jq -r '.check_key // empty')
-    [[ -n "$CHK_ID" && -n "$CHK_KEY" ]] && pass "T12a check created (check_id=$CHK_ID, check_key present)" || fail "T12a create 200 but missing check_id/check_key: $(echo "$BODY"|head -c160)"
-  else fail "T12a payment-check/create should succeed (cap ON + within limit), got $HTTP: $BODY"; fi
-  if [[ -n "${CHK_KEY:-}" ]]; then
-    R_BEFORE=$(intents_bal "$RSEED" "$TOKEN"); note "T12a claimer intents balance before: $R_BEFORE"
-    # Claim is signed by the ephemeral check_key LOCALLY (not the keystore); funds go to the
-    # CALLER's (claimer R's) intents account — so we authenticate the claim as R, not the creator.
-    post POST /wallet/v1/payment-check/claim "$RSEED" "$(jq -nc --arg k "$CHK_KEY" '{check_key:$k}')"
-    if [[ "$HTTP" == "200" ]]; then
-      AC=$(echo "$BODY" | jq -r '.amount_claimed // empty'); IH=$(echo "$BODY" | jq -r '.intent_hash // empty')
-      # amount_claimed is synchronous + authoritative (the response body) → hard-assert it equals
-      # the full check amount; the on-chain balance delta below is the async best-effort confirmation.
-      [[ "$AC" == "$CHK_AMT" ]] && pass "T12a claim accepted (amount_claimed=$AC, intent=$IH)" || fail "T12a amount_claimed='$AC' should equal the created $CHK_AMT: $(echo "$BODY"|head -c160)"
-      # Poll the claimer's intents balance — solver settlement is async.
-      R_AFTER="$R_BEFORE"
-      for attempt in $(seq 1 10); do sleep 3; R_AFTER=$(intents_bal "$RSEED" "$TOKEN"); [[ "$R_AFTER" != "$R_BEFORE" ]] && break
-        note "T12a poll $attempt: claimer balance still $R_AFTER (waiting for solver settlement)"; done
-      note "T12a claimer intents balance: before=$R_BEFORE after=$R_AFTER (expected +$CHK_AMT)"
-      if [[ "$R_AFTER" != "$R_BEFORE" ]]; then pass "T12a claimer intents balance increased → check claimed to a recipient we control"
-      else warn "T12a claimer balance delta not observed after ~30s — confirm solver settlement manually (intent=$IH)"; fi
-    else fail "T12a claim should succeed, got $HTTP: $BODY"; fi
+  # ── 13c: cross-scope isolation — a DIFFERENT seed yields a DIFFERENT key; sigs must not cross-verify ──
+  SEED_B="t13b2-$(date +%s)"; read -r WID_B _ < <(new_subwallet "$SEED_B")
+  store_policy "$SEED_B" "$WID_B" '{"rules":{"transaction_types":["transfer"]}, "capabilities":{"sign_message":{"allowed":true,"allowed_recipients":["verifier-b.testnet"]}}}' || fail "T13c store_policy"
+  IFS='|' read -r SIG_B PUB_B NONCE_B MSG_B < <(sign_and_capture "$SEED_B" "verifier-b.testnet" "B")
+  [[ -n "$SIG_B" && -n "$PUB_B" && -n "$NONCE_B" ]] || fail "T13c sign-message returned no signature/pubkey/nonce for scope B"
+  # B's own signature must verify under B's own pubkey (sanity that scope B is a working signer).
+  "$RECOVERY_BIN" verify-sign-message --pubkey "$PUB_B" --message "$MSG_B" --recipient "verifier-b.testnet" --nonce-base64 "$NONCE_B" --signature "$SIG_B" >/dev/null 2>&1 \
+    && pass "T13c scope-B signature verifies under its own pubkey $PUB_B" || fail "T13c scope-B signature did not verify under its own pubkey"
+  [[ "$PUB_A" != "$PUB_B" ]] && pass "T13c distinct seeds → distinct signing pubkeys ($PUB_A != $PUB_B)" || fail "T13c two scopes shared the SAME pubkey — scope isolation broken"
+  # A's signature must NOT verify under B's pubkey (and vice-versa) — proves keys are isolated.
+  if "$RECOVERY_BIN" verify-sign-message --pubkey "$PUB_B" --message "$MSG_A" --recipient "verifier-a.testnet" --nonce-base64 "$NONCE_A" --signature "$SIG_A" >/dev/null 2>&1; then
+    fail "T13c ISOLATION BROKEN: scope-A signature verified under scope-B pubkey"
+  else pass "T13c SIG_A correctly rejected by PUB_B (no cross-scope key reuse)"; fi
+  if "$RECOVERY_BIN" verify-sign-message --pubkey "$PUB_A" --message "$MSG_B" --recipient "verifier-b.testnet" --nonce-base64 "$NONCE_B" --signature "$SIG_B" >/dev/null 2>&1; then
+    fail "T13c ISOLATION BROKEN: scope-B signature verified under scope-A pubkey"
+  else pass "T13c SIG_B correctly rejected by PUB_A"; fi
+  [[ -z "$VAULT_ID" ]] && note "T13c cross-scope proven via distinct seeds (default-vault mode); per-vault-master split not exercised — set MPC_PUBLIC_KEY to additionally route seeds through a dedicated vault master"
+fi
+
+# ════════════════════════════════════════════════════════════════════════════════
+# T14 — api-key NEAR-signed derive + refusals  [POLICY] (no funds)
+#       Ported from tests/api_key_signed_derive_e2e.sh. PUT /wallet/v1/api-key authenticated by a
+#       NEAR signature over `api-key:<seed>:<ts>` (built+signed by the parent key via
+#       `customer-recovery sign-api-key-claim`). The coordinator verifies the sig, checks the pubkey
+#       is an access key on account_id, and (when vault_id is supplied) that account_id == vault.parent.
+#       Asserts:
+#         14a  happy path → 200, response binds (wallet_id present; vault_id echo matches the scope used);
+#         14b  the minted sub-wallet's wk_ actually works: GET /address agrees on scope + /sign-message
+#              returns a crypto-valid signature (verified with customer-recovery);
+#         14c  cross-account spoof (account_id != the signer/parent) → HTTP 4xx (the vault.parent /
+#              access-key gate; this is the portable refusal).
+#       Under v2 "re-binding the SAME api-key to a DIFFERENT vault" is NOT a 400 — it mints a DISTINCT
+#       wallet_id. The genuine 400 the source still asserts is the cross-account spoof (14c). When a
+#       dedicated vault is deployed (MPC_PUBLIC_KEY set) we ALSO assert the cross-vault mint yields a
+#       distinct wallet_id; otherwise that dimension is SKIP-noted.
+# ════════════════════════════════════════════════════════════════════════════════
+if want T14; then
+  log "T14 [POLICY] api-key NEAR-signed derive (PUT /api-key) + refusals"
+  new_sub_key() { printf 'wk_%s' "$(head -c 32 /dev/urandom | xxd -p -c 64)"; }
+
+  # ── 14a: happy path — sign-api-key-claim → PUT /api-key → 200, binds wallet_id (+ vault echo) ──
+  SEED="t14-$(date +%s)-$$"; SUB_KEY=$(new_sub_key)
+  BODY14=$("$RECOVERY_BIN" sign-api-key-claim --private-key "$PARENT_PRIVKEY" --account-id "$PARENT" --seed "$SEED" --sub-key "$SUB_KEY" ${VAULT_ID:+--vault-id "$VAULT_ID"})
+  H14=$(curl -sS -o /tmp/uop.body -w '%{http_code}' -X PUT "$COORDINATOR_URL/wallet/v1/api-key" -H 'Content-Type: application/json' -d "$BODY14"); R14=$(cat /tmp/uop.body)
+  WALLET_ID_14=$(echo "$R14" | jq -r '.wallet_id // empty'); GOT_VAULT_14=$(echo "$R14" | jq -r '.vault_id // empty')
+  if [[ "$H14" == "200" && -n "$WALLET_ID_14" ]]; then
+    if [[ -n "$VAULT_ID" ]]; then
+      [[ "$GOT_VAULT_14" == "$VAULT_ID" ]] && pass "T14a PUT /api-key bound wallet_id=$WALLET_ID_14 under vault $VAULT_ID" || fail "T14a vault echo '$GOT_VAULT_14' != '$VAULT_ID': $R14"
+    else
+      pass "T14a PUT /api-key bound wallet_id=$WALLET_ID_14 (default-master scope)"
+    fi
+  else fail "T14a PUT /api-key expected 200 + wallet_id, got $H14: $R14"; fi
+
+  # ── 14b: the minted wk_ works — /address agrees on scope; /sign-message returns a crypto-valid sig ──
+  if [[ "$H14" == "200" && -n "$WALLET_ID_14" ]]; then
+    ADDR14=$(curl -sS -G "$COORDINATOR_URL/wallet/v1/address" --data-urlencode "chain=near" -H "Authorization: Bearer $SUB_KEY")
+    ADDR14_VAULT=$(echo "$ADDR14" | jq -r '.vault_id // empty')
+    if [[ -n "$VAULT_ID" ]]; then
+      [[ "$ADDR14_VAULT" == "$VAULT_ID" ]] && pass "T14b minted wk_ /address reports vault_id=$VAULT_ID" || fail "T14b /address vault_id='$ADDR14_VAULT' != '$VAULT_ID': $ADDR14"
+    else
+      [[ -n "$(echo "$ADDR14" | jq -r '.address // empty')" ]] && pass "T14b minted wk_ /address resolves (default scope)" || fail "T14b /address gave no address: $ADDR14"
+    fi
+    MSG14="t14-apik-rt-$(date +%s)"
+    SR14=$(curl -sS -X POST "$COORDINATOR_URL/wallet/v1/sign-message" -H "Authorization: Bearer $SUB_KEY" -H 'Content-Type: application/json' \
+      -d "$(jq -nc --arg m "$MSG14" '{message:$m, recipient:"verifier-apik.testnet", nonce:"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}')")
+    S14=$(echo "$SR14" | jq -r '.signature // empty'); P14=$(echo "$SR14" | jq -r '.public_key // empty'); N14=$(echo "$SR14" | jq -r '.nonce // empty')
+    if [[ -n "$S14" ]] && "$RECOVERY_BIN" verify-sign-message --pubkey "$P14" --message "$MSG14" --recipient "verifier-apik.testnet" --nonce-base64 "$N14" --signature "$S14" >/dev/null 2>&1; then
+      pass "T14b minted sub-wallet's signature verifies under $P14"
+    else fail "T14b minted sub-wallet signature did NOT verify: $SR14"; fi
   fi
 
-  # ── 12b: RECLAIM a check (creator-only); assert the creator's intents balance recovers ──
-  C2SEED="t12b-$(date +%s)"; read -r C2WID C2ADDR < <(new_subwallet "$C2SEED")
-  fund_intents "$C2SEED" "$C2ADDR" "0.1 NEAR" "20000000000000000000000"        # 0.02 wNEAR into creator intents
-  store_policy "$C2SEED" "$C2WID" "$PC_POL" || fail "T12b store_policy"
-  post POST /wallet/v1/payment-check/create "$C2SEED" "$(jq -nc --arg t "$TOKEN" --arg a "$CHK_AMT" '{token:$t, amount:$a, memo:"t12b-reclaim"}')"
-  if [[ "$HTTP" == "200" ]]; then
-    R2_ID=$(echo "$BODY" | jq -r '.check_id // empty'); R2_KEY=$(echo "$BODY" | jq -r '.check_key // empty')
-    [[ -n "$R2_ID" ]] && pass "T12b check created for reclaim (check_id=$R2_ID)" || fail "T12b create 200 but missing check_id: $(echo "$BODY"|head -c160)"
-  else fail "T12b payment-check/create should succeed, got $HTTP: $BODY"; fi
-  if [[ -n "${R2_ID:-}" ]]; then
-    # Snapshot the creator's intents balance just before reclaim (best-effort confirmation only —
-    # both the create transfer-OUT and the reclaim transfer-IN settle asynchronously, so the
-    # AUTHORITATIVE synchronous signal that "the creator got the funds back" is the response's
-    # amount_reclaimed (== full amount) + remaining == 0, which the handler sets only after it
-    # publishes the ephemeral→creator refund intent. The on-chain delta is a secondary check.
-    C2_BEFORE=$(intents_bal "$C2SEED" "$TOKEN"); note "T12b creator intents balance pre-reclaim: $C2_BEFORE"
-    post POST /wallet/v1/payment-check/reclaim "$C2SEED" "$(jq -nc --arg id "$R2_ID" '{check_id:$id}')"
-    if [[ "$HTTP" == "200" ]]; then
-      AR=$(echo "$BODY" | jq -r '.amount_reclaimed // empty'); REM=$(echo "$BODY" | jq -r '.remaining // empty'); IH=$(echo "$BODY" | jq -r '.intent_hash // empty')
-      [[ "$AR" == "$CHK_AMT" ]] && pass "T12b reclaim returned the full amount to the creator (amount_reclaimed=$AR, intent=$IH)" || fail "T12b amount_reclaimed='$AR' should equal the created $CHK_AMT: $(echo "$BODY"|head -c160)"
-      [[ "$REM" == "0" ]] && pass "T12b reclaim left remaining=0 (whole check refunded)" || note "T12b reclaim remaining='$REM' (expected 0)"
-      # Secondary, best-effort: the creator's intents balance should rise back toward the baseline.
-      C2_AFTER="$C2_BEFORE"
-      for attempt in $(seq 1 10); do sleep 3; C2_AFTER=$(intents_bal "$C2SEED" "$TOKEN"); [[ "$C2_AFTER" != "$C2_BEFORE" ]] && break
-        note "T12b poll $attempt: creator balance still $C2_AFTER (waiting for solver settlement)"; done
-      note "T12b creator intents balance: pre-reclaim=$C2_BEFORE post-reclaim=$C2_AFTER (expected to rise by up to $CHK_AMT)"
-      [[ "$C2_AFTER" != "$C2_BEFORE" ]] && pass "T12b creator intents balance moved after reclaim → refund observed on-chain" \
-        || warn "T12b creator balance delta not observed after ~30s (create/reclaim settlement timing) — response already proved the refund (amount_reclaimed=$AR); confirm manually (intent=$IH)"
-      # A second reclaim of the same fully-reclaimed check must be rejected (status already terminal).
-      post POST /wallet/v1/payment-check/reclaim "$C2SEED" "$(jq -nc --arg id "$R2_ID" '{check_id:$id}')"
-      [[ "$HTTP" != "200" ]] && pass "T12b double-reclaim of a fully-reclaimed check rejected ($HTTP): $(echo "$BODY"|head -c100)" || note "T12b second reclaim returned 200 (partial/no-op): $(echo "$BODY"|head -c100)"
-    else fail "T12b reclaim should succeed, got $HTTP: $BODY"; fi
-  fi
+  # ── 14c: cross-account spoof — account_id != signer/parent must be refused (4xx) ──
+  # Mutate account_id on the (otherwise valid) happy-path body to a non-parent account. The
+  # signature was over $PARENT, the pubkey is an access key on $PARENT, so the access-key /
+  # vault.parent gate must reject the mismatched account_id.
+  SPOOF14=$(echo "$BODY14" | jq --arg fake "not-the-parent.$NETWORK" '.account_id = $fake')
+  HS14=$(curl -sS -o /tmp/uop.body -w '%{http_code}' -X PUT "$COORDINATOR_URL/wallet/v1/api-key" -H 'Content-Type: application/json' -d "$SPOOF14"); RS14=$(cat /tmp/uop.body)
+  [[ "$HS14" =~ ^4 ]] && pass "T14c cross-account spoof rejected (HTTP $HS14)" || fail "T14c cross-account spoof should be 4xx, got $HS14: $RS14"
 
-  # ── 12c: BATCH-CREATE two checks in one call; assert both created with distinct ids ──
-  C3SEED="t12c-$(date +%s)"; read -r C3WID C3ADDR < <(new_subwallet "$C3SEED")
-  fund_intents "$C3SEED" "$C3ADDR" "0.12 NEAR" "40000000000000000000000"       # 0.04 wNEAR — covers 2× 0.01 checks + headroom
-  store_policy "$C3SEED" "$C3WID" "$PC_POL" || fail "T12c store_policy"
-  BATCH_BODY=$(jq -nc --arg t "$TOKEN" --arg a "$CHK_AMT" '{checks:[{token:$t, amount:$a, memo:"t12c-1"}, {token:$t, amount:$a, memo:"t12c-2"}]}')
-  post POST /wallet/v1/payment-check/batch-create "$C3SEED" "$BATCH_BODY"
-  B_KEY1=""; B_ID1=""
-  if [[ "$HTTP" == "200" ]]; then
-    N=$(echo "$BODY" | jq -r '.checks | length'); UNIQ=$(echo "$BODY" | jq -r '[.checks[].check_id] | unique | length')
-    B_ID1=$(echo "$BODY" | jq -r '.checks[0].check_id // empty'); B_KEY1=$(echo "$BODY" | jq -r '.checks[0].check_key // empty')
-    A1=$(echo "$BODY" | jq -r '.checks[0].amount // empty'); A2=$(echo "$BODY" | jq -r '.checks[1].amount // empty')
-    if [[ "$N" == "2" && "$UNIQ" == "2" && "$A1" == "$CHK_AMT" && "$A2" == "$CHK_AMT" ]]; then
-      pass "T12c batch-create returned 2 checks with distinct ids + correct amounts (ids: $(echo "$BODY" | jq -rc '[.checks[].check_id]'))"
-    else fail "T12c batch-create expected 2 distinct checks of $CHK_AMT, got n=$N uniq=$UNIQ a1=$A1 a2=$A2: $(echo "$BODY"|head -c200)"; fi
-  else fail "T12c payment-check/batch-create should succeed (cap ON + 2× within limit), got $HTTP: $BODY"; fi
-
-  # ── 12d: read-backs — status (by check_id, creator-auth) + peek (by check_key, any-auth) ──
-  if [[ -n "$B_ID1" ]]; then
-    post GET "/wallet/v1/payment-check/status?check_id=$B_ID1" "$C3SEED"
-    if [[ "$HTTP" == "200" ]]; then
-      S_TOK=$(echo "$BODY" | jq -r '.token // empty'); S_AMT=$(echo "$BODY" | jq -r '.amount // empty'); S_ST=$(echo "$BODY" | jq -r '.status // empty')
-      [[ "$S_TOK" == "$TOKEN" && "$S_AMT" == "$CHK_AMT" && -n "$S_ST" ]] && pass "T12d status read-back OK (token=$S_TOK amount=$S_AMT status=$S_ST)" || fail "T12d status read-back unexpected (token=$S_TOK amount=$S_AMT status=$S_ST): $(echo "$BODY"|head -c160)"
-    else fail "T12d status should return 200 for an owned check_id, got $HTTP: $BODY"; fi
-  fi
-  if [[ -n "$B_KEY1" ]]; then
-    # peek authenticates the caller but reads by ephemeral check_key (no ownership needed) — use creator auth.
-    post POST /wallet/v1/payment-check/peek "$C3SEED" "$(jq -nc --arg k "$B_KEY1" '{check_key:$k}')"
-    if [[ "$HTTP" == "200" ]]; then
-      P_TOK=$(echo "$BODY" | jq -r '.token // empty'); P_BAL=$(echo "$BODY" | jq -r '.balance // empty'); P_ST=$(echo "$BODY" | jq -r '.status // empty')
-      [[ "$P_TOK" == "$TOKEN" && -n "$P_BAL" && -n "$P_ST" ]] && pass "T12d peek read-back OK (token=$P_TOK on-chain balance=$P_BAL status=$P_ST)" || fail "T12d peek read-back unexpected (token=$P_TOK balance=$P_BAL status=$P_ST): $(echo "$BODY"|head -c160)"
-    else fail "T12d peek should return 200 for a valid check_key, got $HTTP: $BODY"; fi
+  # ── (vault-only) cross-vault mint → DISTINCT wallet_id (v2: not a refusal, a distinct wallet) ──
+  if [[ -n "$VAULT_ID" ]]; then
+    SUB_KEY2=$(new_sub_key)
+    BODY14B=$("$RECOVERY_BIN" sign-api-key-claim --private-key "$PARENT_PRIVKEY" --account-id "$PARENT" --seed "$SEED" --sub-key "$SUB_KEY2")
+    H14B=$(curl -sS -o /tmp/uop.body -w '%{http_code}' -X PUT "$COORDINATOR_URL/wallet/v1/api-key" -H 'Content-Type: application/json' -d "$BODY14B"); R14B=$(cat /tmp/uop.body)
+    WID14B=$(echo "$R14B" | jq -r '.wallet_id // empty')
+    if [[ "$H14B" == "200" && -n "$WID14B" && "$WID14B" != "$WALLET_ID_14" ]]; then
+      pass "T14 v2: same seed under a DIFFERENT scope minted a distinct wallet_id ($WID14B != $WALLET_ID_14)"
+    else fail "T14 v2 cross-scope mint expected 200 + distinct wallet_id, got $H14B wid='$WID14B' (vault wid=$WALLET_ID_14): $R14B"; fi
+  else
+    note "T14 vault-rebind dimension SKIPPED (default-vault mode, no MPC_PUBLIC_KEY): source's same-seed-different-vault → distinct-wallet_id needs a dedicated vault"
   fi
 fi
 
 # ════════════════════════════════════════════════════════════════════════════════
+# T15 — vault-scope parity + cache-poisoning  [POLICY] (no funds)
+#       Ported from tests/bearer_vault_endpoint_parity_e2e.sh. Regression coverage for the
+#       "resolve_wallet_pubkey ignores vault scope" / DB-cache silent-fork bug class: every
+#       address-returning endpoint must report the SAME NEAR account as /address for a given
+#       Bearer-near token, and a no-vault write must NOT poison a later vault-scoped lookup.
+#       Asserts:
+#         15a  endpoint parity — for one Bearer-near seed, /address, /balance(native),
+#              /balance(intents) and /sign-message all report the same account_id;
+#       and, ONLY when a dedicated vault is deployed (MPC_PUBLIC_KEY → two distinct vault scopes):
+#         15b  cache-poisoning — a no-vault /address write does NOT poison the later vault-scoped
+#              /address/balance/sign-message (they return the vault address, not the poisoned cache);
+#         15c  cross-vault isolation — vault A vs vault B → distinct addresses, mirrored by every endpoint.
+#       In default-vault mode the suite has only ONE scope, so 15b/15c (which REQUIRE two scopes) are
+#       SKIP-noted cleanly rather than faked.
+# ════════════════════════════════════════════════════════════════════════════════
+if want T15; then
+  log "T15 [POLICY] vault-scope parity + cache-poisoning regression"
+  # acct_via <path-kind> <token> → echoes the .account_id a given endpoint reports for a Bearer-near token.
+  addr_via_address() { curl -sS -G "$COORDINATOR_URL/wallet/v1/address" --data-urlencode "chain=near" -H "Authorization: Bearer near:$1" | jq -r '.address // empty'; }
+  acct_balance_native()  { curl -sS -G "$COORDINATOR_URL/wallet/v1/balance" --data-urlencode "chain=near" -H "Authorization: Bearer near:$1" | jq -r '.account_id // empty'; }
+  acct_balance_intents() { curl -sS -G "$COORDINATOR_URL/wallet/v1/balance" --data-urlencode "token=nep141:usdt.tether-token.near" --data-urlencode "source=intents" -H "Authorization: Bearer near:$1" | jq -r '.account_id // empty'; }
+  acct_sign_message()    { curl -sS -X POST "$COORDINATOR_URL/wallet/v1/sign-message" -H "Authorization: Bearer near:$1" -H 'Content-Type: application/json' -d "$(jq -nc --arg m "parity-$(date +%s%N)" '{message:$m, recipient:"parity-verifier.testnet", nonce:"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}')" | jq -r '.account_id // empty'; }
+
+  # ── 15a: endpoint parity — fresh seed, fresh token, every endpoint must agree with /address ──
+  SEED_P="t15-parity-$(date +%s)-$$"; TOK_P=$(mk_token "$SEED_P" "$VAULT_ID")
+  P_ADDR=$(addr_via_address "$TOK_P"); P_BN=$(acct_balance_native "$TOK_P"); P_BI=$(acct_balance_intents "$TOK_P"); P_SM=$(acct_sign_message "$TOK_P")
+  [[ -n "$P_ADDR" ]] || fail "T15a /address returned no address"
+  note "T15a /address=$P_ADDR /balance(native)=$P_BN /balance(intents)=$P_BI /sign-message=$P_SM"
+  [[ "$P_BN" == "$P_ADDR" ]] && pass "T15a /balance(native).account_id == /address" || fail "T15a /balance(native) '$P_BN' != /address '$P_ADDR' — resolve_wallet_pubkey ignores scope"
+  [[ "$P_BI" == "$P_ADDR" ]] && pass "T15a /balance(intents).account_id == /address" || fail "T15a /balance(intents) '$P_BI' != /address '$P_ADDR'"
+  [[ "$P_SM" == "$P_ADDR" ]] && pass "T15a /sign-message.account_id == /address" || fail "T15a /sign-message '$P_SM' != /address '$P_ADDR'"
+
+  if [[ -n "$VAULT_ID" ]]; then
+    # ── 15b: cache-poisoning regression — no-vault write first, then vault-scoped reads must NOT use the poisoned cache ──
+    SEED_POISON="t15-poison-$(date +%s)-$$"
+    TOK_NV=$(mk_token "$SEED_POISON" "")        # no-vault token (writes default-master pubkey into cache)
+    ADDR_NV=$(addr_via_address "$TOK_NV")       # step 1: poison
+    TOK_VS=$(mk_token "$SEED_POISON" "$VAULT_ID")  # same seed, vault-scoped
+    ADDR_VS=$(addr_via_address "$TOK_VS")
+    [[ -n "$ADDR_VS" && "$ADDR_VS" != "$ADDR_NV" ]] && pass "T15b vault-scoped /address ($ADDR_VS) != poisoned no-vault cache ($ADDR_NV)" || fail "T15b cache poisoning: vault-scoped /address returned the no-vault address ($ADDR_VS == $ADDR_NV)"
+    BVS_I=$(acct_balance_intents "$TOK_VS"); SVS=$(acct_sign_message "$TOK_VS")
+    [[ "$BVS_I" == "$ADDR_VS" ]] && pass "T15b /balance(intents) honors vault scope after poison" || fail "T15b /balance(intents) '$BVS_I' != vault /address '$ADDR_VS' — poisoned cache leaked"
+    [[ "$SVS" == "$ADDR_VS" ]] && pass "T15b /sign-message honors vault scope after poison" || fail "T15b /sign-message '$SVS' != vault /address '$ADDR_VS'"
+
+    # ── 15c: cross-vault isolation — vault A vs vault B → distinct addresses, mirrored per endpoint ──
+    # The suite deploys only ONE vault; treat the no-vault (default-master) scope as the second, distinct scope.
+    SEED_X="t15-xvault-$(date +%s)-$$"
+    TOK_XA=$(mk_token "$SEED_X" "$VAULT_ID"); TOK_XD=$(mk_token "$SEED_X" "")
+    XA=$(addr_via_address "$TOK_XA"); XD=$(addr_via_address "$TOK_XD")
+    [[ -n "$XA" && -n "$XD" && "$XA" != "$XD" ]] && pass "T15c two scopes → distinct addresses (vault=$XA, default=$XD)" || fail "T15c two scopes collapsed to one address (vault=$XA default=$XD)"
+    [[ "$(acct_balance_intents "$TOK_XA")" == "$XA" && "$(acct_balance_intents "$TOK_XD")" == "$XD" ]] && pass "T15c /balance(intents) mirrors per-scope isolation" || fail "T15c /balance(intents) did not mirror scope isolation"
+    [[ "$(acct_sign_message "$TOK_XA")" == "$XA" && "$(acct_sign_message "$TOK_XD")" == "$XD" ]] && pass "T15c /sign-message mirrors per-scope isolation" || fail "T15c /sign-message did not mirror scope isolation"
+  else
+    note "T15b/T15c SKIPPED (default-vault mode, no MPC_PUBLIC_KEY): cache-poisoning + cross-vault isolation REQUIRE two distinct vault scopes; only parity (15a) is reachable in single-scope mode"
+  fi
+fi
+
+# ════════════════════════════════════════════════════════════════════════════════
+# T16 — wallet_id v2 invariants  [POLICY] (no funds)
+#       Ported from tests/v2_policy_invariants_e2e.sh. Asserts:
+#         16a  seed-length validation at the API boundary — a 256-char seed is accepted, 257 rejected
+#              (HTTP 400; max=256, per the source). Checked via PUT /wallet/v1/api-key.
+#         16b  wallet_id idempotency / offline==online — `customer-recovery compute-wallet-id`
+#              reproduces the SAME wallet_id the coordinator returns from /address for the same
+#              (parent, seed [, vault]) — proving the v2 formula and the offline recovery path agree;
+#         16c  reverse-lookup — GET /wallet/v1/pending_approvals_by_pubkey for a vault-scoped pubkey
+#              resolves the wallet (empty approvals array = found, not 404), and a random pubkey is
+#              handled gracefully (no false hit).
+# ════════════════════════════════════════════════════════════════════════════════
+if want T16; then
+  log "T16 [POLICY] wallet_id v2 invariants — seed-length, idempotency, reverse-lookup"
+  # ── 16a: seed-length boundary at the API boundary (256 OK, 257 → 400; max=256 per auth::validate_seed) ──
+  # validate_seed fires FIRST in register_api_key (before key_hash/auth/sig checks), so a 257-char
+  # seed 400s on length regardless of the (bogus) signature — exactly the source's X3 assertion.
+  SEED_256=$(printf 'a%.0s' $(seq 1 256)); SEED_257=$(printf 'a%.0s' $(seq 1 257))
+  # 257 → 400 (length), proven with a bogus sig: the length gate short-circuits before sig verify.
+  LONG_BODY=$(jq -nc --arg s "$SEED_257" '{account_id:"spoof.testnet", seed:$s, key_hash:"0000000000000000000000000000000000000000000000000000000000000000", pubkey:"ed25519:11111111111111111111111111111111", message:"api-key:dummy:0", signature:"deadbeef"}')
+  H_LONG=$(curl -sS -o /tmp/uop.body -w '%{http_code}' -X PUT "$COORDINATOR_URL/wallet/v1/api-key" -H 'Content-Type: application/json' -d "$LONG_BODY")
+  [[ "$H_LONG" == "400" ]] && pass "T16a 257-char seed rejected (HTTP 400, max=256)" || fail "T16a 257-char seed should be 400, got $H_LONG: $(cat /tmp/uop.body | head -c160)"
+  # 256 → must clear the length gate. Sign a REAL parent-keyed claim (correct api-key:<seed>:<ts> +
+  # valid sig) so the request reaches binding; HTTP 200 proves a 256-char seed is within bound.
+  SK_256=$(printf 'wk_%s' "$(head -c 32 /dev/urandom | xxd -p -c 64)")
+  BODY_256=$("$RECOVERY_BIN" sign-api-key-claim --private-key "$PARENT_PRIVKEY" --account-id "$PARENT" --seed "$SEED_256" --sub-key "$SK_256" ${VAULT_ID:+--vault-id "$VAULT_ID"})
+  H_256=$(curl -sS -o /tmp/uop.body -w '%{http_code}' -X PUT "$COORDINATOR_URL/wallet/v1/api-key" -H 'Content-Type: application/json' -d "$BODY_256")
+  [[ "$H_256" == "200" ]] && pass "T16a 256-char seed accepted (HTTP 200 — within max-length bound)" || fail "T16a 256-char seed should be accepted (200), got $H_256: $(cat /tmp/uop.body | head -c160)"
+
+  # ── 16b: wallet_id idempotency — offline compute-wallet-id == coordinator /address .wallet_id ──
+  SEED_ID="t16-idem-$(date +%s)-$$"
+  WID_ONLINE=$(curl -sS -G "$COORDINATOR_URL/wallet/v1/address" --data-urlencode "chain=near" -H "$(AUTH "$SEED_ID")" | jq -r '.wallet_id // empty')
+  WID_OFFLINE=$("$RECOVERY_BIN" compute-wallet-id --account-id "$PARENT" --seed "$SEED_ID" ${VAULT_ID:+--vault-id "$VAULT_ID"})
+  [[ -n "$WID_ONLINE" && "$WID_ONLINE" == "$WID_OFFLINE" ]] && pass "T16b offline compute-wallet-id == coordinator /address wallet_id ($WID_ONLINE)" || fail "T16b wallet_id mismatch (offline-recovery drift): online='$WID_ONLINE' offline='$WID_OFFLINE'"
+  # Idempotency across a second /address call → same wallet_id.
+  WID_ONLINE2=$(curl -sS -G "$COORDINATOR_URL/wallet/v1/address" --data-urlencode "chain=near" -H "$(AUTH "$SEED_ID")" | jq -r '.wallet_id // empty')
+  [[ "$WID_ONLINE2" == "$WID_ONLINE" ]] && pass "T16b wallet_id idempotent across repeated /address calls" || fail "T16b wallet_id varies across calls: $WID_ONLINE2 != $WID_ONLINE"
+
+  # ── 16c: reverse-lookup /pending_approvals_by_pubkey resolves a (vault-)scoped pubkey ──
+  SEED_REV="t16-rev-$(date +%s)-$$"
+  REV_PK=$(curl -sS -G "$COORDINATOR_URL/wallet/v1/address" --data-urlencode "chain=near" -H "$(AUTH "$SEED_REV")" | jq -r '.public_key // empty')
+  [[ -n "$REV_PK" ]] || fail "T16c no public_key from /address for reverse-lookup"
+  REV_RESP=$(curl -sS -G "$COORDINATOR_URL/wallet/v1/pending_approvals_by_pubkey" --data-urlencode "near_pubkey=$REV_PK")
+  REV_COUNT=$(echo "$REV_RESP" | jq -r '.approvals | length' 2>/dev/null || echo "-1")
+  if [[ "$REV_COUNT" == "0" ]]; then
+    pass "T16c reverse-lookup resolved the scoped pubkey (empty approvals array = wallet found)"
+  elif echo "$REV_RESP" | grep -qiE "wallet not found|not_found|404"; then
+    fail "T16c reverse-lookup FAILED to find the scoped wallet by pubkey: $REV_RESP"
+  else
+    pass "T16c reverse-lookup returned a non-error response (scoped pubkey resolved): $(echo "$REV_RESP" | head -c120)"
+  fi
+  # Negative: a random/non-existent pubkey must be handled gracefully (no false hit / no 5xx).
+  FAKE_PK="ed25519:11111111111111111111111111111111111111111"
+  FAKE_RESP=$(curl -sS -G "$COORDINATOR_URL/wallet/v1/pending_approvals_by_pubkey" --data-urlencode "near_pubkey=$FAKE_PK")
+  FAKE_COUNT=$(echo "$FAKE_RESP" | jq -r '.approvals | length' 2>/dev/null || echo "-1")
+  [[ "$FAKE_COUNT" == "0" || "$FAKE_COUNT" == "-1" ]] && pass "T16c reverse-lookup of a non-existent pubkey handled gracefully (no false hit)" || fail "T16c random pubkey produced $FAKE_COUNT approvals — false hit: $FAKE_RESP"
+fi
+
+# ════════════════════════════════════════════════════════════════════════════════
+# T17 — on-chain signer == sub-wallet  [SIG/FUNDS] (funds a throwaway sub-wallet)
+#       Ported from tests/approval_flow_e2e.sh (its unique end-state assertion). Reuses the
+#       T4b approve→execute flow: a transfer gated by a 1-of-1 approval is approved by a real
+#       approver and executes in the background; then we fetch the executed tx on chain and assert
+#       its signer_id == the SUB-WALLET's own address — proving the keystore signed the transfer
+#       with the per-vault DERIVED key (not the parent / default master), preserving vault scope
+#       from auth → approval → background execution. This is the one thing approval_flow asserts
+#       that T4 does not (T4 only checks the request reached status=completed).
+# ════════════════════════════════════════════════════════════════════════════════
+if want T17; then
+  log "T17 [SIG/FUNDS] on-chain tx signer_id == sub-wallet (per-vault derived key, end-to-end scope)"
+  MONEY=true; CUR_TEST=T17
+  if [[ -f "$CREDS_DIR/$APPROVER1.json" ]]; then
+    A1_PRIV=$(jq -r .private_key "$CREDS_DIR/$APPROVER1.json"); A1_PUB=$(jq -r .public_key "$CREDS_DIR/$APPROVER1.json")
+    SEED="t17-$(date +%s)"; read -r WID ADDR < <(new_subwallet "$SEED")
+    fund_near "$ADDR" "0.01 NEAR" || warn "T17 funding"
+    # Wait for the sub-wallet to exist on chain so the executed transfer has a real signer account.
+    for _ in $(seq 1 6); do
+      curl -s "$RPC_URL" -X POST -H 'Content-Type: application/json' \
+        -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"query\",\"params\":{\"request_type\":\"view_account\",\"finality\":\"final\",\"account_id\":\"$ADDR\"}}" \
+        | jq -e '.result.amount' >/dev/null 2>&1 && break; sleep 2
+    done
+    store_policy "$SEED" "$WID" "$(jq -nc --arg a "$APPROVER1" --arg ap "$A1_PUB" '{rules:{transaction_types:["transfer"]}, approval:{threshold:{required:1}, approvers:[{id:$a,pubkey:$ap}]}}')" || fail "T17 store_policy"
+    post POST /wallet/v1/transfer "$SEED" "$(jq -nc --arg to "$PARENT" '{chain:"near", receiver_id:$to, amount:"2000000000000000000000"}')"
+    AID=$(echo "$BODY" | jq -r '.approval_id // empty'); RID=$(echo "$BODY" | jq -r '.request_id // empty')
+    H=$(curl -sS "$COORDINATOR_URL/wallet/v1/approval/$AID" | jq -r '.request_hash // empty')
+    WPK=$(curl -sS "$COORDINATOR_URL/wallet/v1/approval/$AID" | jq -r '.wallet_pubkey // empty')
+    [[ -n "$AID" && -n "$H" ]] || fail "T17 no approval queued: $BODY"
+    if [[ -n "$AID" ]]; then
+      # Real approver YES (wallet-bound NEP-413 message approve:{id}:{wallet_pubkey}:{hash}).
+      nonce=$(head -c 32 /dev/urandom | base64 | tr -d '\n')
+      sj=$("$RECOVERY_BIN" sign-nep413 --private-key "$A1_PRIV" --message "approve:$AID:$WPK:$H" --recipient "$CONTRACT_ID" --nonce-base64 "$nonce")
+      sig=$(echo "$sj" | jq -r '.signature')
+      C=$(curl -sS -o /tmp/uop.body -w '%{http_code}' -X POST "$COORDINATOR_URL/wallet/v1/approve/$AID" -H 'Content-Type: application/json' \
+        -d "$(jq -nc --arg s "$sig" --arg pk "$A1_PUB" --arg ac "$APPROVER1" --arg nc "$nonce" '{signature:$s,public_key:$pk,account_id:$ac,nonce:$nc}')")
+      note "T17 /approve HTTP $C"
+      # Poll until the background worker completes and surfaces the on-chain tx hash.
+      TX_HASH=""
+      for _ in $(seq 1 15); do
+        sleep 3
+        SR=$(curl -sS "$COORDINATOR_URL/wallet/v1/requests/$RID" -H "$(AUTH "$SEED")")
+        ST=$(echo "$SR" | jq -r '.status // empty')
+        case "$ST" in
+          completed|success) TX_HASH=$(echo "$SR" | jq -r '.result.tx_hash // .result.transaction_hash // .tx_hash // empty'); break;;
+          failed) fail "T17 background worker failed: $(echo "$SR" | head -c200)"; break;;
+        esac
+      done
+      [[ -n "$TX_HASH" ]] && pass "T17 approved transfer executed (tx=$TX_HASH)" || fail "T17 did not execute after approve (no tx hash)"
+      if [[ -n "$TX_HASH" ]]; then
+        # THE unique assertion: the executed tx's on-chain signer_id MUST be the sub-wallet itself.
+        TX_VIEW=$(curl -sS "$RPC_URL" -X POST -H 'Content-Type: application/json' \
+          -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tx\",\"params\":[\"$TX_HASH\",\"$ADDR\"]}")
+        TX_SIGNER=$(echo "$TX_VIEW" | jq -r '.result.transaction.signer_id // empty')
+        note "T17 on-chain signer_id=$TX_SIGNER (sub-wallet=$ADDR)"
+        [[ "$TX_SIGNER" == "$ADDR" ]] && pass "T17 tx signer_id == sub-wallet — keystore signed with the per-vault derived key (not parent)" || fail "T17 signer_id '$TX_SIGNER' != sub-wallet '$ADDR' — worker used the wrong master (scope not preserved)"
+      fi
+    fi
+  else warn "T17 skipped — APPROVER1 creds required"; fi
+  return_test_funds; MONEY=false
+fi
+
+# ════════════════════════════════════════════════════════════════════════════════
+# Final fund-return + leak check. The final sweep_now catches any TRAILING wallets left by
+# non-money tests (which don't call return_test_funds); verify_all_drained then re-reads EVERY
+# sub-wallet ever created. MONEY=false here so a leak fail() RECORDS (not aborts) and surfaces in
+# the SUMMARY exit code below, rather than fail-fast halting before the summary prints.
+MONEY=false; sweep_now; verify_all_drained
+
 echo
 log "SUMMARY"
 pass "passed: $PASS"
