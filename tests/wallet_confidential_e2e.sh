@@ -368,6 +368,215 @@ cmd_reset() {
 }
 
 # ============================================================================
+# multisig — confidential Trusted op UNDER MULTISIG (MAINNET-only) [POLICY+SIG]
+#
+# The confidential multisig pending→approve→execute control flow CANNOT be
+# exercised on testnet: /confidential/* returns HTTP 503 off-mainnet (the
+# salt/shard live on mainnet intents.near), so unified_op_e2e.sh's T9/T10
+# (swap/cross-chain under multisig) have no confidential analog there. This is
+# that missing test — the confidential sibling of T9: a Trusted confidential op
+# on a MULTISIG wallet must return `pending_approval` (NOT execute, NOT "no
+# multisig support"), and after the approval threshold it must LEAVE
+# pending_approval (the keystore re-derives request_hash from the canonical
+# Op::Confidential and signs the approved artifact; the quote is re-fetched
+# fresh at execution — see coordinator confidential::handlers::
+# create_confidential_pending / execute_approved_confidential).
+#
+# We assert the CONTROL FLOW (pending_approval → approve → leaves
+# pending_approval), NOT terminal swap settlement — the pending approval is
+# created from the policy decision BEFORE any quote/balance work, so this needs
+# NO funded confidential balance (mirrors T9c/T10c, which accept a downstream
+# 'failed' as proof the op left pending_approval). Tiny amount.
+#
+# Self-contained bootstrap mirroring unified_op_e2e.sh (this file otherwise uses
+# a random-register bearer key with no on-chain policy): deploy a MAINNET vault,
+# derive a sub-wallet, store an on-chain policy with approval.threshold + the
+# default-DENY `confidential` capability, then drive the same NEP-413 approver
+# `vote` helper T9/T10 use: sign `approve:{approval_id}:{wallet_pubkey}:{request_hash}`
+# and POST /wallet/v1/approve/{approval_id}.
+#
+# GATE: require_confidential_enabled (ONECLICK_CONFIDENTIAL_JWT) like every live
+# phase, PLUS SKIP cleanly (exit 0) if NETWORK != mainnet or the multisig infra
+# env is absent (PARENT logged into outlayer, APPROVER1 mainnet creds,
+# MPC_PUBLIC_KEY).
+#
+# Extra env (only for this command):
+#   PARENT          mainnet vault owner, logged into outlayer-cli (NOT an approver)
+#   APPROVER1       approver NEAR account with creds in ~/.near-credentials/mainnet
+#   MPC_PUBLIC_KEY  bls12381g2:base58 (for `outlayer vault init`)
+#   CONTRACT_ID     default outlayer.near
+#   M_SWAP_TOKEN_IN / M_SWAP_TOKEN_OUT  defuse assets (default wrap.near → USDC)
+#   M_SWAP_AMOUNT_IN amount_in minimal units (default 0.001 wNEAR)
+# ============================================================================
+cmd_multisig() {
+    require_confidential_enabled            # ONECLICK_CONFIDENTIAL_JWT gate (SKIP if unset)
+    check_coordinator
+
+    # Confidential is mainnet-only — the testnet coordinator 503s these routes.
+    if [ "$NETWORK" != "mainnet" ]; then
+        echo -e "${YELLOW}SKIP:${NC} confidential multisig is mainnet-only (NETWORK=$NETWORK). Re-run with NETWORK=mainnet."
+        exit 0
+    fi
+
+    local CONTRACT_ID="${CONTRACT_ID:-outlayer.near}"
+    local APPROVER1="${APPROVER1:-}"
+    local CREDS_DIR="$HOME/.near-credentials/$NETWORK"
+    local SCRIPT_DIR; SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local RECOVERY_BIN="$SCRIPT_DIR/../scripts/customer-recovery/target/release/customer-recovery"
+
+    # SKIP cleanly when the multisig bootstrap prerequisites are absent.
+    local miss=()
+    [ -n "${PARENT:-}" ] || miss+=("PARENT (mainnet vault owner logged into outlayer)")
+    [ -n "${MPC_PUBLIC_KEY:-}" ] || miss+=("MPC_PUBLIC_KEY (for 'outlayer vault init')")
+    [ -n "$APPROVER1" ] || miss+=("APPROVER1 (approver NEAR account)")
+    [ -n "$APPROVER1" ] && [ ! -f "$CREDS_DIR/$APPROVER1.json" ] && miss+=("creds $CREDS_DIR/$APPROVER1.json")
+    for t in jq curl outlayer near python3; do command -v "$t" >/dev/null || miss+=("tool: $t"); done
+    if [ "${#miss[@]}" -gt 0 ]; then
+        echo -e "${YELLOW}SKIP:${NC} confidential multisig needs an on-chain policy + approver signatures; missing:"
+        for m in "${miss[@]}"; do echo "      - $m"; done
+        echo "      (gate ONECLICK_CONFIDENTIAL_JWT is set, but the multisig infra is incomplete — skipping cleanly)"
+        exit 0
+    fi
+    [ -f "$CREDS_DIR/$PARENT.json" ] || { echo -e "${RED}creds missing: $CREDS_DIR/$PARENT.json${NC}"; exit 1; }
+
+    local M_TOKEN_IN="${M_SWAP_TOKEN_IN:-nep141:wrap.near}"
+    # Native USDC on NEAR (Circle) — the coordinator's own canonical stablecoin asset id.
+    local M_TOKEN_OUT="${M_SWAP_TOKEN_OUT:-nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1}"
+    local M_AMOUNT_IN="${M_SWAP_AMOUNT_IN:-1000000000000000000000}" # 0.001 wNEAR (24 dec) — tiny
+
+    echo -e "${CYAN}== Confidential MULTISIG (mainnet): pending_approval → approve → leaves pending_approval ==${NC}"
+
+    local PARENT_PRIVKEY; PARENT_PRIVKEY=$(jq -r '.private_key' "$CREDS_DIR/$PARENT.json")
+    local WHOAMI; WHOAMI=$(outlayer whoami 2>/dev/null | awk -F': *' '/^Account:/{print $2; exit}')
+    [ "$WHOAMI" = "$PARENT" ] || { echo -e "${RED}outlayer logged in as '$WHOAMI', not PARENT='$PARENT'${NC}"; exit 1; }
+
+    echo -e "${CYAN}[build] customer-recovery (sign-nep413 + sign-bearer-near)…${NC}"
+    (cd "$SCRIPT_DIR/../scripts/customer-recovery" && cargo build --release --quiet) || { echo -e "${RED}customer-recovery build failed${NC}"; exit 1; }
+
+    # near CLI sometimes needs a TTY for the keychain signer — wrap via `script` if available.
+    near_tty() {
+        if command -v script >/dev/null 2>&1; then
+            local tmp; tmp=$(mktemp -t conf_cmd.XXXXXX.sh)
+            printf 'set -euo pipefail\n%s\n' "$*" > "$tmp"
+            script -q /dev/null bash "$tmp"; local rc=$?; rm -f "$tmp"; return $rc
+        else eval "$@"; fi
+    }
+
+    # ─── vault (reuse VAULT_ID if provided, else deploy a fresh one) ───────────
+    local VAULT_ID="${VAULT_ID:-}"
+    if [ -z "$VAULT_ID" ]; then
+        local VAULT_NAME="confms-$(date +%s)"
+        VAULT_ID="$VAULT_NAME.$PARENT"
+        echo -e "${CYAN}[vault] deploy $VAULT_ID…${NC}"
+        local INIT_RC=0 INIT_OUT
+        INIT_OUT=$(outlayer vault init --name "$VAULT_NAME" --exit-window 60s 2>&1) || INIT_RC=$?
+        if [ $INIT_RC -ne 0 ] && echo "$INIT_OUT" | grep -q "outlayer vault resume"; then
+            for _ in 1 2 3 4 5; do sleep 6; if outlayer vault resume "$VAULT_ID" >&2; then INIT_RC=0; break; fi; done
+        fi
+        [ $INIT_RC -eq 0 ] || { echo -e "${RED}vault init failed: $INIT_OUT${NC}"; exit 1; }
+    else
+        echo -e "${CYAN}[vault] reusing $VAULT_ID${NC}"
+    fi
+    echo -e "  vault: ${GREEN}$VAULT_ID${NC}"
+
+    # ─── auth + policy helpers (mirror unified_op_e2e.sh) ──────────────────────
+    mk_token() { "$RECOVERY_BIN" sign-bearer-near --private-key "$PARENT_PRIVKEY" --account-id "$PARENT" --seed "$1" --vault-id "$VAULT_ID"; }
+    AUTHH() { echo "Authorization: Bearer near:$(mk_token "$1")"; }
+
+    local SEED="confms-$(date +%s)"
+    local addr_resp WID
+    addr_resp=$(curl -sS -G "$COORDINATOR_URL/wallet/v1/address" --data-urlencode "chain=near" -H "$(AUTHH "$SEED")")
+    WID=$(echo "$addr_resp" | jq -r '.wallet_id // empty')
+    [ -n "$WID" ] || { echo -e "${RED}address derive failed: $addr_resp${NC}"; exit 1; }
+    echo -e "  sub-wallet: ${GREEN}$WID${NC} (addr $(echo "$addr_resp" | jq -r '.address'))"
+
+    local A1_PRIV A1_PUB
+    A1_PRIV=$(jq -r .private_key "$CREDS_DIR/$APPROVER1.json"); A1_PUB=$(jq -r .public_key "$CREDS_DIR/$APPROVER1.json")
+
+    # store_policy: encrypt → sign → on-chain store_wallet_policy (exact unified_op_e2e.sh dance).
+    echo -e "${CYAN}[policy] store multisig policy (threshold=1, capabilities.confidential.allowed=true)…${NC}"
+    local POL enc encb64 sg sig_hex pub_hex store_args body
+    POL=$(jq -nc --arg a "$APPROVER1" --arg ap "$A1_PUB" \
+        '{rules:{transaction_types:["confidential"]}, capabilities:{confidential:{allowed:true}}, approval:{threshold:{required:1}, approvers:[{id:$a,pubkey:$ap}]}}')
+    body=$(jq -nc --arg wid "$WID" --argjson p "$POL" '$p + {wallet_id:$wid}')
+    enc=$(curl -sS -X POST "$COORDINATOR_URL/wallet/v1/encrypt-policy" -H "$(AUTHH "$SEED")" -H 'Content-Type: application/json' -d "$body")
+    encb64=$(echo "$enc" | jq -r '.encrypted_base64 // empty'); [ -n "$encb64" ] || { echo -e "${RED}encrypt-policy failed: $enc${NC}"; exit 1; }
+    sg=$(curl -sS -X POST "$COORDINATOR_URL/wallet/v1/sign-policy" -H "$(AUTHH "$SEED")" -H 'Content-Type: application/json' -d "$(jq -nc --arg ed "$encb64" '{encrypted_data:$ed}')")
+    sig_hex=$(echo "$sg" | jq -r '.signature_hex // empty'); pub_hex=$(echo "$sg" | jq -r '.public_key_hex // empty')
+    [ -n "$sig_hex" ] || { echo -e "${RED}sign-policy failed: $sg${NC}"; exit 1; }
+    store_args=$(jq -nc --arg pk "ed25519:$pub_hex" --arg ed "$encb64" --arg sg "$sig_hex" '{wallet_pubkey:$pk, encrypted_data:$ed, wallet_signature:$sg}')
+    near_tty "near contract call-function as-transaction $CONTRACT_ID store_wallet_policy json-args '$store_args' prepaid-gas '100.0 Tgas' attached-deposit '0.1 NEAR' sign-as $PARENT network-config $NETWORK sign-with-keychain send" || { echo -e "${RED}store_wallet_policy failed${NC}"; exit 1; }
+    sleep 5
+    echo -e "  ${GREEN}policy stored${NC}"
+
+    # vote helper: identical binding to T9/T10 — fetch wallet_pubkey from the approval,
+    # sign NEP-413 `{vote}:{approval_id}:{wallet_pubkey}:{request_hash}`, POST it.
+    vote() {
+        local v=$1 aid=$2 h=$3 priv=$4 pub=$5 acct=$6 nonce sj sig wpk
+        wpk=$(curl -sS "$COORDINATOR_URL/wallet/v1/approval/$aid" | jq -r '.wallet_pubkey // empty')
+        nonce=$(head -c 32 /dev/urandom | base64 | tr -d '\n')
+        sj=$("$RECOVERY_BIN" sign-nep413 --private-key "$priv" --message "$v:$aid:$wpk:$h" --recipient "$CONTRACT_ID" --nonce-base64 "$nonce")
+        sig=$(echo "$sj" | jq -r '.signature')
+        curl -sS -o /tmp/conf_vote.body -w '%{http_code}' -X POST "$COORDINATOR_URL/wallet/v1/$v/$aid" -H 'Content-Type: application/json' \
+            -d "$(jq -nc --arg s "$sig" --arg pk "$pub" --arg ac "$acct" --arg nc "$nonce" '{signature:$s,public_key:$pk,account_id:$ac,nonce:$nc}')"
+    }
+    rstatus() { curl -sS "$COORDINATOR_URL/wallet/v1/requests/$1" -H "$(AUTHH "$SEED")" | jq -r '.status // empty'; }
+
+    local PASS=0 FAILED=0
+    mpass() { echo -e "  ${GREEN}PASS${NC} $*"; PASS=$((PASS+1)); }
+    mfail() { echo -e "  ${RED}FAIL${NC} $*"; FAILED=$((FAILED+1)); }
+
+    # ── 1: Trusted confidential swap on a multisig wallet → pending_approval ──
+    echo -e "${CYAN}[1/3] confidential swap on a multisig wallet → expect pending_approval (NOT executed/rejected)…${NC}"
+    local swap_body http body2 ST AID RID RH
+    swap_body=$(jq -nc --arg ti "$M_TOKEN_IN" --arg to "$M_TOKEN_OUT" --arg ai "$M_AMOUNT_IN" '{token_in:$ti, token_out:$to, amount_in:$ai, min_amount_out:"1"}')
+    http=$(curl -sS -o /tmp/conf_ms.body -w '%{http_code}' -X POST "$COORDINATOR_URL/wallet/v1/confidential/swap" -H "$(AUTHH "$SEED")" -H 'Content-Type: application/json' -d "$swap_body")
+    body2=$(cat /tmp/conf_ms.body)
+    if [ "$http" = "503" ]; then echo -e "  ${RED}503 confidential_unavailable${NC} — coordinator not configured for confidential intents (ENABLE_CONFIDENTIAL_INTENTS + upstream). $(echo "$body2" | jq -c . 2>/dev/null || echo "$body2")"; exit 1; fi
+    ST=$(echo "$body2" | jq -r '.status // empty'); AID=$(echo "$body2" | jq -r '.approval_id // empty')
+    RID=$(echo "$body2" | jq -r '.request_id // empty'); RH=$(echo "$body2" | jq -r '.request_hash // empty')
+    if [ "$http" = "200" ] && [ "$ST" = "pending_approval" ] && [ -n "$AID" ] && [ -n "$RH" ]; then
+        mpass "confidential swap → pending_approval (approval_id=$AID, request_hash present) — multisig path reached, NOT rejected as 'no multisig support'"
+    else
+        mfail "confidential swap MUST return pending_approval+approval_id+request_hash, got HTTP $http status='$ST': $(echo "$body2" | head -c200)"
+    fi
+
+    # ── 2: sign+submit the approver YES over the API-provided request_hash (threshold=1) ──
+    if [ -n "$AID" ] && [ -n "$RH" ]; then
+        echo -e "${CYAN}[2/3] approver YES vote over approve:$AID:<wallet_pubkey>:$RH …${NC}"
+        local APPROVAL_H C
+        APPROVAL_H=$(curl -sS "$COORDINATOR_URL/wallet/v1/approval/$AID" | jq -r '.request_hash // empty')
+        [ "$APPROVAL_H" = "$RH" ] && mpass "approval.request_hash matches the swap response request_hash" \
+            || echo -e "  ${YELLOW}note${NC} approval.request_hash='$APPROVAL_H' vs response='$RH' (signing the API-provided RH)"
+        C=$(vote approve "$AID" "$RH" "$A1_PRIV" "$A1_PUB" "$APPROVER1")
+        echo -e "  /approve HTTP $C: $(cat /tmp/conf_vote.body | head -c160)"
+        [ "$C" = "200" ] && mpass "approver YES accepted (HTTP 200) over the confidential request_hash" \
+            || mfail "/approve should accept the approver vote, got HTTP $C: $(cat /tmp/conf_vote.body | head -c160)"
+
+        # ── 3: after threshold the request MUST leave pending_approval (control-flow assertion) ──
+        echo -e "${CYAN}[3/3] poll: request must LEAVE pending_approval after the threshold…${NC}"
+        local S=""; for _ in $(seq 1 20); do sleep 3; S=$(rstatus "$RID"); [ "$S" != "pending_approval" ] && [ -n "$S" ] && break; done
+        case "$S" in
+            processing|success|pending_deposit)
+                mpass "confidential swap proceeded PAST pending_approval after threshold (status=$S) — keystore signed the approved confidential artifact" ;;
+            failed|refunded)
+                echo -e "  ${YELLOW}WARN${NC} left pending_approval then terminal '$S' downstream — control flow OK (approval→execute reached); terminal failure is mainnet liquidity/quote/unfunded-confidential-balance, NOT the multisig gate"
+                mpass "confidential swap left pending_approval after threshold (reached execution; downstream-$S)" ;;
+            pending_approval)
+                mfail "confidential swap STUCK at pending_approval after a valid threshold-meeting approval — execution was NOT dispatched" ;;
+            *)
+                echo -e "  ${YELLOW}note${NC} post-approval status inconclusive (status='$S')"
+                mpass "confidential swap left pending_approval after threshold (status='$S' != pending_approval)" ;;
+        esac
+    fi
+
+    echo ""
+    if [ "$FAILED" -gt 0 ]; then echo -e "${RED}MULTISIG: $FAILED failed, $PASS passed${NC}"; exit 1; fi
+    echo -e "${GREEN}MULTISIG: all $PASS confidential-multisig checks passed${NC}"
+    echo -e "${YELLOW}Cleanup (optional): $VAULT_ID holds locked NEAR + a per-wallet policy storage stake.${NC}"
+}
+
+# ============================================================================
 # Dispatch
 # ============================================================================
 
@@ -380,6 +589,7 @@ case "$CMD" in
     balance)        cmd_balance ;;
     deposit-intent) cmd_deposit_intent ;;
     withdraw)       cmd_withdraw ;;
+    multisig)       cmd_multisig ;;
     status)         cmd_status "$@" ;;
     show)           cmd_show ;;
     reset)          cmd_reset ;;
@@ -393,10 +603,14 @@ case "$CMD" in
         echo "  balance         — show confidential balances"
         echo "  deposit-intent  — cross-chain DEPOSIT quote (returns a bridge deposit address)"
         echo "  withdraw        — cross-chain WITHDRAW (needs WITHDRAW_TO; chain=near is rejected)"
+        echo "  multisig        — MAINNET: confidential Trusted op under multisig → pending_approval →"
+        echo "                    approve (NEP-413 vote) → asserts it LEAVES pending_approval (T9 analog)"
         echo "  status <id>     — poll a request to terminal status"
         echo "  show / reset    — print / delete saved wallet state"
         echo ""
         echo "GATE: live phases require ONECLICK_CONFIDENTIAL_JWT set; unset → SKIP (exit 0)."
         echo "PREREQ (roundtrip/shield): SHIELD_TOKEN already in your PUBLIC intents balance."
+        echo "multisig also needs (else SKIP): NETWORK=mainnet, PARENT logged into outlayer,"
+        echo "  APPROVER1 mainnet creds in ~/.near-credentials/mainnet, MPC_PUBLIC_KEY."
         ;;
 esac

@@ -259,25 +259,25 @@ export default function AgentCustodyPage() {
               </tr>
               <tr className="border-b">
                 <td className="px-4 py-2 font-semibold">Ethereum</td>
-                <td className="px-4 py-2 text-green-600">&#10003; deposit-intent (1Click)</td>
+                <td className="px-4 py-2 text-green-600">&#10003; cross-chain (1Click)</td>
                 <td className="px-4 py-2 text-green-600">&#10003; via Intents (gasless)</td>
                 <td className="px-4 py-2 text-gray-400">&mdash; (planned)</td>
               </tr>
               <tr className="border-b">
                 <td className="px-4 py-2 font-semibold">Bitcoin</td>
-                <td className="px-4 py-2 text-green-600">&#10003; deposit-intent (1Click)</td>
+                <td className="px-4 py-2 text-green-600">&#10003; cross-chain (1Click)</td>
                 <td className="px-4 py-2 text-green-600">&#10003; via Intents (gasless)</td>
                 <td className="px-4 py-2 text-gray-400">&mdash; (planned)</td>
               </tr>
               <tr className="border-b">
                 <td className="px-4 py-2 font-semibold">Solana</td>
-                <td className="px-4 py-2 text-green-600">&#10003; deposit-intent (1Click)</td>
+                <td className="px-4 py-2 text-green-600">&#10003; cross-chain (1Click)</td>
                 <td className="px-4 py-2 text-green-600">&#10003; via Intents (gasless)</td>
                 <td className="px-4 py-2 text-gray-400">&mdash; (planned)</td>
               </tr>
               <tr>
                 <td className="px-4 py-2 font-semibold">Base, Arbitrum, BSC, Polygon, Optimism, Avalanche</td>
-                <td className="px-4 py-2 text-green-600">&#10003; deposit-intent (1Click)</td>
+                <td className="px-4 py-2 text-green-600">&#10003; cross-chain (1Click)</td>
                 <td className="px-4 py-2 text-green-600">&#10003; via Intents (gasless)</td>
                 <td className="px-4 py-2 text-gray-400">&mdash; (planned)</td>
               </tr>
@@ -298,7 +298,7 @@ export default function AgentCustodyPage() {
             Deposits only work for assets in the NEAR Intents / 1Click token catalog (<code className="bg-red-100 px-1 rounded">GET /wallet/v1/tokens</code>),
             sent on the exact chain the deposit address was issued for. If you send an unsupported token, the wrong token, a token on the wrong chain,
             an NFT, or a native gas coin that is not a listed asset, <strong>it cannot be credited or recovered</strong>. Deposit addresses from
-            <code className="bg-red-100 px-1 rounded">/wallet/v1/deposit-intent</code> are per-request and expire (30 min) &mdash; never reuse an old one or send after expiry.
+            <code className="bg-red-100 px-1 rounded">/wallet/v1/intents/deposit/cross-chain</code> (legacy alias <code className="bg-red-100 px-1 rounded">/wallet/v1/deposit-intent</code>) are per-request and expire (30 min) &mdash; never reuse an old one or send after expiry.
           </p>
         </div>
       </section>
@@ -369,8 +369,13 @@ export default function AgentCustodyPage() {
               </tr>
               <tr className="border-b">
                 <td className="px-4 py-2 font-semibold">Transaction types</td>
-                <td className="px-4 py-2">Restrict allowed operations (transfer, call, intents_withdraw, intents_swap, intents_deposit, delete)</td>
+                <td className="px-4 py-2">Restrict allowed operations: <code className="bg-gray-100 px-1 rounded">transfer</code>, <code className="bg-gray-100 px-1 rounded">call</code> (incl. deposits to Intents), <code className="bg-gray-100 px-1 rounded">withdraw</code>, <code className="bg-gray-100 px-1 rounded">swap</code>, <code className="bg-gray-100 px-1 rounded">cross_chain_withdraw</code> (separate, default-deny), <code className="bg-gray-100 px-1 rounded">delete</code></td>
                 <td className="px-4 py-2 font-mono text-xs">call, swap only</td>
+              </tr>
+              <tr className="border-b">
+                <td className="px-4 py-2 font-semibold">Capabilities</td>
+                <td className="px-4 py-2">Opt-in gates for powerful primitives, all <strong>default-deny</strong> except <code className="bg-gray-100 px-1 rounded">sign_message</code>: <code className="bg-gray-100 px-1 rounded">raw_sign</code> (+ per-chain allowlist), <code className="bg-gray-100 px-1 rounded">swap</code>, <code className="bg-gray-100 px-1 rounded">cross_chain_withdraw</code>, <code className="bg-gray-100 px-1 rounded">confidential</code>, <code className="bg-gray-100 px-1 rounded">payment_check</code>, <code className="bg-gray-100 px-1 rounded">sign_message</code> (+ recipient allowlist). Each may also set <code className="bg-gray-100 px-1 rounded">requires_approval</code></td>
+                <td className="px-4 py-2 font-mono text-xs">swap: allowed</td>
               </tr>
               <tr>
                 <td className="px-4 py-2 font-semibold">Emergency freeze</td>
@@ -386,19 +391,42 @@ export default function AgentCustodyPage() {
           This means neither the API gateway operator nor the agent can see or tamper with the raw policy rules.
         </p>
 
+        <div className="rounded-lg border border-amber-300 bg-amber-50 p-4 mb-4">
+          <p className="text-sm font-semibold text-amber-900 mb-1">Velocity limits are best-effort under concurrency</p>
+          <p className="text-sm text-amber-900">
+            Per-transaction limits, whitelists, time windows, capabilities, freeze, and the multisig
+            trigger are enforced <strong>exactly</strong> inside the TEE on every signature.
+            The <strong>cumulative</strong> limits &mdash; daily / hourly / monthly spend and the
+            hourly transaction-count (<code>rate_limit</code>) &mdash; are checked against a usage
+            counter the API gateway supplies; the TEE keeps no state of its own. If you fire several
+            requests <strong>concurrently</strong>, they can each read the same pre-spend counter and
+            all pass, so the cumulative caps may be exceeded by the in-flight batch (e.g. a
+            &ldquo;60&nbsp;tx/hour&rdquo; cap could admit a few extra under a burst). Single-threaded
+            agents (one request at a time) are unaffected.
+          </p>
+          <p className="text-sm text-amber-900 mt-2">
+            If exact cumulative enforcement matters to you, either <strong>serialize</strong> your
+            agent&rsquo;s spending requests (don&rsquo;t issue the next until the previous returns),
+            or leave a <strong>safety margin</strong> in the limit to absorb the maximum number of
+            requests you might have in flight at once. For hard stops use the per-transaction limit,
+            multisig, or freeze &mdash; those are exact.
+          </p>
+        </div>
+
         <h3 className="text-lg font-semibold mt-6 mb-2">Example Policy</h3>
         <SyntaxHighlighter language="json" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
 {`{
   "rules": {
+    "transaction_types": ["transfer", "call", "withdraw", "swap", "delete"],
+    "allowed_tokens": ["*"],
+    "addresses": {
+      "mode": "whitelist",
+      "list": ["bob.near", "dex.near"]
+    },
     "limits": {
       "per_transaction": { "native": "10000000000000000000000000" },
       "daily": { "*": "100000000000000000000000000" },
       "hourly": { "*": "50000000000000000000000000" }
-    },
-    "transaction_types": ["transfer", "call", "intents_withdraw", "intents_swap", "intents_deposit", "delete"],
-    "addresses": {
-      "mode": "whitelist",
-      "list": ["bob.near", "dex.near"]
     },
     "rate_limit": { "max_per_hour": 60 },
     "time_restrictions": {
@@ -408,13 +436,20 @@ export default function AgentCustodyPage() {
     }
   },
   "approval": {
-    "threshold": { "required": 2, "of": 3 },
-    "above_usd": 1000,
+    "threshold": { "required": 2 },
     "approvers": [
-      { "id": "ed25519:pubkey1", "role": "admin" },
-      { "id": "ed25519:pubkey2", "role": "signer" },
-      { "id": "ed25519:pubkey3", "role": "signer" }
+      { "id": "alice.near", "role": "admin",  "pubkey": "ed25519:<base58>" },
+      { "id": "bob.near",   "role": "signer", "pubkey": "ed25519:<base58>" },
+      { "id": "carol.near", "role": "signer", "pubkey": "ed25519:<base58>" }
     ]
+  },
+  "capabilities": {
+    "raw_sign":     { "allowed": false, "chains": ["ethereum", "solana"], "requires_approval": true },
+    "confidential": { "allowed": false },
+    "sign_message": { "allowed": true,  "allowed_recipients": [] },
+    "swap":         { "allowed": false },
+    "cross_chain_withdraw": { "allowed": false },
+    "payment_check": { "allowed": false }
   }
 }`}
         </SyntaxHighlighter>
@@ -425,9 +460,28 @@ export default function AgentCustodyPage() {
         <AnchorHeading id="multisig">Multisig Approval</AnchorHeading>
 
         <p className="text-gray-700 mb-4">
-          When a transaction exceeds the approval threshold (e.g. above $1,000), it goes into a pending state.
+          On a wallet with an approval threshold, fund-moving operations go into a pending state.
           Designated approvers sign the request using their NEAR wallet (NEP-413 signature). Once the required number of signatures is collected, the transaction executes automatically.
         </p>
+
+        <div className="bg-blue-50 border-l-4 border-blue-400 p-4 mb-4">
+          <p className="text-sm text-gray-700">
+            <strong>Multisig also covers NEAR Intents operations.</strong> On a multisig wallet, a
+            swap &mdash; or any NEAR Intents <em>Trusted</em> operation (<code className="bg-blue-100 px-1 rounded">swap</code>,
+            <code className="bg-blue-100 px-1 rounded">confidential</code>, <code className="bg-blue-100 px-1 rounded">cross_chain_withdraw</code>) &mdash;
+            executes only after the required approvers confirm it. Approval controls <em>whether</em> the
+            operation happens: the TEE verifies the approver signatures and pins the recipient. It does
+            <strong>not</strong> itself re-check the token or amount &mdash; for these Trusted operations the
+            gateway builds the 1Click artifact (quote &rarr; deposit address) at execution and the TEE signs it,
+            trusting the gateway to have built it from the approved operation. The off-chain destination (the
+            1Click deposit address) is the same way: provided by the gateway at execution and
+            <strong>not independently verifiable</strong> by the TEE. So a compromised gateway could substitute
+            the token, amount, or routing after approval &mdash; the on-chain guarantees are the recipient pin
+            and the approver signatures, not the value terms (a documented tradeoff).
+            Claimable links (<code className="bg-blue-100 px-1 rounded">payment_check</code>) are the exception &mdash;
+            they are gated by their capability and the per-transaction amount cap rather than by multisig.
+          </p>
+        </div>
 
         <SyntaxHighlighter language="text" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
 {`Agent: POST /wallet/v1/intents/withdraw { amount: "$5,000" }
@@ -492,15 +546,17 @@ Approver 2: Signs approval via NEAR wallet (dashboard)
 curl -s -H "Authorization: Bearer $API_KEY" \\
   "https://api.outlayer.fastnear.com/wallet/v1/address?chain=near"
 
-# To fund from another chain, request a 1Click bridge deposit address.
-# Pass a defuse \`source_asset\` from GET /wallet/v1/tokens — the source
-# chain is derived from its prefix (e.g. \`eth-…\` → Ethereum).
+# To fund from another chain, request a cross-chain deposit address
+# (via 1Click / NEAR Intents). Pass a defuse \`source_asset\` from
+# GET /wallet/v1/tokens — the source chain is derived from its prefix
+# (e.g. \`eth-…\` → Ethereum).
 # ⚠️ Only send the exact whitelisted token on the exact chain below —
 #    any other asset sent to this address is lost permanently.
+# (Legacy alias /wallet/v1/deposit-intent still works.)
 curl -s -X POST -H "Content-Type: application/json" \\
   -H "Authorization: Bearer $API_KEY" \\
   -d '{"source_asset":"nep141:eth-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.omft.near","amount":"10000000"}' \\
-  "https://api.outlayer.fastnear.com/wallet/v1/deposit-intent"
+  "https://api.outlayer.fastnear.com/wallet/v1/intents/deposit/cross-chain"
 
 # Returned \`deposit_address\` format depends on the source chain:
 # NEAR — 64-char hex implicit account; EVM — 0x + 40 hex;
@@ -717,16 +773,16 @@ curl -s -X POST -H "Content-Type: application/json" \\
         </p>
 
         <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 text-sm text-gray-700">
-          <strong>NEAR Intents is mainnet-only.</strong> The testnet API does not run the
-          Intents solver network, so the intents-dependent endpoints are <strong>not
-          available on testnet</strong> — namely{' '}
+          <strong>NEAR Intents is mainnet-only.</strong> There are no testnet Intents solvers, so on
+          testnet the coordinator returns <strong>HTTP 503</strong> for every intents-dependent
+          endpoint — namely{' '}
           <code className="bg-gray-100 px-1 rounded">/wallet/v1/intents/*</code>{' '}
-          (deposit, withdraw, ft-withdraw, swap, and their quote / dry-run variants),
-          cross-chain gasless withdrawals, and all{' '}
+          (deposit, withdraw, swap, cross-chain deposit, payment-check, and their quote / dry-run
+          variants), cross-chain gasless withdrawals, and all{' '}
           <code className="bg-gray-100 px-1 rounded">/wallet/v1/confidential/*</code> routes.
           Test these against the <strong>mainnet</strong> API only. Account, address,
           balance, transfer, contract <code className="bg-gray-100 px-1 rounded">call</code>,
-          message signing, policy, and approval endpoints work on both networks.
+          message signing, policy, approval, and delete endpoints work on both networks.
         </div>
       </section>
 
@@ -739,9 +795,10 @@ curl -s -X POST -H "Content-Type: application/json" \\
           <strong>confidential</strong> shielded-pool shard, and external chains — same
           TEE-mediated signing, a different shard. The{' '}
           <code className="bg-gray-100 px-1 rounded">/wallet/v1/confidential/*</code> routes mirror{' '}
-          <code className="bg-gray-100 px-1 rounded">/wallet/v1/intents/*</code>. They return{' '}
-          <code className="bg-gray-100 px-1 rounded">HTTP 503</code> unless the deployment has
-          confidential intents enabled. The confidential shard is the{' '}
+          <code className="bg-gray-100 px-1 rounded">/wallet/v1/intents/*</code>. Like all Intents
+          flows they are <strong>mainnet-only</strong> — they return{' '}
+          <code className="bg-gray-100 px-1 rounded">HTTP 503</code> on testnet (no testnet solvers)
+          or wherever the deployment has not enabled confidential intents. The confidential shard is the{' '}
           <code className="bg-gray-100 px-1 rounded">intents.far</code> contract on a private NEAR
           shard with no public RPC: balances are <strong>real on-chain state</strong> there, just
           not publicly readable. Full integration guide:{' '}
@@ -751,12 +808,12 @@ curl -s -X POST -H "Content-Type: application/json" \\
         </p>
 
         <ul className="list-disc list-inside text-gray-700 space-y-1 mb-4">
-          <li><code className="bg-gray-100 px-1 rounded">POST /confidential/deposit</code> — SHIELD: public intents → confidential</li>
+          <li><code className="bg-gray-100 px-1 rounded">POST /confidential/shield</code> — SHIELD: public intents → confidential (legacy alias <code className="bg-gray-100 px-1 rounded">/confidential/deposit</code>, still works)</li>
           <li><code className="bg-gray-100 px-1 rounded">POST /confidential/unshield</code> — confidential → public intents</li>
           <li><code className="bg-gray-100 px-1 rounded">POST /confidential/withdraw</code> — confidential → external chain (or <code className="bg-gray-100 px-1 rounded">chain=&quot;near&quot;</code> for native NEAR delivery via <code className="bg-gray-100 px-1 rounded">native_withdraw</code>)</li>
           <li><code className="bg-gray-100 px-1 rounded">POST /confidential/transfer</code> — private confidential → confidential transfer</li>
-          <li><code className="bg-gray-100 px-1 rounded">POST /confidential/swap</code> (+ <code className="bg-gray-100 px-1 rounded">/swap/quote</code>, <code className="bg-gray-100 px-1 rounded">/withdraw/dry-run</code>)</li>
-          <li><code className="bg-gray-100 px-1 rounded">POST /confidential/deposit-intent</code> — cross-chain deposit (bridge address)</li>
+          <li><code className="bg-gray-100 px-1 rounded">POST /confidential/swap</code> (+ <code className="bg-gray-100 px-1 rounded">/swap/quote</code>, <code className="bg-gray-100 px-1 rounded">/withdraw/dry-run</code>) &mdash; on a multisig wallet, like a public swap, approval controls <em>whether</em> it runs (the TEE does not itself re-check the swap&apos;s token/amount against the artifact &mdash; that relies on gateway trust)</li>
+          <li><code className="bg-gray-100 px-1 rounded">POST /confidential/deposit/cross-chain</code> — cross-chain deposit (via 1Click / NEAR Intents; legacy alias <code className="bg-gray-100 px-1 rounded">/confidential/deposit-intent</code>, still works)</li>
           <li><code className="bg-gray-100 px-1 rounded">GET /confidential/balance</code> — read confidential balances</li>
         </ul>
 
@@ -786,10 +843,11 @@ curl -s -X POST -H "Content-Type: application/json" \\
 
         <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
 {`# SHIELD 0.01 wNEAR into the confidential shard
+# (legacy alias /wallet/v1/confidential/deposit still works)
 curl -s -X POST -H "Content-Type: application/json" \\
   -H "Authorization: Bearer $API_KEY" \\
   -d '{"token":"nep141:wrap.near","amount":"10000000000000000000000"}' \\
-  "https://api.outlayer.fastnear.com/wallet/v1/confidential/deposit"
+  "https://api.outlayer.fastnear.com/wallet/v1/confidential/shield"
 
 # Read confidential balances
 curl -s -H "Authorization: Bearer $API_KEY" \\
@@ -1021,6 +1079,12 @@ curl -s -X POST -H "Content-Type: application/json" \\
   "vault_id": "vault.my-bot.near"   // optional; include in signed message too
 }`}
         </SyntaxHighlighter>
+
+        <div className="bg-blue-50 border-l-4 border-blue-400 p-4 mb-4 mt-3">
+          <p className="text-sm text-gray-700">
+            <strong>Key lives in the TEE?</strong> The <code className="bg-blue-100 px-1 rounded">signature</code> above assumes you hold the NEAR ed25519 key locally. For a wallet whose key lives in OutLayer custody (the TEE), you don&apos;t have the private key &mdash; instead call <code className="bg-blue-100 px-1 rounded">POST /wallet/v1/auth-sign</code> with <code className="bg-blue-100 px-1 rounded">{`{ "purpose": "bearer", "seed": "<seed>" }`}</code> and it returns the <code className="bg-blue-100 px-1 rounded">auth:&lt;seed&gt;:&lt;timestamp&gt;</code> message and signature (signed inside the TEE with a fresh server timestamp) to drop into the token.
+          </p>
+        </div>
 
         <h3 className="text-lg font-semibold mt-6 mb-2">Delegate keys for sub-agents</h3>
         <p className="text-gray-700 mb-2">

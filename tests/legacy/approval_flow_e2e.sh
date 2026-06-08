@@ -253,15 +253,18 @@ pass "approval_id=$APPROVAL_ID  request_id=$REQUEST_ID"
 log "6. Fetch approval details (need request_hash for NEP-413 message)"
 DETAILS_RESP=$(curl -sS "$COORDINATOR_URL/wallet/v1/approval/$APPROVAL_ID")
 REQUEST_HASH=$(echo "$DETAILS_RESP" | jq -r '.request_hash // empty')
+WALLET_PUBKEY=$(echo "$DETAILS_RESP" | jq -r '.wallet_pubkey // empty')
 if [[ -z "$REQUEST_HASH" || "$REQUEST_HASH" == "null" ]]; then
   warn "approval details endpoint did not return request_hash; trying alternative"
   warn "raw: $DETAILS_RESP"
   fail "cannot proceed without request_hash. If your build of coordinator \
 exposes it elsewhere, set REQUEST_HASH manually before this section."
 fi
-pass "request_hash=$REQUEST_HASH"
+[[ -n "$WALLET_PUBKEY" && "$WALLET_PUBKEY" != "null" ]] || fail "no wallet_pubkey for approval"
+pass "request_hash=$REQUEST_HASH wallet_pubkey=$WALLET_PUBKEY"
 
-APPROVE_MSG="approve:$APPROVAL_ID:$REQUEST_HASH"
+# Wallet-bound approval message (audit fix 2): approve:{id}:{wallet_pubkey}:{request_hash}.
+APPROVE_MSG="approve:$APPROVAL_ID:$WALLET_PUBKEY:$REQUEST_HASH"
 NONCE_B64=$(head -c 32 /dev/urandom | base64 | tr -d '\n')
 
 log "6.1 Approver ($APPROVER) signs NEP-413 message"
@@ -344,7 +347,8 @@ APPROVAL_2=$(echo "$T2_RESP" | jq -r '.approval_id // .approval.id // empty')
 [[ -n "$APPROVAL_2" && "$APPROVAL_2" != "null" ]] || fail "second transfer didn't queue approval: $T2_RESP"
 DETAILS2=$(curl -sS "$COORDINATOR_URL/wallet/v1/approval/$APPROVAL_2")
 HASH2=$(echo "$DETAILS2" | jq -r '.request_hash')
-MSG2="approve:$APPROVAL_2:$HASH2"
+WPK2=$(echo "$DETAILS2" | jq -r '.wallet_pubkey // empty')
+MSG2="approve:$APPROVAL_2:$WPK2:$HASH2"
 NONCE2=$(head -c 32 /dev/urandom | base64 | tr -d '\n')
 
 PARENT_SIG_JSON=$("$RECOVERY_BIN" sign-nep413 \

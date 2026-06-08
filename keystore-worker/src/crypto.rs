@@ -769,6 +769,66 @@ mod tests {
         assert_eq!(decrypted, plaintext);
     }
 
+    /// Lock-down for the /wallet/sign-policy oracle (audit round 2, #1): the endpoint must
+    /// DECRYPT-VALIDATE `encrypted_data` before signing `sha256(encrypted_data)` with the
+    /// wallet's `:near` tx key. This mirrors the handler's exact logic against a real
+    /// Keystore and proves: (a) arbitrary bytes / a tx_hash / another wallet's ciphertext
+    /// FAIL decryption → never reach signing (so a transaction can't be forged); (c) the
+    /// signed message is sha256(the exact blob); (d) a genuine policy ciphertext signs and
+    /// verifies against the UNCHANGED contract check (bare sha256(encrypted_data)).
+    #[test]
+    fn sign_policy_decrypt_validation_blocks_tx_forging_and_keeps_legit_flow() {
+        use sha2::{Digest, Sha256};
+
+        let ks = Keystore::generate();
+        let wid = "wallet-abc";
+        let policy_seed = format!("wallet-policy:{}", wid);
+        let near_seed = format!("wallet:{}:near", wid);
+        let b64 = base64::engine::general_purpose::STANDARD;
+
+        // ── legit policy ciphertext ──────────────────────────────────────────────
+        let policy_json = br#"{"rules":{"transaction_types":["transfer"]}}"#;
+        let ct = ks.encrypt(None, &policy_seed, policy_json).unwrap();
+        let encrypted_data = b64.encode(&ct); // the `encrypted_data` string the handler gets
+
+        // (a)+ : decrypt-validate succeeds for the genuine ciphertext (the gate passes).
+        let pt = ks.decrypt(None, &policy_seed, &b64.decode(&encrypted_data).unwrap()).unwrap();
+        assert_eq!(pt, policy_json, "genuine policy must decrypt to its plaintext");
+
+        // (c)+(d): sign the BARE sha256(encrypted_data) and verify exactly as the unchanged
+        // contract does (ed25519 over sha256(encrypted_data) with the wallet's :near pubkey).
+        let msg_hash = Sha256::digest(encrypted_data.as_bytes());
+        let sig = ks.sign(None, &near_seed, &msg_hash).unwrap();
+        assert!(
+            ks.verify(None, &near_seed, &msg_hash, &sig).is_ok(),
+            "legit policy signature must verify against the unchanged contract's bare sha256"
+        );
+
+        // (a): the EXACT original attack — encrypted_data = borsh(tx) (arbitrary bytes). The
+        // AEAD auth tag can't verify for non-ciphertext, so decrypt FAILS → the handler
+        // refuses → no signature → no forged tx_hash signed.
+        let fake_tx = vec![0x07u8; 180]; // stand-in for borsh(SignedTransaction)
+        assert!(
+            ks.decrypt(None, &policy_seed, &fake_tx).is_err(),
+            "arbitrary bytes (borsh(tx)) MUST fail decryption — never signed"
+        );
+
+        // (b): a raw 32-byte value (a real tx_hash, the old pre-computed-hash input) is not a
+        // valid ciphertext → fails decryption → rejected.
+        let tx_hash = vec![0x09u8; 32];
+        assert!(
+            ks.decrypt(None, &policy_seed, &tx_hash).is_err(),
+            "a raw 32-byte tx_hash MUST fail decryption — never signed"
+        );
+
+        // wrong-wallet ciphertext (encrypted under a different policy key) also fails.
+        let other_ct = ks.encrypt(None, "wallet-policy:other", policy_json).unwrap();
+        assert!(
+            ks.decrypt(None, &policy_seed, &other_ct).is_err(),
+            "another wallet's policy ciphertext MUST fail this wallet's decrypt"
+        );
+    }
+
     #[test]
     fn test_decrypt_legacy_format() {
         let keystore = Keystore::generate();

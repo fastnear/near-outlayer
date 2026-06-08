@@ -7,8 +7,9 @@ Institutional-grade custody wallets for AI agents. An agent gets an API key to o
 > catalog (`GET /wallet/v1/tokens`), on the exact chain a deposit address was
 > issued for. Sending an unsupported token, the wrong token, a token on the
 > wrong chain, an NFT, or an unlisted native gas coin to a deposit address is
-> **unrecoverable**. Deposit addresses from `/wallet/v1/deposit-intent` are
-> per-request and expire (30 min) — never reuse one or send after expiry.
+> **unrecoverable**. Deposit addresses from
+> `/wallet/v1/intents/deposit/cross-chain` (legacy alias `/wallet/v1/deposit-intent`)
+> are per-request and expire (30 min) — never reuse one or send after expiry.
 
 ---
 
@@ -117,7 +118,7 @@ HTTP API server. Handles auth, routing, usage tracking, webhooks.
 | Function | Line | Description |
 |----------|------|-------------|
 | `register()` | 36 | Generate UUID wallet_id + API key → call keystore TEE to derive NEAR address |
-| `withdraw()` | 404 | Policy check → record usage → direct ft_withdraw on intents.near |
+| `withdraw()` | — | Build `Op::Withdraw` → check-policy → keystore `/wallet/sign` (gasless `native_withdraw`/`ft_withdraw` intent) → publish to solver relay → record usage after success |
 | `withdraw_dry_run()` | 755 | Simulate withdraw: policy + balance check without execution |
 | `call()` | 2186 | Native NEAR function call: policy check → keystore sign → broadcast |
 | `transfer()` | 2621 | Chain-agnostic transfer (chain param, currently near only): policy → keystore sign → broadcast |
@@ -143,15 +144,37 @@ Runs inside Intel TDX. Holds master secret from NEAR MPC. All crypto happens her
 
 | File | Key area | Description |
 |------|----------|-------------|
-| [api.rs:606-612](keystore-worker/src/api.rs#L606) | Wallet routes | Router for `/wallet/*` endpoints |
-| [api.rs:2439](keystore-worker/src/api.rs#L2439) | `wallet_derive_address_handler` | Derive pubkey from seed `"wallet:{wallet_id}:{chain}"` |
-| [api.rs:2507](keystore-worker/src/api.rs#L2507) | `wallet_sign_transaction_handler` | Sign tx bytes with derived wallet key |
-| [api.rs:2539](keystore-worker/src/api.rs#L2539) | `wallet_sign_policy_handler` | Sign encrypted policy SHA256 |
-| [api.rs:2663](keystore-worker/src/api.rs#L2663) | `wallet_sign_nep413_handler` | Sign NEP-413 message for wallet auth |
-| [api.rs:2740](keystore-worker/src/api.rs#L2740) | `wallet_sign_near_call_handler` | Sign NEAR function call (nonce, gas, args) |
-| [api.rs](keystore-worker/src/api.rs) | `wallet_sign_near_transfer_handler` | Sign native NEAR transfer (amount only) |
-| [api.rs:2843](keystore-worker/src/api.rs#L2843) | `wallet_check_policy_handler` | Decrypt policy from chain → evaluate action → return decision |
-| [crypto.rs:108](keystore-worker/src/crypto.rs#L108) | `derive_keypair()` | `HMAC-SHA256(master_secret, seed)` → Ed25519 keypair |
+| [api.rs](keystore-worker/src/api.rs) | Wallet routes | Router for `/wallet/*` (coordinator-token-only) endpoints |
+| [api.rs](keystore-worker/src/api.rs) | `wallet_derive_address_handler` | Derive pubkey from seed `"wallet:{wallet_id}:{chain}"` |
+| [api.rs](keystore-worker/src/api.rs) | `wallet_sign_handler` | **Single** signing entry point. Takes a canonical `op` (+ optional `approval_info`, `artifact` carrying `bytes_base64`/`message`/`nonce_base64`/`recipient`, and `usage`); derives `request_hash = sha256(canonical_json(op))`, evaluates the on-chain policy, verifies approver signatures when required, then produces the artifact per the op's bind mode (Built / Hash-pinned / Trusted). Replaces the old per-flow sign endpoints (transaction / nep413 / near-call / near-transfer). |
+| [api.rs](keystore-worker/src/api.rs) | `wallet_sign_policy_handler` | Sign an encrypted policy blob: decrypt-validates the ciphertext, then signs `sha256(encrypted_data)` (rejects a caller-supplied raw hash — not a signing oracle) |
+| [api.rs](keystore-worker/src/api.rs) | `wallet_check_policy_handler` | Pre-flight: decrypt policy from chain → `evaluate(policy, op, usage, now)` → return `{allowed, frozen, requires_approval, required_approvals, reason, request_hash}` (the decrypted policy never leaves the TEE) |
+| [crypto.rs](keystore-worker/src/crypto.rs) | `derive_keypair()` | `HMAC-SHA256(master_secret, seed)` → Ed25519 keypair |
+
+The keystore exposes exactly one signing endpoint, `POST /wallet/sign`. The OLD five separate
+sign endpoints (`/wallet/sign-transaction`, `/wallet/sign-nep413`, `/wallet/sign-near-call`,
+`/wallet/sign-near-transfer`, and the policy-hash signer used as a raw oracle) are **removed**.
+OutLayer's own Bearer/register/api-key authentication (previously `sign-message` with
+`format:"raw"`) is now a dedicated coordinator endpoint, `POST /wallet/v1/auth-sign`, which maps
+to an `Op::Auth` the keystore constructs and signs raw ed25519.
+
+#### Canonical `op` model
+
+Every signable operation is a canonical `op` with `request_hash = sha256(canonical_json(op))`
+(a recursive-key-sorted, compact JSON; amounts are decimal strings, never JSON numbers — so the
+hash reproduces even for `call.args`). The kind fixes the **bind mode** — how the keystore is
+allowed to produce the artifact it signs:
+
+| Bind mode | Kinds | Keystore behavior |
+|-----------|-------|-------------------|
+| **Built** | `transfer`, `call`, `delete`, `withdraw` (+ `auth`) | Constructs the NEAR tx / NEP-413 intent / auth string FROM the op fields → artifact == approved op |
+| **Hash-pinned** | `raw`, `sign_message` | Op carries `payload_hash`/`message_hash`; signs the supplied bytes iff `sha256(bytes) == hash` |
+| **Trusted** | `swap`, `confidential`, `cross_chain_withdraw`, `payment_check` | Artifact (e.g. the 1Click quote / deposit address) can't exist at approval time; the keystore checks capability + policy + multisig on the op fields and pins the recipient, then signs the supplied artifact, **trusting the coordinator to have built it from the approved op**. The keystore does NOT itself re-verify the artifact's token/amount against the op — those are bound only by that coordinator-trust, the same trust as the coordinator-supplied off-chain deposit address (documented tradeoff) |
+
+The deposit family (`intents/deposit`, `storage-deposit`, cross-chain deposit) is all
+`Op::Call` — there is no finer deposit policy type. `auth` is non-fund (a domain-separated
+`auth:`/`register:`/`api-key:` string, never a 32-byte tx hash), so it is always allowed on a
+non-frozen wallet — no capability, no multisig.
 
 #### Key derivation
 
@@ -176,11 +199,28 @@ Same wallet_id always produces same addresses across chains. Deterministic, stat
 
 #### Policy evaluation flow (inside TEE)
 
-1. Coordinator sends `POST /wallet/check-policy { wallet_id, action, current_usage }`
+One engine (`shared_tee_helpers::wallet_policy::evaluate`) is shared by check-policy and
+`/wallet/sign`. **The keystore is the sole evaluator** — only it can decrypt the on-chain policy,
+so the plaintext policy never leaves the TEE. The coordinator only *supplies* `usage` (it owns the
+stateful spend counters).
+
+1. Coordinator sends `POST /wallet/check-policy { wallet_id, op, usage? }` (the same call shape
+   `/wallet/sign` takes; `usage` is the coordinator's `current_usage` JSON, optional)
 2. Keystore calls `get_wallet_policy(wallet_pubkey)` view method on NEAR (O(1) lookup)
-3. Keystore decrypts `encrypted_data` with derived key
-4. Checks: frozen → per-tx limit → velocity limits (hourly/daily/monthly vs `current_usage + amount`) → whitelist/blacklist → time restrictions → rate limit → approval threshold
-5. Returns `PolicyDecision`: `Allowed`, `Denied(reason)`, `RequiresApproval(threshold)`, `Frozen`
+3. Keystore decrypts `encrypted_data` with the derived key
+4. `evaluate(policy, op, usage, now)` checks, in order: frozen → `transaction_types` → `allowed_tokens`
+   → whitelist/blacklist → per-tx limit → **velocity limits (only when `usage` is supplied)** →
+   time restrictions → capabilities → generic multisig trigger
+5. Returns `Decision`: `Allow`, `Deny { reason }`, `RequiresApproval { threshold }`, `Frozen`
+
+**Stateless vs stateful.** The stateless clauses (frozen, transaction_types, allowed_tokens,
+whitelist, per-transaction, time, capabilities, the multisig trigger) are enforced *exactly* on
+every signature, with or without `usage`. The cumulative clauses (`daily`/`hourly`/`monthly` spend
+and the hourly tx-count / `rate_limit`) are stateful: they run only when the coordinator supplies
+`usage`, and a token's spend is recorded (+1) only after a successful operation. Under concurrency
+they are therefore **best-effort** — simultaneous requests can read the same pre-spend counter and
+all pass, so a burst can overshoot a cumulative cap. For hard stops, rely on the per-transaction
+limit, multisig, or freeze.
 
 ### Contract — `contract/src/wallet.rs`
 
@@ -296,7 +336,11 @@ No blockchain transaction. Instant. API key shown once.
 
 ### Withdraw (with policy)
 
-Withdraws tokens from the wallet's intents.near balance to a receiver via direct `ft_withdraw` contract call. Single synchronous NEAR transaction — no solver-relay needed.
+Withdraws tokens from the wallet's intents.near balance to a receiver as a **gasless** NEP-413
+`withdraw` intent published to the solver relay (`native_withdraw` for native NEAR, `ft_withdraw`
+for NEP-141). The wallet pays no NEAR gas. (The old direct on-chain `/intents/ft-withdraw`
+endpoint — which gated as a `call` and lost the amount/token limits — is **removed**; all
+same-chain FT withdrawals go through this path.)
 
 ```
 Agent → POST /wallet/v1/intents/withdraw { to, amount, chain, token }
@@ -305,25 +349,29 @@ Agent → POST /wallet/v1/intents/withdraw { to, amount, chain, token }
     Coordinator:
         1. Lookup wallet_id from SHA-256(api_key)
         2. Check idempotency key
-        3. Get current_usage from wallet_usage table
-        4. Call keystore POST /wallet/check-policy { wallet_id, action, current_usage }
+        3. Build canonical op: Op::Withdraw { to, amount, token }
+        4. Get current_usage from wallet_usage table
+        5. Call keystore POST /wallet/check-policy { wallet_id, op, usage }
     Keystore TEE:
-        5. get_wallet_policy(wallet_pubkey) via NEAR RPC
-        6. Decrypt policy → evaluate rules
-        7. Return decision: Allowed / Denied / RequiresApproval / Frozen
-    Coordinator (if Allowed):
-        8. record_usage() → wallet_usage table (BEFORE execution)
-        9. Call keystore POST /wallet/sign-near-call { intents.near, ft_withdraw, {token, receiver_id, amount} }
+        6. get_wallet_policy(wallet_pubkey) via NEAR RPC
+        7. Decrypt policy → evaluate(policy, op, usage, now)
+        8. Return decision: Allow / Deny / RequiresApproval / Frozen
+    Coordinator (if Allow):
+        9. Call keystore POST /wallet/sign { wallet_id, op, usage }
     Keystore TEE:
-        10. Derive key → sign NEAR function call transaction
+        10. Re-derive request_hash, re-run policy, then BUILD the NEP-413
+            native_withdraw / ft_withdraw intent from the op and sign it
     Coordinator:
-        11. Broadcast signed tx to NEAR RPC
-        12. Create wallet_requests entry → return { request_id, status, tx_hash }
-        13. Record audit log
-        14. Enqueue webhook if configured
+        11. publish_intent to the solver relay (gasless)
+        12. record_usage() → wallet_usage table (only AFTER a successful sign+submit)
+        13. Create wallet_requests entry → return { request_id, status } (with result_data: { intent_hash, delivered })
+        14. Record audit log
+        15. Enqueue webhook if configured
 ```
 
-**Usage is recorded before execution** — if the backend call fails, velocity limits still accumulate. This prevents bypassing limits by causing intentional failures.
+**Usage is recorded only after a successful operation** (`record_usage()` runs post-settle, never
+on create-pending or failure). This keeps the velocity counters honest while still bounding each
+op by the exact (stateless) per-transaction limit, whitelist, and capability checks inside the TEE.
 
 **Token options for `chain=near`** — the `token` field selects what the recipient receives:
 
@@ -383,6 +431,27 @@ Approver 2 → POST /wallet/v1/approve/{approval_id}
     Enqueue webhook: request_completed
 ```
 
+Approvers sign `approve:{approval_id}:{wallet_pubkey}:{request_hash}` (NEP-413, recipient == the wallet contract,
+wallet-bound); a `reject:` vote from a real approver vetoes. The keystore re-derives `request_hash`
+from the stored canonical op and verifies the signatures itself — the coordinator transports them
+but cannot forge or rebind them.
+
+**Multisig covers Trusted ops too.** On a wallet with an approval threshold, the Trusted kinds —
+`swap`, `confidential`, `cross_chain_withdraw` — also create a pending approval and execute only
+after the approvers confirm. What the approval actually binds is narrow: it binds *whether* the op
+runs (the keystore verifies the approver signatures over the canonical op, and pins the recipient).
+It does **not** bind the token/amount through the keystore — at execution the coordinator fetches
+the 1Click artifact (quote → deposit address) and the keystore signs it **without re-verifying** the
+artifact's `token_in`/`amount_in` against the approved op. The artifact matching the op is enforced
+only by trusting the coordinator to have built it from that op — the **same coordinator-trust** as
+the off-chain deposit address (generated at execution, coordinator-supplied, and not independently
+verifiable by the keystore — the 1Click quote signature does not cover it). So: a compromised
+coordinator could substitute the artifact's token/amount/routing post-approval; the on-chain
+guarantees are the recipient pin + the approver signatures, not the value terms — a documented
+tradeoff. `payment_check` is the **exception**: it is NOT wired into the generic multisig trigger —
+its creation is gated by the default-DENY `payment_check` capability + the per-transaction amount
+cap (cap-gated, not approval-gated, even on a multisig wallet).
+
 ---
 
 ## Policy Format
@@ -394,30 +463,47 @@ Stored encrypted on NEAR blockchain. Only keystore TEE can decrypt.
   "version": 1,
   "frozen": false,
   "rules": {
+    "transaction_types": ["transfer", "call", "withdraw", "swap", "delete"],
+    "allowed_tokens": ["*"],
+    "addresses": { "mode": "whitelist", "list": ["bob.near", "dex.near"] },
     "limits": {
       "per_transaction": { "native": "10000000000000000000000000", "nep141:usdt.tether-token.near": "1000000000" },
       "daily": { "*": "100000000000000000000000000" },
       "hourly": { "*": "50000000000000000000000000" },
       "monthly": { "*": "500000000000000000000000000" }
     },
-    "addresses": { "mode": "whitelist", "list": ["bob.near", "dex.near"] },
-    "transaction_types": ["withdraw", "contract_call"],
     "time_restrictions": { "timezone": "UTC", "allowed_hours": [9, 17], "allowed_days": [1, 2, 3, 4, 5] },
     "rate_limit": { "max_per_hour": 60 }
   },
   "approval": {
-    "threshold": { "required": 2, "of": 3 },
-    "above_usd": 1000,
+    "threshold": { "required": 2 },
     "approvers": [
-      { "id": "ed25519:pubkey1", "role": "admin" },
-      { "id": "ed25519:pubkey2", "role": "signer" },
-      { "id": "ed25519:pubkey3", "role": "signer" }
-    ]
+      { "id": "alice.near", "role": "admin",  "pubkey": "ed25519:<base58>" },
+      { "id": "bob.near",   "role": "signer", "pubkey": "ed25519:<base58>" },
+      { "id": "carol.near", "role": "signer", "pubkey": "ed25519:<base58>" }
+    ],
+    "excluded_types": []
   },
-  "admin_quorum": { "required": 2, "admins": ["ed25519:pubkey1", "ed25519:pubkey2"] },
+  "capabilities": {
+    "raw_sign":     { "allowed": false, "chains": ["ethereum", "solana"], "requires_approval": true },
+    "confidential": { "allowed": false, "requires_approval": false },
+    "sign_message": { "allowed": true,  "requires_approval": false, "allowed_recipients": [] },
+    "swap":         { "allowed": false, "requires_approval": false },
+    "cross_chain_withdraw": { "allowed": false, "requires_approval": false },
+    "payment_check": { "allowed": false, "requires_approval": false }
+  },
   "webhook_url": "https://myapp.com/webhook/wallet"
 }
 ```
+
+### `transaction_types` — the keystore op kinds
+
+`transfer`, `call`, `delete`, `withdraw` (same-chain intents withdrawal), `swap`,
+`cross_chain_withdraw`, `raw`, `sign_message`. The deposit family (`intents/deposit`,
+`storage-deposit`, cross-chain deposit) all gate as **`call`** — there is no separate deposit type.
+Legacy deposit names (`intents_deposit`/`storage_deposit`/`cross_chain_deposit`) in a deployed
+policy are normalized to `call` so old policies keep matching. Note `cross_chain_withdraw` is its
+**own** type (NOT folded into `withdraw`) — a policy must list it explicitly to permit bridging out.
 
 ### Roles
 
@@ -428,15 +514,44 @@ Stored encrypted on NEAR blockchain. Only keystore TEE can decrypt.
 
 ### Limits — `"*"` = wildcard for all tokens
 
-- `per_transaction` — max amount per single tx
-- `hourly` / `daily` / `monthly` — velocity limits (checked against `current_usage` from coordinator DB)
-- `rate_limit.max_per_hour` — max number of transactions
+- `per_transaction` — max amount per single tx (STATELESS, enforced in the TEE on every signature)
+- `hourly` / `daily` / `monthly` — velocity limits (STATEFUL — checked against the coordinator-supplied `usage`; best-effort under concurrency)
+- `rate_limit.max_per_hour` — max number of transactions per hour (STATEFUL)
+
+### Capabilities — default-DENY opt-ins for the non-Built primitives
+
+All capabilities default to **DENY** except `sign_message` (defaults allowed). Under a policy a
+wallet must explicitly enable each:
+
+- `raw_sign` — sign arbitrary raw bytes. `chains` is an optional allowlist (absent = all chains
+  **including `near`**, which can sign a NEAR tx/intent outside the structured policy — by design;
+  warn before enabling). With no on-chain policy at all, raw is permitted (permissionless start).
+- `confidential` — the confidential-intents flows (Trusted).
+- `sign_message` — generic non-fund NEP-413 (e.g. dApp login). `allowed_recipients` is a
+  default-DENY allowlist of verifier recipients (NOT a blocklist); `intents.near`/`intents.far`
+  are always excluded. This is NOT OutLayer auth (that is `/wallet/v1/auth-sign`).
+- `swap` — 1Click swap (Trusted). Default-DENY even when `transaction_types` is absent.
+- `cross_chain_withdraw` — 1Click swap+bridge exit (Trusted, irreversible). Default-DENY; pairs
+  with the `cross_chain_withdraw` type + the `to` whitelist + amount limit.
+- `payment_check` — claimable-link escrow (Trusted, whitelist-BYPASS: funds reach an arbitrary
+  holder via the link). Default-DENY; gated by this capability + the per-transaction amount cap.
+
+Each capability also honors `requires_approval` (opt-in multisig for that primitive specifically).
+`approval.threshold` is either a bare number or `{ "required": N }`; `approval.approvers[].id` is a
+NEAR account id (with the on-chain `pubkey` pinned); `approval.excluded_types` lists op types exempt
+from the generic approval trigger.
 
 ---
 
 ## API Endpoints
 
-Base: `https://api.outlayer.fastnear.com`
+Base: `https://api.outlayer.fastnear.com` (mainnet) · `https://testnet-api.outlayer.fastnear.com` (testnet)
+
+> **NEAR Intents are mainnet-only.** There are no testnet Intents solvers, so on testnet the
+> coordinator returns **HTTP 503** for every intents-dependent endpoint — the whole
+> `/wallet/v1/intents/*` family (deposit, withdraw, swap, cross-chain deposit, payment-check) **and**
+> all `/wallet/v1/confidential/*` routes. The non-intents surface (address, balance, `transfer`,
+> `call`, `sign-message`, `auth-sign`, policy, approvals, delete) works on both networks.
 
 ### Public
 
@@ -456,19 +571,23 @@ Base: `https://api.outlayer.fastnear.com`
 | GET | `/wallet/v1/balance?chain={chain}&token={token}` | Chain-agnostic balance (defaults to near) |
 | POST | `/wallet/v1/intents/deposit` | Deposit FT into intents.near (for manual intents operations) |
 | POST | `/wallet/v1/intents/swap` | Swap via 1Click: quote → deposit to intents.near → mt_transfer → poll |
-| POST | `/wallet/v1/deposit-intent` | Cross-chain deposit (1Click bridge address; `source_asset` or `chain`+`token` shape) |
-| POST | `/wallet/v1/confidential/deposit` | SHIELD: public intents → confidential shard (503 if not enabled) |
+| POST | `/wallet/v1/intents/deposit/cross-chain` | Cross-chain deposit (via 1Click / NEAR Intents; `source_asset` or `chain`+`token` shape). Legacy alias `/wallet/v1/deposit-intent`, still works |
+| GET | `/wallet/v1/intents/deposit/cross-chain/status?id={intent_id}` | Poll a cross-chain deposit's status. Legacy alias `/wallet/v1/deposit-status`, still works |
+| GET | `/wallet/v1/intents/deposit/cross-chain/list` | List this wallet's cross-chain deposits. Legacy alias `/wallet/v1/deposits`, still works |
+| POST | `/wallet/v1/confidential/shield` | SHIELD: public intents → confidential shard (503 if not enabled). Legacy alias `/wallet/v1/confidential/deposit`, still works |
 | POST | `/wallet/v1/confidential/unshield` | Confidential → public intents |
 | POST | `/wallet/v1/confidential/withdraw` | Confidential → external chain (or `chain="near"` for **native NEAR** delivery via `intents.near native_withdraw`) |
 | POST | `/wallet/v1/confidential/withdraw/dry-run` | Quote a confidential withdraw |
 | POST | `/wallet/v1/confidential/transfer` | Private confidential → confidential transfer |
 | POST | `/wallet/v1/confidential/swap` | Confidential swap (distinct assets) |
 | POST | `/wallet/v1/confidential/swap/quote` | Quote a confidential swap |
-| POST | `/wallet/v1/confidential/deposit-intent` | Cross-chain deposit into confidential (bridge address) |
+| POST | `/wallet/v1/confidential/deposit/cross-chain` | Cross-chain deposit into confidential (via 1Click / NEAR Intents). Legacy alias `/wallet/v1/confidential/deposit-intent`, still works |
 | GET | `/wallet/v1/confidential/balance` | Read confidential balances (private shard `intents.far`, no public RPC) |
 | GET | `/wallet/v1/requests/{id}` | Poll async operation status |
 | GET | `/wallet/v1/requests` | List operations (filter: type, status, limit) |
 | GET | `/wallet/v1/tokens` | List available tokens (Intents proxy) |
+| POST | `/wallet/v1/sign-message` | Generic NEP-413 message signing (recipient default-DENY allowlist; `intents.*` excluded). `format:"raw"` is **gone** — use `/auth-sign` |
+| POST | `/wallet/v1/auth-sign` | OutLayer NEAR-key auth signature (`{purpose: bearer\|register\|api-key, seed, vault_id?}` → `{auth_message, auth_timestamp, signature, public_key}`). Replaces the old `sign-message format:"raw"` |
 | GET | `/wallet/v1/policy` | View current policy (decrypted via keystore) |
 | POST | `/wallet/v1/encrypt-policy` | Encrypt policy for on-chain storage |
 | POST | `/wallet/v1/sign-policy` | Keystore signs encrypted policy SHA256 |
@@ -501,7 +620,7 @@ on the Defuse **confidential** shard — a separate PRIVATE shard (the
 gated by `ENABLE_CONFIDENTIAL_INTENTS` plus a **separate** Defuse partner
 agreement (`ONECLICK_CONFIDENTIAL_BASE_URL` + `ONECLICK_CONFIDENTIAL_JWT`, which
 **must differ** from the public `ONECLICK_JWT`). When unconfigured, every
-confidential route returns **HTTP 503** `confidential_unavailable`.
+confidential route returns **HTTP 503** `service_unavailable`.
 
 Pipeline per op: NEP-413 challenge → per-account JWT (cached in Redis
 `wallet:{id}:cfjwt`, 14 min) → 1Click quote → generate-intent → sign via
@@ -524,8 +643,9 @@ keystore → submit-intent. Ops are async; status is refreshed on read of
   the `partner_id` mapping, and the source-chain identity.
 - **Cross-chain DEPOSIT/WITHDRAW are still correlatable by timing and amount**:
   the source-chain deposit (at T) and destination-chain delivery (at T+N, e.g.
-  0.5 in / 0.44 out after bridge fee) are both visible on their public chains
-  and join trivially. True unlinkability needs jitter delays + amount splitting.
+  0.5 in / 0.44 out after the 1Click solver fee) are both visible on their public
+  chains and join trivially. True unlinkability needs jitter delays + amount
+  splitting.
 
 Each wallet has a single confidential identity (the custody wallet itself);
 there is no separate or unlinkable confidential identity.

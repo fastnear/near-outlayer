@@ -217,8 +217,12 @@ function WalletApprovalsContent() {
       const nonceBytes = crypto.getRandomValues(new Uint8Array(32));
       const nonceBase64 = Buffer.from(nonceBytes).toString('base64');
 
-      // Build message: "approve:{approval_id}:{request_hash}"
-      const message = `approve:${approvalId}:${approval.request_hash}`;
+      // Build message: "approve:{approval_id}:{wallet_pubkey}:{request_hash}" — wallet_pubkey
+      // binds the vote to THIS wallet (no cross-wallet replay). Must match the keystore.
+      if (!approval.wallet_pubkey) {
+        throw new Error('Missing wallet_pubkey for this approval — open the approval detail to approve.');
+      }
+      const message = `approve:${approvalId}:${approval.wallet_pubkey}:${approval.request_hash}`;
 
       // Sign with NEAR wallet (NEP-413)
       const signed = await signMessage({

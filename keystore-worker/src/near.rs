@@ -75,6 +75,12 @@ impl NearClient {
         })
     }
 
+    /// The contract this keystore reads wallet policy from — also the NEP-413
+    /// `recipient` that wallet approvers sign their approval messages against.
+    pub fn contract_id(&self) -> &AccountId {
+        &self.contract_id
+    }
+
     // NOTE (Phase 4.3): the four `get_secrets`, `get_secrets_by_wasm_hash`,
     // `get_secrets_by_project`, and `get_secrets_by_system` methods that
     // used to live here were superseded by [`Self::get_secret_with_vault`]
@@ -419,8 +425,15 @@ impl NearClient {
         let account_id_parsed = AccountId::from_str(account_id)
             .context("Invalid account ID")?;
 
+        // Optimistic finality (most-recent block), NOT Final. Final lags ~1-2 blocks
+        // behind, so a caller that broadcasts a tx with `broadcast_tx_commit` and then
+        // immediately re-signs (e.g. the coordinator's sequential create_payment_key
+        // store→storage→ft_transfer chain) would read the PRE-increment nonce under Final
+        // and collide. Optimistic reflects the just-committed nonce. This does NOT
+        // reintroduce a caller-chosen nonce — the signer still uses rpc_nonce+1, so the
+        // one-approval-one-tx property holds.
         let query = methods::query::RpcQueryRequest {
-            block_reference: BlockReference::Finality(Finality::Final),
+            block_reference: BlockReference::Finality(Finality::None),
             request: near_primitives::views::QueryRequest::ViewAccessKey {
                 account_id: account_id_parsed,
                 public_key: public_key.clone(),
