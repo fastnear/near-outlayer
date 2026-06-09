@@ -644,27 +644,32 @@ impl Contract {
             ))
     }
 
-    /// Top up a Payment Key with any whitelisted token (MAINNET ONLY)
+    /// Top up a Payment Key with any whitelisted token — **DISABLED (naive implementation)**.
     ///
-    /// The token will be swapped to USDC via NEAR Intents protocol.
-    /// Whitelist is maintained in the payment-keys-with-intents WASI.
+    /// This method panics and does nothing. It was never wired into any client: the dashboard
+    /// tops up payment keys with the configured stablecoin via `ft_on_transfer`, and with NEAR
+    /// via `top_up_payment_key_with_near`.
     ///
-    /// # Prerequisites
-    /// The token must already be transferred to swap_contract_id.
-    /// This can be done via ft_transfer before calling this method.
+    /// # Why it is disabled — front-runnable by design
+    /// The intended flow assumed the caller had already transferred `amount` of `token_id` to
+    /// `swap_contract_id`, then asked the `payment-keys-with-intents` WASI to swap it to USDC and
+    /// credit the caller's key. The WASI *does* reject fake amounts (its `ft_transfer_call` of the
+    /// claimed `amount` OUT of `swap_contract_id` fails if the tokens aren't there), but it does NOT
+    /// bind the depositor to the credited owner, and `swap_contract_id` is a single shared account
+    /// (it holds the one `SWAP_CONTRACT_PRIVATE_KEY`). So an attacker can watch a victim's deposit
+    /// sitting in that shared pool, call this method first (own `nonce`, victim's `amount`), and have
+    /// the WASI move the victim's tokens and credit the attacker — the victim's own top-up then fails
+    /// for lack of funds.
     ///
-    /// # Arguments
-    /// * `nonce` - Payment Key nonce to top up (must already exist)
-    /// * `token_id` - Token contract address (e.g., "wrap.near")
-    /// * `amount` - Token amount in minimal units
-    /// * `swap_contract_id` - Account that will execute the swap
-    ///
-    /// # Panics
-    /// * Payment key not found
-    /// * Token not in whitelist (will fail in WASI)
-    ///
-    /// # Note
-    /// This method only works on mainnet. NEAR Intents are not available on testnet.
+    /// # The correct implementation (if this feature is ever needed)
+    /// Do NOT use a pre-deposit method: NEP-141 is push-only, so a contract cannot atomically pull the
+    /// caller's FT, and on-chain attribution would need a deposit ledger. Instead fold token top-up
+    /// into `ft_on_transfer` (which already powers the safe USDC path): when a whitelisted non-USDC
+    /// token arrives, the NEP-141 transfer binds `sender_id` + the REAL `amount` atomically — forward
+    /// it to `swap_contract_id` and call `internal_request_token_swap(sender_id, nonce, token, amount,
+    /// swap)`. Then the swapped amount is provably the sender's own deposit and there is no front-run
+    /// window. (`top_up_payment_key_with_near` is already safe this way — it wraps and swaps only the
+    /// caller's attached NEAR.)
     pub fn top_up_payment_key_with_token(
         &mut self,
         nonce: u32,
@@ -672,40 +677,49 @@ impl Contract {
         amount: U128,
         swap_contract_id: AccountId,
     ) -> Promise {
-        self.assert_not_paused();
-
-        let caller = env::predecessor_account_id();
-
-        // Verify payment key exists
-        let secret_key = SecretKey {
-            accessor: SecretAccessor::System(SystemSecretType::PaymentKey),
-            profile: nonce.to_string(),
-            owner: caller.clone(),
-        };
-
-        assert!(
-            self.secrets_storage.get(&secret_key).is_some(),
-            "Payment key not found. Create it first with store_secrets()"
-        );
-
-        log!(
-            "TopUpWithToken: owner={}, nonce={}, token={}, amount={}, swap_contract={}",
-            caller,
-            nonce,
-            token_id,
-            amount.0,
-            swap_contract_id
-        );
-
-        // Token should already be at the swap contract
-        // Call request_execution for payment-keys-with-intents WASI
-        self.internal_request_token_swap(
-            caller,
-            nonce,
-            token_id.to_string(),
-            amount.0.to_string(),
-            swap_contract_id.to_string(),
+        // Disabled: the naive pre-deposit design is front-runnable on the shared swap account.
+        // See the doc-comment above for the correct `ft_on_transfer`-based implementation.
+        let _ = (nonce, token_id, amount, swap_contract_id);
+        env::panic_str(
+            "top_up_payment_key_with_token is disabled (naive, front-runnable design). \
+             Top up with the stablecoin via ft_on_transfer, or with NEAR via \
+             top_up_payment_key_with_near. See this method's doc-comment for the correct fix.",
         )
+
+        // self.assert_not_paused();
+
+        // let caller = env::predecessor_account_id();
+
+        // // Verify payment key exists
+        // let secret_key = SecretKey {
+        //     accessor: SecretAccessor::System(SystemSecretType::PaymentKey),
+        //     profile: nonce.to_string(),
+        //     owner: caller.clone(),
+        // };
+
+        // assert!(
+        //     self.secrets_storage.get(&secret_key).is_some(),
+        //     "Payment key not found. Create it first with store_secrets()"
+        // );
+
+        // log!(
+        //     "TopUpWithToken: owner={}, nonce={}, token={}, amount={}, swap_contract={}",
+        //     caller,
+        //     nonce,
+        //     token_id,
+        //     amount.0,
+        //     swap_contract_id
+        // );
+
+        // // Token should already be at the swap contract
+        // // Call request_execution for payment-keys-with-intents WASI
+        // self.internal_request_token_swap(
+        //     caller,
+        //     nonce,
+        //     token_id.to_string(),
+        //     amount.0.to_string(),
+        //     swap_contract_id.to_string(),
+        // )
     }
 
     /// Internal: Request execution of payment-keys-with-intents WASI
