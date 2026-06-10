@@ -25,6 +25,7 @@ sha2 = "0.10"
 sha3 = "0.10"
 hmac = "0.12"
 hex = "0.4"
+constant_time_eq = "0.3"  # constant-time bearer-token-hash comparison (timing side-channel hardening)
 bs58 = "0.5"
 base64 = "0.22"
 regex = "1.10"

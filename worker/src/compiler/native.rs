@@ -89,11 +89,18 @@ pub async fn compile(
 
 /// Create temporary directory for compilation
 fn create_temp_dir() -> Result<PathBuf> {
-    let uuid = uuid::Uuid::new_v4();
-    let dir = PathBuf::from(format!("/tmp/compile-{}", uuid));
-
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("Failed to create temp dir: {}", dir.display()))?;
+    // Use `tempfile` instead of a hand-built `/tmp/compile-{uuid}` path. The native compiler
+    // (git clone + cargo build) runs OUTSIDE the TEE, so it can share a host with other
+    // processes; `/tmp` is world-writable and `compile-{uuid}` is a guessable name, which
+    // opens a TOCTOU / symlink-pre-creation race and lets a co-tenant read the cloned source
+    // or build artifacts. `tempfile` creates the directory with 0700 permissions and a random,
+    // unguessable suffix. We `keep()` (persist past the guard's Drop) so the existing manual
+    // `cleanup_dir()` lifecycle still applies — the caller removes it after compilation.
+    let dir = tempfile::Builder::new()
+        .prefix("compile-")
+        .tempdir()
+        .context("Failed to create secure temp dir")?
+        .keep();
 
     Ok(dir)
 }

@@ -78,6 +78,4 @@ dirs = "5.0"
 # Phala dstack SDK for TDX attestation
 dstack-sdk = "0.1"
 log = "0.4.28"
-
-[dev-dependencies]
-tempfile = "3.10"
+tempfile = "3.10"  # secure temp dir for native compilation (0700 perms + random name)

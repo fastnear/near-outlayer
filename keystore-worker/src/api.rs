@@ -1161,8 +1161,27 @@ fn has_authenticated_caller(state: &AppState, headers: &axum::http::HeaderMap) -
     let mut hasher = Sha256::new();
     hasher.update(token.as_bytes());
     let token_hash = hex::encode(hasher.finalize());
-    state.config.allowed_coordinator_token_hashes.contains(&token_hash)
-        || state.config.allowed_worker_token_hashes.contains(&token_hash)
+    token_hash_allowed_ct(&state.config.allowed_coordinator_token_hashes, &token_hash)
+        | token_hash_allowed_ct(&state.config.allowed_worker_token_hashes, &token_hash)
+}
+
+/// Constant-time membership check of a bearer-token SHA-256 hash against an allowlist.
+///
+/// A plain `Vec::contains` / `==` short-circuits at the first differing byte, so the response
+/// time leaks how many leading bytes matched — the classic timing side-channel for secret
+/// comparison. Here the practical risk is LOW: we compare the SHA-256 *hash* of the token, not
+/// the token, and SHA-256 is preimage-resistant, so an attacker who can only submit a token
+/// (never the hash) cannot recover the hash byte-by-byte from timings. We still compare in
+/// constant time as defense-in-depth (and so any future *raw*-secret compare can reuse this).
+/// We OR over the whole list with no early-out, so neither the match position nor the
+/// byte-match count leaks.
+fn token_hash_allowed_ct(allowlist: &[String], token_hash: &str) -> bool {
+    let mut allowed = false;
+    for h in allowlist {
+        // constant_time_eq is constant-time for equal-length inputs; SHA-256 hex is always 64 chars.
+        allowed |= constant_time_eq::constant_time_eq(h.as_bytes(), token_hash.as_bytes());
+    }
+    allowed
 }
 
 /// Get public key for encryption AND validate secrets before encryption
@@ -3382,8 +3401,8 @@ async fn worker_auth_middleware(
     hasher.update(token.as_bytes());
     let token_hash = hex::encode(hasher.finalize());
 
-    // Check if hash is in allowed WORKER list
-    if !state.config.allowed_worker_token_hashes.contains(&token_hash) {
+    // Check if hash is in allowed WORKER list (constant-time — see token_hash_allowed_ct)
+    if !token_hash_allowed_ct(&state.config.allowed_worker_token_hashes, &token_hash) {
         tracing::warn!(
             token_hash = %token_hash,
             "Unauthorized: token hash not in worker allowed list"
@@ -3999,6 +4018,41 @@ fn build_withdraw_intent_message(
     }
 }
 
+/// Build the NEP-413 intent message for an INTERNAL Intents transfer (move a token
+/// balance to ANOTHER intents account) FROM canonical op fields. This is the defuse
+/// `transfer` intent — NOT a withdrawal: funds stay inside `intents.near`, credited to
+/// `receiver_id`'s mt balance. The `tokens` map is keyed by the PREFIXED Defuse asset id
+/// (`nep141:`/`nep245:`), unlike `ft_withdraw` which uses the bare contract id. Kept
+/// byte-compatible with the coordinator's `intents_helpers::build_transfer_intent_message`
+/// (same intent/receiver_id/tokens shape). (Verified against the defuse `Intent` enum in
+/// `near/intents`.)
+fn build_transfer_intent_message(
+    signer_id: &str,
+    to: &str,
+    amount: &str,
+    token: &str,
+    deadline: &str,
+) -> String {
+    let t = token.trim();
+    let token_id = if t.starts_with("nep141:") || t.starts_with("nep245:") {
+        t.to_string()
+    } else {
+        format!("nep141:{}", t)
+    };
+    let mut tokens = serde_json::Map::new();
+    tokens.insert(token_id, serde_json::Value::String(amount.to_string()));
+    serde_json::json!({
+        "signer_id": signer_id,
+        "deadline": deadline,
+        "intents": [{
+            "intent": "transfer",
+            "receiver_id": to,
+            "tokens": tokens
+        }]
+    })
+    .to_string()
+}
+
 /// Default-DENY allowlist for `sign_message` recipients. Under a policy, the recipient
 /// must appear in `capabilities.sign_message.allowed_recipients`; anything else is
 /// refused so an auth signature can never target a fund-moving verifier (named or
@@ -4336,6 +4390,33 @@ async fn sign_built(
             // NEAR Intents is mainnet-only (no testnet solvers), so the verifier is always
             // mainnet `intents.near`. The NEP-413 recipient is bound into the signature, so it
             // must match the verifier the withdraw intent will actually execute against.
+            let recipient = "intents.near".to_string();
+            let (signature_base58, public_key) =
+                sign_nep413(state, customer, &req.wallet_id, &message, nonce, &recipient).await?;
+            let mut resp = WalletSignResponse::new(request_hash);
+            resp.signature_base58 = Some(signature_base58);
+            resp.public_key = Some(public_key);
+            resp.message = Some(message);
+            resp.nonce_base64 = Some(base64::encode(nonce));
+            resp.recipient = Some(recipient);
+            Ok(Json(resp))
+        }
+        Op::IntentsTransfer { to, amount, token } => {
+            // Construct the NEP-413 `transfer` intent message FROM the op (fresh deadline +
+            // nonce). Internal move INSIDE intents.near (defuse `transfer`): funds stay in the
+            // intents pool, credited to `to`'s mt balance — NOT a withdrawal out. Built → the
+            // keystore (not the coordinator) fixes the recipient, so it cannot be substituted.
+            let signer_id = wallet_implicit_account(state, customer, &req.wallet_id).await?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let deadline = unix_to_iso8601(now + 300);
+            let message = build_transfer_intent_message(&signer_id, to, amount, token, &deadline);
+            let mut nonce = [0u8; 32];
+            rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
+            // Same verifier as withdraw: intents.near (mainnet-only). The NEP-413 recipient is
+            // bound into the signature and must match the verifier the intent executes against.
             let recipient = "intents.near".to_string();
             let (signature_base58, public_key) =
                 sign_nep413(state, customer, &req.wallet_id, &message, nonce, &recipient).await?;
@@ -4914,6 +4995,39 @@ mod wallet_sign_tests {
         let v2: serde_json::Value = serde_json::from_str(&msg2).unwrap();
         assert_eq!(v2["intents"][0]["intent"], "ft_withdraw");
         assert_eq!(v2["intents"][0]["token"], "usdt.near");
+    }
+
+    #[test]
+    fn built_transfer_message_is_internal_transfer_prefixed_tokens_map() {
+        // Internal intents transfer → defuse `transfer` intent: funds stay inside intents.near,
+        // credited to receiver_id. `tokens` is a PREFIXED map (unlike ft_withdraw).
+        let msg = build_transfer_intent_message(
+            "signer.near",
+            "partner.near",
+            "1000000",
+            "nep141:usdc.near",
+            "2026-06-04T12:05:00.000Z",
+        );
+        let v: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        assert_eq!(v["signer_id"], "signer.near");
+        assert_eq!(v["deadline"], "2026-06-04T12:05:00.000Z");
+        assert_eq!(v["intents"][0]["intent"], "transfer");
+        assert_eq!(v["intents"][0]["receiver_id"], "partner.near");
+        assert_eq!(v["intents"][0]["tokens"]["nep141:usdc.near"], "1000000");
+        // It is NOT a withdrawal — no ft_withdraw/native_withdraw, no bare `token`/`amount`.
+        assert!(v["intents"][0]["token"].is_null());
+        assert!(v["intents"][0]["amount"].is_null());
+
+        // Bare contract id is normalized to the prefixed asset id.
+        let msg2 = build_transfer_intent_message(
+            "signer.near",
+            "950c134e8e7b2e2a1c0f3d4b5a6978a0b1c2d3e4f5061728394a5b6c7d8e9f001",
+            "5",
+            "usdt.near",
+            "2026-06-04T12:05:00.000Z",
+        );
+        let v2: serde_json::Value = serde_json::from_str(&msg2).unwrap();
+        assert_eq!(v2["intents"][0]["tokens"]["nep141:usdt.near"], "5");
     }
 
     #[test]
