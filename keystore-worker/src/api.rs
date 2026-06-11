@@ -4973,12 +4973,12 @@ mod wallet_sign_tests {
             "signer.near",
             "alice.near",
             "1000000",
-            "nep141:usdc.near",
+            "nep141:usdt.tether-token.near",
             "2026-06-04T12:05:00.000Z",
         );
         let v: serde_json::Value = serde_json::from_str(&msg).unwrap();
         assert_eq!(v["intents"][0]["intent"], "ft_withdraw");
-        assert_eq!(v["intents"][0]["token"], "usdc.near"); // prefix stripped
+        assert_eq!(v["intents"][0]["token"], "usdt.tether-token.near"); // prefix stripped
         assert_eq!(v["intents"][0]["receiver_id"], "alice.near");
         assert_eq!(v["intents"][0]["amount"], "1000000");
         // No `tokens` map on ft_withdraw.
@@ -5005,7 +5005,7 @@ mod wallet_sign_tests {
             "signer.near",
             "partner.near",
             "1000000",
-            "nep141:usdc.near",
+            "nep141:usdt.tether-token.near",
             "2026-06-04T12:05:00.000Z",
         );
         let v: serde_json::Value = serde_json::from_str(&msg).unwrap();
@@ -5013,7 +5013,7 @@ mod wallet_sign_tests {
         assert_eq!(v["deadline"], "2026-06-04T12:05:00.000Z");
         assert_eq!(v["intents"][0]["intent"], "transfer");
         assert_eq!(v["intents"][0]["receiver_id"], "partner.near");
-        assert_eq!(v["intents"][0]["tokens"]["nep141:usdc.near"], "1000000");
+        assert_eq!(v["intents"][0]["tokens"]["nep141:usdt.tether-token.near"], "1000000");
         // It is NOT a withdrawal — no ft_withdraw/native_withdraw, no bare `token`/`amount`.
         assert!(v["intents"][0]["token"].is_null());
         assert!(v["intents"][0]["amount"].is_null());
@@ -5229,8 +5229,8 @@ mod tests {
         let trusted = [
             Op::Swap { token_in: "a".into(), amount_in: "1".into(), token_out: "b".into(), min_out: "1".into() },
             Op::Confidential { flow: "withdraw".into(), to: Some("x".into()), amount: "1".into(), token: "near".into(), chain: Some("near".into()), token_out: None, min_amount_out: None },
-            Op::CrossChainWithdraw { to: "0x".into(), amount: "1".into(), token: "nep141:usdc.near".into(), chain: "ethereum".into() },
-            Op::PaymentCheck { amount: "1".into(), token: "nep141:usdc.near".into() },
+            Op::CrossChainWithdraw { to: "0x".into(), amount: "1".into(), token: "nep141:usdt.tether-token.near".into(), chain: "ethereum".into() },
+            Op::PaymentCheck { amount: "1".into(), token: "nep141:usdt.tether-token.near".into() },
         ];
         for op in &trusted {
             assert_eq!(bind_mode(op), BindMode::Trusted, "must be Trusted: {:?}", op);

@@ -634,7 +634,19 @@ curl -s -X POST -H "Content-Type: application/json" \\
   "https://api.outlayer.fastnear.com/wallet/v1/intents/withdraw"`}
         </SyntaxHighlighter>
 
-        <h3 className="text-lg font-semibold mt-4 mb-2">8. Delete wallet (irreversible)</h3>
+        <h3 className="text-lg font-semibold mt-4 mb-2">8. Transfer inside Intents (to another account)</h3>
+        <p className="text-gray-700 mb-2">
+          Move a token from your Intents balance to <strong>another account&apos;s</strong> Intents balance, gasless, staying <strong>inside</strong> <code className="bg-gray-100 px-1 rounded">intents.near</code> &mdash; the recipient is credited there, nothing lands on the public chain. This is <strong>not</strong> a withdrawal: use it when the recipient also holds an Intents balance (e.g. another OutLayer custody wallet); use <code className="bg-gray-100 px-1 rounded">/intents/withdraw</code> to deliver to a plain on-chain account instead. NEAR-only (no <code className="bg-gray-100 px-1 rounded">chain</code> field); <code className="bg-gray-100 px-1 rounded">token</code> is required (to send NEAR, transfer <code className="bg-gray-100 px-1 rounded">nep141:wrap.near</code>). The recipient need not exist on-chain.
+        </p>
+        <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
+{`# Transfer 1 USDT to another account's Intents balance (gasless, stays inside Intents):
+curl -s -X POST -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer $API_KEY" \\
+  -d '{"to":"partner.near","amount":"1000000","token":"nep141:usdt.tether-token.near"}' \\
+  "https://api.outlayer.fastnear.com/wallet/v1/intents/transfer"`}
+        </SyntaxHighlighter>
+
+        <h3 className="text-lg font-semibold mt-4 mb-2">9. Delete wallet (irreversible)</h3>
         <p className="text-gray-700 mb-2">Delete the on-chain account, send all NEAR to a beneficiary, and revoke all API keys:</p>
         <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
 {`curl -s -X POST -H "Content-Type: application/json" \\
@@ -649,7 +661,7 @@ curl -s -X POST -H "Content-Type: application/json" \\
           </p>
         </div>
 
-        <h3 className="text-lg font-semibold mt-4 mb-2">9. Configure policy (optional)</h3>
+        <h3 className="text-lg font-semibold mt-4 mb-2">10. Configure policy (optional)</h3>
         <p className="text-gray-700 mb-2">Share the handoff URL with the wallet owner so they can set spending limits, whitelists, and multisig rules from the dashboard:</p>
         <SyntaxHighlighter language="text" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
 {`https://outlayer.fastnear.com/wallet?key=wk_...`}
@@ -716,6 +728,11 @@ curl -s -X POST -H "Content-Type: application/json" \\
                 <td className="px-4 py-2">Dry-run withdraw</td>
                 <td className="px-4 py-2 font-mono">POST</td>
                 <td className="px-4 py-2 font-mono text-xs">/wallet/v1/intents/withdraw/dry-run</td>
+              </tr>
+              <tr className="border-b">
+                <td className="px-4 py-2">Transfer inside Intents (to another account&apos;s intents balance)</td>
+                <td className="px-4 py-2 font-mono">POST</td>
+                <td className="px-4 py-2 font-mono text-xs">/wallet/v1/intents/transfer</td>
               </tr>
               <tr className="border-b">
                 <td className="px-4 py-2">Delete wallet</td>
