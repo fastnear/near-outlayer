@@ -412,16 +412,22 @@ post() {
   HTTP=$(curl "${args[@]}"); BODY=$(cat /tmp/uop.body)
 }
 
-# assert_funded <label> — call right after a funding `post`. A funding sub-step can return HTTP 200
-# yet settle on-chain as status:"failed" (e.g. the wrap/deposit reverted); without this the failure
-# is silent and only surfaces much later as a confusing "have 0 balance". Treat a "failed" JSON
-# status as a HARD failure here, printing the body so the real cause is visible at the funding step.
+# assert_funded <label> — call right after a funding `post`. Without this a failed funding sub-step
+# is silent and only surfaces much later as a confusing "have 0 balance". Treat it as a HARD failure
+# here, printing the body so the real cause is visible at the funding step.
 assert_funded() {
-  local label=$1 st
-  st=$(echo "$BODY" | jq -r '.status // empty' 2>/dev/null)
-  if [[ "$st" == "failed" ]]; then
-    fail "$label funding step returned status:\"failed\" — $(echo "$BODY" | head -c200)"
-    return 1
+  local label=$1 st err
+  # A failed funding sub-step surfaces three ways across coordinator versions:
+  #   legacy:  HTTP 200 + {"status":"failed"}            (a reverted tx returned 2xx)
+  #   current: HTTP 422 + {"error":"onchain_tx_failed"}  (revert; survives Cloudflare)
+  #   rejected/transient: any other non-2xx (500 NotEnoughBalance, 503, …)
+  if [[ "$HTTP" != 2?? ]]; then
+    fail "$label funding step HTTP $HTTP — $(echo "$BODY" | head -c200)"; return 1
+  fi
+  st=$(echo "$BODY"  | jq -r '.status // empty' 2>/dev/null)
+  err=$(echo "$BODY" | jq -r '.error  // empty' 2>/dev/null)
+  if [[ "$st" == "failed" || "$err" == "onchain_tx_failed" ]]; then
+    fail "$label funding step failed — $(echo "$BODY" | head -c200)"; return 1
   fi
   return 0
 }

@@ -601,6 +601,24 @@ curl -s -X POST -H "Content-Type: application/json" \\
   "https://api.outlayer.fastnear.com/wallet/v1/call"`}
         </SyntaxHighlighter>
 
+        <p className="text-gray-700 mt-2">
+          If the transaction is broadcast but its execution <em>reverts on-chain</em> (contract panic,
+          out of gas), the response is <strong>HTTP 422</strong> with
+          <code className="bg-gray-100 px-1 rounded">error: onchain_tx_failed</code>, the decoded
+          execution error, and the real <code className="bg-gray-100 px-1 rounded">tx_hash</code> &mdash;
+          the transaction <em>is</em> on chain, so do <strong>not</strong> retry it. Same contract on
+          <code className="bg-gray-100 px-1 rounded">/transfer</code>,
+          <code className="bg-gray-100 px-1 rounded">/delete</code>,
+          <code className="bg-gray-100 px-1 rounded">/storage-deposit</code> and
+          <code className="bg-gray-100 px-1 rounded">/intents/deposit</code>.
+          For operations that go through <strong>multisig approval</strong>, execution happens in the
+          background after the threshold is met &mdash; a revert there surfaces as
+          <code className="bg-gray-100 px-1 rounded">status: "failed"</code> via
+          <code className="bg-gray-100 px-1 rounded">GET /wallet/v1/requests/&#123;id&#125;</code> and the
+          <code className="bg-gray-100 px-1 rounded">request_completed</code> webhook, not as a
+          synchronous 422.
+        </p>
+
         <h3 className="text-lg font-semibold mt-4 mb-2">7. Withdraw (gasless cross-chain via Intents)</h3>
         <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
 {`# Tokens must be in Intents balance first (use /intents/deposit or /swap).
