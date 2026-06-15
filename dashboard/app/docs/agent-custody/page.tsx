@@ -28,7 +28,7 @@ export default function AgentCustodyPage() {
           <div className="border border-gray-200 rounded-lg p-5">
             <div className="text-2xl mb-2">&#127760;</div>
             <h3 className="font-semibold text-gray-900 mb-1">Cross-Chain Value</h3>
-            <p className="text-sm text-gray-600">One NEAR-native wallet that deposits from and withdraws to NEAR, Ethereum, Bitcoin, Solana, and other chains via the <strong>NEAR Intents</strong> protocol. No bridges, no wrapping. (Native per-chain signing is planned, not yet shipped.)</p>
+            <p className="text-sm text-gray-600">One NEAR-native wallet that deposits from and withdraws to NEAR, Ethereum, Bitcoin, Solana, and other chains via the <strong>NEAR Intents</strong> protocol. No bridges, no wrapping. EVM signing (EIP-712 / EIP-191 / raw tx) is now supported; native Solana signing is still planned.</p>
           </div>
           <div className="border border-gray-200 rounded-lg p-5">
             <div className="text-2xl mb-2">&#128220;</div>
@@ -235,9 +235,11 @@ export default function AgentCustodyPage() {
           <strong> NEAR Intents protocol</strong> and the 1Click solver network. No bridges, and no gas tokens needed on the destination chain.
         </p>
         <p className="text-gray-700 mb-4">
-          The wallet does <strong>not</strong> hand out a native, self-custodied address on Ethereum/Solana/etc. that you sign with directly &mdash;
-          <code className="bg-gray-100 px-1 rounded">GET /wallet/v1/address</code> returns a NEAR address only. Native per-chain signing is a planned
-          extension, not shipped. Cross-chain deposits and withdrawals do not need it.
+          The wallet signs EVM payloads directly. <code className="bg-gray-100 px-1 rounded">GET /wallet/v1/address</code> returns the NEAR address
+          and a single shared secp256k1 <code className="bg-gray-100 px-1 rounded">0x</code> address (the same across all EVM chains), and the wallet signs
+          EIP-712 typed data, EIP-191 messages, and raw EVM transactions via <code className="bg-gray-100 px-1 rounded">/wallet/v1/evm/*</code> &mdash; you build
+          and broadcast the transaction; the TEE only keccak-hashes and signs. Native Solana signing is still a planned extension. Cross-chain deposits and
+          withdrawals via NEAR Intents do not need any of this.
         </p>
 
         <div className="overflow-x-auto mb-4">
@@ -374,7 +376,7 @@ export default function AgentCustodyPage() {
               </tr>
               <tr className="border-b">
                 <td className="px-4 py-2 font-semibold">Capabilities</td>
-                <td className="px-4 py-2">Opt-in gates for powerful primitives, all <strong>default-deny</strong> except <code className="bg-gray-100 px-1 rounded">sign_message</code>: <code className="bg-gray-100 px-1 rounded">raw_sign</code> (+ per-chain allowlist), <code className="bg-gray-100 px-1 rounded">swap</code>, <code className="bg-gray-100 px-1 rounded">cross_chain_withdraw</code>, <code className="bg-gray-100 px-1 rounded">confidential</code>, <code className="bg-gray-100 px-1 rounded">payment_check</code>, <code className="bg-gray-100 px-1 rounded">sign_message</code> (+ recipient allowlist). Each may also set <code className="bg-gray-100 px-1 rounded">requires_approval</code></td>
+                <td className="px-4 py-2">Opt-in gates for powerful primitives, all <strong>default-deny</strong> under a policy except <code className="bg-gray-100 px-1 rounded">sign_message</code> (default-allow): <code className="bg-gray-100 px-1 rounded">raw_sign</code> (+ per-chain allowlist), <code className="bg-gray-100 px-1 rounded">swap</code>, <code className="bg-gray-100 px-1 rounded">cross_chain_withdraw</code>, <code className="bg-gray-100 px-1 rounded">confidential</code>, <code className="bg-gray-100 px-1 rounded">payment_check</code>, <code className="bg-gray-100 px-1 rounded">sign_message</code> (+ recipient allowlist), <code className="bg-gray-100 px-1 rounded">evm_sign</code> (EVM EIP-712/EIP-191/raw-tx; <strong>default-DENY</strong> — set <code className="bg-gray-100 px-1 rounded">allowed:true</code> to permit, with a <code className="bg-gray-100 px-1 rounded">raw_tx</code> sub-flag default-OFF). A wallet with <strong>no policy</strong> is unrestricted. Each may also set <code className="bg-gray-100 px-1 rounded">requires_approval</code></td>
                 <td className="px-4 py-2 font-mono text-xs">swap: allowed</td>
               </tr>
               <tr>
@@ -449,7 +451,8 @@ export default function AgentCustodyPage() {
     "sign_message": { "allowed": true,  "allowed_recipients": [] },
     "swap":         { "allowed": false },
     "cross_chain_withdraw": { "allowed": false },
-    "payment_check": { "allowed": false }
+    "payment_check": { "allowed": false },
+    "evm_sign":     { "allowed": true,  "raw_tx": false }
   }
 }`}
         </SyntaxHighlighter>
@@ -731,6 +734,21 @@ curl -s -X POST -H "Content-Type: application/json" \\
                 <td className="px-4 py-2">Swap tokens</td>
                 <td className="px-4 py-2 font-mono">POST</td>
                 <td className="px-4 py-2 font-mono text-xs">/wallet/v1/intents/swap</td>
+              </tr>
+              <tr className="border-b">
+                <td className="px-4 py-2">Sign EVM typed data (EIP-712)</td>
+                <td className="px-4 py-2 font-mono">POST</td>
+                <td className="px-4 py-2 font-mono text-xs">/wallet/v1/evm/sign-typed-data</td>
+              </tr>
+              <tr className="border-b">
+                <td className="px-4 py-2">Sign EVM message (EIP-191)</td>
+                <td className="px-4 py-2 font-mono">POST</td>
+                <td className="px-4 py-2 font-mono text-xs">/wallet/v1/evm/sign-message</td>
+              </tr>
+              <tr className="border-b">
+                <td className="px-4 py-2">Sign raw EVM transaction <span className="text-gray-400">(needs <code className="bg-gray-100 px-1 rounded">evm_sign.raw_tx</code>; client serializes &amp; broadcasts)</span></td>
+                <td className="px-4 py-2 font-mono">POST</td>
+                <td className="px-4 py-2 font-mono text-xs">/wallet/v1/evm/sign-transaction</td>
               </tr>
               <tr className="border-b">
                 <td className="px-4 py-2">Deposit to Intents</td>

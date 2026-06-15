@@ -38,6 +38,7 @@ use axum::{
     Router,
 };
 use serde::{Deserialize, Serialize};
+use shared_tee_helpers::is_evm_chain;
 use tower_http::trace::TraceLayer;
 
 use crate::attestation::Attestation;
@@ -790,6 +791,48 @@ pub struct WalletDeriveAddressResponse {
     pub public_key: String,
 }
 
+/// Request to sign EIP-712 typed data with the wallet's EVM (secp256k1) key.
+#[derive(Debug, Deserialize)]
+pub struct WalletEvmSignTypedDataRequest {
+    pub wallet_id: String,
+    pub chain: String,
+    /// Full `eth_signTypedData_v4` object: `{ domain, types, primaryType, message }`.
+    pub typed_data: serde_json::Value,
+}
+
+/// Request to sign an EIP-191 `personal_sign` message with the wallet's EVM key.
+#[derive(Debug, Deserialize)]
+pub struct WalletEvmSignMessageRequest {
+    pub wallet_id: String,
+    pub chain: String,
+    /// The message to sign; interpreted per `encoding`.
+    pub message: String,
+    /// `"utf8"` (default) signs the UTF-8 bytes of `message`; `"hex"` treats
+    /// `message` as hex and signs the decoded bytes. No content sniffing.
+    #[serde(default)]
+    pub encoding: Option<String>,
+}
+
+/// Request to sign a raw EVM transaction with the wallet's EVM key.
+///
+/// The caller supplies the **serialized unsigned transaction** (e.g. viem
+/// `serializeTransaction(tx)` — `0x02‖rlp(...)` for EIP-1559). The keystore
+/// keccak256-hashes it and signs — it does NOT parse or assemble the tx, manage
+/// nonce/gas, or broadcast. Gated by the `evm_sign.raw_tx` sub-capability.
+#[derive(Debug, Deserialize)]
+pub struct WalletEvmSignTransactionRequest {
+    pub wallet_id: String,
+    pub chain: String,
+    /// Serialized unsigned transaction, `0x`-hex.
+    pub unsigned_tx: String,
+}
+
+/// A 65-byte recoverable EVM signature, `0x`-hex (`r‖s‖v`, `v ∈ {27,28}`).
+#[derive(Debug, Serialize)]
+pub struct WalletEvmSignResponse {
+    pub signature: String,
+}
+
 /// Request to sign encrypted policy data (for on-chain store_wallet_policy)
 #[derive(Debug, Deserialize)]
 pub struct WalletSignPolicyRequest {
@@ -1042,6 +1085,9 @@ pub fn create_router(state: AppState) -> Router {
         // Wallet endpoints (coordinator-only)
         .route("/wallet/derive-address", post(wallet_derive_address_handler))
         .route("/wallet/sign", post(wallet_sign_handler))
+        .route("/wallet/evm/sign-typed-data", post(wallet_evm_sign_typed_data_handler))
+        .route("/wallet/evm/sign-message", post(wallet_evm_sign_message_handler))
+        .route("/wallet/evm/sign-transaction", post(wallet_evm_sign_transaction_handler))
         .route("/wallet/sign-policy", post(wallet_sign_policy_handler))
         .route("/wallet/check-policy", post(wallet_check_policy_handler))
         .route("/wallet/encrypt-policy", post(wallet_encrypt_policy_handler))
@@ -3542,11 +3588,32 @@ mod base64 {
 
 // ==================== Wallet Handlers ====================
 
+// `is_evm_chain` is the single source of truth in `shared_tee_helpers` (shared
+// with the coordinator so the two can't drift); imported at the top of this file.
+
+/// Build the keystore derivation seed for `(wallet_id, chain)`.
+///
+/// **All EVM chains share ONE secp256k1 key** — a single `0x` address
+/// across every EVM network, the standard EVM model — so every EVM
+/// chain maps to one canonical `:evm` seed suffix regardless of which
+/// network was requested. Non-EVM chains keep their own per-chain
+/// suffix (`:near`, `:solana`, …). Changing this suffix rotates every
+/// derived EVM address — see the domain-separation note on
+/// `Keystore::derive_secp256k1_keypair`.
+pub(crate) fn wallet_seed(wallet_id: &str, chain: &str) -> String {
+    if is_evm_chain(chain) {
+        format!("wallet:{}:evm", wallet_id)
+    } else {
+        format!("wallet:{}:{}", wallet_id, chain)
+    }
+}
+
 /// Derive a wallet address for a specific chain
 ///
-/// Seed format: "wallet:{wallet_id}:{chain}"
+/// Seed format: see [`wallet_seed`] — EVM chains collapse to one
+/// `wallet:{wallet_id}:evm` key; non-EVM use `wallet:{wallet_id}:{chain}`.
 /// - near/solana: Ed25519 keypair → implicit account (hex-encoded public key)
-/// - ethereum: secp256k1 keypair → keccak256 → address (0x-prefixed)
+/// - EVM: secp256k1 keypair → keccak256 → address (0x-prefixed), same across all EVM chains
 async fn wallet_derive_address_handler(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -3566,7 +3633,7 @@ async fn wallet_derive_address_handler(
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
     let chain = req.chain.to_lowercase();
-    let seed = format!("wallet:{}:{}", req.wallet_id, chain);
+    let seed = wallet_seed(&req.wallet_id, &chain);
 
     let keystore = state.keystore.read().await;
 
@@ -3604,9 +3671,10 @@ async fn wallet_derive_address_handler(
                 public_key: address,
             }))
         }
-        // EVM chains (Ethereum, Base, Arbitrum, etc.) — secp256k1
-        // See: docs/MULTI_CHAIN.md
-        "ethereum" | "base" | "arbitrum" => {
+        // EVM chains — secp256k1. All EVM networks share ONE address
+        // (one secp256k1 key via the canonical `:evm` seed). See
+        // `wallet_seed` / docs/MULTI_CHAIN.md.
+        _ if is_evm_chain(&chain) => {
             let (address, pubkey_hex) = keystore.derive_eth_address(customer.as_ref(), &seed).map_err(|e| {
                 ApiError::InternalError(format!("Key derivation failed: {}", e))
             })?;
@@ -3616,10 +3684,184 @@ async fn wallet_derive_address_handler(
             }))
         }
         _ => Err(ApiError::BadRequest(format!(
-            "Unsupported chain: {}. Supported: near, ethereum, solana",
+            "Unsupported chain: {}. Supported: near, solana, and EVM (ethereum, polygon, base, arbitrum, optimism, bsc, avalanche)",
             chain
         ))),
     }
+}
+
+/// Shared EVM-signing path: validate the chain, gate on the `evm_sign`
+/// capability, then sign an **already-computed 32-byte keccak digest** with the
+/// wallet's canonical EVM key. `want_raw_tx` is `false` here — typed-data and
+/// personal_sign ride the base `evm_sign` capability; raw-transaction signing
+/// (the deferred §4.4 path) is what would pass `true` (gated by `evm_sign.raw_tx`).
+async fn evm_sign_digest(
+    state: &AppState,
+    customer: Option<&near_primitives::types::AccountId>,
+    wallet_id: &str,
+    chain: &str,
+    digest: &[u8; 32],
+    want_raw_tx: bool,
+) -> Result<String, ApiError> {
+    use shared_tee_helpers::wallet_policy::{evm_sign_decision, Decision};
+
+    if !is_evm_chain(chain) {
+        return Err(ApiError::BadRequest(format!(
+            "'{}' is not an EVM chain (supported: ethereum, polygon, base, arbitrum, optimism, bsc, avalanche)",
+            chain
+        )));
+    }
+
+    let policy = load_wallet_policy(state, wallet_id, customer).await?;
+    let now_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    match evm_sign_decision(policy.as_ref(), want_raw_tx, now_unix) {
+        Decision::Allow => {}
+        Decision::Frozen => return Err(ApiError::Forbidden("Wallet is frozen".to_string())),
+        Decision::Deny { reason } => return Err(ApiError::Forbidden(reason)),
+        Decision::RequiresApproval { .. } => {
+            return Err(ApiError::Forbidden(
+                "EVM signing does not support per-op approval".to_string(),
+            ))
+        }
+    }
+
+    let seed = wallet_seed(wallet_id, chain);
+    let keystore = state.keystore.read().await;
+    let sig = keystore
+        .sign_secp256k1_prehash(customer, &seed, digest)
+        .map_err(|e| ApiError::InternalError(format!("EVM signing failed: {}", e)))?;
+    Ok(format!("0x{}", hex::encode(sig)))
+}
+
+/// `POST /wallet/evm/sign-typed-data` — EIP-712 v4 typed-data signature.
+///
+/// The digest is computed server-side from the full typed-data object (we do
+/// NOT trust a client-supplied hash). `ecrecover` over it returns the address
+/// from `/wallet/derive-address` for the same `(wallet_id, evm)` seed.
+async fn wallet_evm_sign_typed_data_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<WalletEvmSignTypedDataRequest>,
+) -> Result<Json<WalletEvmSignResponse>, ApiError> {
+    if !state.is_ready() {
+        return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
+    }
+    let customer = extract_customer_from_header(&headers)?;
+    state
+        .ensure_customer_loaded(customer.as_ref())
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
+    let digest = crate::eip712::eip712_digest(&req.typed_data)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid EIP-712 typed data: {:#}", e)))?;
+
+    let signature = evm_sign_digest(
+        &state,
+        customer.as_ref(),
+        &req.wallet_id,
+        &req.chain.to_lowercase(),
+        &digest,
+        false,
+    )
+    .await?;
+    Ok(Json(WalletEvmSignResponse { signature }))
+}
+
+/// `POST /wallet/evm/sign-message` — EIP-191 `personal_sign` signature.
+async fn wallet_evm_sign_message_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<WalletEvmSignMessageRequest>,
+) -> Result<Json<WalletEvmSignResponse>, ApiError> {
+    if !state.is_ready() {
+        return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
+    }
+    let customer = extract_customer_from_header(&headers)?;
+    state
+        .ensure_customer_loaded(customer.as_ref())
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
+    // Explicit encoding — no content sniffing. "utf8" (default) signs the
+    // UTF-8 bytes; "hex" treats `message` as hex and signs the decoded bytes.
+    let hex = match req.encoding.as_deref() {
+        None | Some("utf8") => false,
+        Some("hex") => true,
+        Some(other) => {
+            return Err(ApiError::BadRequest(format!(
+                "invalid encoding '{}' (use 'utf8' or 'hex')",
+                other
+            )))
+        }
+    };
+    let digest = crate::eip712::eip191_digest_for(&req.message, hex)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid message: {:#}", e)))?;
+
+    let signature = evm_sign_digest(
+        &state,
+        customer.as_ref(),
+        &req.wallet_id,
+        &req.chain.to_lowercase(),
+        &digest,
+        false,
+    )
+    .await?;
+    Ok(Json(WalletEvmSignResponse { signature }))
+}
+
+/// `POST /wallet/evm/sign-transaction` — sign a raw EVM transaction.
+///
+/// Gated by the `evm_sign.raw_tx` sub-capability (default-OFF). The caller sends
+/// the serialized unsigned transaction; we keccak256 it and return the
+/// recoverable signature. For an EIP-1559 (type-2) tx the `yParity` the caller
+/// needs to assemble the final tx is `v - 27`. The caller assembles the signed
+/// tx and broadcasts — the keystore neither builds the tx nor broadcasts.
+async fn wallet_evm_sign_transaction_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<WalletEvmSignTransactionRequest>,
+) -> Result<Json<WalletEvmSignResponse>, ApiError> {
+    if !state.is_ready() {
+        return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
+    }
+    let customer = extract_customer_from_header(&headers)?;
+    state
+        .ensure_customer_loaded(customer.as_ref())
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
+    // Decode the serialized unsigned tx and compute its keccak256 signing hash.
+    // We do NOT parse or assemble the transaction — only hash the supplied bytes.
+    let hex_body = req
+        .unsigned_tx
+        .strip_prefix("0x")
+        .or_else(|| req.unsigned_tx.strip_prefix("0X"))
+        .unwrap_or(&req.unsigned_tx);
+    let tx_bytes = hex::decode(hex_body)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid unsigned_tx hex: {}", e)))?;
+    if tx_bytes.is_empty() {
+        return Err(ApiError::BadRequest("unsigned_tx is empty".to_string()));
+    }
+    let digest: [u8; 32] = {
+        use sha3::{Digest as _, Keccak256};
+        let mut d = [0u8; 32];
+        d.copy_from_slice(&Keccak256::digest(&tx_bytes));
+        d
+    };
+
+    let signature = evm_sign_digest(
+        &state,
+        customer.as_ref(),
+        &req.wallet_id,
+        &req.chain.to_lowercase(),
+        &digest,
+        true,
+    )
+    .await?;
+    Ok(Json(WalletEvmSignResponse { signature }))
 }
 
 /// Sign encrypted policy data so the NEAR contract can verify wallet ownership.
@@ -4573,26 +4815,28 @@ async fn sign_hash_pinned(
                 ));
             }
             let chain_l = chain.to_lowercase();
+            // EVM signing lives on the dedicated /wallet/evm/* endpoints: they
+            // use the canonical `wallet:{id}:evm` key (one address across all EVM
+            // chains), produce a RECOVERABLE keccak signature (r‖s‖v), and are
+            // gated by the `evm_sign` capability. The legacy Op::Raw secp256k1
+            // path used a per-chain seed (`wallet:{id}:ethereum`) that no longer
+            // matches the derived address AND a non-recoverable SHA-256 signature
+            // — so it could only return a signature that fails to ecrecover to the
+            // wallet's EVM address. Refuse it and point callers at the real path.
+            if is_evm_chain(&chain_l) {
+                return Err(ApiError::BadRequest(format!(
+                    "Raw signing is not supported for EVM chain '{}'. Use POST /wallet/v1/evm/sign-typed-data, /sign-message, or /sign-transaction.",
+                    chain_l
+                )));
+            }
+            // NEAR / Solana / other ed25519 chains.
             let seed = format!("wallet:{}:{}", req.wallet_id, chain_l);
             let keystore = state.keystore.read().await;
-            let signature_base64 = match chain_l.as_str() {
-                // EVM chains — secp256k1 ECDSA.
-                "ethereum" | "base" | "arbitrum" => {
-                    let sig = keystore
-                        .sign_secp256k1(customer, &seed, &bytes)
-                        .map_err(|e| ApiError::InternalError(format!("Signing failed: {}", e)))?;
-                    base64::encode(&sig)
-                }
-                // NEAR, Solana, etc. — ed25519.
-                _ => {
-                    let sig = keystore
-                        .sign(customer, &seed, &bytes)
-                        .map_err(|e| ApiError::InternalError(format!("Signing failed: {}", e)))?;
-                    base64::encode(sig.to_bytes())
-                }
-            };
+            let sig = keystore
+                .sign(customer, &seed, &bytes)
+                .map_err(|e| ApiError::InternalError(format!("Signing failed: {}", e)))?;
             let mut resp = WalletSignResponse::new(request_hash);
-            resp.signature_base64 = Some(signature_base64);
+            resp.signature_base64 = Some(base64::encode(sig.to_bytes()));
             Ok(Json(resp))
         }
         Op::SignMessage {
@@ -4945,6 +5189,29 @@ mod wallet_sign_tests {
         assert!(!sign_message_recipient_allowed(Some(&listed), "intents.near"));
         assert!(!sign_message_recipient_allowed(Some(&listed), "some-dex.near")); // unnamed verifier
         assert!(!sign_message_recipient_allowed(Some(&listed), "auth.app.near.evil")); // no substring match
+    }
+
+    #[test]
+    fn evm_chains_share_one_canonical_seed() {
+        // "One EVM address across all chains" reduces to: every EVM
+        // chain name maps to the SAME derivation seed (long names and
+        // 1Click short aliases alike), while non-EVM chains stay
+        // distinct. Address == f(seed), so equal seeds ⇒ equal address.
+        let id = "abc-123";
+        let evm = [
+            "ethereum", "eth", "polygon", "pol", "matic", "base", "arbitrum", "arb", "optimism",
+            "op", "bsc", "avalanche", "avax",
+        ];
+        let canonical = wallet_seed(id, "ethereum");
+        assert_eq!(canonical, format!("wallet:{}:evm", id));
+        for c in evm {
+            assert!(is_evm_chain(c), "{c} must be recognized as EVM");
+            assert_eq!(wallet_seed(id, c), canonical, "{c} must share the canonical EVM seed");
+        }
+        // Non-EVM keep their own per-chain seed (distinct curve/key).
+        assert_eq!(wallet_seed(id, "near"), format!("wallet:{}:near", id));
+        assert_eq!(wallet_seed(id, "solana"), format!("wallet:{}:solana", id));
+        assert!(!is_evm_chain("near") && !is_evm_chain("solana"));
     }
 
     // --- Built: the withdraw artifact is constructed FROM the op fields ------------

@@ -70,6 +70,36 @@ COORDINATOR_URL=http://localhost:8080 \
   ./tests/wallet_deposit_intent_chains_e2e.sh
 ```
 
+### EVM signing
+
+EVM signing v1 is shipped: `GET /wallet/v1/address` serves all supported EVM
+chains (ethereum, polygon, base, arbitrum, optimism, bsc, avalanche, plus
+aliases) returning one shared secp256k1 `0x` address, and three sign endpoints
+are live — `POST /wallet/v1/evm/sign-typed-data` (EIP-712 v4),
+`/wallet/v1/evm/sign-message` (EIP-191 `personal_sign`), and
+`/wallet/v1/evm/sign-transaction` (raw tx: the **client** serializes the
+unsigned tx, the keystore keccak256s + signs it; no assembly, nonce, gas, or
+broadcast). Signatures are 65-byte `0x` `r‖s‖v`, `v ∈ {27, 28}`, low-s.
+
+`tests/wallet_evm_sign_e2e.sh` (read-only, no funds; needs only coordinator +
+keystore, so it runs on testnet; wired into `run_all.sh`) asserts:
+
+- **address stability** — `/wallet/v1/address` returns the same `0x` address for
+  `ethereum` == `polygon` == `base`.
+- **signature shape** — all three EVM endpoints return a 65-byte `0x` `r‖s‖v`
+  signature with `v ∈ {27, 28}`.
+- **capability gating** is SKIPped here (it needs a funded wallet to store an
+  on-chain policy); the gating logic is covered by the unit test
+  `evm_sign_capability_defaults_and_raw_tx_subflag` (default-DENY under a policy;
+  `allowed:true` permits; omit/`false` blocks; no-policy = unrestricted) and
+  `ecrecover == address` by the `crypto.rs` recover tests.
+
+> `requires_approval` is NOT supported for it. An EIP-712 signature is itself
+> fund-moving (EIP-3009 ≈ transfer, EIP-2612 ≈ approve), so `evm_sign` grants
+> full authority over whatever float is bridged to the EVM address — the
+> NEAR-intents balance is never exposed. The keystore/coordinator never build
+> or broadcast an EVM tx; gas, nonce, and broadcast are the client's job.
+
 ### Run everything
 
 ```bash
@@ -81,15 +111,21 @@ COORDINATOR_URL=http://localhost:8080 \
 | Layer | Location | Tests |
 |-------|----------|-------|
 | Unit | `keystore-worker/src/api.rs` (evaluate_policy) | 21 |
+| Unit | `keystore-worker/src/crypto.rs` (secp256k1 recover + pinned fixture) | 2 |
+| Unit | `keystore-worker/src/eip712.rs` (viem reference vectors) | 2 |
+| Unit | `keystore-worker/src/api.rs` (evm_chains_share_one_canonical_seed) | 1 |
+| Unit | `shared-tee-helpers/src/wallet_policy.rs` (evm_sign_capability_defaults_and_raw_tx_subflag) | 1 |
 | Unit | `coordinator/src/wallet/auth.rs` | 18 |
 | Unit | `coordinator/src/wallet/types.rs` | 5 |
 | Unit | `coordinator/src/wallet/policy.rs` | 4 |
 | Unit | `coordinator/src/wallet/nonce.rs` | 3 |
 | Unit | `coordinator/src/wallet/webhooks.rs` | 4 |
 | Unit | `coordinator/src/wallet/handlers.rs` | 15 |
+| Unit | `coordinator/src/wallet/handlers.rs` (test_validate_chain_*) | 3 |
 | Unit | `worker/src/outlayer_wallet/host_functions.rs` | 3 |
 | Integration | `tests/wallet_mode1_agent.sh` | 21 |
 | Integration | `tests/wallet_mode2_policy.sh` | 17 |
 | E2E | `tests/wallet_intents_e2e.sh` | 1 (asserts `delivered`) |
 | E2E | `tests/wallet_deposit_intent_chains_e2e.sh` | 6 chains |
-| **Total** | | **117** |
+| E2E | `tests/wallet_evm_sign_e2e.sh` | 4 (address-stability + 3 sig-shape; gating SKIP) — see [EVM signing](#evm-signing) |
+| **Total** | | **126** |

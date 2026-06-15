@@ -1,6 +1,6 @@
 # Agent Custody — Developer Reference
 
-Institutional-grade custody wallets for AI agents. An agent gets an API key to operate a NEAR-native wallet whose cross-chain value is custodied on `intents.near`. Private keys live exclusively inside a TEE (Intel TDX). The wallet owner sets policy (spending limits, whitelists, multisig, freeze) — all enforced inside the TEE. Cross-chain deposits/withdrawals via NEAR Intents + the 1Click solver (gasless), like a CEX: deposit, operate, withdraw to an external address. The wallet does not sign native Ethereum/Solana transactions itself (planned, not shipped).
+Institutional-grade custody wallets for AI agents. An agent gets an API key to operate a NEAR-native wallet whose cross-chain value is custodied on `intents.near`. Private keys live exclusively inside a TEE (Intel TDX). The wallet owner sets policy (spending limits, whitelists, multisig, freeze) — all enforced inside the TEE. Cross-chain deposits/withdrawals via NEAR Intents + the 1Click solver (gasless), like a CEX: deposit, operate, withdraw to an external address. The wallet now signs EVM payloads itself — EIP-712 typed data, EIP-191 `personal_sign`, and raw EVM transactions (the client builds/serializes the unsigned tx and broadcasts; the keystore only keccak256-hashes and signs). Solana native signing is not shipped.
 
 > **⚠️ Only send whitelisted Intents assets — anything else is lost permanently.**
 > Deposits/withdrawals only work for assets in the NEAR Intents / 1Click token
@@ -126,7 +126,7 @@ HTTP API server. Handles auth, routing, usage tracking, webhooks.
 | `intents_deposit()` | — | Deposit FT into intents.near via `ft_transfer_call` (intents.near auto-registers callers via its own `ft_on_transfer` hook — no NEP-145 `storage_deposit` issued) |
 | `swap()` | — | Swap via 1Click: quote → ft_transfer_call to intents.near → mt_transfer → poll |
 | `deposit()` | 857 | Cross-chain deposit via Intents quote |
-| `get_address()` | 345 | Derive wallet address. **`chain=near` only** — `validate_chain()` rejects other chains (no native spend path yet; cross-chain value uses Intents). |
+| `get_address()` | 345 | Derive wallet address. Serves **`near` + all EVM chains** (ethereum, polygon, base, arbitrum, optimism, bsc, avalanche, + aliases) — every EVM chain shares **one secp256k1 `0x` address**. `solana`/`bitcoin` stay gated (no native spend path yet; that cross-chain value uses Intents). |
 | `encrypt_policy()` | 1155 | Send policy JSON to keystore for encryption |
 | `sign_policy()` | 1199 | Keystore signs encrypted policy SHA256 for on-chain verification |
 | `approve()` | 1447 | Submit multisig approval (NEP-413 signature verification) |
@@ -190,11 +190,14 @@ master_secret (from NEAR MPC network, never leaves TEE)
 Same wallet_id always produces same addresses across chains. Deterministic, stateless.
 
 > The keystore *can* derive and sign for all of the above (secp256k1 for EVM,
-> Ed25519 for NEAR/Solana). But the public `GET /wallet/v1/address` endpoint
-> currently returns the **NEAR** address only — the coordinator has no native
-> tx builder/broadcast for EVM/Solana yet, so it does not hand out fund-able
-> native addresses (that would risk stuck funds). Cross-chain value movement
-> does not need them: it goes through NEAR Intents + the 1Click solver. See
+> Ed25519 for NEAR/Solana). The public `GET /wallet/v1/address` endpoint now
+> serves **NEAR + all EVM chains** — every EVM chain returns the same shared
+> secp256k1 `0x` address. The keystore signs EVM payloads (EIP-712 / EIP-191 /
+> raw tx); the **client** assembles and broadcasts the EVM transaction (the
+> coordinator/keystore never build, fund, or broadcast one). **Solana** stays
+> withheld — no native tx builder/broadcast yet, so its address is not handed
+> out (that would risk stuck funds). Solana value movement still goes through
+> NEAR Intents + the 1Click solver. See
 > [coordinator `docs/MULTI_CHAIN.md`](https://github.com/out-layer/coordinator/blob/main/docs/MULTI_CHAIN.md).
 
 #### Policy evaluation flow (inside TEE)
@@ -486,6 +489,7 @@ Stored encrypted on NEAR blockchain. Only keystore TEE can decrypt.
   },
   "capabilities": {
     "raw_sign":     { "allowed": false, "chains": ["ethereum", "solana"], "requires_approval": true },
+    "evm_sign":     { "allowed": true,  "raw_tx": false },
     "confidential": { "allowed": false, "requires_approval": false },
     "sign_message": { "allowed": true,  "requires_approval": false, "allowed_recipients": [] },
     "swap":         { "allowed": false, "requires_approval": false },
@@ -520,12 +524,22 @@ policy are normalized to `call` so old policies keep matching. Note `cross_chain
 
 ### Capabilities — default-DENY opt-ins for the non-Built primitives
 
-All capabilities default to **DENY** except `sign_message` (defaults allowed). Under a policy a
-wallet must explicitly enable each:
+All capabilities default to **DENY** under a policy except `sign_message` (default-allow).
+Under a policy a wallet must explicitly enable each of the rest (a wallet with **no policy** is
+unrestricted):
 
 - `raw_sign` — sign arbitrary raw bytes. `chains` is an optional allowlist (absent = all chains
   **including `near`**, which can sign a NEAR tx/intent outside the structured policy — by design;
   warn before enabling). With no on-chain policy at all, raw is permitted (permissionless start).
+- `evm_sign` — sign EVM payloads (EIP-712 typed data, EIP-191 `personal_sign`, raw EVM tx).
+  **DEFAULT-DENY** under a policy, like the other fund-moving capabilities — set
+  `evm_sign.allowed: true` to permit (the dashboard writes this when its EVM-signing box is
+  checked). Carries a `raw_tx` sub-flag that is **DEFAULT-OFF**: with `allowed:true`, typed-data
+  and message signing work, but signing a raw EVM transaction additionally requires `raw_tx: true`.
+  `requires_approval` is **NOT supported** for `evm_sign`. CAVEAT (why it's opt-in): an EIP-712
+  signature is itself fund-moving (EIP-3009 ≈ transfer, EIP-2612 ≈ approve), so `evm_sign` grants
+  full authority over the EVM address's float — bounded to what is bridged onto that address; the
+  NEAR-intents balance is never exposed through it.
 - `confidential` — the confidential-intents flows (Trusted).
 - `sign_message` — generic non-fund NEP-413 (e.g. dApp login). `allowed_recipients` is a
   default-DENY allowlist of verifier recipients (NOT a blocklist); `intents.near`/`intents.far`
@@ -551,7 +565,8 @@ Base: `https://api.outlayer.fastnear.com` (mainnet) · `https://testnet-api.outl
 > coordinator returns **HTTP 503** for every intents-dependent endpoint — the whole
 > `/wallet/v1/intents/*` family (deposit, withdraw, swap, cross-chain deposit, payment-check) **and**
 > all `/wallet/v1/confidential/*` routes. The non-intents surface (address, balance, `transfer`,
-> `call`, `sign-message`, `auth-sign`, policy, approvals, delete) works on both networks.
+> `call`, `sign-message`, `auth-sign`, the `/wallet/v1/evm/*` signers — pure crypto, no intents —
+> policy, approvals, delete) works on both networks.
 
 ### Public
 
@@ -563,7 +578,7 @@ Base: `https://api.outlayer.fastnear.com` (mainnet) · `https://testnet-api.outl
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/wallet/v1/address?chain={chain}` | Derive address (near, ethereum, solana, bitcoin) |
+| GET | `/wallet/v1/address?chain={chain}` | Derive address — `near` + all EVM chains (one shared secp256k1 `0x` address); `solana`/`bitcoin` gated |
 | POST | `/wallet/v1/intents/withdraw` | Withdraw / cross-chain transfer |
 | POST | `/wallet/v1/intents/withdraw/dry-run` | Simulate withdrawal (policy + balance check) |
 | POST | `/wallet/v1/call` | Native NEAR contract call |
@@ -587,6 +602,9 @@ Base: `https://api.outlayer.fastnear.com` (mainnet) · `https://testnet-api.outl
 | GET | `/wallet/v1/requests` | List operations (filter: type, status, limit) |
 | GET | `/wallet/v1/tokens` | List available tokens (Intents proxy) |
 | POST | `/wallet/v1/sign-message` | Generic NEP-413 message signing (recipient default-DENY allowlist; `intents.*` excluded). `format:"raw"` is **gone** — use `/auth-sign` |
+| POST | `/wallet/v1/evm/sign-typed-data` | Sign EIP-712 typed data (v4). 65-byte `0x r‖s‖v` sig, `v∈{27,28}`, low-s. Gated by `evm_sign` capability |
+| POST | `/wallet/v1/evm/sign-message` | Sign EIP-191 `personal_sign` (this is **different** from the NEP-413 `/wallet/v1/sign-message` above). Gated by `evm_sign` |
+| POST | `/wallet/v1/evm/sign-transaction` | Sign a raw EVM tx — **client serializes the unsigned tx**, keystore keccak256-hashes + signs (no assembly/nonce/gas/broadcast; `yParity = v − 27` for EIP-1559). Gated by `evm_sign` + the `raw_tx` sub-flag |
 | POST | `/wallet/v1/auth-sign` | OutLayer NEAR-key auth signature (`{purpose: bearer\|register\|api-key, seed, vault_id?}` → `{auth_message, auth_timestamp, signature, public_key}`). Replaces the old `sign-message format:"raw"` |
 | GET | `/wallet/v1/policy` | View current policy (decrypted via keystore) |
 | POST | `/wallet/v1/encrypt-policy` | Encrypt policy for on-chain storage |

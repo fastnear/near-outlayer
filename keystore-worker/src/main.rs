@@ -23,6 +23,7 @@ mod api;
 mod attestation;
 mod config;
 mod crypto;
+mod eip712;
 mod ephemeral_keys;
 mod near;
 mod secret_generation;

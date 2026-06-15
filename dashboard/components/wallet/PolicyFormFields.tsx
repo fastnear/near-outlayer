@@ -340,6 +340,42 @@ export function PolicyFormFields({ policyForm, onChange, apiKeyHash, knownKeyHas
             a login signature could then be replayed to move funds.
           </p>
         </div>
+
+        {/* evm_sign (default-DENY at the engine; this form opts in explicitly) */}
+        <div className="mt-3 pt-3 border-t border-amber-200">
+          <label className="flex items-center gap-1.5 text-sm cursor-pointer">
+            <input
+              type="checkbox"
+              checked={policyForm.evm_sign_enabled}
+              onChange={(e) => update({ evm_sign_enabled: e.target.checked })}
+              className="rounded border-gray-300"
+            />
+            <span className="font-medium">evm_sign — sign on EVM chains (EIP-712 / EIP-191)</span>
+          </label>
+          <p className="text-xs text-gray-500 mt-0.5 ml-5">
+            Checked = allow EVM signing (this form writes <code>evm_sign.allowed=true</code>
+            explicitly). Like the other capabilities, a policy that omits it denies EVM signing;
+            uncheck to write <code>allowed=false</code>.
+          </p>
+          <p className="text-xs text-red-600 mt-0.5 ml-5">
+            ⚠ An EIP-712 signature is itself fund-moving (EIP-3009 ≈ transfer, EIP-2612 ≈
+            approve), so this grants full authority over the EVM address&apos;s float. The risk
+            is bounded to what you bridge onto that address — your NEAR-intents balance is never
+            exposed to an EVM signature. Keep the on-chain float small.
+          </p>
+          {policyForm.evm_sign_enabled && (
+            <label className="flex items-center gap-1.5 text-xs cursor-pointer ml-5 mt-1">
+              <input
+                type="checkbox"
+                checked={policyForm.evm_sign_raw_tx}
+                onChange={(e) => update({ evm_sign_raw_tx: e.target.checked })}
+                className="rounded border-gray-300"
+              />
+              Also allow raw EVM transactions (evm_sign.raw_tx) — arbitrary contract calls /
+              native value; default OFF
+            </label>
+          )}
+        </div>
       </div>
 
       {/* Time Restrictions */}

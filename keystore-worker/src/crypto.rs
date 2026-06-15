@@ -664,17 +664,56 @@ impl Keystore {
         Ok((address, pubkey_hex))
     }
 
-    /// Sign a message with secp256k1 ECDSA for `(customer, seed)`.
-    pub fn sign_secp256k1(
+    // NOTE: the old `sign_secp256k1` (k256 default Signer — SHA-256 prehash,
+    // non-recoverable 64-byte r‖s, no `v`) was REMOVED. It was never an EVM
+    // signer and had no remaining callers once Op::Raw EVM was retired in favor
+    // of the /wallet/evm/* endpoints. All EVM signing goes through
+    // [`Keystore::sign_secp256k1_prehash`] (keccak prehash, recoverable r‖s‖v).
+
+    /// Sign a **32-byte keccak256 prehash** with secp256k1 ECDSA for
+    /// `(customer, seed)`, returning a recoverable Ethereum signature.
+    ///
+    /// This is the EVM signing primitive. The caller supplies the
+    /// already-computed digest (the EIP-712 signing hash, the EIP-191
+    /// `personal_sign` hash, or an EIP-1559 tx sighash) — this method
+    /// signs it **without any further hashing**.
+    ///
+    /// Returns 65 bytes: `r (32) ‖ s (32) ‖ v (1)`, where `s` is
+    /// low-S normalized (EIP-2) and `v ∈ {27, 28}` (legacy EVM
+    /// convention; the caller adds the EIP-155 chain offset for raw
+    /// transactions if/when those are supported). `ecrecover` over
+    /// `digest` with this signature returns the address from
+    /// [`Keystore::derive_eth_address`] for the same `(customer, seed)`.
+    ///
+    /// Deterministic: `k256` uses an RFC-6979 nonce, so the signature
+    /// is a pure function of `(master, seed, digest)`.
+    pub fn sign_secp256k1_prehash(
         &self,
         customer: Option<&AccountId>,
         seed: &str,
-        message: &[u8],
-    ) -> Result<Vec<u8>> {
-        use k256::ecdsa::{signature::Signer as _, Signature as EcdsaSignature};
+        digest: &[u8; 32],
+    ) -> Result<[u8; 65]> {
         let (signing_key, _) = self.derive_secp256k1_keypair(customer, seed)?;
-        let signature: EcdsaSignature = signing_key.sign(message);
-        Ok(signature.to_bytes().to_vec())
+        // `sign_prehash_recoverable` normalizes `s` to the low half and
+        // returns the recovery id that matches the normalized signature.
+        let (signature, recovery_id) = signing_key
+            .sign_prehash_recoverable(digest)
+            .context("secp256k1 recoverable signing failed")?;
+        // recovery_id is 0/1 in practice; bit 1 (x-coordinate reduced mod n) is
+        // set only when k·G's x ≥ the curve order — probability ~2^-128, and not
+        // grindable (RFC-6979 nonce is fixed per (key,digest)). If it ever fires,
+        // `v` would be 29/30, which no `ecrecover` accepts, so fail closed rather
+        // than return a signature that breaks the documented `v ∈ {27,28}`.
+        if recovery_id.to_byte() >= 2 {
+            anyhow::bail!(
+                "secp256k1 recovery id {} has a reduced x-coordinate; cannot produce v in {{27,28}}",
+                recovery_id.to_byte()
+            );
+        }
+        let mut out = [0u8; 65];
+        out[..64].copy_from_slice(&signature.to_bytes());
+        out[64] = 27 + recovery_id.to_byte();
+        Ok(out)
     }
 
     /// Generate VRF output and proof for the given alpha bytes.
@@ -1441,6 +1480,142 @@ mod tests {
         assert_eq!(
             hex::encode(pk.to_encoded_point(true).as_bytes()),
             "03ffd4869b507336699943453906991fe29fac4764f5a77410cbffea9496a6b420",
+        );
+    }
+
+    #[test]
+    fn secp256k1_recoverable_sig_recovers_to_derived_address() {
+        // The EVM signing primitive must produce a recoverable
+        // signature whose `ecrecover` returns the address we derive for
+        // the same (customer, seed). This is the acceptance criterion
+        // the integration partner validates (ecrecover == address).
+        // Fully self-contained — no external vector needed.
+        let ks = Keystore::from_master_secret(&fixed_master()).unwrap();
+        let seed = "wallet:fixed:evm";
+        let (addr, _) = ks.derive_eth_address(None, seed).unwrap();
+
+        // Arbitrary 32-byte keccak prehash (stands in for an EIP-712 /
+        // EIP-191 digest — this primitive does NOT re-hash).
+        let digest: [u8; 32] = {
+            use sha3::{Digest as _, Keccak256};
+            let mut d = [0u8; 32];
+            d.copy_from_slice(&Keccak256::digest(b"outlayer evm prehash"));
+            d
+        };
+
+        let sig = ks.sign_secp256k1_prehash(None, seed, &digest).unwrap();
+        assert_eq!(sig.len(), 65);
+        assert!(sig[64] == 27 || sig[64] == 28, "v must be 27/28, got {}", sig[64]);
+
+        // Reconstruct and recover.
+        let recid = k256::ecdsa::RecoveryId::from_byte(sig[64] - 27).unwrap();
+        let signature = k256::ecdsa::Signature::from_slice(&sig[..64]).unwrap();
+        let vk = k256::ecdsa::VerifyingKey::recover_from_prehash(&digest, &signature, recid)
+            .expect("recover must succeed");
+
+        let uncompressed = vk.to_encoded_point(false);
+        let recovered_addr = {
+            use sha3::{Digest as _, Keccak256};
+            let hash = Keccak256::digest(&uncompressed.as_bytes()[1..]);
+            format!("0x{}", hex::encode(&hash[12..]))
+        };
+        assert_eq!(recovered_addr, addr, "ecrecover must return the derived EVM address");
+
+        // Determinism (RFC-6979): same inputs → same signature.
+        let sig2 = ks.sign_secp256k1_prehash(None, seed, &digest).unwrap();
+        assert_eq!(sig, sig2, "recoverable signing must be deterministic");
+    }
+
+    /// `ecrecover`: recover the 0x address that produced a 65-byte r‖s‖v
+    /// signature over `digest`. Mirrors what an EVM verifier (or
+    /// `ecrecover` precompile) does on-chain.
+    fn recover_evm_addr(digest: &[u8; 32], sig: &[u8; 65]) -> String {
+        assert!(sig[64] == 27 || sig[64] == 28, "v must be 27/28, got {}", sig[64]);
+        let recid = k256::ecdsa::RecoveryId::from_byte(sig[64] - 27).unwrap();
+        let signature = k256::ecdsa::Signature::from_slice(&sig[..64]).unwrap();
+        let vk = k256::ecdsa::VerifyingKey::recover_from_prehash(digest, &signature, recid)
+            .expect("recover must succeed");
+        use sha3::{Digest as _, Keccak256};
+        let uncompressed = vk.to_encoded_point(false);
+        let hash = Keccak256::digest(&uncompressed.as_bytes()[1..]);
+        format!("0x{}", hex::encode(&hash[12..]))
+    }
+
+    // End-to-end (at the crypto layer) for each of the three EVM endpoints:
+    // build the digest exactly as the handler does, sign, then `ecrecover` and
+    // assert the recovered address == the wallet's derived EVM address.
+
+    #[test]
+    fn evm_eip191_message_sign_and_verify() {
+        // POST /wallet/evm/sign-message path: EIP-191 personal_sign digest.
+        let ks = Keystore::from_master_secret(&fixed_master()).unwrap();
+        let seed = "wallet:fixed:evm";
+        let (addr, _) = ks.derive_eth_address(None, seed).unwrap();
+        let digest = crate::eip712::eip191_digest_for("Sign in to Polymarket", false).unwrap();
+        let sig = ks.sign_secp256k1_prehash(None, seed, &digest).unwrap();
+        assert_eq!(
+            recover_evm_addr(&digest, &sig),
+            addr,
+            "EIP-191 personal_sign must ecrecover to the wallet's EVM address"
+        );
+    }
+
+    #[test]
+    fn evm_eip712_typed_data_sign_and_verify() {
+        // POST /wallet/evm/sign-typed-data path: EIP-712 v4 digest (the
+        // canonical spec "Mail" example, full eth_signTypedData_v4 shape).
+        use serde_json::json;
+        let ks = Keystore::from_master_secret(&fixed_master()).unwrap();
+        let seed = "wallet:fixed:evm";
+        let (addr, _) = ks.derive_eth_address(None, seed).unwrap();
+        let typed = json!({
+            "domain": { "name": "Ether Mail", "version": "1", "chainId": 1,
+                        "verifyingContract": "0xcccccccccccccccccccccccccccccccccccccccc" },
+            "types": {
+                "EIP712Domain": [
+                    { "name": "name", "type": "string" }, { "name": "version", "type": "string" },
+                    { "name": "chainId", "type": "uint256" }, { "name": "verifyingContract", "type": "address" }
+                ],
+                "Person": [ { "name": "name", "type": "string" }, { "name": "wallet", "type": "address" } ],
+                "Mail": [ { "name": "from", "type": "Person" }, { "name": "to", "type": "Person" },
+                          { "name": "contents", "type": "string" } ]
+            },
+            "primaryType": "Mail",
+            "message": {
+                "from": { "name": "Cow", "wallet": "0xcd2a3d9f938e13cd947ec05abc7fe734df8dd826" },
+                "to": { "name": "Bob", "wallet": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+                "contents": "Hello, Bob!"
+            }
+        });
+        let digest = crate::eip712::eip712_digest(&typed).unwrap();
+        let sig = ks.sign_secp256k1_prehash(None, seed, &digest).unwrap();
+        assert_eq!(
+            recover_evm_addr(&digest, &sig),
+            addr,
+            "EIP-712 typed-data must ecrecover to the wallet's EVM address"
+        );
+    }
+
+    #[test]
+    fn evm_raw_transaction_sign_and_verify() {
+        // POST /wallet/evm/sign-transaction path: keccak256 of the supplied
+        // serialized unsigned tx (here a real EIP-1559 `0x02‖rlp(...)` blob).
+        use sha3::{Digest as _, Keccak256};
+        let ks = Keystore::from_master_secret(&fixed_master()).unwrap();
+        let seed = "wallet:fixed:evm";
+        let (addr, _) = ks.derive_eth_address(None, seed).unwrap();
+        let unsigned_tx = hex::decode(
+            "02f86c0180843b9aca00851bf08eb000825208\
+             94abababababababababababababababababababab880de0b6b3a764000080c0",
+        )
+        .unwrap();
+        let mut digest = [0u8; 32];
+        digest.copy_from_slice(&Keccak256::digest(&unsigned_tx));
+        let sig = ks.sign_secp256k1_prehash(None, seed, &digest).unwrap();
+        assert_eq!(
+            recover_evm_addr(&digest, &sig),
+            addr,
+            "raw-tx signing hash must ecrecover to the wallet's EVM address"
         );
     }
 

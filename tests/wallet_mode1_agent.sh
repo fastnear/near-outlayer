@@ -181,20 +181,34 @@ echo ""
 # Test 2: Get Ethereum address
 # ============================================================================
 
-echo "2. Get Ethereum address (not yet supported → 400)"
+echo "2. Get Ethereum address (EVM now supported → 200; one 0x address across all EVM chains)"
 parse_response "$(curl_get "/wallet/v1/address?chain=ethereum")"
-assert_status "400" "$RESP_CODE" "GET /address?chain=ethereum"
-assert_json_field "$RESP_BODY" ".error" "unsupported_chain" "error code"
+assert_status "200" "$RESP_CODE" "GET /address?chain=ethereum"
+EVM_ADDR=$(echo "$RESP_BODY" | jq -r '.address' 2>/dev/null || echo "PARSE_ERROR")
+TOTAL=$((TOTAL + 1))
+if [[ "$EVM_ADDR" =~ ^0x[0-9a-fA-F]{40}$ ]]; then
+    echo -e "  ${GREEN}PASS${NC} ethereum address is a 0x EOA ($EVM_ADDR)"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "  ${RED}FAIL${NC} ethereum address is not a 0x EOA (got '$EVM_ADDR')"
+    FAILED=$((FAILED + 1))
+fi
+# All EVM chains share ONE derived secp256k1 address.
+parse_response "$(curl_get "/wallet/v1/address?chain=polygon")"
+assert_status "200" "$RESP_CODE" "GET /address?chain=polygon"
+assert_json_field "$RESP_BODY" ".address" "$EVM_ADDR" "polygon address == ethereum address (one EVM address)"
 echo ""
 
 # ============================================================================
 # Test 3: Unsupported chain
 # ============================================================================
 
-echo "3. Unsupported chain"
+echo "3. Unsupported chains (bitcoin + solana still gated)"
 parse_response "$(curl_get "/wallet/v1/address?chain=bitcoin")"
 assert_status "400" "$RESP_CODE" "GET /address?chain=bitcoin"
 assert_json_field "$RESP_BODY" ".error" "unsupported_chain" "error code"
+parse_response "$(curl_get "/wallet/v1/address?chain=solana")"
+assert_status "400" "$RESP_CODE" "GET /address?chain=solana (no signing path yet)"
 echo ""
 
 # ============================================================================

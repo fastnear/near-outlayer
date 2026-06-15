@@ -36,6 +36,14 @@ export interface PolicyForm {
   cross_chain_withdraw_enabled: boolean;
   /** sign_message: comma-separated NEP-413 recipient allowlist (default-DENY; never fund-moving). */
   sign_message_allowed_recipients: string;
+  /** evm_sign: allow EVM signing (EIP-712 / EIP-191 / raw tx). At the engine level this is
+   *  DEFAULT-DENY under a policy (like the other fund-moving caps) — an EIP-712 signature is
+   *  itself fund-moving (EIP-3009/EIP-2612), so it must be opted in. This form writes it
+   *  EXPLICITLY: enabled → `evm_sign.allowed=true`, disabled → `evm_sign.allowed=false`. */
+  evm_sign_enabled: boolean;
+  /** evm_sign.raw_tx: additionally permit signing arbitrary raw EVM transactions. Default-OFF —
+   *  a separate kill-switch (does NOT contain typed-data drains). */
+  evm_sign_raw_tx: boolean;
 }
 
 export const DEFAULT_POLICY: PolicyForm = {
@@ -63,6 +71,11 @@ export const DEFAULT_POLICY: PolicyForm = {
   swap_enabled: false,
   cross_chain_withdraw_enabled: false,
   sign_message_allowed_recipients: '',
+  // EVM-signing checkbox starts UNCHECKED — fund-moving, so opt-in like every
+  // other capability (matches the engine's default-DENY). A dashboard policy
+  // then writes `evm_sign.allowed=false` until the owner deliberately enables it.
+  evm_sign_enabled: false,
+  evm_sign_raw_tx: false,
 };
 
 // ============================================================================
@@ -166,6 +179,13 @@ export function buildPolicyRules(
   if (smRecipients.length > 0) {
     capabilities.sign_message = { allowed: true, allowed_recipients: smRecipients };
   }
+  // evm_sign is DEFAULT-DENY under a policy, so emit it EXPLICITLY to reflect the
+  // form: enabled → {allowed:true}(+raw_tx if opted in); disabled → {allowed:false}.
+  {
+    const evm: Record<string, unknown> = { allowed: form.evm_sign_enabled };
+    if (form.evm_sign_enabled && form.evm_sign_raw_tx) evm.raw_tx = true;
+    capabilities.evm_sign = evm;
+  }
 
   const policy: Record<string, unknown> = {};
   if (Object.keys(rules).length > 0) policy.rules = rules;
@@ -241,6 +261,10 @@ export function parsePolicyResponse(
     swap_enabled: caps.swap?.allowed === true,
     cross_chain_withdraw_enabled: caps.cross_chain_withdraw?.allowed === true,
     sign_message_allowed_recipients: (caps.sign_message?.allowed_recipients || []).join(', '),
+    // evm_sign is DEFAULT-DENY: the form shows it enabled only when the policy
+    // explicitly set allowed:true.
+    evm_sign_enabled: caps.evm_sign?.allowed === true,
+    evm_sign_raw_tx: caps.evm_sign?.raw_tx === true,
   };
 
   let approval: ParsedPolicy['approval'] = null;

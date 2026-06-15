@@ -4,6 +4,10 @@ This documents the **wallet / custody / NEAR-Intents** e2e surface (the TEE keys
 signing path). It is the single source of truth for **what must be run to be confident the whole
 custody stack works**, and how the suite keeps real funds safe.
 
+> EVM signing v1 (one shared secp256k1 `0x` address + EIP-191 / EIP-712 v4 / raw-tx signing) is
+> covered by `wallet_evm_sign_e2e.sh` (wired into `run_all.sh`) — read-only, no funds, runs on
+> testnet (needs only coordinator + keystore). See [WALLET_TESTS.md → EVM signing](WALLET_TESTS.md#evm-signing).
+
 ## The split principle
 
 > Everything that does NOT touch NEAR Intents runs on **testnet**.
