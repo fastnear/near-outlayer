@@ -2,6 +2,7 @@
 
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback, ReactNode } from 'react';
 import { NearConnector } from '@hot-labs/near-connect';
+import { extractTxHashFromError, waitForTransactionOutcome } from '@/lib/near-rpc';
 
 export type NetworkType = 'testnet' | 'mainnet';
 
@@ -327,8 +328,23 @@ export function NearWalletProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    return await wallet.signAndSendTransaction(params);
-  }, []);
+    try {
+      return await wallet.signAndSendTransaction(params);
+    } catch (err) {
+      // The wallet may report a false failure when its bundled near-api-js
+      // broadcasts the tx, the RPC times out, and the fallback tx-status
+      // poll hits a load-balanced node that hasn't synced the tx yet:
+      //   "[-32000] Server error: Transaction <hash> doesn't exist".
+      // The tx is on chain — recover its real outcome from our own RPC
+      // before surfacing the error to the user.
+      const hash = extractTxHashFromError(err);
+      if (hash && accountId) {
+        const outcome = await waitForTransactionOutcome(hash, accountId, config.rpcUrl);
+        if (outcome) return outcome;
+      }
+      throw err;
+    }
+  }, [accountId, network, config.rpcUrl]);
 
   const signMessage = useCallback(async (params: SignMessageParams): Promise<SignedMessage | null> => {
     const connector = connectorRef.current;

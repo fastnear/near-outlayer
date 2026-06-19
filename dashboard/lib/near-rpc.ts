@@ -91,6 +91,92 @@ export async function fetchTransaction(
 }
 
 /**
+ * Extract a NEAR transaction hash from a wallet/RPC error message.
+ *
+ * near-api-js' JsonRpcProvider (bundled inside the wallet sandboxes
+ * near-connect drives) formats RPC errors as
+ *   "[-32000] Server error: Transaction <base58hash> doesn't exist"
+ * when it broadcasts via broadcast_tx_commit, the RPC times out, and the
+ * fallback `tx`/tx_status poll lands — behind a load balancer — on a node
+ * that hasn't synced the just-broadcast tx yet. The tx IS on chain; the
+ * hash embedded in that message lets us re-fetch the real outcome.
+ *
+ * The error crosses a postMessage bridge from the wallet iframe, so its
+ * structured fields are usually flattened to a string — we scan every
+ * plausible carrier (message, data, cause, and the JSON dump).
+ */
+export function extractTxHashFromError(err: unknown): string | null {
+  const candidates: string[] = [];
+  if (err instanceof Error) candidates.push(err.message);
+  else if (typeof err === 'string') candidates.push(err);
+  if (err && typeof err === 'object') {
+    const o = err as Record<string, unknown>;
+    for (const k of ['message', 'data', 'cause']) {
+      if (typeof o[k] === 'string') candidates.push(o[k] as string);
+    }
+    try {
+      candidates.push(JSON.stringify(err));
+    } catch {
+      // Circular / non-serialisable — the other candidates still apply.
+    }
+  }
+
+  // base58 alphabet (no 0OIl); a 32-byte hash is 43-44 chars, allow slack.
+  const re = /Transaction ([1-9A-HJ-NP-Za-km-z]{32,64}) (?:doesn'?t|does not) exist/i;
+  for (const c of candidates) {
+    const m = c.match(re);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+/**
+ * Poll an RPC for a transaction's final outcome, retrying while the node
+ * still reports it as unknown / not-yet-synced. Returns the
+ * FinalExecutionOutcome (with `.status` and `.transaction.hash`) once
+ * available, or null if it never surfaces within the retry budget.
+ *
+ * Used to recover after a wallet surfaces a false "doesn't exist" failure
+ * for a tx that actually landed (see extractTxHashFromError). We poll our
+ * own configured RPC (FastNEAR) rather than whatever the wallet sandbox
+ * used. The interval is intrinsic to polling — we are waiting for the RPC
+ * indexer to catch up, not delaying arbitrarily.
+ */
+export async function waitForTransactionOutcome(
+  txHash: string,
+  accountId: string,
+  rpcUrl: string,
+  { attempts = 12, intervalMs = 1500 }: { attempts?: number; intervalMs?: number } = {}
+): Promise<TransactionOutcome | null> {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const response = await fetch(rpcUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 'dontcare',
+          method: 'EXPERIMENTAL_tx_status',
+          params: [txHash, accountId],
+        }),
+      });
+      const data = await response.json();
+      // `status` present means the tx executed (Success or Failure). A
+      // not-yet-synced node returns an error instead → keep polling.
+      if (data?.result?.status) {
+        return data.result;
+      }
+    } catch {
+      // Network blip — retry.
+    }
+    if (i < attempts - 1) {
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+  }
+  return null;
+}
+
+/**
  * Extract output from transaction (from outlayer contract receipt)
  * @param tx - Transaction outcome
  * @param network - Network type to determine correct contract ID
