@@ -34,3 +34,6 @@
 [submodule "self-hosted-scheduler"]
 	path = self-hosted-scheduler
 	url = https://github.com/out-layer/self-hosted-scheduler.git
+[submodule "deploy/self-hosted-tdx"]
+	path = deploy/self-hosted-tdx
+	url = https://github.com/out-layer/self-hosted-tdx.git

@@ -195,7 +195,10 @@ echo ""
 echo "4. POST /wallet/v1/evm/sign-transaction (serialized unsigned EIP-1559 tx)"
 # 0x02 ‖ rlp(chainId, nonce, maxPrio, maxFee, gas, to, value, data, accessList[])
 UNSIGNED_TX="0x02f86c0180843b9aca00851bf08eb00082520894abababababababababababababababababababab880de0b6b3a764000080c0"
-parse_response "$(curl_post "/wallet/v1/evm/sign-transaction" "{\"chain\":\"polygon\",\"unsigned_tx\":\"$UNSIGNED_TX\"}")"
+# Build the body in a variable (printf) so the `{...,...}` literal can't undergo
+# bash brace/word-splitting — same safe pattern as the typed-data body above.
+TX_BODY=$(printf '{"chain":"polygon","unsigned_tx":"%s"}' "$UNSIGNED_TX")
+parse_response "$(curl_post "/wallet/v1/evm/sign-transaction" "$TX_BODY")"
 assert_status "200" "$RESP_CODE" "POST /evm/sign-transaction (no policy ⇒ raw-tx unrestricted)"
 assert_evm_sig "$(echo "$RESP_BODY" | jq -r '.signature')" "raw-tx signature shape"
 echo ""
