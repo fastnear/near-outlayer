@@ -78,7 +78,7 @@ export default function TrustVerificationPage() {
           <div className="border border-green-200 rounded-lg p-4 bg-green-50">
             <h4 className="font-semibold text-green-900 mb-2">Self-hosted TDX</h4>
             <p className="text-sm text-gray-700 mb-2">
-              OutLayer&apos;s own bare-metal dstack node. Human-verifiable attestation is rendered at{' '}
+              A self-hosted bare-metal dstack node. Human-verifiable attestation is rendered at{' '}
               <a href="https://workers.outlayer.ai" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
                 workers.outlayer.ai
               </a>
@@ -184,12 +184,12 @@ export default function TrustVerificationPage() {
               </tr>
               <tr>
                 <td className="px-4 py-3 text-sm font-semibold text-gray-700">Who hosts the hardware</td>
-                <td className="px-4 py-3 text-sm text-gray-700 font-medium">OutLayer bare-metal node</td>
+                <td className="px-4 py-3 text-sm text-gray-700 font-medium">Bare-metal node</td>
                 <td className="px-4 py-3 text-sm text-gray-700 font-medium">Phala Cloud</td>
               </tr>
               <tr className="bg-gray-50">
                 <td className="px-4 py-3 text-sm font-semibold text-gray-700">Deploy-time KMS</td>
-                <td className="px-4 py-3 text-sm text-gray-700 font-medium">OutLayer&apos;s own dstack-kms (in TEE)</td>
+                <td className="px-4 py-3 text-sm text-gray-700 font-medium">Self-hosted dstack-kms (in TEE)</td>
                 <td className="px-4 py-3 text-sm text-gray-700 font-medium">Phala&apos;s dstack KMS</td>
               </tr>
               <tr>
@@ -199,7 +199,7 @@ export default function TrustVerificationPage() {
               </tr>
               <tr className="bg-gray-50">
                 <td className="px-4 py-3 text-sm font-semibold text-gray-700">Platform (FMSPC collateral)</td>
-                <td className="px-4 py-3 text-sm text-gray-700 font-medium">OutLayer node&apos;s FMSPC</td>
+                <td className="px-4 py-3 text-sm text-gray-700 font-medium">Self-hosted node&apos;s FMSPC</td>
                 <td className="px-4 py-3 text-sm text-gray-700 font-medium">Phala platform FMSPC</td>
               </tr>
               <tr>
