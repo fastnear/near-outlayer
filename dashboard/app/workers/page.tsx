@@ -84,21 +84,31 @@ export default function WorkersPage() {
                     </tr>
                   ) : (
                     workers.map((worker) => {
-                      // Extract app_id from worker_id (format: network-type-app_id)
+                      // Extract app_id from worker_id (format: network-type-app_id).
                       const parts = worker.worker_id.split('-');
                       const appId = parts.length >= 3 ? parts.slice(2).join('-') : null;
-                      const isPhalaAppId = appId && /^[a-f0-9]{40}$/i.test(appId);
+                      const hasAppId = appId && /^[a-f0-9]{40}$/i.test(appId);
+                      // Routing convention: Phala-hosted workers carry "phala" in their name/id;
+                      // our self-hosted TDX workers do not. So "phala" -> Phala's explorer, else
+                      // our own attestation portal (workers.outlayer.ai/app/<app_id>).
+                      const isPhala =
+                        /phala/i.test(worker.worker_id) || /phala/i.test(worker.worker_name);
+                      const attestationUrl = hasAppId
+                        ? isPhala
+                          ? `https://trust.phala.com/app/${appId}?selected=app-code`
+                          : `https://workers.outlayer.ai/app/${appId}`
+                        : null;
 
                       return (
                       <tr key={worker.worker_id}>
                         <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-900 font-mono">
-                          {isPhalaAppId ? (
+                          {attestationUrl ? (
                             <a
-                              href={`https://trust.phala.com/app/${appId}?selected=app-code`}
+                              href={attestationUrl}
                               target="_blank"
                               rel="noopener noreferrer"
                               className="text-blue-600 hover:text-blue-800 hover:underline"
-                              title="Verify TEE attestation on Phala Trust"
+                              title={isPhala ? 'Verify TEE attestation on Phala Trust' : 'Verify TEE attestation on OutLayer'}
                             >
                               {worker.worker_id}
                             </a>
