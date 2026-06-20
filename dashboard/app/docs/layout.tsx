@@ -206,9 +206,11 @@ const pageStructure = {
   ],
   '/docs/trust-verification': [
     { id: 'overview', title: 'Trust Architecture' },
-    { id: 'phala-trust-center', title: 'Phala Trust Center' },
-    { id: 'sigstore', title: 'GitHub Releases & Sigstore' },
+    { id: 'deployment-methods', title: 'Two Ways Workers Run' },
+    { id: 'verify-deployments', title: 'Verifying Each Deployment' },
+    { id: 'verify-execution', title: 'Verify Any Execution' },
     { id: 'measurements', title: '5-Measurement TDX Verification' },
+    { id: 'sigstore', title: 'GitHub Releases & Sigstore' },
     { id: 'registration-flow', title: 'Worker Registration Flow' },
     { id: 'ephemeral-keys', title: 'Ephemeral Keys & Blockchain Trail' },
     { id: 'ckd', title: 'Deterministic Keystore Secrets (CKD)' },

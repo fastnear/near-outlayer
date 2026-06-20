@@ -56,95 +56,269 @@ export default function TrustVerificationPage() {
             </p>
           </div>
         </div>
-      </section>
-
-      {/* Phala Trust Center */}
-      <section className="mb-12">
-        <AnchorHeading id="phala-trust-center">Phala Trust Center</AnchorHeading>
 
         <p className="text-gray-700 mb-4">
-          OutLayer workers run on{' '}
-          <a href="https://phala.network" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
-            Phala Cloud
-          </a>
-          , which provides a Trust Center for verifying deployed applications.
+          Whatever hardware a worker runs on, these three pillars hold. The next two sections show
+          that the cryptographic guarantee is the same across both deployment methods, and how to
+          verify any individual execution yourself.
+        </p>
+      </section>
+
+      {/* Two ways workers run */}
+      <section className="mb-12">
+        <AnchorHeading id="deployment-methods">Two Ways Workers Run</AnchorHeading>
+
+        <p className="text-gray-700 mb-4">
+          OutLayer workers are deployed in two ways. <strong>Both are genuine Intel TDX</strong> —
+          they differ only in who hosts the hardware and which portal renders the human-readable
+          attestation.
         </p>
 
-        <div className="bg-blue-50 border-l-4 border-blue-400 p-4 mb-6">
-          <p className="text-sm text-blue-800 mb-2">
-            <strong>How to verify:</strong> Visit the Phala Trust Center for the OutLayer apps.
-            The page shows the exact <strong>Docker image hash</strong> running in the TEE. This hash
-            corresponds to a specific GitHub release.
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+          <div className="border border-green-200 rounded-lg p-4 bg-green-50">
+            <h4 className="font-semibold text-green-900 mb-2">Self-hosted TDX</h4>
+            <p className="text-sm text-gray-700 mb-2">
+              OutLayer&apos;s own bare-metal dstack node. Human-verifiable attestation is rendered at{' '}
+              <a href="https://workers.outlayer.ai" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+                workers.outlayer.ai
+              </a>
+              .
+            </p>
+          </div>
+          <div className="border border-blue-200 rounded-lg p-4 bg-blue-50">
+            <h4 className="font-semibold text-blue-900 mb-2">Phala Cloud</h4>
+            <p className="text-sm text-gray-700 mb-2">
+              Managed dstack hosted by{' '}
+              <a href="https://phala.network" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+                Phala Cloud
+              </a>
+              . Human-verifiable attestation is rendered at{' '}
+              <a href="https://trust.phala.com" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+                trust.phala.com
+              </a>
+              .
+            </p>
+          </div>
+        </div>
+
+        <p className="text-gray-700 mb-4">
+          In both cases the worker runs in an Intel TDX confidential VM via dstack and emits a TDX
+          quote that contains the worker&apos;s ed25519 public key in <code>report_data</code> plus
+          all 5 measurements. Both register on the <strong>same on-chain register-contract</strong>
+          {' '}(<code>worker.outlayer.near</code> on mainnet, <code>worker.outlayer.testnet</code> on
+          testnet), which verifies the Intel TDX quote signature (Intel DCAP) and checks the 5
+          measurements against an admin allowlist.
+        </p>
+      </section>
+
+      {/* Verifying each deployment */}
+      <section className="mb-12">
+        <AnchorHeading id="verify-deployments">Verifying Each Deployment</AnchorHeading>
+
+        <p className="text-gray-700 mb-4">
+          Side by side, the two deployment methods are cryptographically identical. Only the last
+          two rows differ.
+        </p>
+
+        <div className="overflow-x-auto mb-6">
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Aspect</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Self-hosted TDX</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Phala Cloud</th>
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              <tr>
+                <td className="px-4 py-3 text-sm font-semibold text-gray-700">TEE hardware</td>
+                <td className="px-4 py-3 text-sm text-gray-600">Intel TDX (Xeon)</td>
+                <td className="px-4 py-3 text-sm text-gray-600">Intel TDX (Xeon)</td>
+              </tr>
+              <tr className="bg-gray-50">
+                <td className="px-4 py-3 text-sm font-semibold text-gray-700">Runtime</td>
+                <td className="px-4 py-3 text-sm text-gray-600">dstack confidential VM</td>
+                <td className="px-4 py-3 text-sm text-gray-600">dstack confidential VM</td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 text-sm font-semibold text-gray-700">Attestation</td>
+                <td className="px-4 py-3 text-sm text-gray-600">Intel TDX quote (DCAP)</td>
+                <td className="px-4 py-3 text-sm text-gray-600">Intel TDX quote (DCAP)</td>
+              </tr>
+              <tr className="bg-gray-50">
+                <td className="px-4 py-3 text-sm font-semibold text-gray-700">Quote signature</td>
+                <td className="px-4 py-3 text-sm text-gray-600">Intel-signed, verified via Intel DCAP</td>
+                <td className="px-4 py-3 text-sm text-gray-600">Intel-signed, verified via Intel DCAP</td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 text-sm font-semibold text-gray-700">Measurements</td>
+                <td className="px-4 py-3 text-sm text-gray-600">MRTD + RTMR0&ndash;3 (5 registers)</td>
+                <td className="px-4 py-3 text-sm text-gray-600">MRTD + RTMR0&ndash;3 (5 registers)</td>
+              </tr>
+              <tr className="bg-gray-50">
+                <td className="px-4 py-3 text-sm font-semibold text-gray-700">On-chain registration</td>
+                <td className="px-4 py-3 text-sm text-gray-600"><code>worker.outlayer.{'{near,testnet}'}</code> — same register-contract, 5-measurement allowlist</td>
+                <td className="px-4 py-3 text-sm text-gray-600"><code>worker.outlayer.{'{near,testnet}'}</code> — same register-contract, 5-measurement allowlist</td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 text-sm font-semibold text-gray-700">Secret custody</td>
+                <td className="px-4 py-3 text-sm text-gray-600">NEAR MPC keystore (CKD)</td>
+                <td className="px-4 py-3 text-sm text-gray-600">NEAR MPC keystore (CKD)</td>
+              </tr>
+              <tr className="bg-gray-50">
+                <td className="px-4 py-3 text-sm font-semibold text-gray-700">Who hosts the hardware</td>
+                <td className="px-4 py-3 text-sm text-gray-700 font-medium">OutLayer bare-metal node</td>
+                <td className="px-4 py-3 text-sm text-gray-700 font-medium">Phala Cloud</td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 text-sm font-semibold text-gray-700">Attestation portal</td>
+                <td className="px-4 py-3 text-sm text-gray-700 font-medium">
+                  <a href="https://workers.outlayer.ai" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+                    workers.outlayer.ai
+                  </a>
+                </td>
+                <td className="px-4 py-3 text-sm text-gray-700 font-medium">
+                  <a href="https://trust.phala.com" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+                    trust.phala.com
+                  </a>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div className="bg-green-50 border-l-4 border-green-400 p-4 mb-6">
+          <p className="text-sm text-green-800">
+            <strong>Takeaway:</strong> The cryptographic guarantee is identical across both
+            deployments — same TDX hardware, same dstack runtime, same Intel-signed quote verified
+            via Intel DCAP, same 5-measurement allowlist on the same on-chain register-contract.
+            Only the host and the portal URL differ. Verify the self-hosted node at{' '}
+            <a href="https://workers.outlayer.ai" target="_blank" rel="noopener noreferrer" className="underline">
+              workers.outlayer.ai
+            </a>
+            {' '}and Phala Cloud at{' '}
+            <a href="https://trust.phala.com" target="_blank" rel="noopener noreferrer" className="underline">
+              trust.phala.com
+            </a>
+            .
           </p>
-          <ul className="text-sm text-blue-800 list-disc list-inside space-y-1">
-            <li>
-              <strong>Worker:</strong>{' '}
-              <a href="https://trust.phala.com/app/dc3959bdba3f3681415a3022590cf434bb599a01?selected=app-code" target="_blank" rel="noopener noreferrer" className="underline">
-                dc3959bdba3f3681415a3022590cf434bb599a01
-              </a>
+        </div>
+      </section>
+
+      {/* Verify any execution */}
+      <section className="mb-12">
+        <AnchorHeading id="verify-execution">Verify Any Execution</AnchorHeading>
+
+        <p className="text-gray-700 mb-4">
+          Beyond verifying that a worker is genuine, you can verify <strong>any individual
+          execution</strong> — for both NEAR blockchain and HTTPS calls — directly from the
+          dashboard.
+        </p>
+
+        <div className="bg-white border-2 border-purple-300 rounded-lg p-6 mb-6">
+          <ol className="space-y-3">
+            <li className="flex items-start">
+              <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-purple-500 text-white text-sm font-bold mr-3 flex-shrink-0">1</span>
+              <div>
+                <p className="font-semibold text-gray-900">Open Executions</p>
+                <p className="text-gray-700 text-sm">
+                  Go to <Link href="/executions" className="text-[var(--primary-orange)] hover:underline">Executions</Link>
+                  {' '}(the page is titled <strong>Job History</strong>).
+                </p>
+              </div>
             </li>
-            <li>
-              <strong>Keystore:</strong>{' '}
-              <a href="https://trust.phala.com/app/5319e38108c14ed325d1a22e8815527320aa3407?selected=app-code" target="_blank" rel="noopener noreferrer" className="underline">
-                5319e38108c14ed325d1a22e8815527320aa3407
-              </a>
+            <li className="flex items-start">
+              <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-purple-500 text-white text-sm font-bold mr-3 flex-shrink-0">2</span>
+              <div>
+                <p className="font-semibold text-gray-900">Click the shield-check icon</p>
+                <p className="text-gray-700 text-sm">
+                  In the <strong>TEE</strong> column, click the <strong>shield-check</strong> icon
+                  (hover tooltip <em>View attestation report</em>) on any row. This works for both
+                  NEAR blockchain and HTTPS executions.
+                </p>
+              </div>
             </li>
-          </ul>
-          <p className="text-xs text-blue-600 mt-2">
-            App IDs change when workers are upgraded to a new version.
+            <li className="flex items-start">
+              <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-purple-500 text-white text-sm font-bold mr-3 flex-shrink-0">3</span>
+              <div>
+                <p className="font-semibold text-gray-900">Read the TEE Attestation report</p>
+                <p className="text-gray-700 text-sm">
+                  The <strong>TEE Attestation</strong> report opens, showing the worker measurement,
+                  source code, hashes, and the raw quote (detailed below).
+                </p>
+              </div>
+            </li>
+          </ol>
+        </div>
+
+        <AnchorHeading id="report-contents" level={3}>What the Report Shows</AnchorHeading>
+
+        <div className="overflow-x-auto mb-6">
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Field</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">What It Proves</th>
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              <tr>
+                <td className="px-4 py-3 text-sm font-semibold text-gray-700">Worker Measurement (RTMR3)</td>
+                <td className="px-4 py-3 text-sm text-gray-600">The TEE environment hash. Ties the run to a registered worker.</td>
+              </tr>
+              <tr className="bg-gray-50">
+                <td className="px-4 py-3 text-sm font-semibold text-gray-700">Source Code</td>
+                <td className="px-4 py-3 text-sm text-gray-600">Link to the exact <code>repo@commit</code> that was executed.</td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 text-sm font-semibold text-gray-700">WASM Hash / Input Hash / Output Hash</td>
+                <td className="px-4 py-3 text-sm text-gray-600">Content-addressable hashes of the binary, the input, and the output.</td>
+              </tr>
+              <tr className="bg-gray-50">
+                <td className="px-4 py-3 text-sm font-semibold text-gray-700">TDX Quote</td>
+                <td className="px-4 py-3 text-sm text-gray-600">The raw Intel-signed quote, plus a verify button (below).</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p className="text-gray-700 mb-4">
+          The report includes a <strong>&quot;Verify Quote (RTMR3 + Task Hash)&quot;</strong> button.
+          Client-side, it extracts <strong>RTMR3</strong> (the worker measurement) and the{' '}
+          <strong>Task Hash from REPORTDATA</strong> and checks them. The Task Hash commits to this
+          execution&apos;s input, output, WASM, and commit — so the Intel-signed quote cannot be
+          reused for a different run.
+        </p>
+
+        <div className="bg-purple-50 border-l-4 border-purple-400 p-4 mb-6">
+          <p className="text-sm text-purple-800">
+            <strong>Input/Output verification:</strong> For NEAR jobs, click{' '}
+            <strong>&quot;Load &amp; Verify from Blockchain&quot;</strong> — it fetches the
+            transaction, re-hashes the input/output, and compares against the report. For HTTPS jobs,
+            paste the request/response to verify them against the hashes.
           </p>
         </div>
 
-        <AnchorHeading id="image-hash" level={3}>What the Image Hash Proves</AnchorHeading>
-
         <p className="text-gray-700 mb-4">
-          The Docker image hash shown in Phala Trust Center is a content-addressable identifier.
-          It proves that the exact binary code running inside the TEE matches a specific build.
-          You can verify this by:
-        </p>
-
-        <ol className="list-decimal list-inside text-gray-700 space-y-2 mb-6">
-          <li>Checking the image hash on Phala Trust Center</li>
-          <li>Finding the corresponding GitHub release with the same hash</li>
-          <li>Verifying the release has Sigstore certification (see below)</li>
-          <li>Inspecting the source code at that release tag</li>
-        </ol>
-      </section>
-
-      {/* GitHub Releases & Sigstore */}
-      <section className="mb-12">
-        <AnchorHeading id="sigstore">GitHub Releases & Sigstore</AnchorHeading>
-
-        <p className="text-gray-700 mb-4">
-          OutLayer publishes releases on GitHub with{' '}
-          <a href="https://www.sigstore.dev/" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
-            Sigstore
-          </a>
-          {' '}certification. Sigstore provides cryptographic proof that a binary was built from specific source code.
+          For NEAR jobs, a <strong>Direct Link</strong> opens a shareable standalone page at{' '}
+          <code>/attestation/{'{jobId}'}</code>.
         </p>
 
         <div className="bg-green-50 border-l-4 border-green-400 p-4 mb-6">
           <p className="text-sm text-green-800">
-            <strong>What Sigstore proves:</strong> The release binary was built by GitHub Actions CI
-            from the exact source code at that git tag. No one — not even the project maintainers —
-            can substitute a different binary without the Sigstore signature failing.
+            <strong>Takeaway:</strong> Anyone can open any execution, read the worker measurement,
+            find the exact sources, and confirm the action ran inside a TEE.
           </p>
         </div>
 
-        <AnchorHeading id="verify-release" level={3}>How to Verify a Release</AnchorHeading>
-
-        <ol className="list-decimal list-inside text-gray-700 space-y-2 mb-6">
-          <li>
-            Go to{' '}
-            <a href="https://github.com/fastnear/near-outlayer/releases" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
-              github.com/fastnear/near-outlayer/releases
-            </a>
-          </li>
-          <li>Find the release matching the version/hash from Phala Trust Center</li>
-          <li>Check the Sigstore certification badge on the release</li>
-          <li>Review the source code at that release tag</li>
-          <li>Optionally: rebuild from source and compare the hash</li>
-        </ol>
+        <div className="bg-yellow-50 border-l-4 border-yellow-500 p-4 mb-6">
+          <p className="text-sm text-yellow-800">
+            <strong>Not to be conflated:</strong> This per-execution view surfaces{' '}
+            <strong>RTMR3 + the task-hash binding</strong>. The full <strong>5-measurement</strong>
+            {' '}check (MRTD + RTMR0&ndash;3) happens once at <strong>worker registration
+            on-chain</strong>, not per execution. See the next section for the full measurement set.
+          </p>
+        </div>
       </section>
 
       {/* 5-Measurement Verification */}
@@ -153,7 +327,8 @@ export default function TrustVerificationPage() {
 
         <p className="text-gray-700 mb-4">
           Intel TDX produces 5 cryptographic measurements that together uniquely identify the TEE environment.
-          The operator contract (<code>worker.outlayer.near</code>) verifies <strong>all 5</strong>:
+          The register-contract (<code>worker.outlayer.near</code>) verifies <strong>all 5</strong> at
+          worker registration, for both deployment methods:
         </p>
 
         <div className="overflow-x-auto mb-6">
@@ -223,12 +398,49 @@ near view worker.outlayer.near is_measurements_approved '{
         </SyntaxHighlighter>
       </section>
 
+      {/* GitHub Releases & Sigstore */}
+      <section className="mb-12">
+        <AnchorHeading id="sigstore">GitHub Releases & Sigstore</AnchorHeading>
+
+        <p className="text-gray-700 mb-4">
+          OutLayer publishes releases on GitHub with{' '}
+          <a href="https://www.sigstore.dev/" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+            Sigstore
+          </a>
+          {' '}certification. Sigstore provides cryptographic proof that a binary was built from specific source code.
+        </p>
+
+        <div className="bg-green-50 border-l-4 border-green-400 p-4 mb-6">
+          <p className="text-sm text-green-800">
+            <strong>What Sigstore proves:</strong> The release binary was built by GitHub Actions CI
+            from the exact source code at that git tag. No one — not even the project maintainers —
+            can substitute a different binary without the Sigstore signature failing.
+          </p>
+        </div>
+
+        <AnchorHeading id="verify-release" level={3}>How to Verify a Release</AnchorHeading>
+
+        <ol className="list-decimal list-inside text-gray-700 space-y-2 mb-6">
+          <li>
+            Go to{' '}
+            <a href="https://github.com/fastnear/near-outlayer/releases" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+              github.com/fastnear/near-outlayer/releases
+            </a>
+          </li>
+          <li>Find the release matching the version running in the TEE</li>
+          <li>Check the Sigstore certification badge on the release</li>
+          <li>Review the source code at that release tag</li>
+          <li>Optionally: rebuild from source and compare the hash</li>
+        </ol>
+      </section>
+
       {/* Worker Registration */}
       <section className="mb-12">
         <AnchorHeading id="registration-flow">Worker Registration Flow</AnchorHeading>
 
         <p className="text-gray-700 mb-4">
-          Every worker must prove its TEE identity before it can execute code or access secrets:
+          Every worker — self-hosted or on Phala Cloud — must prove its TEE identity before it can
+          execute code or access secrets:
         </p>
 
         <div className="bg-white border-2 border-purple-300 rounded-lg p-6 mb-6">
@@ -257,7 +469,7 @@ near view worker.outlayer.near is_measurements_approved '{
               <div>
                 <p className="font-semibold text-gray-900">On-Chain Verification</p>
                 <p className="text-gray-700 text-sm">
-                  Worker calls <code>register_worker_key()</code> on the operator contract (<code>worker.outlayer.near</code>). The contract verifies
+                  Worker calls <code>register_worker_key()</code> on the register-contract (<code>worker.outlayer.near</code>). The contract verifies
                   the Intel signature, extracts all 5 measurements, checks them against the approved list,
                   and confirms the public key matches <code>report_data</code>.
                 </p>
@@ -395,7 +607,7 @@ near view worker.outlayer.near is_measurements_approved '{
               </tr>
               <tr>
                 <td className="px-4 py-3 text-sm text-gray-600">Register unauthorized worker</td>
-                <td className="px-4 py-3 text-sm text-gray-600">Operator contract verifies TDX quote before adding access key; every registration is visible on-chain</td>
+                <td className="px-4 py-3 text-sm text-gray-600">Register-contract verifies TDX quote before adding access key; every registration is visible on-chain</td>
               </tr>
             </tbody>
           </table>

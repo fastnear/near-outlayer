@@ -29,6 +29,7 @@ echo "Note: Built without wasm-opt due to bulk-memory operations in dcap-qvl/rin
 # mainnet
 # near contract deploy worker.outlayer.near use-file worker-contract.wasm with-init-call new json-args '{"owner_id": "owner.outlayer.near", "init_worker_account": "init-worker.outlayer.near"}' prepaid-gas '100.0 Tgas' attached-deposit '0 NEAR' network-config mainnet sign-with-keychain send
 # near contract deploy worker.outlayer.near use-file res/register_contract.wasm without-init-call network-config mainnet sign-with-keychain send
+# near contract call-function as-transaction worker.outlayer.near migrate json-args '{}' prepaid-gas '100.0 Tgas' attached-deposit '0 NEAR' sign-as worker.outlayer.near network-config mainnet sign-with-keychain send
 
 # Add approved measurements (use scripts/deploy_phala.sh to extract all 5 measurements)
 # near contract call-function as-transaction worker.outlayer.testnet add_approved_measurements json-args '{"measurements":{"mrtd":"...","rtmr0":"...","rtmr1":"...","rtmr2":"...","rtmr3":"..."}, "clear_others": true}' prepaid-gas '100.0 Tgas' attached-deposit '0 NEAR' sign-as owner.outlayer.testnet network-config testnet sign-with-legacy-keychain send
