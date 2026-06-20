@@ -162,6 +162,11 @@ pub struct VaultVersionInfo {
     pub approved_at: u64,
 }
 
+/// Max number of cached quote collaterals (one per platform/FMSPC, e.g. Phala + self-hosted).
+/// `submit_keystore_registration` selects the slot whose FMSPC matches the worker's quote and
+/// verifies ONLY that slot; keep small (gas).
+const MAX_COLLATERALS: usize = 2;
+
 /// Keystore DAO Contract
 ///
 /// This contract manages keystore registration through DAO governance.
@@ -209,8 +214,12 @@ pub struct KeystoreDao {
     /// Each entry contains MRTD + RTMR0-3 (all must match for registration).
     pub approved_measurements: Vec<ApprovedMeasurements>,
 
-    /// TDX quote collateral (Intel's reference data for verification)
-    pub quote_collateral: Option<String>,
+    /// Cached quote collateral(s) — Intel reference data for TDX quote verification, one slot
+    /// per platform/FMSPC (e.g. [0]=Phala 20a06f000000, [1]=self-hosted B0C06F000000).
+    /// `submit_keystore_registration` selects the slot whose FMSPC matches the worker's quote,
+    /// so a mixed fleet (Phala + self-hosted) coexists without deleting the other's collateral.
+    /// Bounded by MAX_COLLATERALS; owner manages slots via `update_collateral(collateral, index)`.
+    pub collaterals: Vec<String>,
 
     // ----- v2: vault registry (cessation flag + code-hash whitelist + verified/banned sets) -----
 
@@ -368,7 +377,7 @@ impl KeystoreDao {
             votes: LookupMap::new(StorageKey::Votes { proposal_id: 0 }),
             approved_keystores: UnorderedSet::new(StorageKey::ApprovedKeystores),
             approved_measurements: Vec::new(),
-            quote_collateral: None,
+            collaterals: Vec::new(),
             ceased_operations: false,
             approved_vault_code_hashes: UnorderedSet::new(StorageKey::ApprovedVaultCodeHashes),
             vault_versions: LookupMap::new(StorageKey::VaultVersions),
@@ -409,11 +418,40 @@ impl KeystoreDao {
             "Keystore already approved"
         );
 
-        // Verify TDX quote and extract data
-        let collateral = self.quote_collateral.clone()
-            .expect("Quote collateral required (owner must call update_collateral first)");
+        // Use ONLY cached collateral(s) (security: prevent custom collateral bypass).
+        let collaterals = self.collaterals.clone();
+        assert!(
+            !collaterals.is_empty(),
+            "No quote collateral cached (owner must call update_collateral)"
+        );
 
-        let (measurements, embedded_pubkey) = self.verify_tdx_quote(&tdx_quote_hex, &collateral);
+        // Select the collateral whose FMSPC matches the quote's, then verify ONCE.
+        // dcap-qvl verify is gas-heavy; verifying against every cached slot would exceed
+        // the caller's prepaid gas. So we pick by FMSPC first (cheap quote parse + a small
+        // JSON read of each collateral's tcb_info) and run the expensive verify only once.
+        let quote_bytes = hex::decode(&tdx_quote_hex).expect("Invalid quote hex encoding");
+        let quote_fmspc = hex::encode(
+            dcap_qvl::quote::Quote::parse(&quote_bytes)
+                .expect("Failed to parse TDX quote")
+                .fmspc()
+                .expect("No FMSPC in TDX quote"),
+        );
+        let collateral = collaterals
+            .iter()
+            .find(|c| {
+                Self::collateral_fmspc(c)
+                    .map(|f| f.eq_ignore_ascii_case(&quote_fmspc))
+                    .unwrap_or(false)
+            })
+            .unwrap_or_else(|| {
+                env::panic_str(&format!(
+                    "No cached collateral for quote FMSPC {} (owner must update_collateral for this platform)",
+                    quote_fmspc
+                ))
+            });
+        let (measurements, embedded_pubkey) = self
+            .verify_tdx_quote(&tdx_quote_hex, collateral)
+            .unwrap_or_else(|e| env::panic_str(&format!("TDX quote verification failed: {e}")));
 
         // Log app_id if provided (for TEE verification)
         if let Some(ref app_id) = app_id {
@@ -617,11 +655,28 @@ impl KeystoreDao {
         env::log_str(&format!("Removed DAO member: {}", member));
     }
 
-    /// Owner: Update TDX quote collateral
-    pub fn update_collateral(&mut self, collateral: String) {
+    /// Owner: Update TDX quote collateral at a given slot.
+    ///
+    /// `index` selects the collateral slot (0..MAX_COLLATERALS), one per platform/FMSPC — e.g.
+    /// index 0 = Phala (20a06f000000), index 1 = self-hosted (B0C06F000000). Slots must be filled
+    /// contiguously (set index N only when N <= current count). Updating a slot does NOT delete
+    /// the others, so a mixed fleet coexists.
+    pub fn update_collateral(&mut self, collateral: String, index: u32) {
         self.assert_owner();
-        self.quote_collateral = Some(collateral);
-        env::log_str("Quote collateral updated");
+        let i = index as usize;
+        assert!(i < MAX_COLLATERALS, "index must be < {} (MAX_COLLATERALS)", MAX_COLLATERALS);
+        if i < self.collaterals.len() {
+            self.collaterals[i] = collateral;
+        } else if i == self.collaterals.len() {
+            self.collaterals.push(collateral);
+        } else {
+            env::panic_str("Fill lower collateral indices first (no gaps allowed)");
+        }
+        env::log_str(&format!(
+            "Quote collateral updated at index {} (total slots: {})",
+            i,
+            self.collaterals.len()
+        ));
     }
 
     // ===== View Methods =====
@@ -684,8 +739,19 @@ impl KeystoreDao {
             "next_proposal_id": self.next_proposal_id,
             "approved_keystores_count": self.approved_keystores.len(),
             "approved_measurements_count": self.approved_measurements.len(),
-            "has_collateral": self.quote_collateral.is_some(),
+            "has_collateral": !self.collaterals.is_empty(),
+            "collaterals_count": self.collaterals.len(),
         })
+    }
+
+    /// Get cached collateral at slot 0 (backward-compatible; None if no slots set)
+    pub fn get_collateral(&self) -> Option<String> {
+        self.collaterals.first().cloned()
+    }
+
+    /// Get all cached collaterals (one per platform/FMSPC slot)
+    pub fn get_collaterals(&self) -> Vec<String> {
+        self.collaterals.clone()
     }
 
 
@@ -1040,43 +1106,66 @@ impl KeystoreDao {
 impl KeystoreDao {
     // ===== Internal Methods =====
 
-    /// Verify TDX quote and extract full measurements + public key
-    fn verify_tdx_quote(&self, tdx_quote_hex: &str, collateral_json: &str) -> (ApprovedMeasurements, PublicKey) {
+    /// Extract the FMSPC (hex) from a cached collateral so we can match it against the quote's
+    /// FMSPC and verify only the matching slot. Uses a cheap byte scan — NOT a full `serde_json`
+    /// parse of the ~22 KB collateral — to stay well under the caller's prepaid gas: `"fmspc"` is
+    /// a unique key inside the embedded tcb_info and its value is exactly 6 bytes (12 hex chars).
+    fn collateral_fmspc(collateral_str: &str) -> Option<String> {
+        let bytes = collateral_str.as_bytes();
+        let mut i = collateral_str.find("fmspc")? + "fmspc".len();
+        // skip the escaped `":"` separator (any non-hex bytes) up to the value
+        while i < bytes.len() && !bytes[i].is_ascii_hexdigit() {
+            i += 1;
+        }
+        let start = i;
+        while i < bytes.len() && bytes[i].is_ascii_hexdigit() {
+            i += 1;
+        }
+        let hex = collateral_str.get(start..i)?;
+        (hex.len() >= 12).then(|| hex[..12].to_string())
+    }
+
+    /// Verify TDX quote and extract full measurements + public key.
+    ///
+    /// Returns Err (not panic) on any failure (e.g. mismatched-FMSPC collateral or bad signature),
+    /// so the caller can surface a clear reason without aborting before slot selection logic.
+    fn verify_tdx_quote(&self, tdx_quote_hex: &str, collateral_json: &str) -> Result<(ApprovedMeasurements, PublicKey), String> {
         use dcap_qvl::verify;
 
         // Decode hex quote
-        let quote_bytes = hex::decode(tdx_quote_hex).expect("Invalid hex encoding");
+        let quote_bytes = hex::decode(tdx_quote_hex).map_err(|e| format!("Invalid hex encoding: {e}"))?;
 
         // Parse collateral
         let collateral_value: serde_json::Value = serde_json::from_str(collateral_json)
-            .expect("Failed to parse collateral JSON");
+            .map_err(|e| format!("Failed to parse collateral JSON: {e}"))?;
         let collateral = Collateral::try_from_json(collateral_value)
-            .expect("Failed to parse collateral");
+            .map_err(|e| format!("Failed to parse collateral: {e}"))?;
 
         // Verify quote with dcap-qvl 0.3.11
         let now = env::block_timestamp() / 1_000_000_000; // Convert nanos to seconds
         let result = verify::verify(&quote_bytes, collateral.inner(), now)
-            .expect("TDX quote verification failed");
+            .map_err(|e| format!("TDX quote verification failed (signature/TCB/collateral mismatch): {e:?}"))?;
 
         // Reject anything but an up-to-date platform: dcap-qvl's verify() returns Ok
         // for OutOfDate / ConfigurationNeeded / SWHardeningNeeded — only Revoked errors.
-        assert_eq!(
-            result.status.as_str(),
-            "UpToDate",
-            "TDX TCB status not acceptable: {} (platform needs a firmware/microcode update)",
-            result.status
-        );
-        assert!(
-            result.advisory_ids.is_empty(),
-            "TDX platform has outstanding security advisories: {}",
-            result.advisory_ids.join(", ")
-        );
+        if result.status.as_str() != "UpToDate" {
+            return Err(format!(
+                "TDX TCB status not acceptable: {} (platform needs a firmware/microcode update)",
+                result.status
+            ));
+        }
+        if !result.advisory_ids.is_empty() {
+            return Err(format!(
+                "TDX platform has outstanding security advisories: {}",
+                result.advisory_ids.join(", ")
+            ));
+        }
 
         // Extract all measurements from TDX report (MRTD + RTMR0-3)
         let td10 = result
             .report
             .as_td10()
-            .expect("Quote is not TDX format");
+            .ok_or_else(|| "Quote is not TDX format (expected TD10)".to_string())?;
 
         let measurements = ApprovedMeasurements {
             mrtd: hex::encode(td10.mr_td.to_vec()),
@@ -1092,9 +1181,9 @@ impl KeystoreDao {
         // Convert to NEAR PublicKey (add ed25519 prefix)
         let pubkey_with_prefix = [&[0u8], pubkey_bytes].concat();
         let public_key = PublicKey::try_from(pubkey_with_prefix)
-            .expect("Invalid ed25519 public key");
+            .map_err(|_| "Invalid ed25519 public key in quote report_data".to_string())?;
 
-        (measurements, public_key)
+        Ok((measurements, public_key))
     }
 
     fn assert_owner(&self) {
