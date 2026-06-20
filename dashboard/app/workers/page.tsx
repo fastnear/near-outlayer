@@ -86,6 +86,8 @@ export default function WorkersPage() {
                     workers.map((worker) => {
                       // Extract app_id from worker_id (format: network-type-app_id).
                       const parts = worker.worker_id.split('-');
+                      const network = parts[0];
+                      const workerType = parts[1];
                       const appId = parts.length >= 3 ? parts.slice(2).join('-') : null;
                       const hasAppId = appId && /^[a-f0-9]{40}$/i.test(appId);
                       // Routing convention: Phala-hosted workers carry "phala" in their name/id;
@@ -93,11 +95,17 @@ export default function WorkersPage() {
                       // our own attestation portal (workers.outlayer.ai/app/<app_id>).
                       const isPhala =
                         /phala/i.test(worker.worker_id) || /phala/i.test(worker.worker_name);
-                      const attestationUrl = hasAppId
-                        ? isPhala
+                      let attestationUrl: string | null = null;
+                      if (hasAppId) {
+                        attestationUrl = isPhala
                           ? `https://trust.phala.com/app/${appId}?selected=app-code`
-                          : `https://workers.outlayer.ai/app/${appId}`
-                        : null;
+                          : `https://workers.outlayer.ai/app/${appId}`;
+                      } else if (workerType === 'keystore' && (network === 'testnet' || network === 'mainnet')) {
+                        // Keystore rows are synthesized by the coordinator without an app_id suffix
+                        // (one keystore per network). The portal resolves the current keystore for
+                        // the network and redirects to its attestation page.
+                        attestationUrl = `https://workers.outlayer.ai/${network}-keystore`;
+                      }
 
                       return (
                       <tr key={worker.worker_id}>

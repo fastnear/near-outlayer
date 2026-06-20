@@ -30,6 +30,9 @@ echo "Note: Built without wasm-opt due to bulk-memory operations in dcap-qvl/rin
 # MAINNET
 # near contract deploy dao.outlayer.near use-file res/keystore_dao_contract.wasm without-init-call network-config mainnet sign-with-keychain send
 # near contract call-function as-transaction dao.outlayer.near new json-args '{"owner_id": "owner.outlayer.near", "init_account_id": "init-keystore.outlayer.near", "dao_members": ["zavodil.near"], "mpc_contract_id": "v1.signer"}' prepaid-gas '30.0 Tgas' attached-deposit '0 NEAR' sign-as dao.outlayer.near network-config mainnet sign-with-keychain send
+# near contract deploy dao.outlayer.near use-file res/keystore_dao_contract.wasm without-init-call network-config mainnet sign-with-keychain send
+# near contract call-function as-transaction dao.outlayer.near migrate json-args {} prepaid-gas '100.0 Tgas' attached-deposit '0 NEAR' sign-as owner.outlayer.near network-config mainnet sign-with-keychain send
+
 
 # add collateral
 # ./scripts/update_collateral.sh
