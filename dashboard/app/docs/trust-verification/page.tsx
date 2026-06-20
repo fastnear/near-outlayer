@@ -109,6 +109,17 @@ export default function TrustVerificationPage() {
           testnet), which verifies the Intel TDX quote signature (Intel DCAP) and checks the 5
           measurements against an admin allowlist.
         </p>
+
+        <div className="bg-blue-50 border-l-4 border-blue-400 p-4 mb-6">
+          <p className="text-sm text-blue-800">
+            <strong>Workers complement each other — location doesn&apos;t matter.</strong> Workers from
+            both deployment methods join the same pool; the coordinator dispatches each task to
+            whichever worker is free, regardless of whether it runs on a self-hosted TDX node or on
+            Phala Cloud. You don&apos;t pick a host, and you don&apos;t need to — every execution
+            carries its own TDX attestation, so the result is equally verifiable no matter which
+            worker produced it.
+          </p>
+        </div>
       </section>
 
       {/* Verifying each deployment */}
@@ -130,6 +141,9 @@ export default function TrustVerificationPage() {
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
+              <tr>
+                <td colSpan={3} className="px-4 py-2 text-xs font-bold uppercase tracking-wide text-green-700 bg-green-50">Identical across both — the trust model</td>
+              </tr>
               <tr>
                 <td className="px-4 py-3 text-sm font-semibold text-gray-700">TEE hardware</td>
                 <td className="px-4 py-3 text-sm text-gray-600">Intel TDX (Xeon)</td>
@@ -165,10 +179,28 @@ export default function TrustVerificationPage() {
                 <td className="px-4 py-3 text-sm text-gray-600">NEAR MPC keystore (CKD)</td>
                 <td className="px-4 py-3 text-sm text-gray-600">NEAR MPC keystore (CKD)</td>
               </tr>
-              <tr className="bg-gray-50">
+              <tr>
+                <td colSpan={3} className="px-4 py-2 text-xs font-bold uppercase tracking-wide text-orange-700 bg-orange-50">Differs — who operates the infrastructure (each component itself TDX-attested)</td>
+              </tr>
+              <tr>
                 <td className="px-4 py-3 text-sm font-semibold text-gray-700">Who hosts the hardware</td>
                 <td className="px-4 py-3 text-sm text-gray-700 font-medium">OutLayer bare-metal node</td>
                 <td className="px-4 py-3 text-sm text-gray-700 font-medium">Phala Cloud</td>
+              </tr>
+              <tr className="bg-gray-50">
+                <td className="px-4 py-3 text-sm font-semibold text-gray-700">Deploy-time KMS</td>
+                <td className="px-4 py-3 text-sm text-gray-700 font-medium">OutLayer&apos;s own dstack-kms (in TEE)</td>
+                <td className="px-4 py-3 text-sm text-gray-700 font-medium">Phala&apos;s dstack KMS</td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 text-sm font-semibold text-gray-700">Network gateway (TLS-in-TEE)</td>
+                <td className="px-4 py-3 text-sm text-gray-700 font-medium"><code>gateway.dstack.outlayer.ai</code></td>
+                <td className="px-4 py-3 text-sm text-gray-700 font-medium">Phala gateway</td>
+              </tr>
+              <tr className="bg-gray-50">
+                <td className="px-4 py-3 text-sm font-semibold text-gray-700">Platform (FMSPC collateral)</td>
+                <td className="px-4 py-3 text-sm text-gray-700 font-medium">OutLayer node&apos;s FMSPC</td>
+                <td className="px-4 py-3 text-sm text-gray-700 font-medium">Phala platform FMSPC</td>
               </tr>
               <tr>
                 <td className="px-4 py-3 text-sm font-semibold text-gray-700">Attestation portal</td>
@@ -189,10 +221,12 @@ export default function TrustVerificationPage() {
 
         <div className="bg-green-50 border-l-4 border-green-400 p-4 mb-6">
           <p className="text-sm text-green-800">
-            <strong>Takeaway:</strong> The cryptographic guarantee is identical across both
-            deployments — same TDX hardware, same dstack runtime, same Intel-signed quote verified
-            via Intel DCAP, same 5-measurement allowlist on the same on-chain register-contract.
-            Only the host and the portal URL differ. Verify the self-hosted node at{' '}
+            <strong>Takeaway:</strong> Every row that matters for the cryptographic guarantee — the
+            TDX hardware, the Intel-signed quote, the 5 measurements, the on-chain register-contract,
+            and NEAR-MPC secret custody — is <strong>identical</strong> on both. What differs is purely
+            operational (who runs the hardware, KMS, and gateway), and each of those is itself a
+            TDX-attested component with its own on-chain-approved measurements — not a trusted third
+            party. Verify the self-hosted node at{' '}
             <a href="https://workers.outlayer.ai" target="_blank" rel="noopener noreferrer" className="underline">
               workers.outlayer.ai
             </a>
