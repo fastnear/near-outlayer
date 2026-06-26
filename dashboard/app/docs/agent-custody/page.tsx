@@ -655,6 +655,40 @@ curl -s -X POST -H "Content-Type: application/json" \\
   "https://api.outlayer.fastnear.com/wallet/v1/intents/withdraw"`}
         </SyntaxHighlighter>
 
+        <p className="text-gray-700 mt-3 mb-2">
+          <strong>Cross-chain withdrawals: prefer <code className="bg-gray-100 px-1 rounded">&quot;async&quot;: true</code>.</strong>{' '}
+          The 1Click bridge can take longer than the synchronous response window, so add{' '}
+          <code className="bg-gray-100 px-1 rounded">&quot;async&quot;: true</code> to the body. The call then returns
+          immediately with <code className="bg-gray-100 px-1 rounded">status: &quot;processing&quot;</code> and a{' '}
+          <code className="bg-gray-100 px-1 rounded">poll_url</code>; poll{' '}
+          <code className="bg-gray-100 px-1 rounded">GET /wallet/v1/requests/&#123;request_id&#125;</code> until terminal.
+          Same-chain NEAR settles in seconds, so <code className="bg-gray-100 px-1 rounded">async</code> is optional there.
+        </p>
+
+        <div className="bg-amber-50 border-l-4 border-amber-500 p-4 mb-4">
+          <p className="text-sm text-gray-700 mb-1">
+            <strong>Status values (exact).</strong> The withdraw/swap row returned by{' '}
+            <code className="bg-amber-100 px-1 rounded">GET /wallet/v1/requests/&#123;id&#125;</code> holds only these{' '}
+            <code className="bg-amber-100 px-1 rounded">status</code> strings:{' '}
+            <code className="bg-amber-100 px-1 rounded">processing</code> (keep polling),{' '}
+            <code className="bg-amber-100 px-1 rounded">success</code>,{' '}
+            <code className="bg-amber-100 px-1 rounded">failed</code> (a 1Click refund/expiry is normalized to{' '}
+            <code className="bg-amber-100 px-1 rounded">failed</code>; reason in{' '}
+            <code className="bg-amber-100 px-1 rounded">result.reason</code>), and{' '}
+            <code className="bg-amber-100 px-1 rounded">needs_review</code>. On a multisig wallet the submit can
+            return <code className="bg-amber-100 px-1 rounded">pending_approval</code> /{' '}
+            <code className="bg-amber-100 px-1 rounded">approved</code> /{' '}
+            <code className="bg-amber-100 px-1 rounded">rejected</code> instead. Do <strong>not</strong> invent synonym
+            sets (<code className="bg-amber-100 px-1 rounded">settled</code>/<code className="bg-amber-100 px-1 rounded">completed</code>/&hellip;) — none of those are emitted.
+          </p>
+          <p className="text-sm text-gray-700">
+            <strong><code className="bg-amber-100 px-1 rounded">needs_review</code> is terminal but special:</strong>{' '}
+            execution was interrupted or unresolved and the fund state is unknown. Surface it as &ldquo;needs manual
+            review&rdquo; &mdash; <strong>do not auto-retry</strong> (the transfer may have fired, so a retry can
+            double-spend). Without handling it you would poll forever.
+          </p>
+        </div>
+
         <h3 className="text-lg font-semibold mt-4 mb-2">8. Transfer inside Intents (to another account)</h3>
         <p className="text-gray-700 mb-2">
           Move a token from your Intents balance to <strong>another account&apos;s</strong> Intents balance, gasless, staying <strong>inside</strong> <code className="bg-gray-100 px-1 rounded">intents.near</code> &mdash; the recipient is credited there, nothing lands on the public chain. This is <strong>not</strong> a withdrawal: use it when the recipient also holds an Intents balance (e.g. another OutLayer custody wallet); use <code className="bg-gray-100 px-1 rounded">/intents/withdraw</code> to deliver to a plain on-chain account instead. NEAR-only (no <code className="bg-gray-100 px-1 rounded">chain</code> field); <code className="bg-gray-100 px-1 rounded">token</code> is required (to send NEAR, transfer <code className="bg-gray-100 px-1 rounded">nep141:wrap.near</code>). The recipient need not exist on-chain.
