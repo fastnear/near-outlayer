@@ -601,10 +601,12 @@ near account add-key fastnearmpc.testnet \
   grant-function-call-access \
   --allowance unlimited \
   --contract-account-id v1.signer-prod.testnet \
-  --method-names '' \
+  --function-names '' \
   use-manually-provided-public-key <near_signer_public_key from /public_data> \
   network-config testnet sign-with-keychain send
 # (if "unlimited" is rejected, drop --allowance, or grant a NEAR amount.)
+# NOTE: the flag is --function-names '' (an empty list = all methods). It is NOT
+# --method-names — that name is rejected by current near-cli.
 ```
 
 **Then the node does the rest automatically:** once it has synced to head it submits
@@ -640,6 +642,7 @@ Handy aliases (we put these in `/root/.bashrc` + the node user's `.bashrc`):
 | `near_log_signer [N]` | logs filtered to signing (sign/presignature/triple/ckd/participant) |
 | `near_log_launcher [N]` | launcher container logs |
 | `near_restart` | vmm-cli stop+start the CVM (this is the node-upgrade path — see below) |
+| `near_stop` / `near_start` | vmm-cli stop or start the CVM separately (disk/state persists; for a fresh-`/data` recovery start the host http.server :8899 first — see the recovery subsection) |
 | `near_config` | `cd` to the `cvm-deployment` dir |
 
 Status checks:
@@ -667,6 +670,73 @@ re-attestation is automatic. You only re-sync from zero if `/data` is wiped. Mov
 **Testnet sharding note:** testnet has 9 shards; the node tracks only the one shard holding
 `v1.signer-prod.testnet` (`tracked_shards_config={Accounts:[contract]}`, set by the node at
 init) — that is what bounds its disk footprint.
+
+### Recovering from a corrupted nearcore DB (interrupted migration)
+
+**Symptom:** mpc-node crash-loops; `near_log` shows
+`Detected an existing database migration snapshot at '/data/data/migration-snapshot' …
+database is corrupted`. **Cause:** an image upgrade pulled a newer nearcore that started a
+DB migration, and the CVM was **stopped/started mid-migration** — leaving the snapshot, which
+neard then refuses to start over.
+
+> **There is no surgical fix** — you cannot just delete `/data/data/migration-snapshot` (which
+> would otherwise be the clean fix, since the keyshare/keys live in `/data`, **not** in
+> `/data/data`). The production CVM has **no shell**: no sshd in the guest image (the `…-:22`
+> forward just resets), no serial getty, the guest-agent exposes only `/logs`+`/metrics`, and
+> `vmm-cli` has no `exec`/`console`. The data disk is LUKS, sealed by the gramine key-provider,
+> and the disk key is derived from the TDX measurements `mr_td‖rtmr0..3` — **RTMR3 includes the
+> app-compose hash**, so you can't inject a recovery `pre_launch_script`/`init_script` without
+> changing the key and making the existing `/data` undecryptable. It also can't be mounted from
+> the host. (This same binding is *why* an mpc-node image upgrade keeps `/data`: the launcher
+> swaps the image at runtime, the app-compose is unchanged.)
+
+So the only recovery is a **full data-disk wipe + re-register**. It regenerates the node's
+signer/p2p keys (sealed-disk material → they change) but **preserves app_id / RTMR3 / port
+mapping / on-chain measurement-approval** (the app-compose is untouched, so re-attestation is
+not needed — only the signer access key + governance vote).
+
+```bash
+VMID=<vmid from lsvm>                                   # e.g. 6d1f2bd9-…
+VMM="python3 <dstack-root>/dstack/vmm/src/vmm-cli.py --url http://127.0.0.1:10000"
+DISK=<vmm-data>/run/vm/$VMID/hda.img                   # the hd1/vdb DATA disk
+#                                                        (rootfs is a separate read-only verity image)
+
+# 1. Stop the CVM; confirm qemu is gone and the disk file is released.
+$VMM stop $VMID
+pgrep -af "qemu.*$VMID"                                 # must be empty before touching the disk
+
+# 2. Recreate the data disk EMPTY at the SAME byte size (also reclaims space — dstack-prepare
+#    sees an empty /dev/vdb and reformats it fresh with the derived key on next boot).
+SIZE=$(stat -c %s "$DISK")
+truncate -s 0 "$DISK" && truncate -s "$SIZE" "$DISK"
+chown mpc:mpc "$DISK"; chmod 644 "$DISK"
+
+# 3. A fresh /data re-fetches nearcore config from the host
+#    (user-config.toml: download_config_url=http://10.0.2.2:8899/config.json).
+#    Start that server BEFORE booting or init stalls. Stop it once /data has cached the config.
+cd /opt/mpc/config-host && nohup python3 -m http.server 8899 --bind 0.0.0.0 >>httpd.log 2>&1 &
+
+# 4. Start the CVM.
+$VMM start $VMID
+```
+
+Watch the boot: the serial log shows `Empty disk detected at /dev/vdb → creating dstack-data
+partition → Formatting encrypted disk`; the launcher pulls the mpc-node image; neard downloads
+genesis; `runtime: flushing changes … changes=100000` (via `near_log`) means it is syncing.
+There must be **no** migration-snapshot panic.
+
+> **Gotcha:** do **not** `pkill -f "http.server 8899"` over SSH — the pattern matches your own
+> ssh command line and kills the session. Stop it by PID, or `pkill -f "[h]ttp.server"`.
+
+After it syncs:
+1. `curl -s http://127.0.0.1:8989/public_data` → the **new** signer/p2p keys.
+2. Re-add the signer access key (step 11) for the new `near_signer_public_key`.
+3. The node auto-submits `submit_participant_info`; **re-request the governance vote** (keys changed).
+
+> Because the interrupted migration was triggered by a governance-approved newer image, the
+> launcher may re-pull that image on a later restart and re-run the migration. On a small/fresh
+> DB it is fast — just **never stop/start the CVM while a migration is in progress**, or you
+> recreate this snapshot crash.
 
 ---
 
