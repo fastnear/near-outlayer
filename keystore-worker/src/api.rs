@@ -38,7 +38,7 @@ use axum::{
     Router,
 };
 use serde::{Deserialize, Serialize};
-use shared_tee_helpers::is_evm_chain;
+use shared_tee_helpers::{is_evm_chain, is_solana_chain};
 use tower_http::trace::TraceLayer;
 
 use crate::attestation::Attestation;
@@ -833,6 +833,46 @@ pub struct WalletEvmSignResponse {
     pub signature: String,
 }
 
+/// Request to sign an off-chain message with the wallet's Solana (ed25519) key.
+///
+/// The raw decoded bytes are signed as-is (Solana convention — verifiable
+/// with `nacl.sign.detached.verify`), EXCEPT bytes that parse as a valid
+/// Solana transaction message, which are rejected (use
+/// `/wallet/solana/sign-transaction`, gated by `solana_sign.raw_tx`).
+#[derive(Debug, Deserialize)]
+pub struct WalletSolanaSignMessageRequest {
+    pub wallet_id: String,
+    pub chain: String,
+    /// The message to sign; interpreted per `encoding`.
+    pub message: String,
+    /// `"utf8"` (default) signs the UTF-8 bytes of `message`; `"hex"` /
+    /// `"base64"` decode `message` first and sign the decoded bytes.
+    /// No content sniffing.
+    #[serde(default)]
+    pub encoding: Option<String>,
+}
+
+/// Request to sign a Solana transaction message with the wallet's Solana key.
+///
+/// The caller supplies the **serialized unsigned transaction message** (what
+/// the signature covers on Solana: web3.js `tx.serializeMessage()` /
+/// `versionedTx.message.serialize()`), base64. The keystore signs the bytes
+/// as-is — it does NOT parse or assemble the transaction, pick a blockhash,
+/// or broadcast. Gated by the `solana_sign.raw_tx` sub-capability.
+#[derive(Debug, Deserialize)]
+pub struct WalletSolanaSignTransactionRequest {
+    pub wallet_id: String,
+    pub chain: String,
+    /// Serialized unsigned transaction message, base64.
+    pub unsigned_tx: String,
+}
+
+/// A 64-byte ed25519 signature, base58 (Solana convention).
+#[derive(Debug, Serialize)]
+pub struct WalletSolanaSignResponse {
+    pub signature: String,
+}
+
 /// Request to sign encrypted policy data (for on-chain store_wallet_policy)
 #[derive(Debug, Deserialize)]
 pub struct WalletSignPolicyRequest {
@@ -1088,6 +1128,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/wallet/evm/sign-typed-data", post(wallet_evm_sign_typed_data_handler))
         .route("/wallet/evm/sign-message", post(wallet_evm_sign_message_handler))
         .route("/wallet/evm/sign-transaction", post(wallet_evm_sign_transaction_handler))
+        .route("/wallet/solana/sign-message", post(wallet_solana_sign_message_handler))
+        .route("/wallet/solana/sign-transaction", post(wallet_solana_sign_transaction_handler))
         .route("/wallet/sign-policy", post(wallet_sign_policy_handler))
         .route("/wallet/check-policy", post(wallet_check_policy_handler))
         .route("/wallet/encrypt-policy", post(wallet_encrypt_policy_handler))
@@ -3603,6 +3645,10 @@ mod base64 {
 pub(crate) fn wallet_seed(wallet_id: &str, chain: &str) -> String {
     if is_evm_chain(chain) {
         format!("wallet:{}:evm", wallet_id)
+    } else if is_solana_chain(chain) {
+        // Canonicalize the `sol` alias — both spellings must derive the ONE
+        // Solana key (`wallet:{id}:sol` would silently be a different key).
+        format!("wallet:{}:solana", wallet_id)
     } else {
         format!("wallet:{}:{}", wallet_id, chain)
     }
@@ -3660,7 +3706,7 @@ async fn wallet_derive_address_handler(
                 public_key: format!("ed25519:{}", pubkey_hex),
             }))
         }
-        "solana" => {
+        _ if is_solana_chain(&chain) => {
             let (_, verifying_key) = keystore.derive_keypair(customer.as_ref(), &seed).map_err(|e| {
                 ApiError::InternalError(format!("Key derivation failed: {}", e))
             })?;
@@ -3862,6 +3908,188 @@ async fn wallet_evm_sign_transaction_handler(
     )
     .await?;
     Ok(Json(WalletEvmSignResponse { signature }))
+}
+
+/// Shared Solana-signing path: validate the chain, gate on the `solana_sign`
+/// capability, then ed25519-sign the supplied bytes with the wallet's Solana
+/// key. Solana has no digest step — the signature covers the raw message
+/// bytes — so "sign the supplied bytes" is the correct primitive (unlike EVM,
+/// where we keccak-hash first). `want_raw_tx` distinguishes transaction
+/// signing (gated by `solana_sign.raw_tx`, default-OFF) from message signing
+/// (base capability).
+///
+/// The message/transaction guard is enforced HERE, not in the handlers: any
+/// `want_raw_tx == false` call refuses bytes that parse as a valid Solana
+/// transaction message, so no future caller can accidentally open a
+/// `raw_tx`-bypass through a message-signing path.
+async fn solana_sign_bytes(
+    state: &AppState,
+    customer: Option<&near_primitives::types::AccountId>,
+    wallet_id: &str,
+    chain: &str,
+    bytes: &[u8],
+    want_raw_tx: bool,
+) -> Result<String, ApiError> {
+    use shared_tee_helpers::wallet_policy::{solana_sign_decision, Decision};
+
+    if !is_solana_chain(chain) {
+        return Err(ApiError::BadRequest(format!(
+            "'{}' is not a Solana chain (supported: solana)",
+            chain
+        )));
+    }
+
+    // Message signing must not be usable as transaction signing: Solana has no
+    // EIP-191-style prefix separating the two, so a "message" that IS a valid
+    // tx message would bypass the `solana_sign.raw_tx` sub-flag. Cheap (no
+    // RPC), so it runs before the policy load.
+    if !want_raw_tx && crate::solana::parses_as_transaction_message(bytes) {
+        return Err(ApiError::BadRequest(
+            "message parses as a Solana transaction message — use \
+             /wallet/solana/sign-transaction (requires the solana_sign.raw_tx capability)"
+                .to_string(),
+        ));
+    }
+
+    let policy = load_wallet_policy(state, wallet_id, customer).await?;
+    let now_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    match solana_sign_decision(policy.as_ref(), want_raw_tx, now_unix) {
+        Decision::Allow => {}
+        Decision::Frozen => return Err(ApiError::Forbidden("Wallet is frozen".to_string())),
+        Decision::Deny { reason } => return Err(ApiError::Forbidden(reason)),
+        Decision::RequiresApproval { .. } => {
+            return Err(ApiError::Forbidden(
+                "Solana signing does not support per-op approval".to_string(),
+            ))
+        }
+    }
+
+    let seed = wallet_seed(wallet_id, chain);
+    let keystore = state.keystore.read().await;
+    let sig = keystore
+        .sign(customer, &seed, bytes)
+        .map_err(|e| ApiError::InternalError(format!("Solana signing failed: {}", e)))?;
+    Ok(bs58::encode(sig.to_bytes()).into_string())
+}
+
+/// `POST /wallet/solana/sign-message` — ed25519 signature over raw message bytes.
+///
+/// Signs exactly the decoded bytes (verifiable with standard tooling, e.g.
+/// `nacl.sign.detached.verify` — Sign-in-with-Solana flows work unchanged).
+/// Bytes that parse as a valid Solana **transaction message** are rejected:
+/// Solana has no EIP-191-style prefix separating the two, so without this
+/// guard a "message" could be a broadcastable transaction and bypass the
+/// `solana_sign.raw_tx` sub-flag (same protection Phantom/Solflare apply).
+async fn wallet_solana_sign_message_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<WalletSolanaSignMessageRequest>,
+) -> Result<Json<WalletSolanaSignResponse>, ApiError> {
+    if !state.is_ready() {
+        return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
+    }
+    let customer = extract_customer_from_header(&headers)?;
+    state
+        .ensure_customer_loaded(customer.as_ref())
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
+    // Explicit encoding — no content sniffing (same rule as EVM sign-message).
+    let bytes = match req.encoding.as_deref() {
+        None | Some("utf8") => req.message.as_bytes().to_vec(),
+        Some("hex") => {
+            let body = req
+                .message
+                .strip_prefix("0x")
+                .or_else(|| req.message.strip_prefix("0X"))
+                .unwrap_or(&req.message);
+            if body.len() % 2 == 1 {
+                return Err(ApiError::BadRequest("odd-length hex message".to_string()));
+            }
+            hex::decode(body)
+                .map_err(|e| ApiError::BadRequest(format!("Invalid hex message: {}", e)))?
+        }
+        Some("base64") => base64::decode(&req.message)
+            .map_err(|e| ApiError::BadRequest(format!("Invalid base64 message: {}", e)))?,
+        Some(other) => {
+            return Err(ApiError::BadRequest(format!(
+                "invalid encoding '{}' (use 'utf8', 'hex' or 'base64')",
+                other
+            )))
+        }
+    };
+    if bytes.is_empty() {
+        return Err(ApiError::BadRequest("message is empty".to_string()));
+    }
+    if bytes.len() > crate::solana::MAX_MESSAGE_LEN {
+        return Err(ApiError::BadRequest(format!(
+            "message exceeds {} bytes",
+            crate::solana::MAX_MESSAGE_LEN
+        )));
+    }
+    // The message-vs-transaction guard is enforced inside `solana_sign_bytes`
+    // (want_raw_tx = false), not here — see its doc comment.
+
+    let signature = solana_sign_bytes(
+        &state,
+        customer.as_ref(),
+        &req.wallet_id,
+        &req.chain.to_lowercase(),
+        &bytes,
+        false,
+    )
+    .await?;
+    Ok(Json(WalletSolanaSignResponse { signature }))
+}
+
+/// `POST /wallet/solana/sign-transaction` — sign a Solana transaction message.
+///
+/// Gated by the `solana_sign.raw_tx` sub-capability (default-OFF). The caller
+/// sends the serialized unsigned transaction **message** (base64 — what the
+/// signature covers: web3.js `tx.serializeMessage()`); we ed25519-sign the
+/// bytes as-is and return the base58 signature. The caller assembles the
+/// signed transaction (`compact-u16 sig count ‖ signatures ‖ message`) and
+/// broadcasts — the keystore neither builds the tx nor broadcasts.
+async fn wallet_solana_sign_transaction_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<WalletSolanaSignTransactionRequest>,
+) -> Result<Json<WalletSolanaSignResponse>, ApiError> {
+    if !state.is_ready() {
+        return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
+    }
+    let customer = extract_customer_from_header(&headers)?;
+    state
+        .ensure_customer_loaded(customer.as_ref())
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
+    let tx_bytes = base64::decode(&req.unsigned_tx)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid unsigned_tx base64: {}", e)))?;
+    if tx_bytes.is_empty() {
+        return Err(ApiError::BadRequest("unsigned_tx is empty".to_string()));
+    }
+    // Anything larger than a network packet can never be broadcast.
+    if tx_bytes.len() > crate::solana::MAX_TX_MESSAGE_LEN {
+        return Err(ApiError::BadRequest(format!(
+            "unsigned_tx exceeds {} bytes (Solana packet limit)",
+            crate::solana::MAX_TX_MESSAGE_LEN
+        )));
+    }
+
+    let signature = solana_sign_bytes(
+        &state,
+        customer.as_ref(),
+        &req.wallet_id,
+        &req.chain.to_lowercase(),
+        &tx_bytes,
+        true,
+    )
+    .await?;
+    Ok(Json(WalletSolanaSignResponse { signature }))
 }
 
 /// Sign encrypted policy data so the NEAR contract can verify wallet ownership.

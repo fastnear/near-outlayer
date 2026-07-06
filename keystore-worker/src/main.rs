@@ -26,6 +26,7 @@ mod crypto;
 mod eip712;
 mod ephemeral_keys;
 mod near;
+mod solana;
 mod secret_generation;
 mod types;
 mod utils;

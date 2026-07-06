@@ -1,17 +1,17 @@
 # Multi-Chain Support for Agent Custody Wallets
 
-Agent Custody allows AI agents to hold and manage funds via TEE-secured wallets with configurable spending policies. **NEAR and all EVM chains are supported**; Solana is not yet implemented. The keystore generates keys for EVM chains (secp256k1) and Solana (ed25519). This document describes the shipped EVM signing model and how to enable a remaining chain.
+Agent Custody allows AI agents to hold and manage funds via TEE-secured wallets with configurable spending policies. **NEAR, all EVM chains, and Solana are supported.** The keystore generates keys for EVM chains (secp256k1) and Solana (ed25519). This document describes the shipped EVM and Solana signing models.
 
 ## Current Status
 
 | Component | NEAR | EVM (eth/polygon/base/arbitrum/optimism/bsc/avalanche) | Solana |
 |-----------|------|---------------------|--------|
-| Key generation (keystore) | ed25519 | secp256k1 (one shared address across all EVM chains) | ed25519 |
-| Transaction signing (keystore) | ed25519 | ECDSA secp256k1 (keccak256 + sign; off-chain EIP-712 / EIP-191 / raw-tx hash) | ed25519 |
-| Derivation seed | `wallet:{id}:near` | `wallet:{id}:ethereum` (shared by every EVM chain) | `wallet:{id}:solana` |
-| Coordinator handlers | withdraw, call, transfer, swap, deposit | `evm/sign-typed-data`, `evm/sign-message`, `evm/sign-transaction` (signing only — no build/broadcast) | not implemented |
+| Key generation (keystore) | ed25519 | secp256k1 (one shared address across all EVM chains) | ed25519 (base58 address) |
+| Transaction signing (keystore) | ed25519 | ECDSA secp256k1 (keccak256 + sign; off-chain EIP-712 / EIP-191 / raw-tx hash) | ed25519 over the raw serialized message (no digest step) |
+| Derivation seed | `wallet:{id}:near` | `wallet:{id}:evm` (shared by every EVM chain) | `wallet:{id}:solana` (the `sol` alias canonicalizes to it) |
+| Coordinator handlers | withdraw, call, transfer, swap, deposit | `evm/sign-typed-data`, `evm/sign-message`, `evm/sign-transaction` (signing only — no build/broadcast) | `solana/sign-message`, `solana/sign-transaction` (signing only — no build/broadcast) |
 | Dashboard UI | full support | address display | not implemented |
-| Policy evaluation (keystore) | all rules | `evm_sign` capability (default-DENY under a policy; set `allowed:true`) + `raw_tx` sub-flag (default-OFF); shared policy | all rules (shared policy) |
+| Policy evaluation (keystore) | all rules | `evm_sign` capability (default-DENY under a policy; set `allowed:true`) + `raw_tx` sub-flag (default-OFF); shared policy | `solana_sign` capability — same model as `evm_sign` (`allowed` + `raw_tx`); shared policy |
 
 ## Architecture: Shared Policy
 
@@ -25,7 +25,7 @@ EVM signing is **live**. The model is deliberately narrow: **the client builds a
 
 ### Supported chains
 
-`ethereum`, `polygon`, `base`, `arbitrum`, `optimism`, `bsc`, `avalanche` — plus the 1Click-style aliases `eth`, `pol`, `matic`, `arb`, `op`, `avax`. **All EVM chains share ONE derived secp256k1 address** (a single EOA, seed `wallet:{id}:ethereum`). `GET /wallet/v1/address` serves any of these and returns that one `0x` address. Solana stays gated (ed25519 key derivable, no signing path yet); account delete stays NEAR-only.
+`ethereum`, `polygon`, `base`, `arbitrum`, `optimism`, `bsc`, `avalanche` — plus the 1Click-style aliases `eth`, `pol`, `matic`, `arb`, `op`, `avax`. **All EVM chains share ONE derived secp256k1 address** (a single EOA, seed `wallet:{id}:evm`). `GET /wallet/v1/address` serves any of these and returns that one `0x` address. Account delete stays NEAR-only.
 
 ### Endpoints
 
@@ -48,22 +48,53 @@ All three return a 65-byte `0x` signature `r‖s‖v`, with `v ∈ {27, 28}` and
 - **Dashboard chain selector for signing flows** — address display exists; per-chain signing UX is not built.
 - **Persisting derived EVM addresses** (`wallet_chain_addresses`) is optional — the address is deterministic from the seed and the shared EOA is identical across chains, so the table is only a convenience cache.
 
-## Checklist: Adding Solana (not yet implemented)
+## Solana Signing (shipped)
 
-Solana is the one remaining chain. The keystore derives the ed25519 key but there is no signing path, so `validate_chain()` and `is_evm_chain()` both reject it today.
+Solana signing follows the EVM model exactly: **the client builds and broadcasts; the keystore only signs.** There is no digest step on Solana — the ed25519 signature covers the raw serialized message bytes — so the keystore signs the supplied bytes as-is. It never assembles a transaction, never picks a blockhash, and never broadcasts. The chain identifier is `solana` (alias `sol`); both spellings canonicalize to the ONE derived key on seed `wallet:{id}:solana`. `GET /wallet/v1/address?chain=solana` returns the base58 ed25519 public key (which IS the Solana address).
 
-1. Add a Solana signing handler in the keystore (ed25519 over the message/tx digest) and stop rejecting `"solana"` in `validate_chain()`
-2. Keystore already generates ed25519 keys for Solana (base58 format)
-3. Follow the EVM model: the **client** builds and broadcasts the Solana transaction; the keystore only signs the supplied digest. Do not build/broadcast in the coordinator.
-4. **Important**: Solana ed25519 and NEAR ed25519 are different keys (different seeds: `wallet:{id}:solana` vs `wallet:{id}:near`)
+### Endpoints
+
+| Endpoint | What the keystore does |
+|----------|------------------------|
+| `POST /wallet/v1/solana/sign-message` | Signs the raw decoded bytes (`encoding`: `utf8` default / `hex` / `base64`, no content sniffing) — verifiable with `nacl.sign.detached.verify`; Sign-in-with-Solana flows work unchanged. **Rejects bytes that parse as a valid transaction message** (see guard below). Max 64 KiB. |
+| `POST /wallet/v1/solana/sign-transaction` | The **client** serializes the unsigned transaction **message** (base64 — what the signature covers: web3.js `tx.serializeMessage()` / `versionedTx.message.serialize()`); the keystore signs the bytes as-is. Max 1232 bytes (the Solana packet limit). The client assembles the signed tx (`compact-u16 sig count ‖ signatures ‖ message`) and broadcasts. |
+
+Both return a 64-byte ed25519 signature, **base58** (Solana convention).
+
+### The message/transaction guard
+
+Unlike EVM, Solana has no EIP-191-style prefix cryptographically separating messages from transactions: a "message" whose bytes are a valid serialized transaction message would, once signed, be broadcastable — silently bypassing the `raw_tx` sub-flag. Wallets (Phantom, Solflare) close this by refusing to `signMessage` bytes that parse as a transaction message; `keystore-worker/src/solana.rs::parses_as_transaction_message` implements the same **reject-only** check (legacy + versioned v0 wire format, strict full-byte consumption, `sanitize()`-level header/index checks). It never interprets the payload beyond "could a node accept this as a transaction" — blind signing stays blind. The parser is hand-rolled (no `solana-sdk` in the enclave, same rationale as the EIP-712 encoder) and pinned against `@solana/web3.js`-generated reference vectors (`keystore-worker/src/solana_vectors.json`, generator: `keystore-worker/scripts/gen_solana_vectors.mjs`), including a **byte-exact cross-signing test**: the keystore's signature over the vector transactions is asserted identical to web3.js/nacl output, and splicing it into the wire format reproduces the web3.js-signed transaction exactly.
+
+### Policy capability: `solana_sign`
+
+Same model as `evm_sign`, evaluated by the shared `solana_sign_decision` in `shared-tee-helpers` (one implementation with the EVM gate — the chains cannot drift): **default-DENY under a policy** (`capabilities.solana_sign.allowed = true` to opt in; no policy → unrestricted), `frozen` + `time_restrictions` global gates apply, `requires_approval` fails closed, and the `raw_tx` sub-flag (**default-OFF**) separately gates `sign-transaction`.
+
+**Caveat:** a signed Solana transaction message is itself fund-moving, so `solana_sign` + `raw_tx` grants full authority over the wallet's Solana float — bounded to what has been sent there. The NEAR-intents balance is never exposed by any Solana signing path.
+
+**Overlap with `raw_sign`:** the unified `/wallet/sign` endpoint's `Op::Raw { chain: "solana" }` also blind-signs bytes with the same key, gated by the separate default-DENY `raw_sign` capability (optionally restricted per-chain via `raw_sign.chains`). `raw_sign` is an independent, blunter blind-sign gate with no message/transaction distinction — a policy author locking down Solana must leave BOTH `solana_sign` and `raw_sign` disabled (both are default-DENY under a policy, so the default is safe). ⚠️ Alias caveat: `Op::Raw` treats `chain` as a **literal seed namespace** (`wallet:{id}:{chain}`, no alias canonicalization — a pre-existing property of that endpoint), so `Op::Raw { chain: "sol" }` derives a *different* key than the `/wallet/v1/solana/*` endpoints (which canonicalize `sol` → `solana`). Always use `"solana"` in `Op::Raw`.
+
+### Remaining Solana work
+
+- **Dashboard**: Solana address display + signing UX (matches EVM, where signing UX is also TODO).
+- **SDK**: thin `solanaSignMessage` / `solanaSignTransaction` methods after an api-spec sync.
+
+## Checklist: Adding another chain
+
+1. Add a chain predicate in `shared-tee-helpers/src/lib.rs` (single source of truth for keystore + coordinator) and a capability + decision fn in `wallet_policy.rs` (reuse `chain_sign_decision`).
+2. Add keystore signing handler(s) in `keystore-worker/src/api.rs` mirroring `evm_sign_digest` / `solana_sign_bytes`; canonicalize aliases in `wallet_seed()`.
+3. **Every chain uses a distinct derivation seed** (`wallet:{id}:near` vs `wallet:{id}:evm` vs `wallet:{id}:solana`) — this is the cross-curve/cross-chain domain-separation invariant: a blind signature on one chain's key can never forge another chain's transaction or a NEAR auth message.
+4. Follow the blind-signing model: the **client** builds and broadcasts; the keystore only signs. Do not build/broadcast in the coordinator.
+5. If the chain signs raw bytes (no digest), decide how messages are separated from transactions (prefix or reject-guard) BEFORE shipping the message endpoint.
+6. Un-gate the chain in the coordinator's `validate_chain()`, add `/wallet/v1/<chain>/*` routes, update the api-spec + reference vectors.
 
 ## Key Files
 
-| File | What it does / what to change |
+| File | What it does |
 |------|----------------|
-| `coordinator/src/wallet/handlers.rs` | Shipped: `validate_chain()` + `is_evm_chain()` admit all EVM chains; `evm_sign_typed_data` / `evm_sign_message` / `evm_sign_transaction` handlers forward to the keystore (no build/broadcast). Add Solana here. |
-| `keystore-worker/src/crypto.rs` | Shipped: `derive_secp256k1_keypair()`, `derive_eth_address()`, `sign_secp256k1_prehash()` (returns 65-byte `r‖s‖v`, low-s, `v ∈ {27,28}`) |
-| `keystore-worker/src/eip712.rs` | Shipped: hand-rolled EIP-712 v4 + EIP-191 digest computation (no `alloy`/`ethers`); pinned to `eip712_vectors.json` |
-| `keystore-worker/src/api.rs` | Shipped: `/wallet/evm/{sign-typed-data,sign-message,sign-transaction}` handlers; `evm_sign` capability + `raw_tx` sub-flag gating via `shared_tee_helpers::wallet_policy::evm_sign_decision` |
+| `coordinator/src/wallet/handlers.rs` | `validate_chain()` admits near + EVM + Solana; `evm_sign_*` / `solana_sign_*` handlers forward to the keystore via `keystore_chain_sign` (no build/broadcast) |
+| `keystore-worker/src/crypto.rs` | `derive_keypair()` (ed25519), `derive_secp256k1_keypair()`, `derive_eth_address()`, `sign()` (ed25519 over raw bytes — the Solana primitive), `sign_secp256k1_prehash()` |
+| `keystore-worker/src/eip712.rs` | Hand-rolled EIP-712 v4 + EIP-191 digest computation; pinned to `eip712_vectors.json` |
+| `keystore-worker/src/solana.rs` | Hand-rolled reject-only Solana tx-message guard + size caps; pinned to `solana_vectors.json` (generator: `scripts/gen_solana_vectors.mjs`) |
+| `keystore-worker/src/api.rs` | `/wallet/evm/*` + `/wallet/solana/*` handlers; `wallet_seed()` canonicalization; capability gating via `shared_tee_helpers::wallet_policy::{evm_sign_decision, solana_sign_decision}` |
 | `dashboard/app/wallet/manage/page.tsx` | Multi-chain address display (per-chain signing UX still TODO) |
 | `contract/src/wallet.rs` | No changes needed — policy is keyed by `wallet_pubkey` (NEAR key) |

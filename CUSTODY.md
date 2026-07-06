@@ -1,6 +1,6 @@
 # Agent Custody — Developer Reference
 
-Institutional-grade custody wallets for AI agents. An agent gets an API key to operate a NEAR-native wallet whose cross-chain value is custodied on `intents.near`. Private keys live exclusively inside a TEE (Intel TDX). The wallet owner sets policy (spending limits, whitelists, multisig, freeze) — all enforced inside the TEE. Cross-chain deposits/withdrawals via NEAR Intents + the 1Click solver (gasless), like a CEX: deposit, operate, withdraw to an external address. The wallet now signs EVM payloads itself — EIP-712 typed data, EIP-191 `personal_sign`, and raw EVM transactions (the client builds/serializes the unsigned tx and broadcasts; the keystore only keccak256-hashes and signs). Solana native signing is not shipped.
+Institutional-grade custody wallets for AI agents. An agent gets an API key to operate a NEAR-native wallet whose cross-chain value is custodied on `intents.near`. Private keys live exclusively inside a TEE (Intel TDX). The wallet owner sets policy (spending limits, whitelists, multisig, freeze) — all enforced inside the TEE. Cross-chain deposits/withdrawals via NEAR Intents + the 1Click solver (gasless), like a CEX: deposit, operate, withdraw to an external address. The wallet now signs EVM payloads itself — EIP-712 typed data, EIP-191 `personal_sign`, and raw EVM transactions (the client builds/serializes the unsigned tx and broadcasts; the keystore only keccak256-hashes and signs). Solana signing follows the same model — off-chain messages and serialized transaction messages, ed25519, base58 signature; the client assembles and broadcasts.
 
 > **⚠️ Only send whitelisted Intents assets — anything else is lost permanently.**
 > Deposits/withdrawals only work for assets in the NEAR Intents / 1Click token
@@ -126,7 +126,7 @@ HTTP API server. Handles auth, routing, usage tracking, webhooks.
 | `intents_deposit()` | — | Deposit FT into intents.near via `ft_transfer_call` (intents.near auto-registers callers via its own `ft_on_transfer` hook — no NEP-145 `storage_deposit` issued) |
 | `swap()` | — | Swap via 1Click: quote → ft_transfer_call to intents.near → mt_transfer → poll |
 | `deposit()` | 857 | Cross-chain deposit via Intents quote |
-| `get_address()` | 345 | Derive wallet address. Serves **`near` + all EVM chains** (ethereum, polygon, base, arbitrum, optimism, bsc, avalanche, + aliases) — every EVM chain shares **one secp256k1 `0x` address**. `solana`/`bitcoin` stay gated (no native spend path yet; that cross-chain value uses Intents). |
+| `get_address()` | 345 | Derive wallet address. Serves **`near` + all EVM chains + `solana`** (EVM chains share **one secp256k1 `0x` address**; `solana`/`sol` returns the base58 ed25519 pubkey). `bitcoin` stays gated (no signing path yet; that cross-chain value uses Intents). |
 | `encrypt_policy()` | 1155 | Send policy JSON to keystore for encryption |
 | `sign_policy()` | 1199 | Keystore signs encrypted policy SHA256 for on-chain verification |
 | `approve()` | 1447 | Submit multisig approval (NEP-413 signature verification) |
@@ -182,7 +182,7 @@ non-frozen wallet — no capability, no multisig.
 master_secret (from NEAR MPC network, never leaves TEE)
     │
     ├── seed: "wallet:{wallet_id}:near"      → Ed25519 → NEAR implicit account
-    ├── seed: "wallet:{wallet_id}:ethereum"   → secp256k1 → ETH address
+    ├── seed: "wallet:{wallet_id}:evm"        → secp256k1 → ETH address (shared by all EVM chains)
     ├── seed: "wallet:{wallet_id}:solana"     → Ed25519 → Solana address
     └── seed: "wallet:{wallet_id}:bitcoin"    → secp256k1 → BTC address
 ```
@@ -191,13 +191,13 @@ Same wallet_id always produces same addresses across chains. Deterministic, stat
 
 > The keystore *can* derive and sign for all of the above (secp256k1 for EVM,
 > Ed25519 for NEAR/Solana). The public `GET /wallet/v1/address` endpoint now
-> serves **NEAR + all EVM chains** — every EVM chain returns the same shared
-> secp256k1 `0x` address. The keystore signs EVM payloads (EIP-712 / EIP-191 /
-> raw tx); the **client** assembles and broadcasts the EVM transaction (the
-> coordinator/keystore never build, fund, or broadcast one). **Solana** stays
-> withheld — no native tx builder/broadcast yet, so its address is not handed
-> out (that would risk stuck funds). Solana value movement still goes through
-> NEAR Intents + the 1Click solver. See
+> serves **NEAR + all EVM chains + Solana** — every EVM chain returns the same
+> shared secp256k1 `0x` address; Solana returns the base58 ed25519 public key.
+> The keystore signs EVM payloads (EIP-712 / EIP-191 / raw tx) and Solana
+> payloads (off-chain messages / serialized tx messages, ed25519); the
+> **client** assembles and broadcasts the transaction (the coordinator/keystore
+> never build, fund, or broadcast one). Cross-chain value movement also still
+> works through NEAR Intents + the 1Click solver. See
 > [coordinator `docs/MULTI_CHAIN.md`](https://github.com/out-layer/coordinator/blob/main/docs/MULTI_CHAIN.md).
 
 #### Policy evaluation flow (inside TEE)
@@ -490,6 +490,7 @@ Stored encrypted on NEAR blockchain. Only keystore TEE can decrypt.
   "capabilities": {
     "raw_sign":     { "allowed": false, "chains": ["ethereum", "solana"], "requires_approval": true },
     "evm_sign":     { "allowed": true,  "raw_tx": false },
+    "solana_sign":  { "allowed": false, "raw_tx": false },
     "confidential": { "allowed": false, "requires_approval": false },
     "sign_message": { "allowed": true,  "requires_approval": false, "allowed_recipients": [] },
     "swap":         { "allowed": false, "requires_approval": false },
@@ -540,6 +541,14 @@ unrestricted):
   signature is itself fund-moving (EIP-3009 ≈ transfer, EIP-2612 ≈ approve), so `evm_sign` grants
   full authority over the EVM address's float — bounded to what is bridged onto that address; the
   NEAR-intents balance is never exposed through it.
+- `solana_sign` — sign Solana payloads (off-chain messages, serialized transaction messages). Same
+  model as `evm_sign`: **DEFAULT-DENY** under a policy, `raw_tx` sub-flag **DEFAULT-OFF** gating
+  transaction signing, `requires_approval` NOT supported. The message endpoint signs raw bytes
+  (nacl/SIWS-verifiable) but **rejects** bytes that parse as a valid Solana transaction message —
+  Solana has no EIP-191-style prefix, so without this guard a "message" could be a broadcastable
+  transaction bypassing `raw_tx` (same protection Phantom/Solflare apply). A signed transaction
+  message is fund-moving: `solana_sign` + `raw_tx` grants full authority over the Solana address's
+  float; the NEAR-intents balance is never exposed through it.
 - `confidential` — the confidential-intents flows (Trusted).
 - `sign_message` — generic non-fund NEP-413 (e.g. dApp login). `allowed_recipients` is a
   default-DENY allowlist of verifier recipients (NOT a blocklist); `intents.near`/`intents.far`
@@ -578,7 +587,7 @@ Base: `https://api.outlayer.fastnear.com` (mainnet) · `https://testnet-api.outl
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/wallet/v1/address?chain={chain}` | Derive address — `near` + all EVM chains (one shared secp256k1 `0x` address); `solana`/`bitcoin` gated |
+| GET | `/wallet/v1/address?chain={chain}` | Derive address — `near` + all EVM chains (one shared secp256k1 `0x` address) + `solana` (base58 ed25519); `bitcoin` gated |
 | POST | `/wallet/v1/intents/withdraw` | Withdraw / cross-chain transfer |
 | POST | `/wallet/v1/intents/withdraw/dry-run` | Simulate withdrawal (policy + balance check) |
 | POST | `/wallet/v1/call` | Native NEAR contract call |
@@ -605,6 +614,8 @@ Base: `https://api.outlayer.fastnear.com` (mainnet) · `https://testnet-api.outl
 | POST | `/wallet/v1/evm/sign-typed-data` | Sign EIP-712 typed data (v4). 65-byte `0x r‖s‖v` sig, `v∈{27,28}`, low-s. Gated by `evm_sign` capability |
 | POST | `/wallet/v1/evm/sign-message` | Sign EIP-191 `personal_sign` (this is **different** from the NEP-413 `/wallet/v1/sign-message` above). Gated by `evm_sign` |
 | POST | `/wallet/v1/evm/sign-transaction` | Sign a raw EVM tx — **client serializes the unsigned tx**, keystore keccak256-hashes + signs (no assembly/nonce/gas/broadcast; `yParity = v − 27` for EIP-1559). Gated by `evm_sign` + the `raw_tx` sub-flag |
+| POST | `/wallet/v1/solana/sign-message` | Sign raw Solana message bytes (ed25519, base58 sig; `encoding: utf8\|hex\|base64`). Rejects bytes that parse as a valid tx message. Gated by `solana_sign` capability |
+| POST | `/wallet/v1/solana/sign-transaction` | Sign a Solana tx **message** — **client serializes** (web3.js `tx.serializeMessage()`, base64, ≤1232 bytes), keystore ed25519-signs the bytes as-is (no assembly/blockhash/broadcast). Gated by `solana_sign` + the `raw_tx` sub-flag |
 | POST | `/wallet/v1/auth-sign` | OutLayer NEAR-key auth signature (`{purpose: bearer\|register\|api-key, seed, vault_id?}` → `{auth_message, auth_timestamp, signature, public_key}`). Replaces the old `sign-message format:"raw"` |
 | GET | `/wallet/v1/policy` | View current policy (decrypted via keystore) |
 | POST | `/wallet/v1/encrypt-policy` | Encrypt policy for on-chain storage |

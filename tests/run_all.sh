@@ -84,6 +84,20 @@ else
     echo ""
 fi
 
+# Wallet — Solana signing (message / transaction); read/sign only, no funds
+echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
+echo -e "${BLUE}Wallet — Solana signing (message / transaction)${NC}"
+echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
+echo ""
+
+if curl -s http://localhost:8080/health > /dev/null 2>&1; then
+    "$SCRIPT_DIR/wallet_solana_sign_e2e.sh"
+    echo ""
+else
+    echo "⚠️  Skipping Solana signing tests - Coordinator not running"
+    echo ""
+fi
+
 # Test 5: Wallet Tests (Mode 2 — Policy)
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
 echo -e "${BLUE}Test 5/6: Wallet Mode 2 — User with Policy${NC}"

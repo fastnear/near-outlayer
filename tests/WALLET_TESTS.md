@@ -100,6 +100,42 @@ keystore, so it runs on testnet; wired into `run_all.sh`) asserts:
 > NEAR-intents balance is never exposed. The keystore/coordinator never build
 > or broadcast an EVM tx; gas, nonce, and broadcast are the client's job.
 
+### Solana signing
+
+Solana signing v1 is shipped (same model as EVM: the client builds and
+broadcasts, the keystore only ed25519-signs the raw bytes — Solana has no
+digest step): `GET /wallet/v1/address?chain=solana` returns the base58 ed25519
+address, `POST /wallet/v1/solana/sign-message` signs raw message bytes
+(`encoding: utf8|hex|base64`), and `/wallet/v1/solana/sign-transaction` signs a
+client-serialized transaction message (base64, ≤1232 bytes). Signatures are
+64-byte base58. The `sol` alias is accepted and canonicalized to `solana`.
+
+`tests/wallet_solana_sign_e2e.sh` (read-only, no funds; needs only coordinator +
+keystore, so it runs on testnet; wired into `run_all.sh`) asserts:
+
+- **address shape + alias** — `/wallet/v1/address` returns a 32-byte base58
+  pubkey, identical for `solana` and `sol`.
+- **signature shape + canonical echo** — sign-message (utf8 and hex) returns a
+  64-byte base58 signature; a `chain: "sol"` request is echoed back as
+  `"solana"`; an unknown `encoding` is rejected (400), never sniffed.
+- **the message/transaction guard** — a valid hand-built legacy tx message sent
+  to sign-message is rejected (400), then the SAME bytes sign fine via
+  sign-transaction (no-policy wallet ⇒ raw-tx unrestricted). This is the
+  `raw_tx`-bypass protection; the same bytes are pinned in the keystore unit
+  test `solana.rs::guard_catches_minimal_handbuilt_tx`.
+- **capability gating** is SKIPped here (needs a funded wallet to store an
+  on-chain policy); the gating logic is covered by the unit test
+  `solana_sign_capability_defaults_and_raw_tx_subflag`, and byte-exact
+  signature equivalence with `@solana/web3.js`/nacl by
+  `solana.rs::signatures_match_solana_tooling_byte_for_byte` (pinned vectors,
+  public no-funds test key).
+
+> Same caveats as EVM: a signed Solana transaction message is itself
+> fund-moving, so `solana_sign` + `raw_tx` grants full authority over the
+> Solana address's float; `requires_approval` is NOT supported (fails closed).
+> The keystore/coordinator never build or broadcast a Solana tx; blockhash,
+> fees, assembly, and broadcast are the client's job.
+
 ### Run everything
 
 ```bash
