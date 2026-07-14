@@ -25,6 +25,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use wasmtime::component::Linker;
 
+use crate::executor::wasi_p2::is_blocked_ip;
+
 // Generate bindings from WIT - sync mode for simpler implementation
 wasmtime::component::bindgen!({
     path: "wit",
@@ -95,6 +97,23 @@ impl RpcProxy {
         Ok(())
     }
 
+    /// Rewrite URL host to a resolved IP address (prevents DNS rebinding).
+    /// Keeps original Host header intact via reqwest's default behavior.
+    fn pin_url_to_addr(url: &str, addr: std::net::SocketAddr) -> String {
+        let parsed = reqwest::Url::parse(url).unwrap_or_else(|_| reqwest::Url::parse("http://0.0.0.0").unwrap());
+        let scheme = parsed.scheme();
+        let path = parsed.path();
+        let query = parsed.query().map(|q| format!("?{}", q)).unwrap_or_default();
+
+        // Build URL with IP address, preserving original port
+        let ip_port = if (scheme == "http" && addr.port() == 80) || (scheme == "https" && addr.port() == 443) {
+            format!("{}://{}{}", scheme, addr.ip(), path)
+        } else {
+            format!("{}://{}:{}{}", scheme, addr.ip(), addr.port(), path)
+        };
+        format!("{}{}", ip_port, query)
+    }
+
     /// Safe display of URL - hides API keys and query parameters
     fn safe_url_display(url: &str) -> String {
         if let Some(question_mark_pos) = url.find('?') {
@@ -130,7 +149,6 @@ impl RpcProxy {
         let response = self
             .client
             .post(&self.rpc_url)
-            .header("Content-Type", "application/json")
             .json(&request)
             .send()
             .context("Failed to send RPC request")?;
@@ -145,6 +163,146 @@ impl RpcProxy {
             .json()
             .context("Failed to parse RPC response")?;
         Ok(body)
+    }
+
+    /// Parse a JSON object string like `{"Authorization": "Bearer x", "Accept": "text/plain"}`
+    /// into a list of (name, value) header pairs. Returns empty vec on parse failure (non-fatal).
+    fn parse_headers_json(headers_json: Option<&str>) -> Vec<(String, String)> {
+        let Some(json_str) = headers_json else {
+            return vec![];
+        };
+        let Ok(val) = serde_json::from_str::<Value>(json_str) else {
+            return vec![];
+        };
+        let Some(obj) = val.as_object() else {
+            return vec![];
+        };
+        let mut headers = vec![];
+        for (key, v) in obj {
+            if let Some(s) = v.as_str() {
+                // Validate that the header name is valid HTTP
+                if reqwest::header::HeaderName::from_bytes(key.as_bytes()).is_ok()
+                    && reqwest::header::HeaderValue::from_str(s).is_ok()
+                {
+                    headers.push((key.clone(), s.to_string()));
+                }
+            }
+        }
+        headers
+    }
+
+    /// HTTP GET request (blocking, with SSRF protection)
+    /// Parses response as JSON, returns Value (same as call_method)
+    pub fn http_get(&self, url: &str, headers_json: Option<&str>) -> Result<Value> {
+        self.check_rate_limit()?;
+        let validated_addr = self.validate_url(url)?;
+
+        let headers = Self::parse_headers_json(headers_json);
+
+        // Pin to resolved IP to prevent DNS rebinding (host header preserved)
+        let pinned_url = Self::pin_url_to_addr(url, validated_addr);
+        info!("[RPC] HTTP GET {} (pinned to {})", Self::safe_url_display(url), validated_addr);
+
+        let mut req = self.client.get(&pinned_url);
+        for (name, value) in headers {
+            req = req.header(name, value);
+        }
+        let response = req.send().context("Failed to send HTTP GET request")?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response.text().unwrap_or_default();
+            anyhow::bail!("HTTP GET {}: {}", status, error_text);
+        }
+
+        let body = response.text().context("Failed to read HTTP response body")?;
+        serde_json::from_str(&body).context("HTTP GET response is not valid JSON")
+    }
+
+    /// HTTP POST request (blocking, with SSRF protection)
+    /// Parses response as JSON, returns Value (same as call_method)
+    /// Content-Type defaults to application/json; override via headers if needed.
+    pub fn http_post(&self, url: &str, body: &str, headers_json: Option<&str>) -> Result<Value> {
+        self.check_rate_limit()?;
+        let validated_addr = self.validate_url(url)?;
+
+        let headers = Self::parse_headers_json(headers_json);
+
+        // Pin to resolved IP to prevent DNS rebinding (host header preserved)
+        let pinned_url = Self::pin_url_to_addr(url, validated_addr);
+        info!("[RPC] HTTP POST {} ({} bytes, pinned to {})", Self::safe_url_display(url), body.len(), validated_addr);
+
+        let mut req = self
+            .client
+            .post(&pinned_url);
+        // Set default Content-Type only if user didn't override it
+        let has_content_type = headers.iter().any(|(n, _)| n.eq_ignore_ascii_case("content-type"));
+        if !has_content_type {
+            req = req.header("Content-Type", "application/json");
+        }
+        for (name, value) in headers {
+            req = req.header(name, value);
+        }
+        let response = req
+            .body(body.to_string())
+            .send()
+            .context("Failed to send HTTP POST request")?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response.text().unwrap_or_default();
+            anyhow::bail!("HTTP POST {}: {}", status, error_text);
+        }
+
+        let response_body = response.text().context("Failed to read HTTP response body")?;
+        serde_json::from_str(&response_body).context("HTTP POST response is not valid JSON")
+    }
+
+    /// SSRF protection: validate URL and resolve DNS to block internal IPs
+    fn validate_url(&self, url: &str) -> Result<std::net::SocketAddr> {
+        let parsed = reqwest::Url::parse(url)
+            .with_context(|| format!("Invalid URL: {}", url))?;
+
+        // Check scheme
+        match parsed.scheme() {
+            "https" | "http" => {}
+            scheme => anyhow::bail!("Unsupported URL scheme: {}. Only http and https allowed.", scheme),
+        }
+
+        // Extract host
+        let host = parsed
+            .host_str()
+            .ok_or_else(|| anyhow::anyhow!("URL has no host"))?;
+
+        // Determine port
+        let port = parsed.port().unwrap_or(match parsed.scheme() {
+            "https" => 443,
+            "http" => 80,
+            _ => 80,
+        });
+
+        // DNS lookup with SSRF protection
+        let addrs: Vec<std::net::SocketAddr> = std::net::ToSocketAddrs::to_socket_addrs(&(host, port))
+            .with_context(|| format!("DNS resolution failed for {}:{}", host, port))?
+            .collect();
+
+        if addrs.is_empty() {
+            anyhow::bail!("DNS resolution returned no addresses for {}:{}", host, port);
+        }
+
+        // Return first non-blocked addr
+        for addr in &addrs {
+            if is_blocked_ip(addr.ip()) {
+                anyhow::bail!(
+                    "Blocked SSRF attempt: {} resolves to internal/private address {}",
+                    Self::safe_url_display(url),
+                    addr.ip()
+                );
+            }
+            return Ok(*addr);
+        }
+
+        unreachable!("addrs is non-empty but no addr passed the IP check")
     }
 
     #[allow(dead_code)]
@@ -763,6 +921,22 @@ impl near::rpc::api::Host for RpcHostState {
         let params: Value = serde_json::from_str(&params_json).unwrap_or(json!([]));
 
         match self.proxy.call_method(&method, params) {
+            Ok(result) => (serde_json::to_string(&result).unwrap_or_default(), String::new()),
+            Err(e) => (String::new(), e.to_string()),
+        }
+    }
+
+    // ==================== HTTP API ====================
+
+    fn http_get(&mut self, url: String, headers: Option<String>) -> (String, String) {
+        match self.proxy.http_get(&url, headers.as_deref()) {
+            Ok(result) => (serde_json::to_string(&result).unwrap_or_default(), String::new()),
+            Err(e) => (String::new(), e.to_string()),
+        }
+    }
+
+    fn http_post(&mut self, url: String, body: String, headers: Option<String>) -> (String, String) {
+        match self.proxy.http_post(&url, &body, headers.as_deref()) {
             Ok(result) => (serde_json::to_string(&result).unwrap_or_default(), String::new()),
             Err(e) => (String::new(), e.to_string()),
         }

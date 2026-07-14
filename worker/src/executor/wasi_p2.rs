@@ -109,7 +109,7 @@ impl WasiView for HostState {
 
 /// True for addresses a sandboxed guest must not reach: loopback, RFC1918
 /// private, link-local (incl. cloud metadata 169.254.169.254), CGNAT, ULA, etc.
-fn is_blocked_ip(ip: std::net::IpAddr) -> bool {
+pub(crate) fn is_blocked_ip(ip: std::net::IpAddr) -> bool {
     use std::net::IpAddr;
     match ip {
         IpAddr::V4(v4) => {
