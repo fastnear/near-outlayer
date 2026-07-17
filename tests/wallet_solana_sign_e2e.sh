@@ -23,8 +23,10 @@
 #     funded wallet; gated/SKIPped like the other policy tests.)
 #
 # Prerequisites:
-#   - Coordinator running on localhost:8080
-#   - Keystore running on localhost:8081
+#   - Coordinator reachable at COORDINATOR_URL (default: mainnet
+#     https://api.outlayer.fastnear.com; override for testnet/local, e.g.
+#     COORDINATOR_URL=http://localhost:8080 ./tests/wallet_solana_sign_e2e.sh)
+#   - Keystore running behind that coordinator
 #   - Keystore configured with a reachable NEAR RPC. The sign endpoints
 #     (tests 2-4) read the wallet's on-chain policy via load_wallet_policy even
 #     for a no-policy wallet, so without RPC they return 503 (not a signing bug).
@@ -34,7 +36,7 @@
 
 set -euo pipefail
 
-COORDINATOR_URL="${COORDINATOR_URL:-http://localhost:8080}"
+COORDINATOR_URL="${COORDINATOR_URL:-https://api.outlayer.fastnear.com}"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'

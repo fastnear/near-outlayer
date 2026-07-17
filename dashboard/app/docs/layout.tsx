@@ -200,6 +200,8 @@ const pageStructure = {
     { id: 'what-is-tee', title: 'What is TEE Attestation?' },
     { id: 'worker-registration', title: 'Worker Registration' },
     { id: 'execution-attestation', title: 'Execution Attestation' },
+    { id: 'trust-model', title: 'What the Signature Proves' },
+    { id: 'data-freshness', title: 'Data Freshness' },
     { id: 'verification-process', title: 'Verification Process' },
     { id: 'security-guarantees', title: 'Security Guarantees' },
     { id: 'dashboard-verification', title: 'Dashboard Verification' },

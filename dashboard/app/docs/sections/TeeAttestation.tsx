@@ -251,6 +251,108 @@ export default function TeeAttestationSection() {
           </p>
         </section>
 
+        {/* What the Signature Proves */}
+        <section id="trust-model">
+          <AnchorHeading id="trust-model">What the Signature Proves — and What It Doesn&apos;t</AnchorHeading>
+
+          <p className="text-gray-700 mb-3">
+            OutLayer attests exactly one thing: <strong>this WASM binary produced this output, inside a
+            genuine Intel TDX environment.</strong> The binary is identified by its{' '}
+            <code className="bg-gray-100 px-1 rounded">wasm_hash</code> — a SHA256 of the exact bytes that ran.
+            This is the trust anchor. It does not depend on any single host: pin the bytes on content-addressed
+            storage (FastFS, IPFS, …) and fetch them by hash, or rebuild from source and confirm the hash matches.
+          </p>
+
+          <div className="bg-yellow-50 border-l-4 border-yellow-500 p-4 my-4">
+            <p className="text-yellow-900 font-semibold mb-2">The anchor is the wasm_hash, not a repo + commit</p>
+            <p className="text-yellow-800 text-sm">
+              A source repo and commit may also be recorded, so you can read the human-readable code — but that
+              is a convenience, not the anchor. A repo can be deleted or a commit rewritten; the{' '}
+              <code className="bg-white px-1 rounded">wasm_hash</code> cannot. Trust follows the bytes, addressed
+              by their hash.
+            </p>
+          </div>
+
+          <div className="bg-red-50 border-l-4 border-red-500 p-4 my-4">
+            <p className="text-red-900 font-semibold mb-2">TEE proves what ran, not that it is honest</p>
+            <p className="text-red-800 text-sm">
+              The attestation does <strong>not</strong> claim the program&apos;s logic is correct or honest. It proves{' '}
+              <em>what ran</em>, not that <em>what ran is trustworthy</em>. To trust a result, audit the WASM (by its hash).
+            </p>
+          </div>
+
+          <h4 className="text-lg font-semibold text-gray-900 mt-6 mb-2">Acting on the output</h4>
+          <p className="text-gray-700 mb-3">
+            A program may return its output to a caller, or act on it — for example, sign and submit its own
+            transactions. OutLayer&apos;s guarantee is the same either way: it attests the binary → output link,
+            and nothing about what the program then chooses to do. Auditing the WASM is always what you rely on.
+          </p>
+
+          <div className="bg-white border-2 border-purple-300 rounded-lg p-4 my-4">
+            <p className="text-gray-900 font-semibold mb-2">Signing keys — the distinction that matters</p>
+            <ul className="list-disc list-inside space-y-2 text-gray-700 text-sm">
+              <li>
+                A key the developer generates and stores as a <strong>regular secret</strong> is held by both the
+                developer and the program — the developer can also use it directly, outside the attested code.
+              </li>
+              <li>
+                A <strong><code className="bg-gray-100 px-1 rounded">PROTECTED_</code> secret is generated inside
+                the TEE and never leaves it</strong> — only the attested binary can produce a valid signature with
+                it. Use this when no one must be able to act under the worker&apos;s identity outside the attested code.
+              </li>
+            </ul>
+          </div>
+
+          <div className="bg-blue-50 border-l-4 border-blue-500 p-4 my-4">
+            <p className="text-blue-900 font-semibold mb-2">Is the consumer &quot;privy&quot; to verification?</p>
+            <p className="text-blue-800 text-sm">
+              Yes — but not at read time. The TDX environment is verified <strong>once</strong>, at worker
+              registration (measurements checked on-chain). Results are then signed by the worker key, so verifying
+              a result at use time is a cheap signature check. The full attestation proof — TDX quote and
+              input/output/wasm hashes — is published and can be verified <strong>independently, at any time, after
+              the fact</strong>. Per-call on-chain quote verification is deliberately avoided; it is prohibitively
+              expensive in gas.
+            </p>
+          </div>
+        </section>
+
+        {/* Data Freshness */}
+        <section id="data-freshness">
+          <AnchorHeading id="data-freshness">Data Freshness</AnchorHeading>
+
+          <p className="text-gray-700 mb-3">
+            A result is timestamped at <strong>generation time</strong> — when the runner read the source — not by
+            the age of the source data itself. Enforcing source freshness is the <strong>program&apos;s</strong>{' '}
+            responsibility: only the program knows where &quot;age&quot; lives in a given source&apos;s response, and
+            some sources expose no timestamp at all.
+          </p>
+
+          <div className="bg-white border-2 border-green-300 rounded-lg p-4 my-4">
+            <p className="text-gray-900 font-semibold mb-2">A program that needs freshness guarantees should:</p>
+            <ul className="list-disc list-inside space-y-2 text-gray-700 text-sm">
+              <li>
+                Reject data older than its threshold <strong>where the source exposes its own timestamp</strong>
+                {' '}(e.g. a publish time or an update time).
+              </li>
+              <li>
+                Where the source exposes <strong>no</strong> timestamp, record the fetch time and treat the value
+                as only as fresh as the moment it was read.
+              </li>
+              <li>
+                Carry source provenance (for example, the queried block height of a cross-chain view call) into its
+                <strong> attested output</strong>, so the consuming contract can enforce its own deadline.
+              </li>
+            </ul>
+          </div>
+
+          <p className="text-gray-700">
+            OutLayer cannot enforce source freshness universally, because &quot;freshness&quot; is a property of each
+            source&apos;s payload, which only the program parses. The platform attests <em>when</em> the data was read
+            and <em>what</em> was returned; deciding whether that is fresh enough is the program&apos;s and the
+            consumer&apos;s job.
+          </p>
+        </section>
+
         {/* Verification Process */}
         <section id="verification-process">
           <AnchorHeading id="verification-process">Verification Process</AnchorHeading>
