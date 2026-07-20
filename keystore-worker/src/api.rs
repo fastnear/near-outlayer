@@ -4764,7 +4764,7 @@ async fn sign_built(
     use near_primitives::transaction::{
         Action, DeleteAccountAction, FunctionCallAction, TransferAction,
     };
-    use near_primitives::types::AccountId;
+    use near_primitives::types::{AccountId, Balance, Gas};
     use shared_tee_helpers::wallet_policy::Op;
     use std::str::FromStr;
 
@@ -4782,7 +4782,7 @@ async fn sign_built(
                 move |_signer| {
                     let receiver = AccountId::from_str(&to)
                         .map_err(|e| ApiError::BadRequest(format!("Invalid 'to': {}", e)))?;
-                    Ok((receiver, vec![Action::Transfer(TransferAction { deposit })]))
+                    Ok((receiver, vec![Action::Transfer(TransferAction { deposit: Balance::from_yoctonear(deposit) })]))
                 },
             )
             .await?;
@@ -4818,8 +4818,8 @@ async fn sign_built(
                         vec![Action::FunctionCall(Box::new(FunctionCallAction {
                             method_name: method,
                             args,
-                            gas,
-                            deposit,
+                            gas: Gas::from_gas(gas),
+                            deposit: Balance::from_yoctonear(deposit),
                         }))],
                     ))
                 },
@@ -6018,6 +6018,7 @@ mod tests {
             allowed_coordinator_token_hashes: vec![],
             tee_mode: crate::config::TeeMode::None,
             operator_account_id: None,
+            keystore_key_type: near_crypto::KeyType::ED25519,
         };
         AppState::new(crate::crypto::Keystore::generate(), config, None)
     }

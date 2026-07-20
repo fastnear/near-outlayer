@@ -6,7 +6,8 @@ set -e
 echo "Building keystore-dao-contract in Docker..."
 
 # Use the same Docker image as MPC/register contracts
-DOCKER_IMAGE="sourcescan/cargo-near:0.17.0-rust-1.86.0"
+# rust >= 1.93 is required by near-sdk 5.29 (post-quantum ml-dsa-65 PublicKey support)
+DOCKER_IMAGE="sourcescan/cargo-near:0.22.0-rust-1.97.1"
 
 # Run build in Docker container
 docker run --rm \

@@ -71,7 +71,7 @@ impl TdxClient {
     /// inside the TEE.
     ///
     /// # Arguments
-    /// * `public_key_bytes` - Raw ed25519 public key bytes (32 bytes)
+    /// * `public_key_bytes` - 32-byte report_data binding (see tee_registration::report_data_binding)
     ///
     /// # Returns
     /// * Hex-encoded TDX quote (ready to pass to submit_keystore_registration)

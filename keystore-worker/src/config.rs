@@ -34,6 +34,12 @@ pub struct Config {
 
     /// Operator account where TEE worker keys are registered as access keys (e.g., "worker.outlayer.testnet")
     pub operator_account_id: Option<String>,
+
+    /// Signature scheme for the keystore's own registration key.
+    /// ed25519 (default) or ml-dsa-65 (FIPS-204 post-quantum). Set via KEYSTORE_KEY_TYPE.
+    /// Note: per-vault TEE keys (mpc_ckd Layer 1) stay ed25519 — they are derived
+    /// deterministically from the master secret and are a separate concern.
+    pub keystore_key_type: near_crypto::KeyType,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,6 +103,15 @@ impl Config {
 
         let operator_account_id = std::env::var("OPERATOR_ACCOUNT_ID").ok();
 
+        // Keystore registration key scheme (ed25519 | ml-dsa-65). Default ed25519.
+        let keystore_key_type = {
+            let s = std::env::var("KEYSTORE_KEY_TYPE").unwrap_or_else(|_| "ed25519".to_string());
+            let s = s.trim().trim_matches('"').trim_matches('\'');
+            s.parse::<near_crypto::KeyType>().map_err(|e| {
+                anyhow::anyhow!("Invalid KEYSTORE_KEY_TYPE '{}': {} (use 'ed25519' or 'ml-dsa-65')", s, e)
+            })?
+        };
+
         Ok(Config {
             server_addr,
             near_network,
@@ -106,6 +121,7 @@ impl Config {
             allowed_coordinator_token_hashes,
             tee_mode,
             operator_account_id,
+            keystore_key_type,
         })
     }
 

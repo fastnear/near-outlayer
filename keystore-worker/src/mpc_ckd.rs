@@ -35,7 +35,7 @@ use hkdf::Hkdf;
 use near_jsonrpc_client::{methods, JsonRpcClient};
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::transaction::{Action, FunctionCallAction, Transaction, TransactionV0};
-use near_primitives::types::{AccountId, BlockReference, Finality, FunctionArgs};
+use near_primitives::types::{AccountId, Balance, BlockReference, Finality, FunctionArgs, Gas};
 use near_primitives::views::{QueryRequest, CallResult, FinalExecutionStatus};
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
@@ -530,7 +530,7 @@ impl MpcCkdClient {
             actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
                 method_name: method_name.to_string(),
                 args,
-                gas: 300_000_000_000_000, // 300 TGas
+                gas: Gas::from_gas(300_000_000_000_000), // 300 TGas
                 // FC access keys can't attach deposit. Boot CKD signs as
                 // dao.outlayer.testnet (FullAccess elsewhere but no
                 // deposit needed since DAO's `request_key` doesn't
@@ -538,7 +538,7 @@ impl MpcCkdClient {
                 // vault's own `request_master` proxy — that adds the
                 // 1 yocto MPC requires from the vault contract's
                 // balance via cross-contract `with_attached_deposit`.
-                deposit: 0,
+                deposit: Balance::from_yoctonear(0),
             }))],
         };
 
@@ -750,6 +750,15 @@ pub async fn check_access_key_methods(
             }
             Ok(())
         }
+        // near-primitives 0.37 added gas-key permissions. Fail closed: a gas key is not the
+        // plain function-call access key this check expects, so refuse rather than assume.
+        other => {
+            anyhow::bail!(
+                "keystore access key on {dao} has an unsupported permission ({other:?}); \
+                 expected a plain function-call access key",
+                dao = dao_contract,
+            );
+        }
     }
 }
 
@@ -791,10 +800,11 @@ pub async fn initialize_mpc_keystore(
     tracing::info!("Using DAO contract as signer: {}", signer_account_id);
 
     // Create signer for DAO contract using keystore's key (added as access key after approval)
-    let signer = near_crypto::InMemorySigner::from_secret_key(
-        signer_account_id.clone(),
-        keystore_secret_key,
-    );
+    let signer = near_crypto::InMemorySigner {
+        account_id: signer_account_id.clone(),
+        public_key: keystore_secret_key.public_key(),
+        secret_key: keystore_secret_key,
+    };
 
     // Create MPC client. Signer is passed per-call.
     let mpc_client = MpcCkdClient::new(config.clone());
@@ -924,7 +934,11 @@ pub async fn add_customer(
     // `vault_id` during atomic deploy by the customer, restricted to
     // `(receiver=mpc_contract, methods=["request_app_private_key"])`.
     let vault_signer =
-        near_crypto::InMemorySigner::from_secret_key(vault_id.clone(), vault_sk);
+        near_crypto::InMemorySigner {
+            account_id: vault_id.clone(),
+            public_key: vault_sk.public_key(),
+            secret_key: vault_sk,
+        };
 
     // Issue MPC CKD as a fresh client (the worker's persistent client
     // is bound to the keystore-dao signer; vault calls need a different

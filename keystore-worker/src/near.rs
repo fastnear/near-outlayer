@@ -5,7 +5,7 @@
 use anyhow::{Context, Result};
 use near_jsonrpc_client::{methods, JsonRpcClient};
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
-use near_primitives::types::{AccountId, BlockReference};
+use near_primitives::types::{AccountId, Balance, BlockReference, Gas};
 use serde_json::json;
 use std::str::FromStr;
 
@@ -109,7 +109,7 @@ impl NearClient {
             .context("Failed to query account")?;
 
         match response.kind {
-            QueryResponseKind::ViewAccount(account_view) => Ok(account_view.amount),
+            QueryResponseKind::ViewAccount(account_view) => Ok(account_view.amount.as_yoctonear()),
             _ => anyhow::bail!("Unexpected query response"),
         }
     }
@@ -698,8 +698,8 @@ impl NearClient {
             actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
                 method_name: method_name.to_string(),
                 args: args_bytes,
-                gas,
-                deposit,
+                gas: Gas::from_gas(gas),
+                deposit: Balance::from_yoctonear(deposit),
             }))],
         };
         let transaction = Transaction::V0(transaction_v0);

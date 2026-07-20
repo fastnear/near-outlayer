@@ -294,6 +294,20 @@ fn check_function_call_key(
             }
             Ok(())
         }
+        // near-primitives 0.37 added gas-key permissions. A gas key with full access is just
+        // as dangerous as FullAccess; a gas function-call key is not the exact self-call
+        // grant we require. Both are rejected.
+        AccessKeyPermissionView::GasKeyFullAccess { .. } => {
+            Err(VerifyError::FullAccessKeyPresent)
+        }
+        AccessKeyPermissionView::GasKeyFunctionCall {
+            receiver_id,
+            method_names,
+            ..
+        } => Err(VerifyError::FunctionCallKeyMisconfigured {
+            receiver: receiver_id.to_string(),
+            methods: method_names.clone(),
+        }),
     }
 }
 

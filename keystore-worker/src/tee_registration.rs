@@ -7,11 +7,11 @@
 //! 4. Wait for DAO approval
 
 use anyhow::{Context, Result};
-use near_crypto::{InMemorySigner, PublicKey, SecretKey};
+use near_crypto::{InMemorySigner, KeyType, PublicKey, SecretKey};
 use near_jsonrpc_client::{methods, JsonRpcClient};
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::transaction::{Action, FunctionCallAction, Transaction, TransactionV0};
-use near_primitives::types::{AccountId, BlockReference, Finality};
+use near_primitives::types::{AccountId, Balance, BlockReference, Finality, Gas};
 use near_primitives::views::{QueryRequest, CallResult};
 use serde_json::json;
 use std::fs;
@@ -30,9 +30,34 @@ pub struct RegistrationClient {
 
     /// Init account for gas payment
     init_signer: InMemorySigner,
+    /// Signature scheme for the generated keystore registration key
+    key_type: KeyType,
 
     /// Path to store keypair
     keypair_path: PathBuf,
+}
+
+/// Compute the 32-byte value embedded into the TDX quote's `report_data` that binds the
+/// TEE to its on-chain keystore key.
+///
+/// - `ed25519`: the raw 32-byte public key (unchanged — backward compatible with already
+///   approved keystores).
+/// - `ml-dsa-65`: SHA-256 of the 1952-byte public key. The full ML-DSA key does not fit into
+///   `report_data`'s 32 bytes, so we bind to its hash. keystore-dao-contract recomputes the
+///   same hash from the submitted public key and compares.
+pub fn report_data_binding(public_key: &PublicKey) -> Result<[u8; 32]> {
+    match public_key {
+        PublicKey::ED25519(key) => Ok(key.0),
+        PublicKey::MLDSA65(key) => {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(&key.0[..]); // 1952 bytes of ML-DSA-65 public key
+            Ok(hasher.finalize().into())
+        }
+        _ => anyhow::bail!(
+            "Unsupported keystore key type for report_data binding (use ed25519 or ml-dsa-65)"
+        ),
+    }
 }
 
 impl RegistrationClient {
@@ -42,13 +67,15 @@ impl RegistrationClient {
         dao_contract_id: AccountId,
         init_account_id: AccountId,
         init_secret_key: SecretKey,
+        key_type: KeyType,
     ) -> Result<Self> {
         let rpc_client = JsonRpcClient::connect(&near_rpc_url);
 
-        let init_signer = InMemorySigner::from_secret_key(
-            init_account_id,
-            init_secret_key,
-        );
+        let init_signer = InMemorySigner {
+            account_id: init_account_id,
+            public_key: init_secret_key.public_key(),
+            secret_key: init_secret_key,
+        };
 
         let keypair_path = Self::get_keypair_path();
 
@@ -57,6 +84,7 @@ impl RegistrationClient {
             dao_contract_id,
             init_signer,
             keypair_path,
+            key_type,
         })
     }
 
@@ -93,24 +121,23 @@ impl RegistrationClient {
         }
     }
 
-    /// Generate new ED25519 keypair
+    /// Generate a new keystore registration keypair using the configured signature scheme.
+    ///
+    /// Supports `ed25519` (default) and `ml-dsa-65` (FIPS-204 post-quantum). Both are
+    /// generated randomly from the OS CSPRNG inside the TEE via near-crypto.
     fn generate_keypair(&self) -> Result<(PublicKey, SecretKey)> {
-        use ed25519_dalek::SigningKey;
-        use rand::rngs::OsRng;
+        match self.key_type {
+            KeyType::ED25519 | KeyType::MLDSA65 => {}
+            other => anyhow::bail!(
+                "Unsupported keystore key type {} (use 'ed25519' or 'ml-dsa-65')",
+                other
+            ),
+        }
 
-        let signing_key = SigningKey::generate(&mut OsRng);
-        let secret_bytes = signing_key.to_bytes();
-        let public_bytes = signing_key.verifying_key().to_bytes();
-
-        // NEAR ED25519SecretKey requires 64 bytes: [secret_key (32 bytes)][public_key (32 bytes)]
-        let mut keypair_bytes = [0u8; 64];
-        keypair_bytes[..32].copy_from_slice(&secret_bytes);
-        keypair_bytes[32..].copy_from_slice(&public_bytes);
-
-        let secret_key = SecretKey::ED25519(near_crypto::ED25519SecretKey(keypair_bytes));
+        let secret_key = SecretKey::from_random(self.key_type);
         let public_key = secret_key.public_key();
 
-        info!("✅ Generated new keypair: {}", public_key);
+        info!("✅ Generated new {} keystore keypair: {}", self.key_type, public_key);
 
         Ok((public_key, secret_key))
     }
@@ -262,8 +289,8 @@ impl RegistrationClient {
             actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
                 method_name: "submit_keystore_registration".to_string(),
                 args: args_json.into_bytes(),  // Use JSON string as bytes, not MessagePack
-                gas: 300_000_000_000_000, // 300 TGas (matching worker registration)
-                deposit: 0,
+                gas: Gas::from_gas(300_000_000_000_000), // 300 TGas (matching worker registration)
+                deposit: Balance::from_yoctonear(0),
             }))],
         };
 
@@ -554,5 +581,66 @@ impl RegistrationClient {
         } else {
             Ok("Unknown".to_string())
         }
+    }
+}
+#[cfg(test)]
+mod binding_tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    /// ed25519 keeps the legacy binding: report_data[..32] is the raw public key.
+    /// This is what makes already-approved ed25519 keystores survive the upgrade.
+    #[test]
+    fn ed25519_binding_is_raw_public_key() {
+        let sk = SecretKey::from_random(KeyType::ED25519);
+        let pk = sk.public_key();
+
+        let binding = report_data_binding(&pk).expect("ed25519 binding");
+
+        match &pk {
+            PublicKey::ED25519(k) => assert_eq!(binding, k.0),
+            _ => panic!("expected ed25519"),
+        }
+    }
+
+    /// ml-dsa-65 public keys are 1952 bytes and cannot fit in report_data's 32 bytes,
+    /// so the binding is their SHA-256. keystore-dao-contract recomputes exactly this
+    /// (env::sha256_array over the key bytes minus the curve tag) — keep them in sync.
+    #[test]
+    fn mldsa_binding_is_sha256_of_public_key() {
+        let sk = SecretKey::from_random(KeyType::MLDSA65);
+        let pk = sk.public_key();
+
+        let raw = match &pk {
+            PublicKey::MLDSA65(k) => k.0.to_vec(),
+            _ => panic!("expected ml-dsa-65"),
+        };
+        assert_eq!(raw.len(), 1952, "ML-DSA-65 public key must be 1952 bytes");
+
+        let binding = report_data_binding(&pk).expect("ml-dsa binding");
+        assert_eq!(binding, <[u8; 32]>::from(Sha256::digest(&raw)));
+
+        // The contract strips the leading curve tag before hashing; same bytes must result.
+        let mut tagged = vec![2u8];
+        tagged.extend_from_slice(&raw);
+        assert_eq!(binding, <[u8; 32]>::from(Sha256::digest(&tagged[1..])));
+    }
+
+    /// The keystore must be able to actually sign with an ml-dsa key and round-trip it
+    /// through the `ml-dsa-65:<base58>` textual form used by the keypair file.
+    #[test]
+    fn mldsa_signs_and_round_trips_through_string() {
+        let sk = SecretKey::from_random(KeyType::MLDSA65);
+        let pk = sk.public_key();
+
+        let msg = b"keystore dao registration";
+        let sig = sk.sign(msg);
+        assert!(sig.verify(msg, &pk), "ml-dsa signature must verify");
+        assert!(!sig.verify(b"tampered", &pk), "must reject a wrong message");
+
+        let sk_str = sk.to_string();
+        assert!(sk_str.starts_with("ml-dsa-65:"), "got {sk_str}");
+        let parsed: SecretKey = sk_str.parse().expect("parse ml-dsa-65 secret key");
+        assert_eq!(parsed.public_key(), pk);
     }
 }

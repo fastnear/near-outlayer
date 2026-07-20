@@ -252,6 +252,7 @@ async fn perform_tee_registration(config: &Config) -> Result<TeeRegistrationResu
         dao_contract.parse()?,
         init_account_id.parse()?,
         init_private_key.parse()?,
+        config.keystore_key_type,
     )?;
 
     // Load or generate keypair
@@ -296,11 +297,9 @@ async fn perform_tee_registration(config: &Config) -> Result<TeeRegistrationResu
         use crate::tdx_attestation::TdxClient;
         let tdx_client = TdxClient::new(config.tee_mode.to_string());
 
-        // Extract ED25519 public key bytes
-        let pubkey_bytes = match &public_key {
-            near_crypto::PublicKey::ED25519(key) => key.0,
-            _ => anyhow::bail!("Only ED25519 keys supported"),
-        };
+        // Compute the 32-byte report_data binding (raw pubkey for ed25519, SHA-256 of the
+        // pubkey for ml-dsa-65). The DAO contract re-derives and checks this.
+        let pubkey_bytes = tee_registration::report_data_binding(&public_key)?;
 
         let tdx_quote = tdx_client.generate_registration_quote(&pubkey_bytes).await?;
         tracing::info!("📡 Generated TEE attestation (mode: {:?})", config.tee_mode);
