@@ -239,9 +239,12 @@ impl RegisterContract {
             "Public key mismatch: provided key doesn't match TDX quote report_data"
         );
 
+        // NOTE: do not log the full public_key with {:?} — an ml-dsa-65 key debug-prints to
+        // ~19 KB and blows the 16 KB per-log limit. Log the (short) curve + report_data binding.
         env::log_str(&format!(
-            "✅ TEE verification passed: all 5 measurements approved, pubkey={:?}",
-            public_key
+            "✅ TEE verification passed: all 5 measurements approved, curve={:?}, binding={}",
+            public_key.curve_type(),
+            hex::encode(report_data_prefix)
         ));
 
         // 4. Add access key to this contract's account (worker account)
@@ -251,8 +254,8 @@ impl RegisterContract {
         let current_account = env::current_account_id();
         
         env::log_str(&format!(
-            "Adding access key to {}: pubkey={:?}, allowance=10 NEAR, methods={}, receiver={}",
-            current_account.clone(), public_key, method_names, self.outlayer_contract_id
+            "Adding access key to {}: curve={:?}, binding={}, allowance=10 NEAR, methods={}, receiver={}",
+            current_account.clone(), public_key.curve_type(), hex::encode(report_data_prefix), method_names, self.outlayer_contract_id
         ));
 
         // Add key to this account (self) with permissions for offchainvm_contract_id
@@ -443,7 +446,12 @@ impl RegisterContract {
         self.assert_owner();
         let account = env::current_account_id();
         for key in &public_keys {
-            env::log_str(&format!("Removing worker key: {:?}", key));
+            // Short fingerprint only: an ml-dsa-65 key debug-prints to ~19 KB (over the log limit).
+            env::log_str(&format!(
+                "Removing worker key: curve={:?}, sha256={}",
+                key.curve_type(),
+                hex::encode(env::sha256_array(key.as_bytes()))
+            ));
             // Each delete_key is an independent promise — if one key
             // doesn't exist, the others still get removed. Detached on purpose: we schedule
             // them all and return nothing (near-sdk >= 5.29 marks Promise #[must_use]).

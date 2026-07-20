@@ -1284,9 +1284,12 @@ impl KeystoreDao {
         // Add to approved keystores
         self.approved_keystores.insert(&proposal.public_key);
 
+        // Short fingerprint only: an ml-dsa-65 key debug-prints to ~19 KB (over the log limit).
         env::log_str(&format!(
-            "✅ Executed proposal {}: Added keystore access key {:?} (all 5 TEE measurements verified)",
-            proposal_id, proposal.public_key
+            "✅ Executed proposal {}: Added keystore access key (curve={:?}, sha256={}, all 5 TEE measurements verified)",
+            proposal_id,
+            proposal.public_key.curve_type(),
+            hex::encode(env::sha256_array(proposal.public_key.as_bytes()))
         ));
     }
 
