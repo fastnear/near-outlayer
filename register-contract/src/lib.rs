@@ -1,6 +1,6 @@
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::serde::{Deserialize, Serialize};
-use near_sdk::{env, near_bindgen, AccountId, Allowance, NearToken, Promise, PublicKey, BorshStorageKey};
+use near_sdk::{env, near_bindgen, AccountId, Allowance, CurveType, NearToken, Promise, PublicKey, BorshStorageKey};
 use schemars::JsonSchema;
 
 // Collateral wrapper with Borsh support (same approach as MPC Node)
@@ -100,6 +100,11 @@ impl Default for RegisterContract {
     }
 }
 
+// near-sdk >= 5.29 requires contract structs to implement `ContractState`. All methods are
+// defaulted and `state_key()` stays `b"STATE"`, so the on-chain state layout and storage key
+// are byte-identical to what the deployed contract already uses (no migration needed).
+impl near_sdk::state::ContractState for RegisterContract {}
+
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(crate = "near_sdk::serde")]
 pub struct WorkerKeyInfo {
@@ -189,14 +194,14 @@ impl RegisterContract {
                     quote_fmspc
                 ))
             });
-        let (measurements, embedded_pubkey) = self
+        let (measurements, report_data_prefix) = self
             .verify_worker_registration(&tdx_quote_hex, collateral)
             .unwrap_or_else(|e| env::panic_str(&format!("TDX quote verification failed: {e}")));
 
         // Log verification result for admin visibility
         env::log_str(&format!(
-            "📋 Verified TDX quote. Worker's TEE-generated key (from quote report_data): {:?}",
-            embedded_pubkey
+            "📋 Verified TDX quote. report_data binding (hex): {}",
+            hex::encode(report_data_prefix)
         ));
         env::log_str(&format!(
             "📋 Measurements from TDX quote: mrtd={}, rtmr0={}, rtmr1={}, rtmr2={}, rtmr3={}",
@@ -212,9 +217,25 @@ impl RegisterContract {
             measurements.rtmr2, measurements.rtmr3
         );
 
-        // 3. Verify public_key matches the one embedded in TDX quote
+        // 3. Verify the submitted public_key matches the binding embedded in the TDX quote.
+        //    ed25519: the binding is the raw 32-byte public key.
+        //    ml-dsa-65: the 1952-byte key does not fit in report_data, so the binding is its
+        //    SHA-256. Recompute the same hash here (must match worker::report_data_binding).
+        let key_bytes = public_key.as_bytes(); // [curve_tag, ..data]
+        let expected_binding: [u8; 32] = match public_key.curve_type() {
+            CurveType::ED25519 => {
+                let mut b = [0u8; 32];
+                b.copy_from_slice(&key_bytes[1..33]);
+                b
+            }
+            CurveType::MLDSA65 => env::sha256_array(&key_bytes[1..]),
+            other => env::panic_str(&format!(
+                "Unsupported worker key curve {:?} (use ed25519 or ml-dsa-65)",
+                other
+            )),
+        };
         assert_eq!(
-            embedded_pubkey, public_key,
+            report_data_prefix, expected_binding,
             "Public key mismatch: provided key doesn't match TDX quote report_data"
         );
 
@@ -275,7 +296,7 @@ impl RegisterContract {
         &self,
         quote_hex: &str,
         collateral_str: &str,
-    ) -> Result<(ApprovedMeasurements, PublicKey), String> {
+    ) -> Result<(ApprovedMeasurements, [u8; 32]), String> {
         use dcap_qvl::verify;
         use hex::decode;
 
@@ -324,15 +345,13 @@ impl RegisterContract {
             rtmr3: hex::encode(td10.rt_mr3.to_vec()),
         };
 
-        // Extract public key from report_data (first 32 bytes)
-        let pubkey_bytes = &td10.report_data[..32]; // ed25519 public key (32 bytes)
+        // Extract the 32-byte report_data binding. This is the raw ed25519 public key, or
+        // SHA-256 of an ml-dsa-65 public key (which is 1952 bytes and does not fit in
+        // report_data's 32 bytes). register_worker_key re-derives this from the submitted key.
+        let mut report_data_prefix = [0u8; 32];
+        report_data_prefix.copy_from_slice(&td10.report_data[..32]);
 
-        // Convert bytes to NEAR PublicKey
-        let pubkey_with_prefix = [&[0u8], pubkey_bytes].concat(); // Add ed25519 prefix
-        let public_key = PublicKey::try_from(pubkey_with_prefix)
-            .map_err(|_| "Invalid ed25519 public key in quote report_data".to_string())?;
-
-        Ok((measurements, public_key))
+        Ok((measurements, report_data_prefix))
     }
 
     /// Update cached quote collateral
@@ -426,8 +445,9 @@ impl RegisterContract {
         for key in &public_keys {
             env::log_str(&format!("Removing worker key: {:?}", key));
             // Each delete_key is an independent promise — if one key
-            // doesn't exist, the others still get removed.
-            Promise::new(account.clone()).delete_key(key.clone());
+            // doesn't exist, the others still get removed. Detached on purpose: we schedule
+            // them all and return nothing (near-sdk >= 5.29 marks Promise #[must_use]).
+            Promise::new(account.clone()).delete_key(key.clone()).detach();
         }
         env::log_str(&format!("Scheduled removal of {} worker key(s)", public_keys.len()));
     }

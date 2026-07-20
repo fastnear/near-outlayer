@@ -1610,7 +1610,8 @@ async fn decrypt_handler(
     // SECURITY NOTE:
     // - For Repo: use branch from SECRET PROFILE (not request) to construct seed
     // - This is correct because seed must match the one used during encryption
-    // - Access control already validated above (only owner can decrypt their secrets)
+    // - Access control already validated above via the secret's AccessCondition
+    //   (caller = user_account_id, i.e. the request's signer — NOT necessarily the owner)
     // - Contract already returned the correct secrets based on request parameters
     //
     // The `seed` values logged below are NOT secrets — they are the

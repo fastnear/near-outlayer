@@ -65,6 +65,10 @@ pub struct Config {
     // CRITICAL: OPERATOR_PRIVATE_KEY is ONLY for resolve_execution(), NEVER for user transactions!
     pub use_tee_registration: bool,
 
+    // Signature scheme for the on-chain worker access key.
+    // ed25519 (default) or ml-dsa-65 (FIPS-204 post-quantum). Switchable via WORKER_KEY_TYPE.
+    pub worker_key_type: near_crypto::KeyType,
+
     // Init account (optional - for paying gas on worker registration)
     // If not set, operator_signer will be used for registration
     pub init_account_id: Option<AccountId>,
@@ -210,6 +214,14 @@ impl Config {
             .parse::<bool>()
             .context("USE_TEE_REGISTRATION must be 'true' or 'false'")?;
 
+        // Worker key signature scheme (ed25519 | ml-dsa-65). Default ed25519.
+        let worker_key_type = {
+            let s = env::var("WORKER_KEY_TYPE").unwrap_or_else(|_| "ed25519".to_string());
+            near_crypto::KeyType::from_str(&s).map_err(|e| {
+                anyhow::anyhow!("Invalid WORKER_KEY_TYPE '{}': {} (use 'ed25519' or 'ml-dsa-65')", s, e)
+            })?
+        };
+
         // Load operator_signer based on registration mode
         // CRITICAL: operator_signer is ONLY used for calling resolve_execution() on OutLayer contract
         // This key is NEVER passed to WASM and NEVER used for user transactions!
@@ -227,10 +239,11 @@ impl Config {
                 .parse()
                 .context("Invalid OPERATOR_PRIVATE_KEY format (expected ed25519:...)")?;
 
-            Some(InMemorySigner::from_secret_key(
-                operator_account_id.clone(),
+            Some(InMemorySigner {
+                account_id: operator_account_id.clone(),
+                public_key: secret_key.public_key(),
                 secret_key,
-            ))
+            })
         };
 
         // Optional fields with defaults
@@ -384,7 +397,11 @@ impl Config {
                 .parse()
                 .context("Invalid FASTFS_SENDER_PRIVATE_KEY format (expected ed25519:...)")?;
 
-            Some(InMemorySigner::from_secret_key(sender_account, secret_key))
+            Some(InMemorySigner {
+                account_id: sender_account,
+                public_key: secret_key.public_key(),
+                secret_key,
+            })
         } else {
             None
         };
@@ -400,10 +417,11 @@ impl Config {
             let init_private_key = SecretKey::from_str(&init_private_key_str)
                 .context("Invalid INIT_ACCOUNT_PRIVATE_KEY format")?;
 
-            let init_signer = InMemorySigner::from_secret_key(
-                init_account_id.clone(),
-                init_private_key,
-            );
+            let init_signer = InMemorySigner {
+                account_id: init_account_id.clone(),
+                public_key: init_private_key.public_key(),
+                secret_key: init_private_key,
+            };
 
             (Some(init_account_id), Some(init_signer))
         } else {
@@ -462,6 +480,7 @@ impl Config {
             offchainvm_contract_id,
             operator_account_id,
             operator_signer,
+            worker_key_type,
             worker_id,
             enable_event_monitor,
             poll_timeout_seconds,
@@ -654,10 +673,15 @@ mod tests {
             start_block_height: 0,
             offchainvm_contract_id: "outlayer.testnet".parse().unwrap(),
             operator_account_id: "worker.testnet".parse().unwrap(),
-            operator_signer: Some(InMemorySigner::from_secret_key(
-                "worker.testnet".parse().unwrap(),
-                "ed25519:3D4YudUahN1nawWvHfEKBGpmJLfbCTbvdXDJKqfLhQ98XewyWK4tEDWvmAYPZqcgz7qfkCEHyWD15m8JVVWJ3LXD".parse().unwrap(),
-            )),
+            operator_signer: Some({
+                let secret_key: SecretKey = "ed25519:3D4YudUahN1nawWvHfEKBGpmJLfbCTbvdXDJKqfLhQ98XewyWK4tEDWvmAYPZqcgz7qfkCEHyWD15m8JVVWJ3LXD".parse().unwrap();
+                InMemorySigner {
+                    account_id: "worker.testnet".parse().unwrap(),
+                    public_key: secret_key.public_key(),
+                    secret_key,
+                }
+            }),
+            worker_key_type: near_crypto::KeyType::ED25519,
             worker_id: "test-worker".to_string(),
             enable_event_monitor: false,
             poll_timeout_seconds: 60,

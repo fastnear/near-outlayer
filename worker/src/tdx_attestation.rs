@@ -66,13 +66,14 @@ impl TdxClient {
 
     /// Generate TDX quote for worker registration with public key embedded
     ///
-    /// This method embeds the worker's public key (32 bytes) into the first
+    /// This method embeds the worker's 32-byte report_data binding into the first
     /// 32 bytes of the TDX quote's report_data field. This allows the register
     /// contract to cryptographically verify that the public key was generated
-    /// inside the TEE.
+    /// inside the TEE. The binding is the raw public key for ed25519, or SHA-256
+    /// of the public key for ml-dsa-65 (which does not fit in 32 bytes).
     ///
     /// # Arguments
-    /// * `public_key_bytes` - Raw ed25519 public key bytes (32 bytes)
+    /// * `public_key_bytes` - 32-byte report_data binding (see registration::report_data_binding)
     ///
     /// # Returns
     /// * Hex-encoded TDX quote (ready to pass to register_worker_key)

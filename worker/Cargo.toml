@@ -20,10 +20,10 @@ async-trait = "0.1"
 reqwest = { version = "0.11", features = ["json", "multipart", "blocking"] }
 
 # NEAR
-near-jsonrpc-client = "0.13"
-near-primitives = "0.26"
-near-crypto = "0.26"
-near-jsonrpc-primitives = "0.26"
+near-jsonrpc-client = "0.22"
+near-primitives = "0.37"
+near-crypto = "0.37"
+near-jsonrpc-primitives = "0.37"
 
 # WASM execution (wasmtime with WASI Preview 2 support)
 # wasmtime = { version = "37", features = ["component-model", "async"] }

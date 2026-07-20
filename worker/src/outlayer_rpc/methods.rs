@@ -420,7 +420,7 @@ impl RpcProxy {
     ) -> Result<String> {
         use near_crypto::{InMemorySigner, SecretKey};
         use near_primitives::transaction::{Action, FunctionCallAction, Transaction, TransactionV0};
-        use near_primitives::types::AccountId;
+        use near_primitives::types::{AccountId, Balance, Gas};
         use base64::Engine;
 
         // Parse signer credentials
@@ -430,7 +430,11 @@ impl RpcProxy {
         let secret_key: SecretKey = signer_key.parse()
             .map_err(|e| anyhow::anyhow!("Invalid signer private key: {}", e))?;
 
-        let signer = InMemorySigner::from_secret_key(signer_account_id.clone(), secret_key);
+        let signer = InMemorySigner {
+            account_id: signer_account_id.clone(),
+            public_key: secret_key.public_key(),
+            secret_key,
+        };
 
         // Parse receiver
         let receiver_account_id: AccountId = receiver_id.parse()
@@ -487,8 +491,8 @@ impl RpcProxy {
             actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
                 method_name: method_name.to_string(),
                 args: args_bytes,
-                gas: gas_amount,
-                deposit,
+                gas: Gas::from_gas(gas_amount),
+                deposit: Balance::from_yoctonear(deposit),
             }))],
         };
 
@@ -537,7 +541,7 @@ impl RpcProxy {
     ) -> Result<String> {
         use near_crypto::{InMemorySigner, SecretKey};
         use near_primitives::transaction::{Action, Transaction, TransactionV0, TransferAction};
-        use near_primitives::types::AccountId;
+        use near_primitives::types::{AccountId, Balance};
         use base64::Engine;
 
         // Parse signer credentials
@@ -547,7 +551,11 @@ impl RpcProxy {
         let secret_key: SecretKey = signer_key.parse()
             .map_err(|e| anyhow::anyhow!("Invalid signer private key: {}", e))?;
 
-        let signer = InMemorySigner::from_secret_key(signer_account_id.clone(), secret_key);
+        let signer = InMemorySigner {
+            account_id: signer_account_id.clone(),
+            public_key: secret_key.public_key(),
+            secret_key,
+        };
 
         // Parse receiver
         let receiver_account_id: AccountId = receiver_id.parse()
@@ -595,7 +603,7 @@ impl RpcProxy {
             nonce: current_nonce + 1,
             receiver_id: receiver_account_id,
             block_hash,
-            actions: vec![Action::Transfer(TransferAction { deposit: amount })],
+            actions: vec![Action::Transfer(TransferAction { deposit: Balance::from_yoctonear(amount) })],
         };
 
         let transaction = Transaction::V0(transaction_v0);

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use near_crypto::{InMemorySigner, PublicKey, SecretKey};
+use near_crypto::{InMemorySigner, KeyType, PublicKey, SecretKey};
 use near_jsonrpc_client::{methods, JsonRpcClient};
 use near_jsonrpc_primitives::types::query::RpcQueryError;
 use near_primitives::types::{AccountId, BlockReference, Finality};
@@ -21,6 +21,8 @@ pub struct RegistrationClient {
     /// Operator account where register-contract is deployed and keys are stored
     operator_account_id: AccountId,
     rpc_client: JsonRpcClient,
+    /// Signature scheme for the generated worker key (ed25519 or ml-dsa-65)
+    key_type: KeyType,
 }
 
 impl RegistrationClient {
@@ -33,12 +35,14 @@ impl RegistrationClient {
         operator_account_id: AccountId,
         init_account_id: AccountId,
         init_secret_key: SecretKey,
+        key_type: KeyType,
     ) -> Result<Self> {
         // Create signer for init account (pays gas for registration)
-        let signer = InMemorySigner::from_secret_key(
-            init_account_id,
-            init_secret_key,
-        );
+        let signer = InMemorySigner {
+            account_id: init_account_id,
+            public_key: init_secret_key.public_key(),
+            secret_key: init_secret_key,
+        };
 
         // Create NearClient pointing to operator account (register-contract deployed there)
         let near_client = NearClient::new(
@@ -54,6 +58,7 @@ impl RegistrationClient {
             near_client,
             operator_account_id,
             rpc_client,
+            key_type,
         })
     }
 
@@ -75,25 +80,23 @@ impl RegistrationClient {
         }
     }
 
-    /// Generate a new ed25519 keypair
+    /// Generate a new worker keypair using the configured signature scheme.
+    ///
+    /// Supports `ed25519` (default) and `ml-dsa-65` (FIPS-204 post-quantum). Both are
+    /// generated randomly from the OS CSPRNG inside the TEE via near-crypto.
     fn generate_keypair(&self) -> Result<(PublicKey, SecretKey)> {
-        use ed25519_dalek::SigningKey;
-        use rand::rngs::OsRng;
+        match self.key_type {
+            KeyType::ED25519 | KeyType::MLDSA65 => {}
+            other => anyhow::bail!(
+                "Unsupported worker key type {} (use 'ed25519' or 'ml-dsa-65')",
+                other
+            ),
+        }
 
-        let signing_key = SigningKey::generate(&mut OsRng);
-        let secret_bytes = signing_key.to_bytes(); // 32 bytes
-        let public_bytes = signing_key.verifying_key().to_bytes(); // 32 bytes
-
-        // NEAR ED25519SecretKey requires 64 bytes: [secret_key (32 bytes)][public_key (32 bytes)]
-        let mut keypair_bytes = [0u8; 64];
-        keypair_bytes[..32].copy_from_slice(&secret_bytes);
-        keypair_bytes[32..].copy_from_slice(&public_bytes);
-
-        // Create NEAR SecretKey from 64-byte keypair
-        let secret_key = SecretKey::ED25519(near_crypto::ED25519SecretKey(keypair_bytes));
+        let secret_key = SecretKey::from_random(self.key_type);
         let public_key = secret_key.public_key();
 
-        info!("✅ Generated new keypair: {}", public_key);
+        info!("✅ Generated new {} worker keypair: {}", self.key_type, public_key);
 
         Ok((public_key, secret_key))
     }
@@ -314,18 +317,16 @@ impl RegistrationClient {
         info!("   Public key: {}", public_key);
         info!("   Register contract: {}", self.operator_account_id);
 
-        // Extract raw ed25519 public key bytes (32 bytes, without the 0x00 prefix)
-        let public_key_bytes = match public_key {
-            PublicKey::ED25519(key) => key.0,
-            _ => anyhow::bail!("Only ed25519 keys are supported"),
-        };
+        // Compute the 32-byte report_data binding for this key (raw pubkey for ed25519,
+        // SHA-256 of the pubkey for ml-dsa-65). This is what the contract re-derives and checks.
+        let report_data_prefix = report_data_binding(public_key)?;
 
-        info!("   Public key bytes (hex): {}", hex::encode(&public_key_bytes));
+        info!("   report_data binding (hex): {}", hex::encode(report_data_prefix));
 
-        // Generate TDX quote with public key embedded in report_data
-        // TdxClient will put public_key_bytes into the first 32 bytes of report_data
+        // Generate TDX quote with the binding embedded in report_data
+        // TdxClient will put report_data_prefix into the first 32 bytes of report_data
         let tdx_quote_hex = tdx_client
-            .generate_registration_quote(&public_key_bytes)
+            .generate_registration_quote(&report_data_prefix)
             .await
             .context("Failed to generate TDX quote for registration")?;
 
@@ -414,11 +415,35 @@ impl RegistrationClient {
 /// 4. Store the keypair for future use
 ///
 /// Returns the worker's public key and secret key
+/// Compute the 32-byte value embedded into the TDX quote's `report_data` that binds the
+/// TEE to its on-chain worker key.
+///
+/// - `ed25519`: the raw 32-byte public key (unchanged — backward compatible with existing
+///   workers, so ed25519 fleets do not need re-registration).
+/// - `ml-dsa-65`: SHA-256 of the 1952-byte public key. The full ML-DSA key does not fit into
+///   `report_data`'s 32 bytes, so we bind to its hash. The register-contract recomputes the
+///   same hash from the submitted public key and compares.
+fn report_data_binding(public_key: &PublicKey) -> Result<[u8; 32]> {
+    match public_key {
+        PublicKey::ED25519(key) => Ok(key.0),
+        PublicKey::MLDSA65(key) => {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(&key.0[..]); // 1952 bytes of ML-DSA-65 public key
+            Ok(hasher.finalize().into())
+        }
+        _ => anyhow::bail!(
+            "Unsupported worker key type for report_data binding (use ed25519 or ml-dsa-65)"
+        ),
+    }
+}
+
 pub async fn register_worker_on_startup(
     near_rpc_url: String,
     operator_account_id: AccountId,
     init_account_id: AccountId,
     init_secret_key: SecretKey,
+    key_type: KeyType,
     tdx_client: &TdxClient,
 ) -> Result<(PublicKey, SecretKey, String)> {
     info!("🚀 Starting worker registration flow...");
@@ -428,6 +453,7 @@ pub async fn register_worker_on_startup(
         operator_account_id,
         init_account_id,
         init_secret_key,
+        key_type,
     )
     .context("Failed to create registration client")?;
 
@@ -445,13 +471,10 @@ pub async fn register_worker_on_startup(
         info!("   Using existing key for signing execution results");
 
         // Generate a TDX quote anyway for coordinator attestation (not sent to contract)
-        let public_key_bytes = match &public_key {
-            PublicKey::ED25519(key) => key.0,
-            _ => anyhow::bail!("Only ed25519 keys are supported"),
-        };
+        let report_data_prefix = report_data_binding(&public_key)?;
 
         tdx_client
-            .generate_registration_quote(&public_key_bytes)
+            .generate_registration_quote(&report_data_prefix)
             .await
             .context("Failed to generate TDX quote for coordinator")?
     } else {
@@ -467,4 +490,70 @@ pub async fn register_worker_on_startup(
     };
 
     Ok((public_key, secret_key, tdx_quote_hex))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    /// ed25519 keeps the legacy binding: report_data[..32] is the raw public key.
+    /// This is what makes already-registered ed25519 workers survive the upgrade.
+    #[test]
+    fn ed25519_binding_is_raw_public_key() {
+        let sk = SecretKey::from_random(KeyType::ED25519);
+        let pk = sk.public_key();
+
+        let binding = report_data_binding(&pk).expect("ed25519 binding");
+
+        match &pk {
+            PublicKey::ED25519(k) => assert_eq!(binding, k.0),
+            _ => panic!("expected ed25519"),
+        }
+    }
+
+    /// ml-dsa-65 public keys are 1952 bytes and cannot fit in report_data's 32 bytes,
+    /// so the binding is their SHA-256. The register-contract recomputes exactly this
+    /// (env::sha256_array over the key bytes minus the curve tag) — keep them in sync.
+    #[test]
+    fn mldsa_binding_is_sha256_of_public_key() {
+        let sk = SecretKey::from_random(KeyType::MLDSA65);
+        let pk = sk.public_key();
+
+        let raw = match &pk {
+            PublicKey::MLDSA65(k) => k.0.to_vec(),
+            _ => panic!("expected ml-dsa-65"),
+        };
+        assert_eq!(raw.len(), 1952, "ML-DSA-65 public key must be 1952 bytes");
+
+        let binding = report_data_binding(&pk).expect("ml-dsa binding");
+        assert_eq!(binding.len(), 32);
+        assert_eq!(binding, <[u8; 32]>::from(Sha256::digest(&raw)));
+
+        // The contract strips the leading curve tag before hashing; that must be the same bytes.
+        let mut tagged = vec![2u8];
+        tagged.extend_from_slice(&raw);
+        assert_eq!(binding, <[u8; 32]>::from(Sha256::digest(&tagged[1..])));
+    }
+
+    /// The worker must be able to actually sign with an ml-dsa key and round-trip it
+    /// through the `ml-dsa-65:<base58>` textual form used by config/keypair files.
+    #[test]
+    fn mldsa_signs_and_round_trips_through_string() {
+        let sk = SecretKey::from_random(KeyType::MLDSA65);
+        let pk = sk.public_key();
+
+        let msg = b"outlayer worker registration";
+        let sig = sk.sign(msg);
+        assert!(sig.verify(msg, &pk), "ml-dsa signature must verify");
+        assert!(!sig.verify(b"tampered", &pk), "must reject a wrong message");
+
+        let sk_str = sk.to_string();
+        assert!(sk_str.starts_with("ml-dsa-65:"), "got {sk_str}");
+        let parsed: SecretKey = sk_str.parse().expect("parse ml-dsa-65 secret key");
+        assert_eq!(parsed.public_key(), pk);
+
+        let pk_parsed: PublicKey = pk.to_string().parse().expect("parse ml-dsa-65 public key");
+        assert_eq!(pk_parsed, pk);
+    }
 }

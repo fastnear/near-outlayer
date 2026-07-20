@@ -2,15 +2,22 @@
 # Optimized for Intel TDX TEE environment with dstack socket support
 
 # Stage 1: Build Rust worker binary
-FROM rust:1.90-alpine AS builder
+FROM rust:1.93-alpine AS builder
 
 # Install build dependencies (Alpine uses musl instead of glibc)
+# cmake/make/build-base/clang/perl are required to compile aws-lc-rs (ML-DSA backend pulled in
+# by near-crypto 0.37 for post-quantum worker keys) on musl.
 RUN apk add --no-cache \
     musl-dev \
     pkgconfig \
     openssl-dev \
     openssl-libs-static \
-    git
+    git \
+    cmake \
+    make \
+    build-base \
+    clang \
+    perl
 
 WORKDIR /build/worker
 

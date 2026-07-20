@@ -13,13 +13,18 @@
 # ==============================================================================
 # Stage 1: Build Worker Binary
 # ==============================================================================
-FROM rust:1.90-slim AS worker-builder
+FROM rust:1.93-slim AS worker-builder
 
 # Install build dependencies
+# cmake/build-essential/clang are required to compile aws-lc-rs (ML-DSA backend pulled in by
+# near-crypto 0.37 for post-quantum worker keys).
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     git \
+    cmake \
+    build-essential \
+    clang \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build/worker
@@ -44,7 +49,7 @@ RUN cargo build --release --locked --bin offchainvm-worker
 # ==============================================================================
 # Stage 2: Runtime Image with Rust Toolchain + WASI SDK
 # ==============================================================================
-FROM rust:1.90-slim
+FROM rust:1.93-slim
 
 LABEL maintainer="NEAR OutLayer Team"
 LABEL description="Worker with native WASI compilation (env isolation)"

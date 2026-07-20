@@ -17,7 +17,7 @@ use near_crypto::{InMemorySigner, SecretKey};
 use near_primitives::action::{Action, FunctionCallAction, TransferAction};
 use near_primitives::hash::CryptoHash;
 use near_primitives::transaction::{Transaction, TransactionV0, SignedTransaction};
-use near_primitives::types::{AccountId, BlockHeight, Nonce};
+use near_primitives::types::{AccountId, Balance, BlockHeight, Gas, Nonce};
 use serde_json::{json, Value};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -273,7 +273,11 @@ impl RpcProxy {
                 anyhow::anyhow!("Invalid receiver account: {}", e)
             })?;
 
-        let signer = InMemorySigner::from_secret_key(signer_id.clone(), secret_key);
+        let signer = InMemorySigner {
+            account_id: signer_id.clone(),
+            public_key: secret_key.public_key(),
+            secret_key,
+        };
         let public_key = signer.public_key();
 
         debug!("[RPC_PROXY] About to get access key nonce for {}, pubkey: {}", signer_account, public_key);
@@ -658,8 +662,8 @@ impl near::rpc::api::Host for RpcHostState {
         let action = Action::FunctionCall(Box::new(FunctionCallAction {
             method_name: method_name.clone(),
             args: args_json.clone().into_bytes(),
-            gas: gas_amount,
-            deposit,
+            gas: Gas::from_gas(gas_amount),
+            deposit: Balance::from_yoctonear(deposit),
         }));
 
         debug!("[HOST] Calling sign_and_send_tx_as...");
@@ -698,7 +702,7 @@ impl near::rpc::api::Host for RpcHostState {
             Err(e) => return (String::new(), format!("Invalid amount: {}", e)),
         };
 
-        let action = Action::Transfer(TransferAction { deposit: amount });
+        let action = Action::Transfer(TransferAction { deposit: Balance::from_yoctonear(amount) });
 
         // Note: wait_until is ignored for now - sign_and_send_tx_as always waits for FINAL
         // TODO: Add wait_until parameter to sign_and_send_tx_as

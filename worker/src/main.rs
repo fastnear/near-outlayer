@@ -241,6 +241,7 @@ async fn main() -> Result<()> {
             config.operator_account_id.clone(),
             init_account_id.clone(),
             init_secret_key.clone(),
+            config.worker_key_type,
             &tdx_client,
         ).await {
             Ok(result) => {
@@ -317,10 +318,11 @@ async fn main() -> Result<()> {
         };
 
         // Set operator signer with generated keypair (moves secret_key)
-        let operator_signer = near_crypto::InMemorySigner::from_secret_key(
-            config.operator_account_id.clone(),
+        let operator_signer = near_crypto::InMemorySigner {
+            account_id: config.operator_account_id.clone(),
+            public_key: secret_key.public_key(),
             secret_key,
-        );
+        };
         config.set_operator_signer(operator_signer);
         info!("✅ Operator signer configured for account: {}", config.operator_account_id);
 

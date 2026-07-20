@@ -8,7 +8,7 @@ use borsh::{BorshSerialize, BorshDeserialize};
 use near_crypto::InMemorySigner;
 use near_jsonrpc_client::{methods, JsonRpcClient};
 use near_primitives::transaction::{Action, FunctionCallAction, Transaction, TransactionV0};
-use near_primitives::types::{AccountId, BlockReference, Finality};
+use near_primitives::types::{AccountId, Balance, BlockReference, Finality, Gas};
 use tracing::{debug, info, warn};
 
 /// MIME type for WASM files
@@ -138,8 +138,8 @@ impl FastFsClient {
             actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
                 method_name: FASTFS_METHOD.to_string(),
                 args,
-                gas: 300_000_000_000_000, // 300 TGas
-                deposit: 0,
+                gas: Gas::from_gas(300_000_000_000_000), // 300 TGas
+                deposit: Balance::from_yoctonear(0),
             }))],
         };
 

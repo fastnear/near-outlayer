@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use near_crypto::InMemorySigner;
 use near_jsonrpc_client::{methods, JsonRpcClient};
 use near_primitives::transaction::{Action, FunctionCallAction, Transaction, TransactionV0};
-use near_primitives::types::{AccountId, BlockReference, Finality};
+use near_primitives::types::{AccountId, Balance, BlockReference, Finality, Gas};
 use near_primitives::views::FinalExecutionOutcomeView;
 use serde_json::{json, Value};
 use tracing::{debug, info, warn};
@@ -464,8 +464,8 @@ impl NearClient {
             actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
                 method_name: method_name.to_string(),
                 args,
-                gas,
-                deposit,
+                gas: Gas::from_gas(gas),
+                deposit: Balance::from_yoctonear(deposit),
             }))],
         };
 
@@ -581,8 +581,8 @@ impl NearClient {
             actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
                 method_name: method_name.to_string(),
                 args,
-                gas,
-                deposit,
+                gas: Gas::from_gas(gas),
+                deposit: Balance::from_yoctonear(deposit),
             }))],
         };
 
@@ -906,12 +906,14 @@ mod tests {
 
     #[test]
     fn test_near_client_creation() {
-        let signer = InMemorySigner::from_secret_key(
-            "worker.testnet".parse().unwrap(),
-            "ed25519:3D4YudUahN1nawWvHfEKBGpmJLfbCTbvdXDJKqfLhQ98XewyWK4tEDWvmAYPZqcgz7qfkCEHyWD15m8JVVWJ3LXD"
-                .parse::<SecretKey>()
-                .unwrap(),
-        );
+        let secret_key = "ed25519:3D4YudUahN1nawWvHfEKBGpmJLfbCTbvdXDJKqfLhQ98XewyWK4tEDWvmAYPZqcgz7qfkCEHyWD15m8JVVWJ3LXD"
+            .parse::<SecretKey>()
+            .unwrap();
+        let signer = InMemorySigner {
+            account_id: "worker.testnet".parse().unwrap(),
+            public_key: secret_key.public_key(),
+            secret_key,
+        };
 
         let client = NearClient::new(
             "https://rpc.testnet.near.org".to_string(),
