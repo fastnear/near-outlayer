@@ -71,13 +71,27 @@ impl RegistrationClient {
 
         if keypair_path.exists() {
             info!("📂 Loading existing worker keypair from: {}", keypair_path.display());
-            self.load_keypair(&keypair_path)
-        } else {
-            info!("🔑 Generating new worker keypair...");
-            let (public_key, secret_key) = self.generate_keypair()?;
-            self.save_keypair(&keypair_path, &public_key, &secret_key)?;
-            Ok((public_key, secret_key))
+            let (public_key, secret_key) = self.load_keypair(&keypair_path)?;
+
+            // KeyType has no PartialEq; compare discriminants of this fieldless enum.
+            if public_key.key_type() as u8 == self.key_type as u8 {
+                return Ok((public_key, secret_key));
+            }
+
+            // WORKER_KEY_TYPE changed (e.g. ed25519 -> ml-dsa-65). Reusing the stored key would
+            // silently ignore the flag, so generate a fresh keypair and overwrite the file. The
+            // new key gets registered on-chain by the normal registration flow.
+            info!(
+                "♻️  Stored worker key is {} but WORKER_KEY_TYPE={} — generating a new keypair",
+                public_key.key_type(),
+                self.key_type
+            );
         }
+
+        info!("🔑 Generating new worker keypair...");
+        let (public_key, secret_key) = self.generate_keypair()?;
+        self.save_keypair(&keypair_path, &public_key, &secret_key)?;
+        Ok((public_key, secret_key))
     }
 
     /// Generate a new worker keypair using the configured signature scheme.

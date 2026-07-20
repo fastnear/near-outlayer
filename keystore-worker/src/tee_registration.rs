@@ -111,13 +111,26 @@ impl RegistrationClient {
             // Non-TEE mode: Can use persistent storage
             if self.keypair_path.exists() {
                 info!("📂 Loading existing keystore keypair from: {}", self.keypair_path.display());
-                self.load_keypair()
-            } else {
-                info!("🔑 Generating new keystore keypair...");
-                let (public_key, secret_key) = self.generate_keypair()?;
-                self.save_keypair(&public_key, &secret_key)?;
-                Ok((public_key, secret_key))
+                let (public_key, secret_key) = self.load_keypair()?;
+
+                // KeyType has no PartialEq; compare discriminants of this fieldless enum.
+                if public_key.key_type() as u8 == self.key_type as u8 {
+                    return Ok((public_key, secret_key));
+                }
+
+                // KEYSTORE_KEY_TYPE changed — reusing the stored key would silently ignore the
+                // flag, so generate a fresh keypair and overwrite the file.
+                info!(
+                    "♻️  Stored keystore key is {} but KEYSTORE_KEY_TYPE={} — generating a new keypair",
+                    public_key.key_type(),
+                    self.key_type
+                );
             }
+
+            info!("🔑 Generating new keystore keypair...");
+            let (public_key, secret_key) = self.generate_keypair()?;
+            self.save_keypair(&public_key, &secret_key)?;
+            Ok((public_key, secret_key))
         }
     }
 
