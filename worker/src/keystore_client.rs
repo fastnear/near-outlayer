@@ -61,7 +61,7 @@ pub struct KeystoreClient {
     /// TEE session ID (set after successful challenge-response registration)
     tee_session_id: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     /// TEE signing info for auto-reconnect (public key bytes + signing key)
-    tee_signing_info: Option<std::sync::Arc<([u8; 32], ed25519_dalek::SigningKey)>>,
+    tee_signing_info: Option<std::sync::Arc<near_crypto::SecretKey>>,
 }
 
 impl KeystoreClient {
@@ -82,8 +82,8 @@ impl KeystoreClient {
     }
 
     /// Set TEE signing info for auto-reconnect on session expiry
-    pub fn set_tee_signing_info(&mut self, public_key_bytes: [u8; 32], signing_key: ed25519_dalek::SigningKey) {
-        self.tee_signing_info = Some(std::sync::Arc::new((public_key_bytes, signing_key)));
+    pub fn set_tee_signing_info(&mut self, secret_key: near_crypto::SecretKey) {
+        self.tee_signing_info = Some(std::sync::Arc::new(secret_key));
     }
 
     /// Set TEE session ID (called after successful challenge-response registration)
@@ -106,10 +106,10 @@ impl KeystoreClient {
     /// on the same keystore instance that handles /decrypt requests.
     pub async fn register_tee_session(
         &self,
-        public_key_bytes: &[u8; 32],
-        signing_key: &ed25519_dalek::SigningKey,
+        secret_key: &near_crypto::SecretKey,
     ) -> Result<String> {
-        let near_public_key = format!("ed25519:{}", bs58::encode(public_key_bytes).into_string());
+        // NEAR canonical form carries the scheme (ed25519 / ml-dsa-65) in its prefix.
+        let near_public_key = secret_key.public_key().to_string();
 
         // 1. Request challenge
         let url = format!("{}/tee-challenge", self.base_url);
@@ -133,12 +133,10 @@ impl KeystoreClient {
         let challenge_resp: ChallengeResponse = response.json().await
             .context("Failed to parse keystore TEE challenge")?;
 
-        // 2. Sign challenge
+        // 2. Sign challenge (ed25519 or ml-dsa-65), send signature in NEAR form.
         let challenge_bytes = hex::decode(&challenge_resp.challenge)
             .context("Invalid challenge hex")?;
-        use ed25519_dalek::Signer;
-        let signature = signing_key.sign(&challenge_bytes);
-        let signature_hex = hex::encode(signature.to_bytes());
+        let signature = secret_key.sign(&challenge_bytes).to_string();
 
         // 3. Register with signed challenge
         let url = format!("{}/register-tee", self.base_url);
@@ -148,7 +146,7 @@ impl KeystoreClient {
             .json(&serde_json::json!({
                 "public_key": near_public_key,
                 "challenge": challenge_resp.challenge,
-                "signature": signature_hex,
+                "signature": signature,
             }))
             .send()
             .await
@@ -194,11 +192,11 @@ impl KeystoreClient {
     /// Try to re-register TEE session if signing info is available.
     /// Returns Ok(()) on success, Err if reconnect failed or no signing info.
     async fn try_reconnect_tee_session(&self) -> Result<()> {
-        let signing_info = self.tee_signing_info.as_ref()
-            .context("No TEE signing info for reconnect")?;
-        let (pub_key_bytes, signing_key) = signing_info.as_ref();
+        let secret_key = self.tee_signing_info.as_ref()
+            .context("No TEE signing info for reconnect")?
+            .clone();
         tracing::warn!("TEE session expired on keystore, re-registering...");
-        let session_id = self.register_tee_session(pub_key_bytes, signing_key).await?;
+        let session_id = self.register_tee_session(&secret_key).await?;
         tracing::info!(session_id = %session_id, "TEE session re-registered");
         Ok(())
     }

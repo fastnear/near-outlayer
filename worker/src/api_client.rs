@@ -434,10 +434,11 @@ impl ApiClient {
     async fn do_tee_challenge_response(
         &self,
         path_prefix: &str,
-        public_key_bytes: &[u8; 32],
-        signing_key: &ed25519_dalek::SigningKey,
+        secret_key: &near_crypto::SecretKey,
     ) -> Result<String> {
-        let near_public_key = format!("ed25519:{}", bs58::encode(public_key_bytes).into_string());
+        // NEAR canonical form encodes the scheme (ed25519 / ml-dsa-65) in the prefix, so the
+        // server learns how we signed without a side channel.
+        let near_public_key = secret_key.public_key().to_string();
 
         // 1. Request challenge
         let url = format!("{}/{}/tee-challenge", self.base_url, path_prefix);
@@ -459,12 +460,10 @@ impl ApiClient {
         let challenge_resp: ChallengeResponse = response.json().await
             .with_context(|| format!("Failed to parse {} TEE challenge", path_prefix))?;
 
-        // 2. Sign challenge with TEE key
+        // 2. Sign challenge with TEE key (ed25519 or ml-dsa-65), send signature in NEAR form.
         let challenge_bytes = hex::decode(&challenge_resp.challenge)
             .context("Invalid challenge hex")?;
-        use ed25519_dalek::Signer;
-        let signature = signing_key.sign(&challenge_bytes);
-        let signature_hex = hex::encode(signature.to_bytes());
+        let signature = secret_key.sign(&challenge_bytes).to_string();
 
         // 3. Submit registration
         let url = format!("{}/{}/register-tee", self.base_url, path_prefix);
@@ -472,7 +471,7 @@ impl ApiClient {
             .json(&serde_json::json!({
                 "public_key": near_public_key,
                 "challenge": challenge_resp.challenge,
-                "signature": signature_hex,
+                "signature": signature,
             }))
             .send()
             .await
@@ -498,10 +497,9 @@ impl ApiClient {
     /// Stores the session ID so all subsequent requests include X-TEE-Session.
     pub async fn register_tee_session(
         &self,
-        public_key_bytes: &[u8; 32],
-        signing_key: &ed25519_dalek::SigningKey,
+        secret_key: &near_crypto::SecretKey,
     ) -> Result<String> {
-        let session_id = self.do_tee_challenge_response("workers", public_key_bytes, signing_key).await?;
+        let session_id = self.do_tee_challenge_response("workers", secret_key).await?;
         *self.tee_session_id.lock().unwrap() = Some(session_id.clone());
         tracing::info!("TEE session registered with coordinator: {}", session_id);
         Ok(session_id)

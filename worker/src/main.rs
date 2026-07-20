@@ -236,7 +236,7 @@ async fn main() -> Result<()> {
         };
 
         // Attempt registration (only once - fail fast if it fails)
-        let (public_key, secret_key, tdx_quote_hex) = match registration::register_worker_on_startup(
+        let (_public_key, secret_key, tdx_quote_hex) = match registration::register_worker_on_startup(
             config.near_rpc_url.clone(),
             config.operator_account_id.clone(),
             init_account_id.clone(),
@@ -302,20 +302,10 @@ async fn main() -> Result<()> {
             }
         };
 
-        // Extract ed25519 signing key BEFORE secret_key is moved into operator_signer.
-        // Needed for TEE session registration challenge-response.
-        let tee_signing_info: Option<([u8; 32], ed25519_dalek::SigningKey)> = match (&public_key, &secret_key) {
-            (near_crypto::PublicKey::ED25519(ed_pub), near_crypto::SecretKey::ED25519(ed_sk)) => {
-                let pub_key_bytes: [u8; 32] = ed_pub.0;
-                let mut seed_bytes = [0u8; 32];
-                seed_bytes.copy_from_slice(&ed_sk.0[..32]);
-                Some((pub_key_bytes, ed25519_dalek::SigningKey::from_bytes(&seed_bytes)))
-            }
-            _ => {
-                warn!("⚠️ Non-ED25519 key - TEE session registration will be skipped");
-                None
-            }
-        };
+        // Clone the worker secret key for the TEE session challenge-response BEFORE it is moved
+        // into the operator signer. near-crypto signs/verifies ed25519 and ml-dsa-65 uniformly,
+        // so this works regardless of WORKER_KEY_TYPE.
+        let tee_secret_key = secret_key.clone();
 
         // Set operator signer with generated keypair (moves secret_key)
         let operator_signer = near_crypto::InMemorySigner {
@@ -344,7 +334,7 @@ async fn main() -> Result<()> {
         // Register TEE sessions with coordinator and keystore (challenge-response)
         // This proves to the coordinator/keystore that we hold the TEE private key
         // registered on the operator account
-        if let Some((pub_key_bytes, signing_key)) = &tee_signing_info {
+        {
             const MAX_TEE_RETRIES: u32 = 5;
             const TEE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -352,7 +342,7 @@ async fn main() -> Result<()> {
             let mut coordinator_session_ok = false;
             for attempt in 1..=MAX_TEE_RETRIES {
                 info!("🔐 Registering TEE session with coordinator (attempt {}/{})", attempt, MAX_TEE_RETRIES);
-                match api_client.register_tee_session(pub_key_bytes, signing_key).await {
+                match api_client.register_tee_session(&tee_secret_key).await {
                     Ok(session_id) => {
                         info!("✅ TEE session registered with coordinator: {}", session_id);
                         coordinator_session_ok = true;
@@ -374,12 +364,12 @@ async fn main() -> Result<()> {
             // Register TEE session directly with keystore (bypasses coordinator proxy)
             if let Some(ref mut kc) = keystore_client {
                 // Store signing info for auto-reconnect on session expiry
-                kc.set_tee_signing_info(*pub_key_bytes, signing_key.clone());
+                kc.set_tee_signing_info(tee_secret_key.clone());
 
                 let mut keystore_session_ok = false;
                 for attempt in 1..=MAX_TEE_RETRIES {
                     info!("🔐 Registering TEE session with keystore directly (attempt {}/{})", attempt, MAX_TEE_RETRIES);
-                    match kc.register_tee_session(pub_key_bytes, signing_key).await {
+                    match kc.register_tee_session(&tee_secret_key).await {
                         Ok(session_id) => {
                             info!("✅ TEE session registered with keystore: {}", session_id);
                             keystore_session_ok = true;

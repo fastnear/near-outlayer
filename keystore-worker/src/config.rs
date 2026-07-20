@@ -40,6 +40,10 @@ pub struct Config {
     /// Note: per-vault TEE keys (mpc_ckd Layer 1) stay ed25519 — they are derived
     /// deterministically from the master secret and are a separate concern.
     pub keystore_key_type: near_crypto::KeyType,
+
+    /// Which WORKER signature schemes this keystore accepts for TEE-session challenge-response.
+    /// Set via TEE_ALLOWED_KEY_TYPES, e.g. "ed25519,ml-dsa-65". Default: ed25519 only.
+    pub tee_allowed_key_types: shared_tee_helpers::AllowedKeyTypes,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +116,11 @@ impl Config {
             })?
         };
 
+        // Which worker schemes this keystore admits for TEE-session auth (default ed25519).
+        let tee_allowed_key_types = shared_tee_helpers::AllowedKeyTypes::from_csv(
+            &std::env::var("TEE_ALLOWED_KEY_TYPES").unwrap_or_else(|_| "ed25519".to_string()),
+        );
+
         Ok(Config {
             server_addr,
             near_network,
@@ -122,6 +131,7 @@ impl Config {
             tee_mode,
             operator_account_id,
             keystore_key_type,
+            tee_allowed_key_types,
         })
     }
 

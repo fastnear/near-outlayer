@@ -3305,7 +3305,7 @@ async fn register_tee_handler(
     }
 
     // 2. Verify signature
-    shared_tee_helpers::verify_signature(&req.public_key, &req.challenge, &req.signature)
+    shared_tee_helpers::verify_signature(&req.public_key, &req.challenge, &req.signature, state.config.tee_allowed_key_types)
         .map_err(|e| ApiError::BadRequest(format!("Signature verification failed: {}", e)))?;
 
     // 3. Check key on operator account via NEAR RPC (with retry for finality lag)
@@ -6019,6 +6019,7 @@ mod tests {
             tee_mode: crate::config::TeeMode::None,
             operator_account_id: None,
             keystore_key_type: near_crypto::KeyType::ED25519,
+            tee_allowed_key_types: shared_tee_helpers::AllowedKeyTypes { ed25519: true, ml_dsa_65: true },
         };
         AppState::new(crate::crypto::Keystore::generate(), config, None)
     }
