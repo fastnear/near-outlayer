@@ -103,7 +103,8 @@ export default function TrustVerificationPage() {
 
         <p className="text-gray-700 mb-4">
           In both cases the worker runs in an Intel TDX confidential VM via dstack and emits a TDX
-          quote that contains the worker&apos;s ed25519 public key in <code>report_data</code> plus
+          quote that binds the worker&apos;s public key in <code>report_data</code> (the raw key for
+          ed25519, or its SHA-256 for post-quantum ml-dsa-65) plus
           all 5 measurements. Both register on the <strong>same on-chain register-contract</strong>
           {' '}(<code>worker.outlayer.near</code> on mainnet, <code>worker.outlayer.testnet</code> on
           testnet), which verifies the Intel TDX quote signature (Intel DCAP) and checks the 5

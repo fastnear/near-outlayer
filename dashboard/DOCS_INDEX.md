@@ -206,7 +206,7 @@ dashboard/app/docs/
 | `/docs/projects` | `dashboard/app/docs/projects/page.tsx` | `contract/src/projects.rs` | Projects, versions, persistent storage, project secrets |
 | `/docs/vaults` | `dashboard/app/docs/vaults/page.tsx` | `vault-contract/src/lib.rs`, `docs/LEAVING_OUTLAYER.md`, `scripts/customer-recovery/README.md` | **MPC Vaults (NEW): per-customer master via MPC CKD, cessation + unilateral recovery, atomic key-swap (`finalize_recovery`), parent-only finalize gate, ECIES secret encryption (CLI + dashboard agree), coordinator-side 423 fast-fail for unlocked vaults, sovereign-exit runbook with `customer-recovery` binary (`generate-key` / `derive-wallet-key` / `decrypt-secret` subcommands)** |
 | `/docs/pricing` | `dashboard/app/docs/sections/Pricing.tsx` | - | Cost model, resource limits |
-| `/docs/tee-attestation` | `dashboard/app/docs/sections/TeeAttestation.tsx` | `TEE_ATTESTATION_FLOW.md` | TEE verification, attestation |
+| `/docs/tee-attestation` | `dashboard/app/docs/sections/TeeAttestation.tsx` | `TEE_ATTESTATION_FLOW.md` | TEE verification, attestation, **post-quantum worker keys (ML-DSA-65 / FIPS-204, bound to quote via SHA-256 in `report_data`)** |
 | `/docs/vrf` | `dashboard/app/docs/vrf/page.tsx` | `VRF.md`, `sdk/outlayer/src/vrf.rs` | **VRF: verifiable randomness, SDK, on-chain verification** |
 | `/docs/examples` | `dashboard/app/docs/examples/page.tsx` | `wasi-examples/*/README.md` | All example projects |
 

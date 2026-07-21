@@ -191,6 +191,37 @@ export default function TeeAttestationSection() {
           </div>
         </section>
 
+        {/* Post-Quantum Worker Keys */}
+        <section id="post-quantum-keys">
+          <AnchorHeading id="post-quantum-keys">Post-Quantum Worker Keys</AnchorHeading>
+
+          <p className="text-gray-700 mb-4">
+            A worker&apos;s on-chain key is its authority to submit results, so OutLayer supports
+            NEAR&apos;s post-quantum signature scheme <strong>ML-DSA-65 (NIST FIPS-204)</strong> for it,
+            alongside classic ed25519. Whichever scheme a worker uses, the key is generated inside the
+            Intel TDX enclave and cryptographically bound to the attestation quote.
+          </p>
+
+          <div className="bg-blue-50 border-l-4 border-blue-400 p-4 my-4">
+            <p className="text-blue-900 font-semibold mb-2">How the key is bound to the enclave</p>
+            <p className="text-blue-800 text-sm">
+              Because an ML-DSA-65 public key (1952 bytes) doesn&apos;t fit in the quote&apos;s{' '}
+              <code className="bg-white/60 px-1 rounded">report_data</code> field, its{' '}
+              <strong>SHA-256 hash</strong> is embedded there instead (ed25519 keys are embedded raw).
+              The register-contract recomputes that binding from the submitted key before adding it
+              on-chain &mdash; so whether classic or post-quantum, the key is provably enclave-generated.
+            </p>
+          </div>
+
+          <p className="text-gray-700 text-sm mb-4">
+            Live on mainnet: <code className="bg-gray-100 px-1 rounded">worker.outlayer.near</code>{' '}
+            signs <code className="bg-gray-100 px-1 rounded">resolve_execution</code> with an{' '}
+            <code className="bg-gray-100 px-1 rounded">ml-dsa-65:</code> key. This hardens the trust
+            anchor for every result against a future &ldquo;harvest-now, forge-later&rdquo; quantum
+            attacker, on top of the hardware isolation the TDX enclave already provides.
+          </p>
+        </section>
+
         {/* Execution Attestation */}
         <section id="execution-attestation">
           <AnchorHeading id="execution-attestation">Execution Attestation</AnchorHeading>

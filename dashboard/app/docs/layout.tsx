@@ -199,6 +199,7 @@ const pageStructure = {
   '/docs/tee-attestation': [
     { id: 'what-is-tee', title: 'What is TEE Attestation?' },
     { id: 'worker-registration', title: 'Worker Registration' },
+    { id: 'post-quantum-keys', title: 'Post-Quantum Keys' },
     { id: 'execution-attestation', title: 'Execution Attestation' },
     { id: 'trust-model', title: 'What the Signature Proves' },
     { id: 'data-freshness', title: 'Data Freshness' },
