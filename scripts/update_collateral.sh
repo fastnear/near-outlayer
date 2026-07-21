@@ -25,7 +25,10 @@
 #       su - outlayer -c 'cd /tmp && PCCS_URL=https://localhost:8081 \
 #         /home/outlayer/dcap-qvl/cli/target/release/dcap-qvl verify --hex /home/outlayer/platform-quote.hex'
 #       # prints "Quote verified" (status UpToDate) + writes /tmp/our_collateral.json
-#       # then from your laptop:  scp root@173.237.9.76:/tmp/our_collateral.json ./our_collateral.json
+#       # then from your laptop, pull it in CANONICAL form (see the strip note below — this is what
+#       # keeps the committed file identical no matter which node generated it):
+#       #   ssh root@<node> 'jq -S "del(.pck_certificate_chain)" /tmp/our_collateral.json' \
+#       #     > scripts/our_collateral.json
 #     (If platform-quote.hex is lost, extract any worker's quote from its app_cert ext OID
 #      1.3.6.1.4.1.62397.1.8; the FMSPC must be B0C06F000000.)
 #
@@ -46,7 +49,21 @@ OWNER="owner.outlayer.$SUFFIX"
 
 # Contract signature: update_collateral(collateral: String, index: u32)
 # -> `collateral` is the QuoteCollateralV3 JSON passed AS A STRING; `index` is the slot.
-ARGS=$(jq -nc --arg c "$(jq -c . "$COLLATERAL_FILE")" --argjson i "$INDEX" '{collateral: $c, index: $i}')
+#
+# STRIP `pck_certificate_chain` — mandatory, do not "fix" this back.
+# That field is the PCK certificate of the ONE machine whose quote generated the collateral (the
+# `dcap-qvl verify` path sets it; Intel's/Phala's PCCS path does not). dcap-qvl 0.3.11 PREFERS it
+# over the chain embedded in the quote under verification:
+#     verify.rs / verify_pck_cert_chain: "Extract PCK certificate chain - prefer collateral,
+#                                         fall back to quote"
+# PCK certs are per-CPU, so leaving it in pins the whole FMSPC slot to a single physical node: any
+# other node with the same FMSPC then fails registration with
+#     "TDX quote verification failed (signature/TCB/collateral mismatch):
+#      Signature is invalid for qe_report in quote"
+# Phala's slot 0 has no such field — that is exactly why one Phala collateral serves every Phala
+# worker. TDX quotes carry their own type-5 PCK chain, so dropping it loses nothing and is what
+# makes a slot cover the whole fleet on that platform.
+ARGS=$(jq -nc --arg c "$(jq -c 'del(.pck_certificate_chain)' "$COLLATERAL_FILE")" --argjson i "$INDEX" '{collateral: $c, index: $i}')
 
 echo "update_collateral on $CONTRACT  slot=$INDEX  signer=$OWNER  network=$NETWORK"
 near contract call-function as-transaction "$CONTRACT" update_collateral \
