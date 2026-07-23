@@ -69,16 +69,18 @@ export default function WorkersPage() {
                 <thead className="bg-gray-50">
                   <tr>
                     <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Worker ID</th>
+                    <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Instance</th>
+                    <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Status</th>
                     <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Completed</th>
                     <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Failed</th>
-                    <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Uptime</th>
+                    <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">First seen</th>
                     <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Last Heartbeat</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200 bg-white">
                   {workers.length === 0 ? (
                     <tr>
-                      <td colSpan={5} className="px-3 py-8 text-center text-sm text-gray-500">
+                      <td colSpan={7} className="px-3 py-8 text-center text-sm text-gray-500">
                         No workers found
                       </td>
                     </tr>
@@ -108,7 +110,9 @@ export default function WorkersPage() {
                       }
 
                       return (
-                      <tr key={worker.worker_id}>
+                      // Several instances share a worker_id (it encodes the version, not the
+                      // machine), so the attested instance key is part of the row key.
+                      <tr key={`${worker.worker_id}:${worker.instance ?? ''}`}>
                         <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-900 font-mono">
                           {attestationUrl ? (
                             <a
@@ -123,6 +127,26 @@ export default function WorkersPage() {
                           ) : (
                             worker.worker_id
                           )}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500 font-mono">
+                          {worker.instance ? (
+                            <span title="Prefix of this worker's attested public key (registered on-chain)">
+                              {worker.instance}
+                            </span>
+                          ) : (
+                            <span className="text-gray-400">—</span>
+                          )}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-4 text-sm">
+                          <span
+                            className={
+                              worker.status === 'online' || worker.status === 'busy'
+                                ? 'text-green-700'
+                                : 'text-gray-500'
+                            }
+                          >
+                            {worker.status}
+                          </span>
                         </td>
                         <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-900">
                           {worker.total_tasks_completed}

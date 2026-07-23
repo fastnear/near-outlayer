@@ -554,6 +554,25 @@ impl MpcCkdClient {
         };
 
         let outcome = self.rpc_client.call(request).await
+            .map_err(|e| {
+                // Surface the exact RPC/broadcast error. Without this the
+                // whole failure is swallowed: the only thing that reaches
+                // the caller is the `MPC CKD failed for vault …` wrapper
+                // in `add_customer`, with no InvalidTxError variant, no
+                // status, nothing in the logs. Log the full chain here so
+                // a pre-inclusion reject (InvalidSignature / InvalidNonce /
+                // NotEnoughBalance / InvalidAccessKey / Expired) is visible.
+                tracing::error!(
+                    signer = %signer.account_id,
+                    receiver = %receiver_id,
+                    method = method_name,
+                    nonce,
+                    signer_pubkey = %signer.public_key,
+                    error = ?e,
+                    "CKD broadcast_tx_commit failed (pre-inclusion / RPC error)"
+                );
+                e
+            })
             .context("Failed to call MPC contract")?;
 
         // Check transaction status and extract result
@@ -565,9 +584,24 @@ impl MpcCkdClient {
                 Ok(ckd_response)
             }
             FinalExecutionStatus::Failure(err) => {
+                tracing::error!(
+                    signer = %signer.account_id,
+                    receiver = %receiver_id,
+                    method = method_name,
+                    tx_hash = %outcome.transaction.hash,
+                    error = ?err,
+                    "CKD transaction included but execution failed"
+                );
                 Err(anyhow::anyhow!("MPC transaction failed: {:?}", err))
             }
             other => {
+                tracing::error!(
+                    signer = %signer.account_id,
+                    receiver = %receiver_id,
+                    method = method_name,
+                    status = ?other,
+                    "CKD transaction ended in unexpected status"
+                );
                 Err(anyhow::anyhow!("Unexpected transaction status: {:?}", other))
             }
         }

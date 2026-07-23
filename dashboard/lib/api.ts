@@ -44,11 +44,20 @@ const API_BASE_URL = getCoordinatorApiUrl();
 export interface WorkerInfo {
   worker_id: string;
   worker_name: string;
+  /**
+   * Prefix of this instance's TEE-attested public key. `worker_id` only identifies the
+   * (network, type, version) — every replica of a version shares it — so this is what tells two
+   * running workers apart. The full key is public on-chain as an access key on the operator
+   * account; where the worker physically runs is deliberately not exposed here.
+   * Empty for the keystore row and for workers running without a TEE session.
+   */
+  instance?: string;
   status: string;
   current_task_id: number | null;
   last_heartbeat_at: string;
   total_tasks_completed: number;
   total_tasks_failed: number;
+  /** Seconds since this instance was first seen — not process uptime. */
   uptime_seconds: number | null;
 }
 

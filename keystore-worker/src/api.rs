@@ -3676,8 +3676,12 @@ async fn wallet_derive_address_handler(
     let customer = extract_customer_from_header(&headers)?;
     state
         .ensure_customer_loaded(customer.as_ref())
+        // `{:#}` unrolls the full anyhow source chain into the body, not
+        // just the top `MPC CKD failed for vault …` wrapper — so the real
+        // cause (the RPC/broadcast `InvalidTxError` variant) is visible in
+        // the HTTP response itself, without needing keystore log access.
         .await
-        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        .map_err(|e| ApiError::BadRequest(format!("{:#}", e)))?;
 
     let chain = req.chain.to_lowercase();
     let seed = wallet_seed(&req.wallet_id, &chain);
