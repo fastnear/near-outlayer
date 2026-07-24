@@ -290,7 +290,28 @@ pub enum ApiError {
     BadRequest(String),
     Unauthorized(String),
     Forbidden(String),
+    /// The customer vault is underfunded and cannot pay for on-chain key
+    /// derivation. HTTP 402 — the client must top up the vault. Distinct from
+    /// BadRequest so the coordinator can forward an actionable message.
+    PaymentRequired(String),
     InternalError(String),
+}
+
+impl ApiError {
+    /// Map an `ensure_customer_loaded` / CKD failure to an API error.
+    ///
+    /// An underfunded vault (the vault can't pay the MPC gas prepayment) is a
+    /// user-actionable condition, not a server fault — surface it as a 402 with
+    /// the exact top-up amount. Everything else surfaces the full anyhow source
+    /// chain as a 400 (the chain carries the real `InvalidTxError` variant; it
+    /// contains no secrets — see `mpc_ckd` logging audit).
+    pub fn from_customer_load(e: anyhow::Error) -> Self {
+        if let Some(b) = e.downcast_ref::<crate::mpc_ckd::InsufficientVaultBalance>() {
+            ApiError::PaymentRequired(b.to_string())
+        } else {
+            ApiError::BadRequest(format!("{:#}", e))
+        }
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -299,6 +320,7 @@ impl IntoResponse for ApiError {
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
             ApiError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg),
             ApiError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg),
+            ApiError::PaymentRequired(msg) => (StatusCode::PAYMENT_REQUIRED, msg),
             ApiError::InternalError(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
         };
 
@@ -1378,7 +1400,7 @@ async fn pubkey_handler(
     state
         .ensure_customer_loaded(customer.as_ref())
         .await
-        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        .map_err(ApiError::from_customer_load)?;
 
     let keystore = state.keystore.read().await;
     let pubkey_hex = keystore
@@ -1567,11 +1589,9 @@ async fn decrypt_handler(
     state
         .ensure_customer_loaded(customer.as_ref())
         .await
-        .map_err(|e| ApiError::InternalError(format!(
-            "lazy-load gate failed for vault {}: {}",
-            customer.as_ref().map(|v| v.as_str()).unwrap_or("<none>"),
-            e
-        )))?;
+        // Underfunded vault → 402 with a top-up message; anything else → 400
+        // with the full chain. (Was InternalError/500, which hid the cause.)
+        .map_err(ApiError::from_customer_load)?;
 
     tracing::debug!(
         task_id = %task_id_str,
@@ -2385,7 +2405,7 @@ async fn add_generated_secret_handler(
     state
         .ensure_customer_loaded(customer.as_ref())
         .await
-        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        .map_err(ApiError::from_customer_load)?;
 
     tracing::info!(
         seed = %req.seed,
@@ -2573,7 +2593,7 @@ async fn update_user_secrets_handler(
     state
         .ensure_customer_loaded(customer.as_ref())
         .await
-        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        .map_err(ApiError::from_customer_load)?;
 
     tracing::info!(
         owner = %req.owner,
@@ -3676,12 +3696,10 @@ async fn wallet_derive_address_handler(
     let customer = extract_customer_from_header(&headers)?;
     state
         .ensure_customer_loaded(customer.as_ref())
-        // `{:#}` unrolls the full anyhow source chain into the body, not
-        // just the top `MPC CKD failed for vault …` wrapper — so the real
-        // cause (the RPC/broadcast `InvalidTxError` variant) is visible in
-        // the HTTP response itself, without needing keystore log access.
         .await
-        .map_err(|e| ApiError::BadRequest(format!("{:#}", e)))?;
+        // Underfunded vault → 402 with an actionable top-up message; anything
+        // else → 400 carrying the full anyhow chain (real `InvalidTxError`).
+        .map_err(ApiError::from_customer_load)?;
 
     let chain = req.chain.to_lowercase();
     let seed = wallet_seed(&req.wallet_id, &chain);
@@ -3804,7 +3822,7 @@ async fn wallet_evm_sign_typed_data_handler(
     state
         .ensure_customer_loaded(customer.as_ref())
         .await
-        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        .map_err(ApiError::from_customer_load)?;
 
     let digest = crate::eip712::eip712_digest(&req.typed_data)
         .map_err(|e| ApiError::BadRequest(format!("Invalid EIP-712 typed data: {:#}", e)))?;
@@ -3834,7 +3852,7 @@ async fn wallet_evm_sign_message_handler(
     state
         .ensure_customer_loaded(customer.as_ref())
         .await
-        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        .map_err(ApiError::from_customer_load)?;
 
     // Explicit encoding — no content sniffing. "utf8" (default) signs the
     // UTF-8 bytes; "hex" treats `message` as hex and signs the decoded bytes.
@@ -3882,7 +3900,7 @@ async fn wallet_evm_sign_transaction_handler(
     state
         .ensure_customer_loaded(customer.as_ref())
         .await
-        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        .map_err(ApiError::from_customer_load)?;
 
     // Decode the serialized unsigned tx and compute its keccak256 signing hash.
     // We do NOT parse or assemble the transaction — only hash the supplied bytes.
@@ -4000,7 +4018,7 @@ async fn wallet_solana_sign_message_handler(
     state
         .ensure_customer_loaded(customer.as_ref())
         .await
-        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        .map_err(ApiError::from_customer_load)?;
 
     // Explicit encoding — no content sniffing (same rule as EVM sign-message).
     let bytes = match req.encoding.as_deref() {
@@ -4070,7 +4088,7 @@ async fn wallet_solana_sign_transaction_handler(
     state
         .ensure_customer_loaded(customer.as_ref())
         .await
-        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        .map_err(ApiError::from_customer_load)?;
 
     let tx_bytes = base64::decode(&req.unsigned_tx)
         .map_err(|e| ApiError::BadRequest(format!("Invalid unsigned_tx base64: {}", e)))?;
@@ -4114,7 +4132,7 @@ async fn wallet_sign_policy_handler(
     state
         .ensure_customer_loaded(customer.as_ref())
         .await
-        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        .map_err(ApiError::from_customer_load)?;
 
     // SECURITY: the signing key here (`wallet:{id}:near`) is ALSO the wallet's NEAR tx key,
     // and a NEAR tx signature is `sign(sha256(borsh(tx)))`. So we must NEVER sign a
@@ -4692,7 +4710,7 @@ async fn wallet_sign_handler(
     state
         .ensure_customer_loaded(customer.as_ref())
         .await
-        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        .map_err(ApiError::from_customer_load)?;
 
     // The canonical hash the keystore signs under — derived from the op, never trusted
     // from the coordinator. Approver signatures must cover exactly this.
@@ -5219,7 +5237,7 @@ async fn wallet_check_policy_handler(
     state
         .ensure_customer_loaded(customer.as_ref())
         .await
-        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        .map_err(ApiError::from_customer_load)?;
 
     let request_hash = wallet_policy::request_hash(&req.op);
 
@@ -5343,7 +5361,7 @@ async fn wallet_encrypt_policy_handler(
     state
         .ensure_customer_loaded(customer.as_ref())
         .await
-        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        .map_err(ApiError::from_customer_load)?;
 
     let seed = format!("wallet-policy:{}", req.wallet_id);
     let keystore = state.keystore.read().await;
@@ -5374,7 +5392,7 @@ async fn wallet_decrypt_policy_handler(
     state
         .ensure_customer_loaded(customer.as_ref())
         .await
-        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        .map_err(ApiError::from_customer_load)?;
 
     let seed = format!("wallet-policy:{}", req.wallet_id);
     let encrypted_bytes = base64::decode(&req.encrypted_policy_data)

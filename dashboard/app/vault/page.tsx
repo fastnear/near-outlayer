@@ -539,12 +539,17 @@ function IssuedVaultPanel({
           recoverable via the <code>customer-recovery</code> script.
         </div>
         <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
-          <strong>Heads up:</strong> outbound MPC-CKD calls
-          (<code>vault.request_master</code>) burn gas from <em>this</em>{' '}
-          account. The vault was funded with ~0.1 NEAR at deploy — when the
-          balance gets low you&rsquo;ll need to top it up by sending NEAR to{' '}
-          <code>{data.vault}</code>. The dashboard surfaces a top-up
-          prompt on the vault detail page below the threshold.
+          <strong>Heads up:</strong> deriving the vault&rsquo;s master key
+          calls <code>vault.request_master</code> on-chain, and NEAR makes
+          this account <em>prepay</em> the gas (~0.3 NEAR reserved, most
+          refunded). If the vault runs out of NEAR the derive fails and
+          sub-agent wallets can&rsquo;t be minted or read. This re-runs
+          whenever the OutLayer keystore is updated, so keep a standing
+          balance. The vault was funded with{' '}
+          {(Number(VAULT_INITIAL_YOCTO) / 1e24).toFixed(2)} NEAR at deploy —
+          top it up (send NEAR to <code>{data.vault}</code>) before it drops
+          low; the dashboard shows a prompt below{' '}
+          {(Number(VAULT_LOW_BALANCE_YOCTO) / 1e24).toFixed(2)} NEAR.
         </div>
       </div>
     </div>

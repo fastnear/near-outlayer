@@ -140,20 +140,26 @@ export interface AccessKeyEntry {
  * (three `AccountId`s, flags, empty `registered_tee_keys` Vec) →
  * ~0.004 NEAR storage stake.
  *
- * Outbound `vault.request_master → mpc.request_app_private_key` costs
- * ~0.001 NEAR/call (gas burn; the deposit is 1 yocto). The master is
- * cached in keystore-worker enclave memory after the first call, so a
- * vault typically only triggers MPC a handful of times in its
- * lifetime (initial customer use + occasional keystore restarts).
+ * Outbound `vault.request_master → mpc.request_app_private_key` requires
+ * the vault to PREPAY the transaction gas up front. NEAR reserves the full
+ * attached gas at a pessimistic gas price (~0.3 NEAR for the 300 TGas call)
+ * and refunds the unused portion — the net burn is tiny (~0.001 NEAR) but
+ * the vault must hold ~0.3 NEAR LIQUID at derive time, or the tx is rejected
+ * pre-inclusion with `NotEnoughBalance` and key derivation fails (sub-agent
+ * wallets can't be minted or read).
  *
- * 0.1 NEAR ≈ 0.004 storage + ~100 MPC-calls headroom with 10× safety
- * margin on storage growth (registered_tee_keys, recovery state).
- * High-frequency derivers can top up; the parent account budget check
- * is enforced before deploy so the user can't get stuck mid-flow.
+ * The master is cached in keystore-worker enclave memory after the first
+ * call, BUT the cache is cleared on every keystore-worker update/restart,
+ * which re-triggers a fresh (gas-paying) derive. So a vault must keep a
+ * STANDING balance, not just a one-shot amount.
+ *
+ * 1 NEAR ≈ 0.004 storage + several cold-derivation prepayments of headroom
+ * before a top-up is needed. The parent-account budget check is enforced
+ * before deploy so the user can't get stuck mid-flow.
  *
  * Must match `outlayer-cli/src/commands/vault.rs::VAULT_INITIAL_NEAR`.
  */
-export const VAULT_INITIAL_YOCTO = BigInt('100000000000000000000000'); // 0.1 NEAR
+export const VAULT_INITIAL_YOCTO = BigInt('1000000000000000000000000'); // 1 NEAR
 
 /** Conservative parent-balance check: initial transfer + 0.1 NEAR gas headroom. */
 export const VAULT_PARENT_BUDGET_YOCTO =
@@ -577,14 +583,15 @@ export interface VerifyReport {
 }
 
 /**
- * Below this balance the dashboard surfaces a top-up warning. ~50
- * MPC calls of headroom — enough that we don't cry-wolf during normal
- * operation but loud enough that the customer notices before stalls.
+ * Below this balance the dashboard surfaces a top-up warning. Set above the
+ * ~0.3 NEAR a single cold master-derivation must prepay, so the customer is
+ * warned BEFORE the vault can no longer derive (which would stall wallet
+ * mint/read after the next keystore-worker restart clears the master cache).
  */
-export const VAULT_LOW_BALANCE_YOCTO = BigInt('50000000000000000000000'); // 0.05 NEAR
+export const VAULT_LOW_BALANCE_YOCTO = BigInt('500000000000000000000000'); // 0.5 NEAR
 
 /** Minimum top-up the dashboard suggests when balance is low. */
-export const VAULT_TOPUP_SUGGESTED_YOCTO = BigInt('100000000000000000000000'); // 0.1 NEAR
+export const VAULT_TOPUP_SUGGESTED_YOCTO = BigInt('1000000000000000000000000'); // 1 NEAR
 
 export async function verifyVault(
   viewMethod: ViewMethodFn,

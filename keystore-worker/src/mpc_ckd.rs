@@ -123,6 +123,58 @@ pub fn derive_vault_tee_keypair(
     Ok((public_key, secret_key))
 }
 
+/// A vault's on-chain balance was too low to cover the gas prepayment for the
+/// MPC `request_master` call, so child-key derivation (CKD) cannot proceed.
+///
+/// This is a plain operational condition (not a bug): NEAR requires the signer
+/// to prepay the full attached gas up front (most of it is refunded after
+/// execution). We surface it as a distinct, downcastable error so the HTTP
+/// layer can return an actionable "top up the vault" message with the exact
+/// shortfall, instead of an opaque 400/503.
+#[derive(Debug)]
+pub struct InsufficientVaultBalance {
+    pub vault: AccountId,
+}
+
+impl std::fmt::Display for InsufficientVaultBalance {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Kept short on purpose — the exact have/need/cost amounts are in the
+        // keystore's `CKD broadcast_tx_commit failed` error log (raw RPC error).
+        write!(
+            f,
+            "Vault {}: insufficient NEAR balance to register the vault on the network. \
+             Recommended balance: 0.5+ NEAR.",
+            self.vault,
+        )
+    }
+}
+
+impl std::error::Error for InsufficientVaultBalance {}
+
+/// True iff a broadcast error is a NEAR `NotEnoughBalance` pre-inclusion
+/// rejection (the signer can't cover the tx gas prepayment). Deep-matches the
+/// exact nested shape produced by near-jsonrpc-client 0.22 / near-primitives
+/// 0.37. The exact have/need amounts are left in the raw error log — the
+/// user-facing message doesn't need them.
+fn is_not_enough_balance(
+    e: &near_jsonrpc_client::errors::JsonRpcError<
+        near_jsonrpc_primitives::types::transactions::RpcTransactionError,
+    >,
+) -> bool {
+    use near_jsonrpc_client::errors::{JsonRpcError, JsonRpcServerError};
+    use near_jsonrpc_primitives::types::transactions::RpcTransactionError;
+    use near_primitives::errors::InvalidTxError;
+
+    matches!(
+        e,
+        JsonRpcError::ServerError(JsonRpcServerError::HandlerError(
+            RpcTransactionError::InvalidTransaction {
+                context: InvalidTxError::NotEnoughBalance { .. },
+            },
+        ))
+    )
+}
+
 /// MPC CKD configuration from environment
 #[derive(Debug, Clone)]
 pub struct MpcCkdConfig {
@@ -553,8 +605,9 @@ impl MpcCkdClient {
             ),
         };
 
-        let outcome = self.rpc_client.call(request).await
-            .map_err(|e| {
+        let outcome = match self.rpc_client.call(request).await {
+            Ok(o) => o,
+            Err(e) => {
                 // Surface the exact RPC/broadcast error. Without this the
                 // whole failure is swallowed: the only thing that reaches
                 // the caller is the `MPC CKD failed for vault …` wrapper
@@ -571,9 +624,19 @@ impl MpcCkdClient {
                     error = ?e,
                     "CKD broadcast_tx_commit failed (pre-inclusion / RPC error)"
                 );
-                e
-            })
-            .context("Failed to call MPC contract")?;
+                // The single most common operational failure here is a vault
+                // that can't cover the gas prepayment for the MPC call. Turn
+                // it into a TYPED, actionable error so the HTTP layer can tell
+                // the user to top up the vault instead of returning an opaque
+                // 400/503. (Exact have/need amounts stay in the log above.)
+                if is_not_enough_balance(&e) {
+                    return Err(anyhow::Error::new(InsufficientVaultBalance {
+                        vault: signer.account_id.clone(),
+                    }));
+                }
+                return Err(anyhow::Error::new(e).context("Failed to call MPC contract"));
+            }
+        };
 
         // Check transaction status and extract result
         match &outcome.status {

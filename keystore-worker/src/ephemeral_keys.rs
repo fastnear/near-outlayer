@@ -100,7 +100,8 @@ async fn derive_ephemeral_key_handler(
     state
         .ensure_customer_loaded(customer.as_ref())
         .await
-        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        // Underfunded vault → 402 with a top-up message; anything else → 400.
+        .map_err(ApiError::from_customer_load)?;
 
     let seed = format!(
         "wallet:{}:{}:{}",

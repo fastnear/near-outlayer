@@ -110,7 +110,7 @@ export default function VaultsDocsPage() {
             <tr className="border-t border-gray-200">
               <td className="px-3 py-2 font-medium align-top">One-time cost</td>
               <td className="px-3 py-2 align-top">$0</td>
-              <td className="px-3 py-2 align-top bg-blue-50/50">~0.1 NEAR (storage stake + MPC gas reserve)</td>
+              <td className="px-3 py-2 align-top bg-blue-50/50">1 NEAR at deploy (storage + working balance for the on-chain MPC derive; keep ≥0.5 NEAR)</td>
             </tr>
           </tbody>
         </table>
@@ -196,8 +196,9 @@ export default function VaultsDocsPage() {
             </li>
             <li>
               <strong>Per-customer MPC vault:</strong> on-chain CKD-issuer
-              contract bound to your account. ~0.1 NEAR one-time
-              (storage stake + gas reserve for outbound MPC calls) thanks
+              contract bound to your account. Funded with 1 NEAR at deploy
+              (storage stake + a working balance the vault spends prepaying
+              its on-chain MPC derive — keep ≥0.5 NEAR) thanks
               to <code>UseGlobalContract</code>; one atomic tx at setup.
               You can later take the vault over yourself via NEAR MPC and
               keep deriving every key independently of OutLayer.
@@ -249,7 +250,7 @@ outlayer vault init --name treasury --exit-window 7d`}
         <ol className="list-decimal list-inside text-sm space-y-1 mb-4">
           <li>CLI/dashboard probes <code>is_vault_code_approved(hash)</code> on keystore-DAO so you don&rsquo;t pay gas to deploy a deprecated WASM.</li>
           <li>Coordinator returns the deterministic TEE function-call public key for your vault id (HMAC-derived inside the TEE).</li>
-          <li>One transaction, five actions: <code>CreateAccount</code>{' + '}<code>Transfer 0.1 NEAR</code>{' + '}<code>UseGlobalContract(code_hash)</code>{' + '}<code>new(parent, keystore_dao, mpc_contract, initial_tee_pubkey, initial_exit_window)</code>{' + '}<code>AddKey(tee_pubkey, FCAK on vault.request_master)</code>.</li>
+          <li>One transaction, five actions: <code>CreateAccount</code>{' + '}<code>Transfer 1 NEAR</code>{' + '}<code>UseGlobalContract(code_hash)</code>{' + '}<code>new(parent, keystore_dao, mpc_contract, initial_tee_pubkey, initial_exit_window)</code>{' + '}<code>AddKey(tee_pubkey, FCAK on vault.request_master)</code>.</li>
           <li>
             CLI/dashboard calls <code>POST /customer/register</code>{' '}
             on the coordinator. The coordinator forwards to the
@@ -630,29 +631,45 @@ MPC_PUBLIC_KEY='bls12381g2:...' \\
         <AnchorHeading id="ops">Operational considerations</AnchorHeading>
         <ul className="list-disc list-inside text-sm space-y-2">
           <li>
-            <strong>One-time cost:</strong> ~0.1 NEAR transferred to the
-            new vault account. With <code>UseGlobalContract</code> the
-            WASM lives in the global registry, so storage stake is just
-            the contract state (~0.004 NEAR). The remainder is the gas
-            reserve for outbound MPC calls
-            (<code>vault.request_master → mpc.request_app_private_key</code>,
-            ~0.001 NEAR/call; the master is cached in the keystore TEE
-            after the first call).
+            <strong>Initial funding:</strong> the vault account is created
+            with <strong>1 NEAR</strong>. With <code>UseGlobalContract</code>
+            the WASM lives in the global registry, so storage stake is just
+            the contract state (~0.004 NEAR). The rest is a working balance
+            for the vault&rsquo;s on-chain MPC call (below).
           </li>
           <li>
-            <strong>Top-ups when the gas reserve runs low:</strong> gas
-            for <code>vault.request_master</code> is paid from the
-            vault account itself (it owns the TEE function-call key
-            that signs the call). If the balance falls below the
-            reserve threshold, the keystore eventually fails to
-            refresh your per-customer master in enclave memory and
-            derived-key requests stall until top-up. Top-up is a plain
-            on-chain NEAR transfer to the vault account from any
-            wallet — no contract method, no signature on a special
-            endpoint. The dashboard surfaces a banner with a suggested
-            transfer amount when the balance is below the threshold.
-            Operationally we recommend customers monitor the vault
-            balance the same way they monitor a hot wallet.
+            <strong>Why the vault must keep a NEAR balance (important):</strong>{' '}
+            deriving your per-vault master key calls
+            <code>vault.request_master → mpc.request_app_private_key</code>{' '}
+            <em>on-chain</em>, signed by the vault&rsquo;s own TEE key — so
+            the vault pays for it. NEAR requires the signer to <em>prepay</em>{' '}
+            the full transaction gas up front at a pessimistic gas price
+            (≈0.3 NEAR for this call) and refunds the unused part; the net
+            burn is tiny (~0.001 NEAR) but the vault must hold roughly
+            <strong> 0.3 NEAR liquid</strong> at derive time. <strong>If the
+            vault runs out of NEAR, the derivation transaction is rejected
+            before it&rsquo;s even included (<code>NotEnoughBalance</code>)
+            and the vault stops working</strong> — sub-agent wallets can no
+            longer be minted or read (the API returns HTTP 402
+            <code>vault_underfunded</code>).
+          </li>
+          <li>
+            <strong>The derive re-runs on keystore updates:</strong> the
+            master is cached in the keystore-worker TEE enclave after the
+            first call, but that cache is cleared on <em>every</em> OutLayer
+            keystore-worker update/restart — which re-triggers a fresh,
+            gas-prepaying <code>request_master</code>. A vault that was fine
+            for weeks can suddenly fail right after a keystore upgrade if its
+            balance drifted below the prepayment. So keep a{' '}
+            <strong>standing</strong> balance, not a one-shot amount.
+          </li>
+          <li>
+            <strong>Top-ups:</strong> a plain on-chain NEAR transfer to the
+            vault account from any wallet — no contract method, no special
+            endpoint. We recommend keeping <strong>0.5 NEAR or more</strong>.
+            The dashboard shows a banner with a suggested transfer amount
+            when the balance drops low; monitor the vault balance the same
+            way you monitor a hot wallet.
           </li>
           <li>
             <strong>Race-attack protection:</strong> a malicious customer
