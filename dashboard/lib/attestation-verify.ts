@@ -42,15 +42,17 @@ export interface AuthenticityResult {
 export interface IdentityResult {
   ok: boolean;
   contract: string;
+  /** False when the layer never ran, so the UI can say "not checked" instead of "failed". */
+  checked: boolean;
   error?: string;
 }
 
 export interface BindingResult {
   ok: boolean;
+  /** False when the layer never ran, so the UI can say "not checked" instead of "failed". */
+  checked: boolean;
   expectedTaskHash: string;
   quoteTaskHash?: string;
-  /** report_data bytes 32..64 must be zero — the layout reserves them. */
-  reservedBytesZero?: boolean;
   error?: string;
 }
 
@@ -60,6 +62,14 @@ export interface CollateralInfo {
   validUntil: string;
   /** False when no published collateral covers the execution time; see the note in the UI. */
   coversExecutionTime: boolean;
+  /** Which contract published this copy. */
+  contractId: string;
+  /** SHA-256 of the body as served. */
+  sha256: string;
+  /** The `update_collateral` transaction it came from, when it was recovered from call history. */
+  txHash?: string;
+  blockHeight?: number;
+  source: string;
 }
 
 export interface AttestationVerification {
@@ -68,6 +78,8 @@ export interface AttestationVerification {
   binding: BindingResult;
   measurements?: Measurements;
   collateral?: CollateralInfo;
+  /** The collateral body itself, so the page can show it and embed it in a reproduction snippet. */
+  collateralBody?: string;
 }
 
 /** Everything the verification needs from an attestation record. */
@@ -229,6 +241,11 @@ async function fetchCollateral(
       validFrom: data.valid_from,
       validUntil: data.valid_until,
       coversExecutionTime: data.covers_requested_time,
+      contractId: data.contract_id,
+      sha256: data.collateral_sha256,
+      txHash: data.tx_hash,
+      blockHeight: data.block_height,
+      source: data.source,
     },
   };
 }
@@ -276,10 +293,13 @@ export async function verifyAttestation(
 ): Promise<AttestationVerification> {
   const expectedTaskHash = await calculateTaskHash(att);
 
+  // Layers start as "not checked". Anything that stops the pipeline early leaves them that way, so
+  // the UI never reports a check as FAILED when it simply never ran — an unverifiable quote and a
+  // quote that failed a check are very different claims.
   const result: AttestationVerification = {
     authenticity: { ok: false, advisoryIds: [] },
-    identity: { ok: false, contract: registerContractId(network) },
-    binding: { ok: false, expectedTaskHash },
+    identity: { ok: false, checked: false, contract: registerContractId(network) },
+    binding: { ok: false, checked: false, expectedTaskHash },
   };
 
   let quote: Uint8Array;
@@ -313,6 +333,7 @@ export async function verifyAttestation(
   try {
     collateral = await fetchCollateral(parsed.fmspc, att.timestamp, network);
     result.collateral = collateral.info;
+    result.collateralBody = collateral.body;
   } catch (e) {
     result.authenticity.error = e instanceof Error ? e.message : String(e);
     return result;
@@ -341,6 +362,7 @@ export async function verifyAttestation(
   // Layer 3 — the commitment inside the now-verified quote must match the published fields.
   result.binding = {
     ok: verified.report_data_prefix === expectedTaskHash,
+    checked: true,
     expectedTaskHash,
     quoteTaskHash: verified.report_data_prefix,
   };
@@ -349,10 +371,12 @@ export async function verifyAttestation(
   if (verified.measurements) {
     try {
       result.identity.ok = await measurementsApproved(verified.measurements, network);
+      result.identity.checked = true;
       if (!result.identity.ok) {
         result.identity.error = 'measurements are not in the approved list';
       }
     } catch (e) {
+      // The contract could not be reached — unknown, not disapproved.
       result.identity.error = e instanceof Error ? e.message : String(e);
     }
   }

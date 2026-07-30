@@ -73,6 +73,54 @@ export default function AttestationView({
     }
   };
 
+  // Appended to the Python snippet once verification has run: the same check, offline, with the
+  // quote and Intel's reference data written in as literals so the reader needs no network access
+  // and no API of ours. The API calls below are the published dcap-qvl Python bindings.
+  const pythonVerifySuffix =
+    verification?.collateralBody && verification.collateral
+      ? `
+
+# ---------------------------------------------------------------------------
+# Optional: verify Intel's signature over the quote, offline.
+#   pip install dcap-qvl
+#
+# COLLATERAL is Intel's signed reference data for this worker's CPU platform
+# (FMSPC ${verification.collateral.fmspc}), valid ${verification.collateral.validFrom.slice(0, 10)} to ${verification.collateral.validUntil.slice(0, 10)}.
+# It is the copy published on chain in ${verification.collateral.contractId}${
+          verification.collateral.txHash
+            ? `
+# by transaction ${verification.collateral.txHash}${
+                verification.collateral.blockHeight ? ` (block ${verification.collateral.blockHeight})` : ''
+              }, so you can pull it from an explorer or an archival node and diff it.`
+            : `,
+# read from contract state${verification.collateral.blockHeight ? ` at block ${verification.collateral.blockHeight}` : ''}.`
+        }
+# sha256(COLLATERAL) = ${verification.collateral.sha256}
+# Intel signs it, so a modified copy simply fails below.
+import base64, json, dcap_qvl
+
+QUOTE = base64.b64decode("${attestation.tdx_quote}")
+COLLATERAL = json.loads(r"""${verification.collateralBody}""")
+AS_OF = ${attestation.timestamp}  # verify as of the moment this execution ran
+
+collateral = dcap_qvl.QuoteCollateralV3(
+    COLLATERAL["pck_crl_issuer_chain"], bytes.fromhex(COLLATERAL["root_ca_crl"]),
+    bytes.fromhex(COLLATERAL["pck_crl"]), COLLATERAL["tcb_info_issuer_chain"],
+    COLLATERAL["tcb_info"], bytes.fromhex(COLLATERAL["tcb_info_signature"]),
+    COLLATERAL["qe_identity_issuer_chain"], COLLATERAL["qe_identity"],
+    bytes.fromhex(COLLATERAL["qe_identity_signature"]),
+)
+
+report = dcap_qvl.verify(QUOTE, collateral, AS_OF)
+print(f"TCB status: {report.status}")          # UpToDate = platform fully current
+print(f"Advisories: {report.advisory_ids}")
+
+# The signed commitment must equal the hash computed above.
+td = json.loads(report.to_json())["report"]["TD10"]
+print(f"report_data: {td['report_data'][:64]}")
+print(f"Signed commitment matches: {td['report_data'][:64] == final_hash}")`
+      : '';
+
   // Shape the result for the detail panels below, which walk through the same values step by step.
   const quoteValidation = verification
     ? {
@@ -157,27 +205,34 @@ export default function AttestationView({
                 />
                 <VerdictLine
                   ok={verification.identity.ok}
+                  skipped={!verification.identity.checked}
                   label="Identity"
                   detail={
                     verification.identity.ok
                       ? `measurements approved on ${verification.identity.contract}`
-                      : verification.identity.error ?? 'not checked'
+                      : verification.identity.error ??
+                        'not checked — the quote was not verified, so its measurements mean nothing yet'
                   }
                 />
                 <VerdictLine
                   ok={verification.binding.ok}
+                  skipped={!verification.binding.checked}
                   label="Binding"
                   detail={
                     verification.binding.ok
                       ? 'the signed quote commits to this input, output, code and caller'
-                      : verification.binding.error ?? 'commitment does not match the published fields'
+                      : verification.binding.checked
+                        ? 'the commitment does not match the published fields'
+                        : 'not checked — the quote was not verified, so its commitment means nothing yet'
                   }
                 />
                 {verification.collateral && !verification.collateral.coversExecutionTime && (
                   <p className="text-xs text-blue-700 pt-1">
-                    Checked against the nearest published Intel collateral
-                    (valid to {new Date(verification.collateral.validUntil).toISOString().slice(0, 10)}),
-                    so the TCB status is reported as of that date.
+                    Intel publishes its reference data (TCB levels, revocation lists) in time-bounded
+                    editions. No edition covering this execution&apos;s date is published on chain, so the
+                    nearest one was used — valid to{' '}
+                    {new Date(verification.collateral.validUntil).toISOString().slice(0, 10)}. The signature
+                    check stands; the TCB status is as of that date.
                   </p>
                 )}
               </div>
@@ -646,10 +701,18 @@ export default function AttestationView({
               <div className="bg-white p-2 border border-gray-300 rounded font-mono text-xs break-all">
                 {formatRtmr3(quoteValidation.extractedRtmr3) || 'not available'}
               </div>
-              <div className={`mt-1 px-2 py-1 rounded text-xs ${quoteValidation.rtmr3Match ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
-                {quoteValidation.rtmr3Match
-                  ? `✓ Approved on ${registerContractId(network)} — this is a published OutLayer worker build`
-                  : `✗ Not in the approved list on ${registerContractId(network)}`}
+              <div className={`mt-1 px-2 py-1 rounded text-xs ${
+                !verification?.identity.checked
+                  ? 'bg-gray-100 text-gray-700'
+                  : quoteValidation.rtmr3Match
+                    ? 'bg-green-100 text-green-800'
+                    : 'bg-red-100 text-red-800'
+              }`}>
+                {!verification?.identity.checked
+                  ? '– Not checked: the on-chain comparison only runs once the quote itself is verified'
+                  : quoteValidation.rtmr3Match
+                    ? `✓ Approved on ${registerContractId(network)} — this is a published OutLayer worker build`
+                    : `✗ Not in the approved list on ${registerContractId(network)}`}
               </div>
               {verification?.measurements && (
                 <details className="mt-2 bg-white border border-gray-200 rounded p-2">
@@ -678,10 +741,18 @@ export default function AttestationView({
               <div className="bg-white p-2 border border-gray-300 rounded font-mono text-xs break-all mt-1">
                 <span className="font-semibold">Expected:</span> {quoteValidation.expectedTaskHash}
               </div>
-              <div className={`mt-1 px-2 py-1 rounded text-xs ${quoteValidation.taskHashMatch ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
-                {quoteValidation.taskHashMatch
-                  ? '✓ Match — Intel signed this commitment to the input, output, code and caller below'
-                  : '✗ Mismatch'}
+              <div className={`mt-1 px-2 py-1 rounded text-xs ${
+                !verification?.binding.checked
+                  ? 'bg-gray-100 text-gray-700'
+                  : quoteValidation.taskHashMatch
+                    ? 'bg-green-100 text-green-800'
+                    : 'bg-red-100 text-red-800'
+              }`}>
+                {!verification?.binding.checked
+                  ? '– Not checked: the commitment is only meaningful once the quote itself is verified'
+                  : quoteValidation.taskHashMatch
+                    ? '✓ Match — Intel signed this commitment to the input, output, code and caller below'
+                    : '✗ Mismatch'}
               </div>
 
               {/* Expandable: Show how Task Hash is calculated */}
@@ -932,7 +1003,7 @@ data += b"${escapePyStr(attestation.attached_usd)}"
 final_hash = hashlib.sha256(data).hexdigest()
 print(f"Calculated: {final_hash}")
 print(f"Extracted:  ${quoteValidation.extractedTaskHash}")
-print(f"Match: {final_hash == '${quoteValidation.extractedTaskHash}'}")`}</pre>
+print(f"Match: {final_hash == '${quoteValidation.extractedTaskHash}'}")${pythonVerifySuffix}`}</pre>
                     <button
                       onClick={() => {
                         const code = `import hashlib
@@ -1008,7 +1079,7 @@ data += b"${escapePyStr(attestation.attached_usd)}"
 final_hash = hashlib.sha256(data).hexdigest()
 print(f"Calculated: {final_hash}")
 print(f"Extracted:  ${quoteValidation.extractedTaskHash}")
-print(f"Match: {final_hash == '${quoteValidation.extractedTaskHash}'}")`;
+print(f"Match: {final_hash == '${quoteValidation.extractedTaskHash}'}")${pythonVerifySuffix}`;
                         navigator.clipboard.writeText(code);
                       }}
                       className="absolute top-2 right-2 px-2 py-1 bg-green-600 hover:bg-green-700 text-white text-xs rounded"
@@ -1036,11 +1107,62 @@ print(f"Match: {final_hash == '${quoteValidation.extractedTaskHash}'}")`;
                       : '✗ Not verified — see which layer failed above.'}
                   </p>
                   {allPassed && verification?.collateral && (
-                    <p className="text-green-700 text-xs mt-1">
-                      Checked against Intel collateral for platform {verification.collateral.fmspc},
-                      valid {new Date(verification.collateral.validFrom).toISOString().slice(0, 10)} to{' '}
-                      {new Date(verification.collateral.validUntil).toISOString().slice(0, 10)}.
-                    </p>
+                    <div className="text-green-700 text-xs mt-2 space-y-1">
+                      <p>
+                        Checked against Intel&apos;s signed reference data — the TCB levels, quoting-enclave
+                        identity and revocation lists that Intel publishes for the CPU model this worker runs
+                        on (Intel calls that model id an <strong>FMSPC</strong>:{' '}
+                        <code className="bg-green-50 px-1 rounded">{verification.collateral.fmspc}</code>).
+                        This particular reference data was issued by Intel for{' '}
+                        {new Date(verification.collateral.validFrom).toISOString().slice(0, 10)} –{' '}
+                        {new Date(verification.collateral.validUntil).toISOString().slice(0, 10)}, the period
+                        this execution falls in.
+                      </p>
+                      <p>
+                        It is the same copy that <code className="bg-green-50 px-1 rounded">{verification.collateral.contractId}</code>{' '}
+                        holds on chain — published there so the contract can verify workers, and archived
+                        version by version so executions from any date stay verifiable. Intel signs it, so
+                        where it is served from cannot change the outcome.
+                      </p>
+
+                      <details className="bg-white/70 border border-green-300 rounded p-2 mt-2">
+                        <summary className="cursor-pointer font-semibold text-green-900">
+                          Show the reference data and where it came from
+                        </summary>
+                        <div className="mt-2 space-y-1 font-mono text-[11px] text-gray-800 break-all">
+                          <div><span className="text-gray-500">published in:&nbsp;</span>{verification.collateral.contractId}</div>
+                          {verification.collateral.txHash && (
+                            <div>
+                              <span className="text-gray-500">by transaction:&nbsp;</span>
+                              <a
+                                href={getTransactionUrl(verification.collateral.txHash, network)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-blue-700 hover:underline"
+                              >
+                                {verification.collateral.txHash}
+                              </a>
+                            </div>
+                          )}
+                          {verification.collateral.blockHeight && (
+                            <div><span className="text-gray-500">block:&nbsp;</span>{verification.collateral.blockHeight}</div>
+                          )}
+                          <div><span className="text-gray-500">sha256:&nbsp;</span>{verification.collateral.sha256}</div>
+                        </div>
+                        <p className="text-gray-600 text-[11px] mt-2 font-sans">
+                          {verification.collateral.txHash
+                            ? 'Open that transaction in an explorer or an archival node and compare its argument with the JSON below — they are the same bytes.'
+                            : 'Read straight from contract state; call get_collaterals() on the contract above and compare with the JSON below.'}
+                        </p>
+                        {verification.collateralBody && (
+                          <textarea
+                            readOnly
+                            value={verification.collateralBody}
+                            className="w-full h-32 mt-2 p-2 border border-gray-300 rounded font-mono text-[10px] bg-white"
+                          />
+                        )}
+                      </details>
+                    </div>
                   )}
                 </div>
               );
@@ -1052,20 +1174,27 @@ print(f"Match: {final_hash == '${quoteValidation.extractedTaskHash}'}")`;
   );
 }
 
-/** One line of the verification summary. `warn` keeps a pass visible while flagging it. */
+/**
+ * One line of the verification summary.
+ *
+ * `skipped` is not the same as a failure and must never be drawn like one: a layer that never ran
+ * has established nothing, in either direction. `warn` keeps a pass visible while flagging it.
+ */
 function VerdictLine({
   ok,
   warn = false,
+  skipped = false,
   label,
   detail,
 }: {
   ok: boolean;
   warn?: boolean;
+  skipped?: boolean;
   label: string;
   detail: string;
 }) {
-  const tone = !ok ? 'text-red-800' : warn ? 'text-amber-800' : 'text-green-800';
-  const mark = !ok ? '✗' : warn ? '!' : '✓';
+  const tone = skipped ? 'text-gray-600' : !ok ? 'text-red-800' : warn ? 'text-amber-800' : 'text-green-800';
+  const mark = skipped ? '–' : !ok ? '✗' : warn ? '!' : '✓';
   return (
     <p className={`text-sm ${tone}`}>
       <span className="font-semibold">{mark} {label}</span>
