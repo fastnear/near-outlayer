@@ -424,10 +424,20 @@ export default function JobsPage() {
                 <thead className="bg-gray-50">
                   <tr>
                     {effectiveColumns.id && (
-                      <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">ID</th>
+                      <th
+                        className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900"
+                        title="Click an id to open its TEE attestation report"
+                      >
+                        ID
+                      </th>
                     )}
                     {effectiveColumns.tee && (
-                      <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">TEE</th>
+                      <th
+                        className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900"
+                        title="Trusted Execution Environment — open the attestation report proving this ran inside Intel TDX"
+                      >
+                        TEE
+                      </th>
                     )}
                     {effectiveColumns.type && (
                       <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Type</th>
@@ -485,8 +495,21 @@ export default function JobsPage() {
                         <>
                           <tr key={job.id}>
                             {effectiveColumns.id && (
-                              <td className="whitespace-nowrap px-3 py-4 text-sm font-mono text-gray-900">
-                                #{job.id}
+                              <td className="whitespace-nowrap px-3 py-4 text-sm font-mono">
+                                {/* The id opens the same attestation report as the shield icon.
+                                    Styled as a link because most people never discover that these
+                                    reports exist — the row identifier is where they look first. */}
+                                {job.job_id ? (
+                                  <button
+                                    onClick={() => loadAttestation(job)}
+                                    className="text-blue-600 hover:text-blue-800 underline decoration-dotted underline-offset-2 cursor-pointer"
+                                    title="View the TEE attestation report for this execution"
+                                  >
+                                    #{job.id}
+                                  </button>
+                                ) : (
+                                  <span className="text-gray-900">#{job.id}</span>
+                                )}
                               </td>
                             )}
                             {effectiveColumns.tee && (
@@ -538,18 +561,23 @@ export default function JobsPage() {
                               </td>
                             )}
                             {effectiveColumns.status && (
-                              <td className="whitespace-nowrap px-3 py-4 text-sm">
+                              // No `whitespace-nowrap` here, and a width cap: the longest label
+                              // ("Insufficient Payment", "Compilation Failed") otherwise stretches
+                              // this column and squeezes every other one on the row.
+                              <td className="px-3 py-4 text-sm">
                                 <span
-                                  className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${
+                                  className={`inline-flex max-w-[7.5rem] rounded-2xl px-2 py-0.5 text-xs font-semibold leading-4 ${
                                     getStatusDisplay(job.status, job.success).color
                                   } ${hasErrorDetails ? 'cursor-pointer hover:opacity-80' : ''}`}
                                   onClick={() => hasErrorDetails && setExpandedJobId(isExpanded ? null : job.id)}
                                   title={hasErrorDetails ? 'Click to show error details' : undefined}
                                 >
-                                  {getStatusDisplay(job.status, job.success).text}
-                                  {hasErrorDetails && (
-                                    <span className="ml-1">{isExpanded ? '▼' : '▶'}</span>
-                                  )}
+                                  <span className="min-w-0">
+                                    {getStatusDisplay(job.status, job.success).text}
+                                    {/* Kept inside the text run so the caret wraps with the last
+                                        word instead of being stranded on a line of its own. */}
+                                    {hasErrorDetails && <span className="ml-1">{isExpanded ? '▼' : '▶'}</span>}
+                                  </span>
                                 </span>
                               </td>
                             )}
