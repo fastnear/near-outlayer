@@ -27,12 +27,18 @@ export default function AttestationPage() {
     if (jobId) {
       loadAttestation(parseInt(jobId));
     }
-  }, [jobId]);
+    // Refetch if the resolved network changes: the wallet's network is the fallback when the link
+    // carries no ?network=, so switching it has to reload the record rather than leave the previous
+    // network's job on screen.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId, displayNetwork]);
 
   const loadAttestation = async (id: number) => {
     try {
       const { fetchAttestation } = await import('@/lib/api');
-      const data = await fetchAttestation(id);
+      // displayNetwork, not the wallet's network: the link's ?network= decides which coordinator
+      // holds this record, so the page shows the same execution to whoever opens it.
+      const data = await fetchAttestation(id, displayNetwork);
 
       if (!data) {
         setError('No attestation found for this job');

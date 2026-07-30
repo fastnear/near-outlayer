@@ -1119,7 +1119,10 @@ print(f"Match: {final_hash == '${quoteValidation.extractedTaskHash}'}")${pythonV
                         this execution falls in.
                       </p>
                       <p>
-                        It is the same copy that <code className="bg-green-50 px-1 rounded">{verification.collateral.contractId}</code>{' '}
+                        It is the same copy that{' '}
+                        <code className="bg-green-50 px-1 rounded">
+                          {verification.collateral.contractId || verification.identity.contract}
+                        </code>{' '}
                         holds on chain — published there so the contract can verify workers, and archived
                         version by version so executions from any date stay verifiable. Intel signs it, so
                         where it is served from cannot change the outcome.
@@ -1129,8 +1132,14 @@ print(f"Match: {final_hash == '${quoteValidation.extractedTaskHash}'}")${pythonV
                         <summary className="cursor-pointer font-semibold text-green-900">
                           Show the reference data and where it came from
                         </summary>
+                        {/* Every row is optional: an older coordinator (or a cached response from
+                            one) omits these fields, and a label with nothing after it reads as a
+                            bug rather than as missing data. */}
                         <div className="mt-2 space-y-1 font-mono text-[11px] text-gray-800 break-all">
-                          <div><span className="text-gray-500">published in:&nbsp;</span>{verification.collateral.contractId}</div>
+                          <div>
+                            <span className="text-gray-500">published in:&nbsp;</span>
+                            {verification.collateral.contractId || verification.identity.contract}
+                          </div>
                           {verification.collateral.txHash && (
                             <div>
                               <span className="text-gray-500">by transaction:&nbsp;</span>
@@ -1144,15 +1153,17 @@ print(f"Match: {final_hash == '${quoteValidation.extractedTaskHash}'}")${pythonV
                               </a>
                             </div>
                           )}
-                          {verification.collateral.blockHeight && (
+                          {!!verification.collateral.blockHeight && (
                             <div><span className="text-gray-500">block:&nbsp;</span>{verification.collateral.blockHeight}</div>
                           )}
-                          <div><span className="text-gray-500">sha256:&nbsp;</span>{verification.collateral.sha256}</div>
+                          {verification.collateral.sha256 && (
+                            <div><span className="text-gray-500">sha256:&nbsp;</span>{verification.collateral.sha256}</div>
+                          )}
                         </div>
                         <p className="text-gray-600 text-[11px] mt-2 font-sans">
                           {verification.collateral.txHash
                             ? 'Open that transaction in an explorer or an archival node and compare its argument with the JSON below — they are the same bytes.'
-                            : 'Read straight from contract state; call get_collaterals() on the contract above and compare with the JSON below.'}
+                            : `Call get_collaterals() on ${verification.collateral.contractId || verification.identity.contract} and compare the result with the JSON below.`}
                         </p>
                         {verification.collateralBody && (
                           <textarea

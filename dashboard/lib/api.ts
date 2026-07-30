@@ -355,11 +355,18 @@ export interface AttestationResponse {
  * Returns null if attestation doesn't exist
  */
 export async function fetchAttestation(
-  taskId: number
+  taskId: number,
+  network?: NetworkType
 ): Promise<AttestationResponse | null> {
   try {
+    // Resolved per call, not from the module-level API_BASE_URL: that one is computed once at
+    // import time from the connected wallet's network, so a shared link like
+    // /attestation/2008?network=testnet opened in a mainnet-connected browser would silently fetch
+    // the MAINNET job with that id — a different execution entirely, which then fails verification
+    // against the testnet contract. An attestation link has to resolve to the same record for
+    // everyone who opens it, whatever their wallet is set to.
     const response = await axios.get(
-      `${API_BASE_URL}/attestations/${taskId}`
+      `${getCoordinatorApiUrl(network)}/attestations/${taskId}`
     );
     return response.data;
   } catch (error) {
