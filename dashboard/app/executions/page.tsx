@@ -25,7 +25,6 @@ interface TableSettings {
     payment: boolean;
     tx: boolean;
     created: boolean;
-    tee: boolean;
   };
 }
 
@@ -44,7 +43,6 @@ const DEFAULT_SETTINGS: TableSettings = {
     payment: true,
     tx: true,
     created: true,
-    tee: true,
   },
 };
 
@@ -60,7 +58,6 @@ const COLUMN_LABELS: Record<keyof TableSettings['visibleColumns'], string> = {
   payment: 'Payment',
   tx: 'TX',
   created: 'Created',
-  tee: 'TEE',
 };
 
 export default function JobsPage() {
@@ -176,7 +173,7 @@ export default function JobsPage() {
 
     try {
       // Always use job_id to fetch attestation (works for both NEAR and HTTPS calls)
-      const data = await fetchAttestation(job.job_id);
+      const data = await fetchAttestation(job.job_id, network);
 
       if (!data) {
         setAttestationModal({
@@ -431,14 +428,6 @@ export default function JobsPage() {
                         ID
                       </th>
                     )}
-                    {effectiveColumns.tee && (
-                      <th
-                        className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900"
-                        title="Trusted Execution Environment — open the attestation report proving this ran inside Intel TDX"
-                      >
-                        TEE
-                      </th>
-                    )}
                     {effectiveColumns.type && (
                       <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Type</th>
                     )}
@@ -496,40 +485,34 @@ export default function JobsPage() {
                           <tr key={job.id}>
                             {effectiveColumns.id && (
                               <td className="whitespace-nowrap px-3 py-4 text-sm font-mono">
-                                {/* The id opens the same attestation report as the shield icon.
-                                    Styled as a link because most people never discover that these
-                                    reports exist — the row identifier is where they look first. */}
+                                {/* The id itself opens the attestation report. Discovery was the
+                                    problem with a separate icon column: people never connected the
+                                    shield to "this execution can be proven". Attached to the row's
+                                    identifier, with the shield right after it, it is where the eye
+                                    already goes. Jobs without an attestation (compilations) render
+                                    as plain text — no link affordance for something that does not
+                                    open. */}
                                 {job.job_id ? (
                                   <button
                                     onClick={() => loadAttestation(job)}
-                                    className="text-blue-600 hover:text-blue-800 underline decoration-dotted underline-offset-2 cursor-pointer"
+                                    className="inline-flex items-baseline gap-1 text-blue-600 hover:text-blue-800 cursor-pointer group"
                                     title="View the TEE attestation report for this execution"
                                   >
-                                    #{job.id}
-                                  </button>
-                                ) : (
-                                  <span className="text-gray-900">#{job.id}</span>
-                                )}
-                              </td>
-                            )}
-                            {effectiveColumns.tee && (
-                              <td className="whitespace-nowrap px-3 py-4 text-sm">
-                                {job.job_id ? (
-                                  <button
-                                    onClick={() => loadAttestation(job)}
-                                    className="text-gray-400 hover:text-blue-600 cursor-pointer transition-colors"
-                                    title="View attestation report"
-                                  >
-                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <span className="underline decoration-dotted underline-offset-2">{job.id}</span>
+                                    {/* Sized in `em` so it tracks the digits next to it instead of
+                                        towering over them at a fixed pixel size. */}
+                                    <svg
+                                      className="w-[0.9em] h-[0.9em] shrink-0 text-green-600 group-hover:text-green-700"
+                                      fill="none"
+                                      stroke="currentColor"
+                                      viewBox="0 0 24 24"
+                                      aria-label="TEE attestation available"
+                                    >
                                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
                                     </svg>
                                   </button>
                                 ) : (
-                                  <span className="text-gray-200">
-                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-                                    </svg>
-                                  </span>
+                                  <span className="text-gray-900">{job.id}</span>
                                 )}
                               </td>
                             )}
