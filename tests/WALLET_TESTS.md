@@ -55,6 +55,39 @@ for [issue #25](https://github.com/fastnear/near-outlayer/issues/25) where
 ./tests/wallet_intents_e2e.sh withdraw
 ```
 
+### Withdraw dry-run fidelity (read-only, no funds)
+
+Asserts that `POST /wallet/v1/intents/withdraw/dry-run` and the real
+`POST /wallet/v1/intents/withdraw` agree. Regression net for
+[issue #28](https://github.com/fastnear/near-outlayer/issues/28), where the
+dry-run answered `would_succeed: true` for a cross-chain amount the withdraw
+then refused with `1Click: Amount is too low for bridge, try at least 303064` —
+it never asked the bridge, never checked the balance, never mirrored the input
+validation, and evaluated an `Op::Withdraw` policy op for a cross-chain exit
+that the real call gates on `cross_chain_withdraw`.
+
+Runs on a fresh **unfunded** wallet, so it is safe on every deploy. The
+`amount: "0"` cases clear the balance gate (`0 >= 0`) and get refused deeper in
+the pipeline, which is how the bridge / storage / recipient checks are reached
+without money. The real withdraw is called **only** for cases the dry-run
+predicts will fail — if one of those ever returns 2xx, that is the bug.
+
+Needs a **mainnet-configured** coordinator (intents are mainnet-only); against a
+testnet coordinator it detects the 503 and skips itself.
+
+```bash
+./tests/wallet_dry_run_e2e.sh
+COORDINATOR_URL=https://api.outlayer.fastnear.com ./tests/wallet_dry_run_e2e.sh
+SKIP_PARITY=1 ./tests/wallet_dry_run_e2e.sh   # dry-run assertions only
+```
+
+Not covered (needs an on-chain policy ⇒ a funded wallet, SKIPped by the script):
+`policy_denied` / `wallet_frozen` verdicts and the cross-chain op-type gate. The
+op-type logic is unit-tested in shared-tee-helpers
+(`wallet_policy.rs::cross_chain_withdraw_is_default_deny_own_type`); the dry-run
+and real quote sharing one builder is unit-tested in the coordinator
+(`wallet::cross_chain::tests::withdraw_dry_quote_differs_from_real_only_in_dry_flag`).
+
 ### Deposit-intent chain matrix (read-only)
 
 Verifies that `/wallet/v1/deposit-intent` returns chain-appropriate deposit

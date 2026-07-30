@@ -36,6 +36,21 @@
 #   ./scripts/update_collateral.sh our_collateral.json 1 testnet        # self-hosted TDX -> slot 1, testnet
 #   ./scripts/update_collateral.sh our_collateral.json 1 mainnet        # SAME file -> slot 1, mainnet
 #   ./scripts/update_collateral.sh phala_collateral.json 0 testnet      # Phala -> slot 0
+#
+# After the on-chain call, the coordinator is asked to capture the new version into its
+# `collateral_versions` history (POST /admin/collateral/check). That history is what lets a past
+# attestation still be verified once this slot has been overwritten — the contract keeps only the
+# newest version per slot and Intel's PCS serves only the current one, so a superseded collateral
+# survives nowhere else. The step is best-effort: the on-chain update has already succeeded by then,
+# and a missed capture is recoverable later from the transaction history
+# (outlayer-coordinator/scripts/backfill_collateral_versions.py).
+#
+# Put the coordinator credentials in a `.env` NEXT TO THIS SCRIPT (gitignored):
+#   COORDINATOR_URL_MAINNET=https://api.outlayer.fastnear.com
+#   ADMIN_BEARER_TOKEN_MAINNET=...
+#   COORDINATOR_URL_TESTNET=https://api-testnet.outlayer.fastnear.com
+#   ADMIN_BEARER_TOKEN_TESTNET=...
+# Missing values just skip the notification with a warning.
 set -euo pipefail
 
 COLLATERAL_FILE="${1:?usage: update_collateral.sh <collateral.json> <index: 0=Phala | 1=self-hosted> [network] [contract]}"
@@ -74,3 +89,53 @@ near contract call-function as-transaction "$CONTRACT" update_collateral \
   network-config "$NETWORK" \
   sign-with-legacy-keychain \
   send
+
+# --- tell the coordinator to archive this version -------------------------------------------
+# Deliberately after `send` and deliberately non-fatal: the chain is already updated, so exiting
+# non-zero here would report a failure that did not happen.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/.env" ]; then
+  set -a; . "$SCRIPT_DIR/.env"; set +a
+fi
+
+if [ "$NETWORK" = "mainnet" ]; then
+  COORDINATOR_URL="${COORDINATOR_URL_MAINNET:-}"
+  ADMIN_TOKEN="${ADMIN_BEARER_TOKEN_MAINNET:-}"
+else
+  COORDINATOR_URL="${COORDINATOR_URL_TESTNET:-}"
+  ADMIN_TOKEN="${ADMIN_BEARER_TOKEN_TESTNET:-}"
+fi
+
+if [ -z "$COORDINATOR_URL" ] || [ -z "$ADMIN_TOKEN" ]; then
+  # `tr`, not ${VAR^^}: macOS ships bash 3.2, where that expansion is a syntax error.
+  NET_UPPER=$(printf '%s' "$NETWORK" | tr '[:lower:]' '[:upper:]')
+  echo "⚠️  Skipping coordinator capture: set COORDINATOR_URL_$NET_UPPER and ADMIN_BEARER_TOKEN_$NET_UPPER in $SCRIPT_DIR/.env" >&2
+  echo "    (the new collateral is on chain; capture it later with POST /admin/collateral/check)" >&2
+  exit 0
+fi
+
+echo
+echo "capturing into coordinator history: $COORDINATOR_URL/admin/collateral/check"
+RESPONSE=$(curl -sS -m 60 -X POST "$COORDINATOR_URL/admin/collateral/check" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -w '\n%{http_code}' 2>&1) || {
+    echo "⚠️  Coordinator unreachable — collateral IS on chain, capture it later" >&2
+    exit 0
+  }
+
+HTTP_CODE=$(printf '%s' "$RESPONSE" | tail -1)
+BODY=$(printf '%s' "$RESPONSE" | sed '$d')
+
+if [ "$HTTP_CODE" != "200" ]; then
+  echo "⚠️  Coordinator returned HTTP $HTTP_CODE — collateral IS on chain, capture it later" >&2
+  printf '%s\n' "$BODY" >&2
+  exit 0
+fi
+
+# Show what was learned and how much runway each platform has left. `watched` marks the platforms
+# whose expiry actually alerts (COLLATERAL_WATCH_FMSPC on the coordinator).
+printf '%s' "$BODY" | jq -r '
+  (.synced[]? | "  \(.contract_id): \(.new_versions | length) new version(s)"),
+  (.failed[]?  | "  ⚠️  \(.)"),
+  (.coverage[]? | "  \(.contract_id) \(.fmspc): \(.days_remaining) day(s) left\(if .watched then "" else "  (not watched)" end)")
+' 2>/dev/null || printf '%s\n' "$BODY"

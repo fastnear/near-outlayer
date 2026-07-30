@@ -318,12 +318,28 @@ export default function TrustVerificationPage() {
         </div>
 
         <p className="text-gray-700 mb-4">
-          The report includes a <strong>&quot;Verify Quote (RTMR3 + Task Hash)&quot;</strong> button.
-          Client-side, it extracts <strong>RTMR3</strong> (the worker measurement) and the{' '}
-          <strong>Task Hash from REPORTDATA</strong> and checks them. The Task Hash commits to this
-          execution&apos;s input, output, WASM, and commit — so the Intel-signed quote cannot be
-          reused for a different run.
+          The report includes a <strong>&quot;Verify&quot;</strong> button that runs the whole check in
+          your browser, using Intel&apos;s DCAP quote-verification library compiled to WebAssembly:
         </p>
+
+        <ul className="list-disc list-inside space-y-1 text-gray-700 mb-4 ml-2">
+          <li>
+            <strong>Authenticity</strong> — the quote&apos;s signature chain is verified to the Intel SGX
+            Root CA against Intel-issued collateral, and the platform&apos;s TCB status is reported.
+            Collateral is fetched for the platform and the moment the execution ran, so past executions
+            are judged by the material that was current at the time.
+          </li>
+          <li>
+            <strong>Identity</strong> — all five measurements (MRTD + RTMR0&ndash;3) are read from the
+            verified quote and checked against the on-chain approved-build list via{' '}
+            <code>is_measurements_approved</code>.
+          </li>
+          <li>
+            <strong>Binding</strong> — the Task Hash inside the signed quote commits to this
+            execution&apos;s input, output, WASM, commit, caller and payment, so an Intel-signed quote
+            cannot be reused for a different run.
+          </li>
+        </ul>
 
         <div className="bg-purple-50 border-l-4 border-purple-400 p-4 mb-6">
           <p className="text-sm text-purple-800">
@@ -348,10 +364,10 @@ export default function TrustVerificationPage() {
 
         <div className="bg-yellow-50 border-l-4 border-yellow-500 p-4 mb-6">
           <p className="text-sm text-yellow-800">
-            <strong>Not to be conflated:</strong> This per-execution view surfaces{' '}
-            <strong>RTMR3 + the task-hash binding</strong>. The full <strong>5-measurement</strong>
-            {' '}check (MRTD + RTMR0&ndash;3) happens once at <strong>worker registration
-            on-chain</strong>, not per execution. See the next section for the full measurement set.
+            <strong>Two places, one measurement set:</strong> the contract checks all five
+            measurements when a worker <strong>registers</strong>, and the per-execution view checks
+            the same five against the same on-chain list when you verify an attestation. The next
+            section explains what each measurement covers.
           </p>
         </div>
       </section>

@@ -4,6 +4,13 @@ import { useState } from 'react';
 import { AttestationResponse } from '@/lib/api';
 import { getTransactionUrl } from '@/lib/explorer';
 import { NetworkType } from '@/contexts/NearWalletContext';
+import {
+  verifyAttestation,
+  calculateTaskHash as computeTaskHash,
+  registerContractId,
+  tcbStatusIsCurrent,
+  type AttestationVerification,
+} from '@/lib/attestation-verify';
 
 interface AttestationViewProps {
   attestation: AttestationResponse;
@@ -32,16 +39,9 @@ export default function AttestationView({
     error: string | null;
   } | null>(null);
 
-  const [quoteValidation, setQuoteValidation] = useState<{
-    quote: string;
-    extractedRtmr3: string;
-    expectedRtmr3: string;
-    extractedTaskHash: string;
-    expectedTaskHash: string;
-    rtmr3Match: boolean;
-    taskHashMatch: boolean;
-    error: string | null;
-  } | null>(null);
+  // Full three-layer verification, run in the browser on demand.
+  const [verification, setVerification] = useState<AttestationVerification | null>(null);
+  const [verifying, setVerifying] = useState(false);
 
   // Helper functions
   const formatRtmr3 = (rtmr3: string): string => {
@@ -60,115 +60,32 @@ export default function AttestationView({
   // Determine if this attestation uses V1 format (for display purposes)
   const isV1Format = ATTESTATION_V1_TIMESTAMP > 0 && attestation.timestamp >= ATTESTATION_V1_TIMESTAMP;
 
-  const calculateTaskHash = async (att: AttestationResponse): Promise<string> => {
-    const parts: Uint8Array[] = [];
-    const encoder = new TextEncoder();
+  // Task-hash recomputation and quote verification both live in lib/attestation-verify.ts, so the
+  // page and the verifier can never disagree about what the attestation commits to.
+  const calculateTaskHash = (att: AttestationResponse) => computeTaskHash(att);
 
-    // Determine if this is V1 format based on timestamp
-    const isV1 = ATTESTATION_V1_TIMESTAMP > 0 && att.timestamp >= ATTESTATION_V1_TIMESTAMP;
-
-    // Original V0 fields
-    parts.push(encoder.encode(att.task_type));
-
-    const task_id_buffer = new ArrayBuffer(8);
-    const task_id_view = new DataView(task_id_buffer);
-    task_id_view.setBigInt64(0, BigInt(att.task_id), true);
-    parts.push(new Uint8Array(task_id_buffer));
-
-    if (att.repo_url) parts.push(encoder.encode(att.repo_url));
-    if (att.commit_hash) parts.push(encoder.encode(att.commit_hash));
-    if (att.build_target) parts.push(encoder.encode(att.build_target));
-    if (att.wasm_hash) parts.push(encoder.encode(att.wasm_hash));
-    if (att.input_hash) parts.push(encoder.encode(att.input_hash));
-
-    parts.push(encoder.encode(att.output_hash));
-
-    if (att.block_height) {
-      const bh_buffer = new ArrayBuffer(8);
-      const bh_view = new DataView(bh_buffer);
-      bh_view.setBigUint64(0, BigInt(att.block_height), true);
-      parts.push(new Uint8Array(bh_buffer));
-    }
-
-    // V1 additional fields (only for attestations after ATTESTATION_V1_TIMESTAMP)
-    if (isV1) {
-      // caller_account_id
-      if (att.caller_account_id) parts.push(encoder.encode(att.caller_account_id));
-      // project_id
-      if (att.project_id) parts.push(encoder.encode(att.project_id));
-      // secrets_ref
-      if (att.secrets_ref) parts.push(encoder.encode(att.secrets_ref));
-      // timestamp (i64 little-endian)
-      const ts_buffer = new ArrayBuffer(8);
-      const ts_view = new DataView(ts_buffer);
-      ts_view.setBigInt64(0, BigInt(att.timestamp), true);
-      parts.push(new Uint8Array(ts_buffer));
-      // attached_usd
-      if (att.attached_usd) parts.push(encoder.encode(att.attached_usd));
-    }
-
-    const totalLength = parts.reduce((sum, part) => sum + part.length, 0);
-    const combined = new Uint8Array(totalLength);
-    let offset = 0;
-    for (const part of parts) {
-      combined.set(part, offset);
-      offset += part.length;
-    }
-
-    const hashBuffer = await crypto.subtle.digest('SHA-256', combined);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-  };
-
-  const verifyTdxQuote = (tdxQuoteBase64: string, expectedRtmr3: string, expectedTaskHash: string): {
-    valid: boolean;
-    extractedRtmr3: string | null;
-    extractedTaskHash: string | null;
-    error: string | null
-  } => {
+  const runVerification = async () => {
+    setVerifying(true);
     try {
-      const binaryString = atob(tdxQuoteBase64);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-
-      const RTMR3_OFFSET = 520;
-      const RTMR3_SIZE = 48;
-      const REPORTDATA_OFFSET = 568;
-      const REPORTDATA_SIZE = 64;
-
-      if (bytes.length < REPORTDATA_OFFSET + REPORTDATA_SIZE) {
-        return { valid: false, extractedRtmr3: null, extractedTaskHash: null, error: 'Quote too short' };
-      }
-
-      const rtmr3Bytes = bytes.slice(RTMR3_OFFSET, RTMR3_OFFSET + RTMR3_SIZE);
-      const extractedRtmr3 = Array.from(rtmr3Bytes)
-        .map(b => b.toString(16).padStart(2, '0'))
-        .join('');
-
-      const reportDataBytes = bytes.slice(REPORTDATA_OFFSET, REPORTDATA_OFFSET + 32);
-      const extractedTaskHash = Array.from(reportDataBytes)
-        .map(b => b.toString(16).padStart(2, '0'))
-        .join('');
-
-      const rtmr3Match = extractedRtmr3.toLowerCase() === expectedRtmr3.toLowerCase();
-      const taskHashMatch = extractedTaskHash.toLowerCase() === expectedTaskHash.toLowerCase();
-      const valid = rtmr3Match && taskHashMatch;
-
-      return { valid, extractedRtmr3, extractedTaskHash, error: null };
-    } catch (err) {
-      return { valid: false, extractedRtmr3: null, extractedTaskHash: null, error: err instanceof Error ? err.message : 'Verification failed' };
+      setVerification(await verifyAttestation(attestation, network));
+    } finally {
+      setVerifying(false);
     }
   };
 
-  // Quick verification for display
-  const quickVerification = verifyTdxQuote(
-    attestation.tdx_quote,
-    attestation.worker_measurement,
-    ''
-  );
-  const rtmr3Valid = quickVerification.extractedRtmr3?.toLowerCase() === attestation.worker_measurement.toLowerCase();
+  // Shape the result for the detail panels below, which walk through the same values step by step.
+  const quoteValidation = verification
+    ? {
+        quote: attestation.tdx_quote,
+        extractedRtmr3: verification.measurements?.rtmr3 ?? '',
+        expectedRtmr3: attestation.worker_measurement,
+        extractedTaskHash: verification.binding.quoteTaskHash ?? '',
+        expectedTaskHash: verification.binding.expectedTaskHash,
+        rtmr3Match: verification.identity.ok,
+        taskHashMatch: verification.binding.ok,
+        error: verification.authenticity.error ?? null,
+      }
+    : null;
 
   // Share URL for standalone page
   const shareUrl = typeof window !== 'undefined'
@@ -192,35 +109,99 @@ export default function AttestationView({
             <div>
               <p className="font-semibold mb-1">✅ What Can You Verify?</p>
               <ul className="list-disc list-inside space-y-1 text-blue-800 ml-2">
-                <li>Worker Identity (RTMR3) - TEE environment hash</li>
-                <li>Task Hash - prevents attestation forgery</li>
-                <li>Input/Output - verify against blockchain</li>
-                <li>Source Code - exact GitHub commit</li>
+                <li><strong>Authenticity</strong> — Intel&apos;s signature over the quote, checked in your browser</li>
+                <li><strong>Identity</strong> — the measurements are an on-chain approved worker build</li>
+                <li><strong>Binding</strong> — the signed quote commits to this exact input, output and code</li>
+                <li>Input/Output — recompute the hashes from the data you sent and received</li>
+                <li>Source Code — the exact GitHub commit that was built</li>
               </ul>
             </div>
           </div>
         </div>
       )}
 
-      {/* Quick Verification Status */}
+      {/* Verification summary — the three layers, checked in this browser. */}
       <div className="bg-blue-50 border border-blue-200 rounded-md p-4">
-        <div className="flex justify-between items-start">
+        <div className="flex justify-between items-start gap-3">
           <div className="flex-1">
-            <p className="text-blue-800 font-semibold">
-              {rtmr3Valid ? '✓' : '⚠️'} RTMR3: {rtmr3Valid ? 'Valid' : 'Invalid'} |
-              Task Hash: Click &quot;Verify Quote&quot; below to check
-            </p>
-            <p className="text-blue-700 text-sm mt-1">Full verification (including task hash with input/output/wasm commitment) is available in the &quot;TDX Quote Verification&quot; section below.</p>
+            {!verification && (
+              <>
+                <p className="text-blue-800 font-semibold">
+                  Verification runs in your browser
+                </p>
+                <p className="text-blue-700 text-sm mt-1">
+                  Intel&apos;s signature, the on-chain approved build list and the commitment to this
+                  execution are all checked locally — nothing is taken on trust from this page.
+                </p>
+              </>
+            )}
+
+            {verification && (
+              <div className="space-y-1.5">
+                <VerdictLine
+                  ok={verification.authenticity.ok}
+                  label="Authenticity"
+                  detail={
+                    verification.authenticity.ok
+                      ? `Intel signature valid · TCB status ${verification.authenticity.status}${
+                          verification.authenticity.advisoryIds.length
+                            ? ` · advisories: ${verification.authenticity.advisoryIds.join(', ')}`
+                            : ''
+                        }`
+                      : verification.authenticity.error ?? 'signature could not be verified'
+                  }
+                  warn={
+                    verification.authenticity.ok &&
+                    !tcbStatusIsCurrent(verification.authenticity.status)
+                  }
+                />
+                <VerdictLine
+                  ok={verification.identity.ok}
+                  label="Identity"
+                  detail={
+                    verification.identity.ok
+                      ? `measurements approved on ${verification.identity.contract}`
+                      : verification.identity.error ?? 'not checked'
+                  }
+                />
+                <VerdictLine
+                  ok={verification.binding.ok}
+                  label="Binding"
+                  detail={
+                    verification.binding.ok
+                      ? 'the signed quote commits to this input, output, code and caller'
+                      : verification.binding.error ?? 'commitment does not match the published fields'
+                  }
+                />
+                {verification.collateral && !verification.collateral.coversExecutionTime && (
+                  <p className="text-xs text-blue-700 pt-1">
+                    Checked against the nearest published Intel collateral
+                    (valid to {new Date(verification.collateral.validUntil).toISOString().slice(0, 10)}),
+                    so the TCB status is reported as of that date.
+                  </p>
+                )}
+              </div>
+            )}
           </div>
-          {onToggleHelp && (
+
+          <div className="flex flex-col gap-2 shrink-0">
             <button
-              onClick={onToggleHelp}
-              className="ml-3 px-3 py-1 bg-white hover:bg-blue-100 text-blue-700 text-sm font-medium rounded border border-blue-300"
-              title="Show help about attestation fields"
+              onClick={runVerification}
+              disabled={verifying}
+              className="px-3 py-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-medium rounded"
             >
-              ❓ Help
+              {verifying ? 'Verifying…' : verification ? '↻ Re-verify' : '🔐 Verify'}
             </button>
-          )}
+            {onToggleHelp && (
+              <button
+                onClick={onToggleHelp}
+                className="px-3 py-1 bg-white hover:bg-blue-100 text-blue-700 text-sm font-medium rounded border border-blue-300"
+                title="Show help about attestation fields"
+              >
+                ❓ Help
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -612,32 +593,16 @@ export default function AttestationView({
           <h3 className="text-lg font-semibold text-purple-900">TDX Quote Verification</h3>
           {!quoteValidation && (
             <button
-              onClick={async () => {
-                const expectedTaskHash = await calculateTaskHash(attestation);
-                const result = verifyTdxQuote(
-                  attestation.tdx_quote,
-                  attestation.worker_measurement,
-                  expectedTaskHash
-                );
-                setQuoteValidation({
-                  quote: attestation.tdx_quote,
-                  extractedRtmr3: result.extractedRtmr3 || '',
-                  expectedRtmr3: attestation.worker_measurement,
-                  extractedTaskHash: result.extractedTaskHash || '',
-                  expectedTaskHash,
-                  rtmr3Match: result.extractedRtmr3?.toLowerCase() === attestation.worker_measurement.toLowerCase(),
-                  taskHashMatch: result.extractedTaskHash?.toLowerCase() === expectedTaskHash.toLowerCase(),
-                  error: result.error
-                });
-              }}
-              className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium rounded"
+              onClick={runVerification}
+              disabled={verifying}
+              className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-60 text-white text-sm font-medium rounded"
             >
-              🔐 Verify Quote (RTMR3 + Task Hash)
+              {verifying ? 'Verifying…' : '🔐 Verify Quote'}
             </button>
           )}
           {quoteValidation && (
             <button
-              onClick={() => setQuoteValidation(null)}
+              onClick={() => setVerification(null)}
               className="px-3 py-1 bg-gray-400 hover:bg-gray-500 text-white text-sm font-medium rounded"
             >
               Close
@@ -673,26 +638,39 @@ export default function AttestationView({
               />
             </div>
 
-            {/* Extracted RTMR3 */}
+            {/* Measurements, taken from the verified quote and checked against the chain. */}
             <div>
               <label className="block text-sm font-semibold text-gray-800 mb-1">
-                Extracted RTMR3 (Worker Measurement, offset 256)
+                RTMR3 from the verified quote (worker build measurement)
               </label>
               <div className="bg-white p-2 border border-gray-300 rounded font-mono text-xs break-all">
-                {formatRtmr3(quoteValidation.extractedRtmr3) || 'Failed to extract'}
-              </div>
-              <div className="bg-white p-2 border border-gray-300 rounded font-mono text-xs break-all mt-1">
-                <span className="font-semibold">Expected:</span> {formatRtmr3(quoteValidation.expectedRtmr3)}
+                {formatRtmr3(quoteValidation.extractedRtmr3) || 'not available'}
               </div>
               <div className={`mt-1 px-2 py-1 rounded text-xs ${quoteValidation.rtmr3Match ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
-                {quoteValidation.rtmr3Match ? '✓ RTMR3 Match' : '✗ RTMR3 Mismatch'}
+                {quoteValidation.rtmr3Match
+                  ? `✓ Approved on ${registerContractId(network)} — this is a published OutLayer worker build`
+                  : `✗ Not in the approved list on ${registerContractId(network)}`}
               </div>
+              {verification?.measurements && (
+                <details className="mt-2 bg-white border border-gray-200 rounded p-2">
+                  <summary className="cursor-pointer text-xs font-semibold text-gray-700">
+                    All measurements submitted to the contract
+                  </summary>
+                  <div className="mt-2 space-y-1 font-mono text-[11px] break-all text-gray-800">
+                    <div><span className="text-gray-500">mrtd:&nbsp;</span>{verification.measurements.mrtd}</div>
+                    <div><span className="text-gray-500">rtmr0:</span> {verification.measurements.rtmr0}</div>
+                    <div><span className="text-gray-500">rtmr1:</span> {verification.measurements.rtmr1}</div>
+                    <div><span className="text-gray-500">rtmr2:</span> {verification.measurements.rtmr2}</div>
+                    <div><span className="text-gray-500">rtmr3:</span> {verification.measurements.rtmr3}</div>
+                  </div>
+                </details>
+              )}
             </div>
 
             {/* Extracted Task Hash */}
             <div>
               <label className="block text-sm font-semibold text-gray-800 mb-1">
-                Extracted Task Hash (REPORTDATA, offset 568)
+                Task commitment from the verified quote (report_data)
               </label>
               <div className="bg-white p-2 border border-gray-300 rounded font-mono text-xs break-all">
                 {quoteValidation.extractedTaskHash || 'Failed to extract'}
@@ -701,7 +679,9 @@ export default function AttestationView({
                 <span className="font-semibold">Expected:</span> {quoteValidation.expectedTaskHash}
               </div>
               <div className={`mt-1 px-2 py-1 rounded text-xs ${quoteValidation.taskHashMatch ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
-                {quoteValidation.taskHashMatch ? '✓ Task Hash Match (contains commitment to input/output/wasm hashes)' : '✗ Task Hash Mismatch'}
+                {quoteValidation.taskHashMatch
+                  ? '✓ Match — Intel signed this commitment to the input, output, code and caller below'
+                  : '✗ Mismatch'}
               </div>
 
               {/* Expandable: Show how Task Hash is calculated */}
@@ -1042,17 +1022,54 @@ print(f"Match: {final_hash == '${quoteValidation.extractedTaskHash}'}")`;
               </details>
             </div>
 
-            {/* Overall Verification Result */}
-            <div className={`px-4 py-3 rounded ${quoteValidation.rtmr3Match && quoteValidation.taskHashMatch ? 'bg-green-100 border border-green-300' : 'bg-red-100 border border-red-300'}`}>
-              <p className={`font-semibold ${quoteValidation.rtmr3Match && quoteValidation.taskHashMatch ? 'text-green-800' : 'text-red-800'}`}>
-                {quoteValidation.rtmr3Match && quoteValidation.taskHashMatch
-                  ? '✓ Full Verification Passed! The TDX Quote is valid and matches all expected values.'
-                  : '✗ Verification Failed - The attestation may be invalid or tampered'}
-              </p>
-            </div>
+            {/* Overall verdict: all three layers, or nothing. */}
+            {(() => {
+              const allPassed =
+                !!verification?.authenticity.ok &&
+                verification.identity.ok &&
+                verification.binding.ok;
+              return (
+                <div className={`px-4 py-3 rounded ${allPassed ? 'bg-green-100 border border-green-300' : 'bg-red-100 border border-red-300'}`}>
+                  <p className={`font-semibold ${allPassed ? 'text-green-800' : 'text-red-800'}`}>
+                    {allPassed
+                      ? '✓ Verified — genuine Intel TDX hardware, an approved worker build, and a signature covering this exact execution.'
+                      : '✗ Not verified — see which layer failed above.'}
+                  </p>
+                  {allPassed && verification?.collateral && (
+                    <p className="text-green-700 text-xs mt-1">
+                      Checked against Intel collateral for platform {verification.collateral.fmspc},
+                      valid {new Date(verification.collateral.validFrom).toISOString().slice(0, 10)} to{' '}
+                      {new Date(verification.collateral.validUntil).toISOString().slice(0, 10)}.
+                    </p>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         )}
-      </div>      
+      </div>
     </div>
+  );
+}
+
+/** One line of the verification summary. `warn` keeps a pass visible while flagging it. */
+function VerdictLine({
+  ok,
+  warn = false,
+  label,
+  detail,
+}: {
+  ok: boolean;
+  warn?: boolean;
+  label: string;
+  detail: string;
+}) {
+  const tone = !ok ? 'text-red-800' : warn ? 'text-amber-800' : 'text-green-800';
+  const mark = !ok ? '✗' : warn ? '!' : '✓';
+  return (
+    <p className={`text-sm ${tone}`}>
+      <span className="font-semibold">{mark} {label}</span>
+      <span className="opacity-80"> — {detail}</span>
+    </p>
   );
 }

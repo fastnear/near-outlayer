@@ -398,19 +398,46 @@ export default function TeeAttestationSection() {
 
             <div className="space-y-4">
               <div className="border-l-4 border-blue-500 pl-4">
-                <p className="font-semibold text-gray-900 mb-1">Step 1: Verify TDX Quote & Task Hash</p>
+                <p className="font-semibold text-gray-900 mb-1">Step 1: Authenticity — is the quote genuine?</p>
                 <p className="text-gray-700 text-sm mb-2">
-                  Extract the worker measurement (RTMR3) from the TDX quote (located at byte offset 256, 48 bytes long).
-                  Compare it to the worker_measurement stored in the attestation. Also extract the Task Hash from
-                  REPORTDATA (offset 568, 32 bytes) and compare it to the calculated hash of all execution parameters.
-                  If both match, the quote is authentic and bound to this specific execution.
-                  Note: worker registration verifies{' '}
-                  <a href="/docs/trust-verification#measurements" className="underline hover:text-blue-600">all 5 TDX measurements (MRTD + RTMR0-3)</a>.
+                  Verify the quote&apos;s ECDSA signature chain up to the Intel SGX Root CA, using Intel-issued
+                  collateral (TCB info, QE identity, PCK CRLs). This is what proves the bytes came out of real
+                  Intel TDX silicon rather than being written by software, and it is the step that gives the
+                  values in the quote their meaning.
+                </p>
+                <p className="text-gray-700 text-sm mb-2">
+                  Collateral is time-bounded, so a quote is verified <em>as of the moment it was produced</em>.
+                  Every collateral version we publish on chain is archived and served at{' '}
+                  <code className="bg-gray-100 px-1 rounded">GET /public/collateral?fmspc=…&amp;at=…</code>, so an
+                  execution from any point in time can be checked against the collateral that was current then.
+                  The quote itself states which platform (FMSPC) it came from — that is what selects the right
+                  collateral.
+                </p>
+              </div>
+
+              <div className="border-l-4 border-blue-500 pl-4">
+                <p className="font-semibold text-gray-900 mb-1">Step 2: Identity — is it an approved worker build?</p>
+                <p className="text-gray-700 text-sm mb-2">
+                  Take the measurements decoded from the <em>verified</em> quote and ask the register-contract
+                  (<code className="bg-gray-100 px-1 rounded">worker.outlayer.near</code>) whether they are approved:{' '}
+                  <code className="bg-gray-100 px-1 rounded">is_measurements_approved</code>. A genuine TEE running
+                  someone else&apos;s code fails here. All five measurements are checked —{' '}
+                  <a href="/docs/trust-verification#measurements" className="underline hover:text-blue-600">MRTD + RTMR0-3</a>.
+                </p>
+              </div>
+
+              <div className="border-l-4 border-blue-500 pl-4">
+                <p className="font-semibold text-gray-900 mb-1">Step 3: Binding — does it cover this execution?</p>
+                <p className="text-gray-700 text-sm mb-2">
+                  The TEE hashes every task parameter into the quote&apos;s REPORTDATA <em>before</em> Intel signs it.
+                  Recompute that hash from the published fields and compare. A match means the signature covers this
+                  exact input, output, code, caller and payment — see the{' '}
+                  <a href="#task-hash" className="underline hover:text-blue-600">Task Hash section</a> below.
                 </p>
                 <p className="text-gray-600 text-xs italic">
-                  The Dashboard does this automatically when you click &quot;Verify Quote&quot; in the attestation modal.
-                  See the <a href="#task-hash" className="underline hover:text-blue-600">Task Hash section</a> below for
-                  detailed explanation of how this prevents attestation forgery.
+                  The dashboard runs all three steps in your browser when you click &quot;Verify&quot; on an
+                  attestation: the verifier is Intel&apos;s DCAP quote-verification library compiled to WebAssembly,
+                  so the checks happen on your machine and nothing on the page is taken on trust.
                 </p>
               </div>
 
@@ -562,19 +589,22 @@ export default function TeeAttestationSection() {
           <div className="bg-blue-50 border-l-4 border-blue-500 p-4 my-4">
             <p className="text-blue-900 font-semibold mb-2">Interactive Verification in Dashboard:</p>
             <p className="text-blue-800 text-sm mb-2">
-              When you click <strong>&quot;Verify Quote&quot;</strong> in the attestation modal, the Dashboard performs
-              full Task Hash verification:
+              Clicking <strong>&quot;Verify&quot;</strong> on an attestation runs the full check in your browser. The
+              verifier is Intel&apos;s DCAP quote-verification library compiled to WebAssembly — the same library, at
+              the same version, that the register-contract uses on chain, so a verdict here cannot differ from the
+              contract&apos;s:
             </p>
             <ol className="list-decimal list-inside space-y-1 text-blue-800 text-sm ml-2">
-              <li>Extracts worker measurement (RTMR3) from TDX quote (offset 256, 48 bytes) - verifies worker identity</li>
-              <li>Extracts Task Hash from REPORTDATA (offset 568, first 32 bytes) - extracts commitment</li>
-              <li>Calculates expected Task Hash from attestation parameters - computes what it should be</li>
-              <li>Compares extracted vs. expected hashes - validates cryptographic binding</li>
-              <li>Shows ✓ green checkmark if both match, ✗ red error if mismatch</li>
+              <li>Reads the platform id (FMSPC) from the quote and fetches the Intel collateral that was valid when the execution ran</li>
+              <li>Verifies the signature chain to the Intel SGX Root CA and reports the platform&apos;s TCB status</li>
+              <li>Checks the measurements from the verified quote against the on-chain approved-build list</li>
+              <li>Recomputes the Task Hash from the attestation parameters and compares it to the signed commitment</li>
+              <li>Shows a per-layer verdict — a green result means all three passed</li>
             </ol>
             <p className="text-blue-800 text-sm mt-2">
               You can also click <strong>&quot;📊 Show Task Hash Calculation Steps&quot;</strong> to see the exact
-              step-by-step breakdown of how the Task Hash is computed from the attestation data.
+              step-by-step breakdown of how the Task Hash is computed, and copy a Python snippet that reproduces it
+              outside the browser.
             </p>
           </div>
 
@@ -744,11 +774,12 @@ export default function TeeAttestationSection() {
               <li className="flex items-start">
                 <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-orange-500 text-white text-sm font-bold mr-3 flex-shrink-0">4</span>
                 <div>
-                  <p className="font-semibold text-gray-900">Verify TDX Quote</p>
+                  <p className="font-semibold text-gray-900">Verify the Quote</p>
                   <p className="text-gray-700 text-sm">
-                    Click <strong>&quot;Verify Quote&quot;</strong> in the purple section. The Dashboard will extract the
-                    worker measurement from the TDX quote and compare it to the stored value. You&apos;ll see a live validation with
-                    green checkmark if it matches.
+                    Click <strong>&quot;Verify&quot;</strong>. Your browser downloads the Intel collateral for the
+                    execution&apos;s platform and moment in time, checks the signature chain to the Intel root, confirms
+                    the measurements are an on-chain approved worker build, and matches the signed commitment against
+                    the published parameters. Each layer gets its own verdict, along with the platform&apos;s TCB status.
                   </p>
                 </div>
               </li>

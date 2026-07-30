@@ -1,0 +1,29 @@
+[package]
+name = "outlayer-attestation-verifier"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Browser-side TDX quote verification for the OutLayer dashboard (dcap-qvl compiled to WebAssembly)."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The same crate, at the same version, that verifies quotes server-side. Compiling it to WASM rather
+# than reimplementing the checks in TypeScript is the point: one implementation, one audit surface,
+# and a browser verdict that cannot drift from the backend one.
+#
+# `js` is dcap-qvl's own wasm-bindgen feature. `ring` is off deliberately — it does not build for
+# wasm32-unknown-unknown; `rustcrypto` provides the same primitives in pure Rust and satisfies the
+# `_anycrypto` marker that `verify()` requires.
+dcap-qvl = { version = "0.5.2", default-features = false, features = ["std", "rustcrypto", "default-x509", "js"] }
+
+wasm-bindgen = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde-wasm-bindgen = "0.6"
+hex = "0.4"
+
+[profile.release]
+opt-level = "s"
+lto = true

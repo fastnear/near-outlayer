@@ -98,6 +98,21 @@ else
     echo ""
 fi
 
+# Wallet — withdraw dry-run fidelity (issue #28); no funds. Self-skips unless
+# the coordinator is mainnet-configured (intents are mainnet-only).
+echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
+echo -e "${BLUE}Wallet — withdraw dry-run fidelity${NC}"
+echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
+echo ""
+
+if curl -s http://localhost:8080/health > /dev/null 2>&1; then
+    "$SCRIPT_DIR/wallet_dry_run_e2e.sh"
+    echo ""
+else
+    echo "⚠️  Skipping withdraw dry-run tests - Coordinator not running"
+    echo ""
+fi
+
 # Test 5: Wallet Tests (Mode 2 — Policy)
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
 echo -e "${BLUE}Test 5/6: Wallet Mode 2 — User with Policy${NC}"
