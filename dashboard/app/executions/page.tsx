@@ -423,7 +423,7 @@ export default function JobsPage() {
                     {effectiveColumns.id && (
                       <th
                         className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900"
-                        title="Click an id to open its TEE attestation report"
+                        title="Click an id to view its TEE attestation quote"
                       >
                         ID
                       </th>
@@ -495,8 +495,8 @@ export default function JobsPage() {
                                 {job.job_id ? (
                                   <button
                                     onClick={() => loadAttestation(job)}
-                                    className="inline-flex items-baseline gap-1 text-blue-600 hover:text-blue-800 cursor-pointer group"
-                                    title="View the TEE attestation report for this execution"
+                                    className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 cursor-pointer group"
+                                    title="Click to view the TEE attestation quote for this execution"
                                   >
                                     <span className="underline decoration-dotted underline-offset-2">{job.id}</span>
                                     {/* Sized in `em` so it tracks the digits next to it instead of
