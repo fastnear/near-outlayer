@@ -159,8 +159,8 @@ export default function JobsPage() {
   };
 
   const loadAttestation = async (job: JobHistoryEntry) => {
-    if (!job.job_id) {
-      return; // No job_id available
+    if (!job.job_id || job.job_type === 'compile') {
+      return; // No job_id, or a compile job — compilation runs outside the TEE
     }
 
     setAttestationModal({
@@ -489,10 +489,10 @@ export default function JobsPage() {
                                     problem with a separate icon column: people never connected the
                                     shield to "this execution can be proven". Attached to the row's
                                     identifier, with the shield right after it, it is where the eye
-                                    already goes. Jobs without an attestation (compilations) render
-                                    as plain text — no link affordance for something that does not
-                                    open. */}
-                                {job.job_id ? (
+                                    already goes. Compilations happen outside the TEE, so they have
+                                    no attestation and render as plain text — no link affordance for
+                                    something that does not open. */}
+                                {job.job_id && job.job_type !== 'compile' ? (
                                   <button
                                     onClick={() => loadAttestation(job)}
                                     className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 cursor-pointer group"
