@@ -2,6 +2,7 @@
   "name": "dashboard",
   "version": "0.1.0",
   "private": true,
+  "license": "Apache-2.0",
   "scripts": {
     "llms": "node scripts/build-llms.mjs",
     "predev": "npm run llms",

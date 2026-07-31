@@ -1,5 +1,9 @@
 // Code taken 1:1 from MPC Node (audited code):
 // https://github.com/near/mpc/blob/main/crates/attestation/src/collateral.rs
+//
+// Copyright (c) NEAR Protocol contributors
+// Licensed under the MIT License. See register-contract/NOTICE for the full
+// license text and the list of files derived from https://github.com/near/mpc.
 
 use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use near_sdk::serde::{Deserialize, Serialize};

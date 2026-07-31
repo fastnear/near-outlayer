@@ -1,0 +1,73 @@
+# cargo-deny configuration — license policy for OutLayer.
+#
+# Purpose: the dependency tree is free of GPL-only, AGPL, SSPL and BUSL code (see
+# THIRD_PARTY_LICENSES.md). This file makes that policy machine-checkable, so the
+# claim can be re-verified in seconds instead of re-audited by hand.
+#
+# Deliberately NOT wired into CI — the dependency tree changes rarely. Run it by hand
+# after adding or bumping a dependency, and before handing THIRD_PARTY_LICENSES.md to
+# anyone doing diligence.
+#
+# Each component is its own cargo workspace, so cargo-deny will not discover this file
+# automatically. Run it per component, passing the path explicitly from the repo root:
+#     cargo deny --manifest-path worker/Cargo.toml --config deny.toml check licenses
+#     cargo deny --manifest-path keystore-worker/Cargo.toml --config deny.toml check licenses
+#     ... and likewise for contract, register-contract, vault-contract,
+#         keystore-dao-contract, outlayer-monitor, dashboard/wasm-verifier, sdk/outlayer
+#
+# Install: cargo install cargo-deny --locked
+
+[licenses]
+# Fail on anything not explicitly allowed below.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "CC0-1.0",
+    "Unlicense",
+    "BSL-1.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CDLA-Permissive-2.0",
+    # File-level copyleft. Permitted only for unmodified upstream crates; forking or
+    # vendoring any of these requires publishing the modified files under MPL-2.0.
+    "MPL-2.0",
+]
+
+# Anything detected with less confidence than this must be resolved by hand rather
+# than assumed.
+confidence-threshold = 0.9
+
+# First-party crates that are deliberately not open source (currently only
+# outlayer-coordinator) declare `publish = false` and carry their own proprietary
+# LICENSE. Without this, cargo-deny reports them as `unlicensed` and fails.
+[licenses.private]
+ignore = true
+
+# Note on dual-licensed crates (ittapi = "GPL-2.0-only OR BSD-3-Clause", r-efi =
+# "MIT OR Apache-2.0 OR LGPL-2.1-or-later"): cargo-deny evaluates the SPDX expression
+# and accepts the crate as soon as one branch is in `allow` above, so no per-crate
+# configuration is needed. Deliberately NOT using `[[licenses.clarify]]` for these —
+# clarify overrides detection unconditionally, so it would keep passing a crate that
+# upstream later relicensed to GPL-only. The elections themselves are recorded in
+# THIRD_PARTY_LICENSES.md.
+[bans]
+multiple-versions = "allow"
+
+[advisories]
+# License policy only; vulnerability policy is out of scope for this file.
+yanked = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# First-party crates consumed over git.
+allow-git = [
+    "https://github.com/out-layer/shared-tee-helpers",
+]

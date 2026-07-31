@@ -2,6 +2,7 @@
 name = "vault-checker"
 version = "0.1.0"
 edition = "2021"
+license = "MIT OR Apache-2.0"
 description = "Phase 3 of per-vault master plan: WASI agent that off-chain verifies a vault account's state and asks the keystore-worker to mark it verified on-chain."
 
 [[bin]]

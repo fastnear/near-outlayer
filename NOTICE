@@ -1,0 +1,14 @@
+OutLayer
+Copyright 2025-2026 OutLayer LLC
+
+This product includes software developed by OutLayer LLC
+(https://outlayer.ai/).
+
+Portions of this product are derived from the NEAR MPC contract
+(https://github.com/near/mpc), Copyright (c) NEAR Protocol contributors,
+licensed under the MIT License. See register-contract/NOTICE for details.
+
+This product bundles or depends on third-party software under separate
+licenses. A complete inventory, including the licenses elected for
+dual-licensed dependencies and the GPL components present in published
+container images, is in THIRD_PARTY_LICENSES.md.

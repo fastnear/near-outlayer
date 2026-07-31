@@ -2,6 +2,7 @@
 name = "customer-recovery"
 version = "0.1.0"
 edition = "2021"
+license = "Apache-2.0"
 description = "Standalone CKD recovery tool for OutLayer per-customer vaults after finalize_recovery"
 publish = false
 

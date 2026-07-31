@@ -239,7 +239,17 @@ To add your own example:
 
 ## 📝 License
 
-Same as NEAR OutLayer project (see main LICENSE file)
+The examples in this directory are dual-licensed under **MIT OR Apache-2.0**, at your
+option — see `LICENSE-MIT` and `LICENSE-APACHE` here. This is deliberately more
+permissive than the rest of the repository (Apache-2.0), because examples are meant to
+be copied into your own product without an attribution burden you might overlook.
+
+Note that most subdirectories here are **git submodules** with their own repositories,
+and are governed by the `LICENSE` in those repositories rather than by these files:
+`random-ark`, `ai-ark`, `echo-ark`, `oracle-ark`, `captcha-ark`, `weather-ark`,
+`private-dao-ark`, `botfather-ark`, `env-test-ark`, `test-secrets-ark`, `near-email`.
+
+See [LICENSING.md](../LICENSING.md) for the full component map.
 
 ---
 
