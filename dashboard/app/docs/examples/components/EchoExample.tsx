@@ -12,9 +12,9 @@ export function EchoExample() {
   return (
     <ExampleCard
       id="echo-ark"
-      title="echo-ark"
+      title="echo-example"
       badges={badges}
-      githubUrl="https://github.com/zavodil/echo-ark"
+      githubUrl="https://github.com/out-layer/echo-example"
       playgroundId="echo"
     >
       <p className="text-gray-700 mb-4">
@@ -55,7 +55,7 @@ export function EchoExample() {
     }
   },
   "timestamp": "2025-01-15T12:34:56Z",
-  "processed_by": "echo-ark v1.0"
+  "processed_by": "echo-example v1.0"
 }`}
       />
 
@@ -89,7 +89,7 @@ export function EchoExample() {
             </Link>
           </li>
           <li>
-            💻 <a href="https://github.com/zavodil/echo-ark" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+            💻 <a href="https://github.com/out-layer/echo-example" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
               View Source Code
             </a>
           </li>

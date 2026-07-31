@@ -136,7 +136,7 @@ echo -e "${BLUE}═════════════════════�
 echo ""
 
 echo "📦 Sending execution request..."
-echo "  Repo: https://github.com/zavodil/echo-ark"
+echo "  Repo: https://github.com/out-layer/echo-example"
 echo "  Target: wasm32-wasip1"
 echo "  Input: Hello, world"
 echo ""
@@ -146,7 +146,7 @@ TX2_OUTPUT=$(near contract call-function as-transaction \
   request_execution \
   json-args '{
     "code_source": {
-      "repo": "https://github.com/zavodil/echo-ark",
+      "repo": "https://github.com/out-layer/echo-example",
       "commit": "main",
       "build_target": "wasm32-wasip1"
     },

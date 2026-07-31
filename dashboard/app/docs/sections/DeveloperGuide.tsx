@@ -398,7 +398,7 @@ impl CoinFlipContract {
                 WASI containers can receive blockchain context as input parameters (block height, account ID, timestamp, etc.).
               </p>
               <p className="text-gray-700 text-sm">
-                Example: <a href="https://github.com/zavodil/echo-ark" target="_blank" rel="noopener" className="text-[var(--primary-orange)] underline">echo-ark</a> -
+                Example: <a href="https://github.com/out-layer/echo-example" target="_blank" rel="noopener" className="text-[var(--primary-orange)] underline">echo-example</a> -
                 demonstrates how to pass and process blockchain data in off-chain code.
               </p>
             </div>

@@ -96,7 +96,7 @@ const DIRECT_PRESETS: DirectPreset[] = [
     type: 'direct',
     name: 'Echo Generator',
     description: '📢 Simple echo with blockchain context (sender, block height, timestamp). Perfect starter to understand how contracts interact with OutLayer.',
-    repo: 'https://github.com/zavodil/echo-ark',
+    repo: 'https://github.com/out-layer/echo-example',
     commit: 'main',
     buildTarget: 'wasm32-wasip1',
     args: 'Hello, NEARverse!',

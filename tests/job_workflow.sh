@@ -72,7 +72,7 @@ echo "This test should trigger BOTH compilation and execution jobs"
 echo ""
 
 # Test repository - use echo-ark as it's simple and fast
-TEST_REPO="https://github.com/zavodil/echo-ark"
+TEST_REPO="https://github.com/out-layer/echo-example"
 TEST_COMMIT="main"
 TEST_TARGET="wasm32-wasip1"
 TEST_INPUT="Hello from job test 1"
