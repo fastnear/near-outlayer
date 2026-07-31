@@ -64,4 +64,7 @@ package-lock.json
 # and never rewrites it (plain `npm i` would, leaving the tree dirty and breaking the next
 # `git pull`). The examples under wasi-examples/ stay ignored — they are samples, not deployments.
 !dashboard/package-lock.json
+# mcp-server is a standalone tool devs `npm install` and run directly (like a binary, not a
+# library), so the same reproducibility argument applies.
+!mcp-server/package-lock.json
 .research
