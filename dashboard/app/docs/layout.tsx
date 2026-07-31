@@ -212,6 +212,7 @@ const pageStructure = {
     { id: 'deployment-methods', title: 'Two Ways Workers Run' },
     { id: 'verify-deployments', title: 'Verifying Each Deployment' },
     { id: 'verify-execution', title: 'Verify Any Execution' },
+    { id: 'outlayer-verify', title: 'outlayer-verify: Independent Proof' },
     { id: 'measurements', title: '5-Measurement TDX Verification' },
     { id: 'sigstore', title: 'GitHub Releases & Sigstore' },
     { id: 'registration-flow', title: 'Worker Registration Flow' },

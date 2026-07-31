@@ -265,11 +265,11 @@ export default function TrustVerificationPage() {
             <li className="flex items-start">
               <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-purple-500 text-white text-sm font-bold mr-3 flex-shrink-0">2</span>
               <div>
-                <p className="font-semibold text-gray-900">Click the shield-check icon</p>
+                <p className="font-semibold text-gray-900">Click the execution ID</p>
                 <p className="text-gray-700 text-sm">
-                  In the <strong>TEE</strong> column, click the <strong>shield-check</strong> icon
-                  (hover tooltip <em>View attestation report</em>) on any row. This works for both
-                  NEAR blockchain and HTTPS executions.
+                  Rows with an attestation show a green <strong>shield-check</strong> next to the ID
+                  in the first column; click either. This works for both NEAR blockchain and HTTPS
+                  executions.
                 </p>
               </div>
             </li>
@@ -368,6 +368,133 @@ export default function TrustVerificationPage() {
             measurements when a worker <strong>registers</strong>, and the per-execution view checks
             the same five against the same on-chain list when you verify an attestation. The next
             section explains what each measurement covers.
+          </p>
+        </div>
+      </section>
+
+      {/* Independent CLI verification */}
+      <section className="mb-12">
+        <AnchorHeading id="outlayer-verify"><code>outlayer-verify</code>: Proof That Does Not Depend on Us</AnchorHeading>
+
+        <p className="text-gray-700 mb-4">
+          Everything above runs on a page we serve. For an internal review that is the wrong shape of
+          evidence: a vendor&apos;s own website asserting the vendor&apos;s own trustworthiness is a
+          claim, not an artifact. <strong>outlayer-verify</strong> is the same three checks as a
+          standalone open-source binary your engineers run on their own machines, so the result does
+          not depend on anything we say, host or sign.
+        </p>
+
+        <div className="bg-white border-2 border-purple-300 rounded-lg p-6 mb-6">
+          <p className="font-semibold text-gray-900 mb-2">What it does not need</p>
+          <ul className="list-disc list-inside space-y-1 text-gray-700 text-sm ml-2">
+            <li>No account with us, no API key, no configuration file, no key material.</li>
+            <li>
+              No trust in our servers for the answer: Intel&apos;s root certificate is compiled into
+              the binary, so a signature chain that does not end at Intel fails regardless of what we
+              serve.
+            </li>
+            <li>
+              Nothing kept from the original call, for on-chain executions — the request and the
+              response are read back out of the NEAR transaction.
+            </li>
+          </ul>
+        </div>
+
+        <p className="text-gray-700 mb-4">
+          It reaches three places: our public API for the attestation record and the archived Intel
+          collateral, public NEAR RPC for the on-chain approved-build list, and a NEAR archival node
+          for on-chain payloads. Only the first is ours, and the collateral it serves is Intel-signed
+          — altering it breaks the chain, so we cannot influence the verdict through it. Use{' '}
+          <code>--collateral</code> to supply your own copy if you would rather not take even that.
+        </p>
+
+        <AnchorHeading id="outlayer-verify-install" level={3}>Install and run</AnchorHeading>
+
+        <pre className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm mb-4">
+{`cargo install --git https://github.com/out-layer/outlayer-verify outlayer-verify
+
+# a live production execution: Ref Finance calling a price oracle on OutLayer.
+# No account, no key, no payment — this works for anyone, right now.
+outlayer-verify job 221092 --network mainnet
+
+# an execution you triggered on chain: payloads recovered from the transaction
+outlayer-verify tx <near-tx-hash>
+
+# an HTTPS call you made, with the request and response you kept
+outlayer-verify call <call-id> --input '{"city":"Paris"}' --output '{"temp":21}'
+
+# or let the tool make the call and prove it in one step
+outlayer-verify run owner.near/agent --input '{"city":"Paris"}' --payment-key "$KEY"`}
+        </pre>
+
+        <p className="text-gray-700 mb-4">
+          The default output shows its working rather than a verdict: the record as published, the
+          measurements and both halves of <code>report_data</code> read out of the quote{' '}
+          <em>after</em> the signature was checked, which collateral was used and whether its
+          validity window really covers the execution, and — for every comparison — both values.
+          Exit codes make it usable in a pipeline: <code>0</code> proven, <code>1</code> a check
+          failed, <code>2</code> the proof could not be completed, and <code>--json</code> emits the
+          same values for a control that needs machine evidence.
+        </p>
+
+        <div className="bg-blue-50 border-l-4 border-blue-400 p-4 mb-6">
+          <p className="text-sm text-blue-800">
+            <strong>For the audit file:</strong> <code>--bundle proof.json</code> writes one
+            self-contained file holding the record, the Intel-signed collateral, the payloads and the
+            chain&apos;s answer. <code>outlayer-verify bundle proof.json --offline</code> re-checks it
+            with no network at all — so an execution stays provable to your auditor years later, and
+            it does not depend on OutLayer, or this website, still existing. The verdict stored in
+            the file is ignored on re-check; it is recomputed from the evidence.
+          </p>
+        </div>
+
+        <AnchorHeading id="outlayer-verify-limits" level={3}>What a passing verdict does not mean</AnchorHeading>
+
+        <p className="text-gray-700 mb-4">
+          Worth reading before it reaches a risk register, because the gaps are the part a technical
+          reviewer will find on their own:
+        </p>
+
+        <ul className="list-disc list-inside space-y-2 text-gray-700 mb-6 ml-2">
+          <li>
+            <strong>It does not prove the approved build came from the published source.</strong> The
+            attestation identifies which binary ran, not which source it was compiled from. Closing
+            that gap needs a reproducible build and a published digest-to-commit map.
+          </li>
+          <li>
+            <strong>It does not say who may approve a build.</strong> The tool reports which contract
+            it asked. Who controls that account, and under what governance, is a question to put to
+            us — and one you should put to us.
+          </li>
+          <li>
+            <strong>HTTPS payloads are not recoverable.</strong> Only their hashes are stored, so if
+            the caller did not keep the request and response, the bytes of that execution can never
+            be checked again — by anyone, including us. Keep them, or make the call through{' '}
+            <code>run</code>.
+          </li>
+          <li>
+            <strong>Verification is as of the execution&apos;s own timestamp.</strong> Intel
+            collateral is valid only inside a window, and Intel serves only the current one, so
+            executions are judged against the archived material that was current when they ran. Where
+            no archived window covers an execution, the tool reports it as unproven rather than
+            quietly passing.
+          </li>
+        </ul>
+
+        <div className="bg-green-50 border-l-4 border-green-400 p-4 mb-6">
+          <p className="text-sm text-green-800">
+            <strong>Source and issues:</strong>{' '}
+            <a
+              href="https://github.com/out-layer/outlayer-verify"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[var(--primary-orange)] hover:underline"
+            >
+              github.com/out-layer/outlayer-verify
+            </a>{' '}
+            — Apache-2.0, with the attestation format&apos;s test vectors taken from real production
+            records. A <code>FAIL</code> on a record served by our API is a security finding: please
+            send the evidence bundle to <code>security@outlayer.ai</code> before publishing it.
           </p>
         </div>
       </section>
