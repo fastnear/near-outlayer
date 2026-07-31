@@ -205,7 +205,7 @@ near call offchainvm.your-account.testnet \
 ### 1. Create Test WASM
 
 ```bash
-cd wasi-examples/random-ark
+cd wasi-examples/random-example
 cargo build --release --target wasm32-wasip1
 
 # WASM output:

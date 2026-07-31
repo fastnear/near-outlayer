@@ -109,11 +109,11 @@ cd tests
 ✓ Docker is running
 
 📦 Testing compilation:
-  Repository: https://github.com/zavodil/random-ark
+  Repository: https://github.com/out-layer/random-example
   Commit: 6491b317afa33534b56cebe9957844e16ac720e8
   Target: wasm32-wasi
 
-Compiling https://github.com/zavodil/random-ark @ 6491b31...
+Compiling https://github.com/out-layer/random-example @ 6491b31...
 Compiled WASM size: 113915 bytes
 Compiled WASM checksum: ba2c7a75...
 Expected WASM checksum: ba2c7a75...
@@ -240,7 +240,7 @@ PAYMENT=0.5 ./e2e.sh
   Contract: outlayer.testnet
   Caller: outlayer.testnet
   Payment: 0.1 NEAR
-  Repo: https://github.com/zavodil/random-ark
+  Repo: https://github.com/out-layer/random-example
   Commit: main
 
 🔍 Checking prerequisites...

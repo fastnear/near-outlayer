@@ -279,7 +279,7 @@ cargo test test_real_github_compilation -- --ignored --nocapture
 ```
 
 This test:
-- Compiles https://github.com/zavodil/random-ark @ `6491b31`
+- Compiles https://github.com/out-layer/random-example @ `6491b31`
 - Validates WASM magic number
 - Compares with pre-compiled version if available
 - Shows compilation metrics (size, checksum)

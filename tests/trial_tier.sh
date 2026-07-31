@@ -13,7 +13,7 @@
 # Usage:
 #   ./trial_tier.sh
 #   COORDINATOR_URL=https://api.outlayer.fastnear.com ./trial_tier.sh
-#   TEST_PROJECT="zavodil/random-ark" ./trial_tier.sh
+#   TEST_PROJECT="out-layer/random-example" ./trial_tier.sh
 # ============================================================================
 
 set -euo pipefail

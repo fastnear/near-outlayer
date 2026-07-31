@@ -53,9 +53,9 @@ cargo build --release
 ### Test Specific Examples
 
 ```bash
-# Test random-ark (WASI P1)
+# Test random-example (WASI P1)
 ./target/release/wasi-test \
-  --wasm ../random-ark/target/wasm32-wasip1/release/random-ark.wasm \
+  --wasm ../random-example/target/wasm32-wasip1/release/random-example.wasm \
   --input '{"min":1,"max":100}'
 
 # Test ai-ark (WASI P2)
@@ -130,7 +130,7 @@ cargo build --release
 ### Successful Test
 
 ```
-🔍 Testing WASM module: random-ark.wasm
+🔍 Testing WASM module: random-example.wasm
 📝 Input: {"min":1,"max":100}
 ⚙️  Max instructions: 10000000000
 💾 Max memory: 128 MB
@@ -453,7 +453,7 @@ Test this WASM:
 ## See Also
 
 - [WASI_TUTORIAL.md](../WASI_TUTORIAL.md) - Complete WASI development guide
-- [random-ark](../random-ark/) - Example WASI P1 module
+- [random-example](../random-example/) - Example WASI P1 module
 - [ai-ark](../ai-ark/) - Example WASI P2 component
 - [rpc-test-ark](../rpc-test-ark/) - Example with NEAR RPC host functions
 - [botfather-ark](../botfather-ark/) - Example with RPC transactions and secrets

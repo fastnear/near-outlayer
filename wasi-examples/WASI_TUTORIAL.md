@@ -77,7 +77,7 @@ NEAR OutLayer executes WASM modules off-chain using wasmtime runtime. Your code 
 - **Use case**: Simple computations, random numbers, basic I/O
 - **Features**: Core WASI functions (random, stdio, environment)
 - **Size**: Smaller binaries (~100-200KB)
-- **Example**: [random-ark](./random-ark/)
+- **Example**: [random-example](./random-example/)
 
 ### WASI Preview 2 (P2)
 - **Target**: `wasm32-wasip2`
@@ -467,7 +467,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #### For WASI Applications
 
 **✅ CORRECT**: Copy `Cargo.toml` from existing working examples:
-- [random-ark/Cargo.toml](./random-ark/Cargo.toml) - WASI P1 template
+- [random-example/Cargo.toml](./random-example/Cargo.toml) - WASI P1 template
 - [ai-ark/Cargo.toml](./ai-ark/Cargo.toml) - WASI P2 template
 - [oracle-ark/Cargo.toml](./oracle-ark/Cargo.toml) - WASI P2 with HTTP
 
@@ -968,7 +968,7 @@ pub fn on_outlayer_callback(
 
 ### Complete Working Examples
 
-1. **[random-ark](./random-ark/)** - WASI P1
+1. **[random-example](./random-example/)** - WASI P1
    - Random number generation
    - JSON input/output
    - ~111KB binary
@@ -1108,7 +1108,7 @@ See [BEST_PRACTICES_OUTLAYER_NEAR.md](./BEST_PRACTICES_OUTLAYER_NEAR.md) for:
 
 ## Working with Embedded NEAR Contracts
 
-Some WASI applications need to **build, deploy, or interact with NEAR smart contracts** at runtime. Examples: [intents-ark](./intents-ark/), [random-ark](./random-ark/).
+Some WASI applications need to **build, deploy, or interact with NEAR smart contracts** at runtime. Examples: [intents-ark](./intents-ark/), [random-example](./random-example/).
 
 ### When to Use Embedded Contracts
 
@@ -1280,7 +1280,7 @@ fn deploy_contract(contract_wasm: &[u8]) {
 
 ### Examples to Study
 
-1. **[random-ark/random-contract](./random-ark/random-contract/)** - Simple contract
+1. **[random-example/random-contract](./random-example/random-contract/)** - Simple contract
    - Single contract in subdirectory
    - Basic workspace setup
    - Clean build script
@@ -1368,7 +1368,7 @@ cargo near --version
 
 ## Need Help?
 
-- Check [examples](./random-ark/) for working code
+- Check [examples](./random-example/) for working code
 - Use [test runner](./WASI_TEST_RUNNER.md) to validate your module
 - Review [common pitfalls](#common-pitfalls) section
 - Read [BEST_PRACTICES_OUTLAYER_NEAR.md](./BEST_PRACTICES_OUTLAYER_NEAR.md) for frontend patterns

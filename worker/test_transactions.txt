@@ -3,7 +3,7 @@ near contract call-function as-transaction \
   request_execution \
   json-args '{
     "code_source": {
-      "repo": "https://github.com/zavodil/random-ark",
+      "repo": "https://github.com/out-layer/random-example",
       "commit": "e5b07e548ffa068bce98efea6425086cd2d75f66",
       "build_target": "wasm32-wasip1"
     },

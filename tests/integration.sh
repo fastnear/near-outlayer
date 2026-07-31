@@ -40,7 +40,7 @@ fi
 
 UPLOAD_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST $COORDINATOR_URL/wasm/upload \
   -F "checksum=$CHECKSUM" \
-  -F "repo_url=https://github.com/zavodil/random-ark" \
+  -F "repo_url=https://github.com/out-layer/random-example" \
   -F "commit_hash=test" \
   -F "wasm_file=@$TEST_WASM_PATH")
 
@@ -86,7 +86,7 @@ CREATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST $COORDINATOR_URL/execution
     "data_id": "0000000000000000000000000000000000000000000000000000000000000001",
     "code_source": {
       "type": "GitHub",
-      "repo": "https://github.com/zavodil/random-ark",
+      "repo": "https://github.com/out-layer/random-example",
       "commit": "test",
       "build_target": "wasm32-wasip1"
     },

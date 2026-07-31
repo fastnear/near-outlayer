@@ -68,7 +68,7 @@ const DIRECT_PRESETS: DirectPreset[] = [
     type: 'direct',
     name: 'Random Number Generator',
     description: '🎲 Generate truly random numbers on-chain. Great for games, lotteries, and any application needing unpredictable randomness.',
-    repo: 'https://github.com/zavodil/random-ark',
+    repo: 'https://github.com/out-layer/random-example',
     commit: 'main',
     buildTarget: 'wasm32-wasip1',
     args: '{"min":1,"max":100}',
@@ -153,7 +153,7 @@ const DIRECT_PRESETS: DirectPreset[] = [
     type: 'direct',
     name: 'Publish to FastFS',
     description: '📦 Compile code and publish WASM to FastFS for permanent storage. Returns FastFS URL instead of executing. Requires force_rebuild to ensure fresh compilation.',
-    repo: 'https://github.com/zavodil/random-ark',
+    repo: 'https://github.com/out-layer/random-example',
     commit: 'main',
     buildTarget: 'wasm32-wasip1',
     args: '',
@@ -187,7 +187,7 @@ const PROXY_PRESETS: ProxyPreset[] = [
     type: 'proxy',
     name: 'Coin Flip Game',
     args: '{"choice":"Heads"}',
-    description: '🎲 Play a coin flip game! Choose Heads or Tails. The proxy contract calls OutLayer for random number generation.\n\n🔗 Contract: https://github.com/zavodil/random-ark/tree/main/random-contract',
+    description: '🎲 Play a coin flip game! Choose Heads or Tails. The proxy contract calls OutLayer for random number generation.\n\n🔗 Contract: https://github.com/out-layer/random-example/tree/main/random-contract',
     networks: ['testnet', 'mainnet'],
     proxyContractIdTestnet: 'coin-toss.testnet',
     proxyContractIdMainnet: 'coin-toss.near',
@@ -195,7 +195,7 @@ const PROXY_PRESETS: ProxyPreset[] = [
     proxyDeposit: '10000000000000000000000', // 0.01 NEAR
     proxyGas: '300000000000000', // 300 TGas
     // WASM cache check
-    wasmRepo: 'https://github.com/zavodil/random-ark',
+    wasmRepo: 'https://github.com/out-layer/random-example',
     wasmCommit: 'main',
     wasmBuildTarget: 'wasm32-wasip1',
     increaseDepositIfNoCache: true, // Add 0.1 NEAR if WASM not cached

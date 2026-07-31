@@ -22,7 +22,7 @@ cargo build --release
 
 ## 📦 Examples
 
-### [random-ark](./random-ark/) - WASI P1
+### [random-example](./random-example/) - WASI P1
 Simple random number generator demonstrating:
 - ✅ WASI Preview 1 (wasm32-wasip1)
 - ✅ Binary format with `main()`
@@ -246,7 +246,7 @@ be copied into your own product without an attribution burden you might overlook
 
 Note that most subdirectories here are **git submodules** with their own repositories,
 and are governed by the `LICENSE` in those repositories rather than by these files:
-`random-ark`, `ai-ark`, `echo-example`, `oracle-ark`, `captcha-ark`, `weather-ark`,
+`random-example`, `ai-ark`, `echo-example`, `oracle-ark`, `captcha-ark`, `weather-ark`,
 `private-dao-ark`, `botfather-ark`, `env-test-ark`, `test-secrets-ark`, `near-email`.
 
 See [LICENSING.md](../LICENSING.md) for the full component map.

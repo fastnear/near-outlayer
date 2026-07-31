@@ -78,7 +78,7 @@ Full compilation process:
 - `test_real_github_compilation()` - **Integration test with real Docker compilation**
 
 #### Test Repository:
-- **URL**: https://github.com/zavodil/random-ark
+- **URL**: https://github.com/out-layer/random-example
 - **Commit**: `6491b317afa33534b56cebe9957844e16ac720e8`
 - **Build Target**: `wasm32-wasi`
 

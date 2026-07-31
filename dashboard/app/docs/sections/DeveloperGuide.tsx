@@ -133,7 +133,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
           </p>
           <SyntaxHighlighter language="ini" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
 {`[package]
-name = "random-ark"
+name = "random-example"
 version = "0.1.0"
 edition = "2021"
 
@@ -143,7 +143,7 @@ serde_json = "1.0"
 rand = "0.8"
 
 [[bin]]
-name = "random-ark"
+name = "random-example"
 path = "src/main.rs"`}
           </SyntaxHighlighter>
         </section>
@@ -162,7 +162,7 @@ path = "src/main.rs"`}
             <li><strong>Commit hash</strong> (e.g., <code className="bg-gray-100 px-2 py-1 rounded">a1b2c3d</code>) - immutable, guarantees exact version</li>
           </ul>
           <p className="text-sm text-gray-600">
-            📝 Example repo: <a href="https://github.com/zavodil/random-ark" target="_blank" rel="noopener" className="text-[var(--primary-orange)] hover:underline">github.com/zavodil/random-ark</a>
+            📝 Example repo: <a href="https://github.com/out-layer/random-example" target="_blank" rel="noopener" className="text-[var(--primary-orange)] hover:underline">github.com/out-layer/random-example</a>
           </p>
           <p className="text-sm text-gray-600 mt-2">
             🔮 Coming soon: GitLab, Bitbucket, and other git hosting platforms
@@ -181,7 +181,7 @@ path = "src/main.rs"`}
 near call outlayer.testnet request_execution '{
   "source": {
     "GitHub": {
-      "repo": "https://github.com/zavodil/random-ark",
+      "repo": "https://github.com/out-layer/random-example",
       "commit": "main",
       "build_target": "wasm32-wasip1"
     }
@@ -313,7 +313,7 @@ impl CoinFlipContract {
             .with_attached_deposit(NearToken::from_yoctonear(attached))
             .with_unused_gas_weight(1)
             .request_execution(
-                json!({"repo": "https://github.com/zavodil/random-ark",
+                json!({"repo": "https://github.com/out-layer/random-example",
                        "commit": "main", "build_target": "wasm32-wasip1"}),
                 json!({"max_instructions": 10000000000,
                        "max_memory_mb": 128, "max_execution_seconds": 60}),
@@ -434,11 +434,11 @@ impl CoinFlipContract {
           <ul className="space-y-2">
             <li className="flex items-center space-x-2">
               <span className="text-[var(--primary-orange)]">→</span>
-              <span>Fork <a href="https://github.com/zavodil/random-ark" target="_blank" rel="noopener" className="text-[var(--primary-orange)] hover:underline">random-ark</a> and customize it</span>
+              <span>Fork <a href="https://github.com/out-layer/random-example" target="_blank" rel="noopener" className="text-[var(--primary-orange)] hover:underline">random-example</a> and customize it</span>
             </li>
             <li className="flex items-center space-x-2">
               <span className="text-[var(--primary-orange)]">→</span>
-              <span>Explore <a href="https://github.com/zavodil/random-ark/tree/main/random-contract" target="_blank" rel="noopener" className="text-[var(--primary-orange)] hover:underline">coin flip contract</a> source code</span>
+              <span>Explore <a href="https://github.com/out-layer/random-example/tree/main/random-contract" target="_blank" rel="noopener" className="text-[var(--primary-orange)] hover:underline">coin flip contract</a> source code</span>
             </li>
             <li className="flex items-center space-x-2">
               <span className="text-[var(--primary-orange)]">→</span>

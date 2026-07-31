@@ -492,12 +492,12 @@ cargo near build
 
 - [WASI Tutorial](./WASI_TUTORIAL.md) - Building WASM modules for OutLayer
 - [WASM Environment Variables](./WASM_ENV_VARS.md) - Env vars available in WASM
-- [random-ark](./random-ark/) - Simple coin flip example
+- [random-example](./random-example/) - Simple coin flip example
 - [private-dao-ark](./private-dao-ark/) - Complex DAO with voting
 
 ## Examples in This Repository
 
 | Example | Description | Complexity |
 |---------|-------------|------------|
-| [random-ark](./random-ark/) | Coin flip with random number | Simple |
+| [random-example](./random-example/) | Coin flip with random number | Simple |
 | [private-dao-ark](./private-dao-ark/) | DAO with encrypted voting | Advanced |

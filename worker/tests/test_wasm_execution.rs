@@ -12,14 +12,14 @@ async fn test_wasm_execution() {
     let test_wasm_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
-        .join("wasi-examples/random-ark/target/wasm32-wasip1/release/random-ark.wasm");
+        .join("wasi-examples/random-example/target/wasm32-wasip1/release/random-example.wasm");
 
     println!("Looking for WASM at: {}", test_wasm_path.display());
 
     if !test_wasm_path.exists() {
         panic!(
             "Test WASM not found! Build it first:\n\
-             cd ../wasi-examples/random-ark && cargo build --release --target wasm32-wasip1"
+             cd ../wasi-examples/random-example && cargo build --release --target wasm32-wasip1"
         );
     }
 
@@ -41,7 +41,7 @@ async fn test_wasm_execution() {
         max_execution_seconds: 60,
     };
 
-    // Create valid JSON input for random-ark example
+    // Create valid JSON input for random-example example
     let input_json = r#"{"min": 0, "max": 100}"#;
     let input_data = input_json.as_bytes().to_vec();
 

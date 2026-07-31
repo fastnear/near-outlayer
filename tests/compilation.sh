@@ -22,7 +22,7 @@ echo ""
 
 # Run the compilation integration test
 echo "📦 Testing compilation:"
-echo "  Repository: https://github.com/zavodil/random-ark"
+echo "  Repository: https://github.com/out-layer/random-example"
 echo "  Commit: 6491b317afa33534b56cebe9957844e16ac720e8"
 echo "  Target: wasm32-wasi"
 echo ""

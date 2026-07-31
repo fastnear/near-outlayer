@@ -98,7 +98,7 @@ cargo test test_real_github_compilation -- --ignored --nocapture
 
 ### Expected Output
 ```
-Compiling https://github.com/zavodil/random-ark @ 6491b31... for wasm32-wasi
+Compiling https://github.com/out-layer/random-example @ 6491b31... for wasm32-wasi
 Compiled WASM size: 113915 bytes
 Compiled WASM checksum: ba2c7a75c93b7cd7bc3e2f7e12943ba2dacac6ea444f6a2e853023b892ca8acc
 Expected WASM checksum: ba2c7a75c93b7cd7bc3e2f7e12943ba2dacac6ea444f6a2e853023b892ca8acc
@@ -226,7 +226,7 @@ RUST_LOG=info cargo run
 near call outlayer.testnet request_execution '{
   "code_source": {
     "type": "GitHub",
-    "repo": "https://github.com/zavodil/random-ark",
+    "repo": "https://github.com/out-layer/random-example",
     "commit": "main",
     "build_target": "wasm32-wasip1"
   },

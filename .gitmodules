@@ -1,6 +1,6 @@
 [submodule "wasi-examples/random-ark"]
-	path = wasi-examples/random-ark
-	url = git@github.com:zavodil/random-ark.git
+	path = wasi-examples/random-example
+	url = git@github.com:out-layer/random-example.git
 [submodule "wasi-examples/ai-ark"]
 	path = wasi-examples/ai-ark
 	url = git@github.com:zavodil/ai-ark.git

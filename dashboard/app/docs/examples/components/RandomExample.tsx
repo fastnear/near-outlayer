@@ -12,9 +12,9 @@ export function RandomExample() {
   return (
     <ExampleCard
       id="random-ark"
-      title="random-ark"
+      title="random-example"
       badges={badges}
-      githubUrl="https://github.com/zavodil/random-ark"
+      githubUrl="https://github.com/out-layer/random-example"
       playgroundId="random"
     >
       <p className="text-gray-700 mb-4">
@@ -82,7 +82,7 @@ export function RandomExample() {
             </Link>
           </li>
           <li>
-            💻 <a href="https://github.com/zavodil/random-ark" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+            💻 <a href="https://github.com/out-layer/random-example" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
               View Source Code
             </a>
           </li>

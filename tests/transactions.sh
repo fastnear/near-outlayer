@@ -64,7 +64,7 @@ echo -e "${BLUE}═════════════════════�
 echo ""
 
 echo "📦 Sending execution request..."
-echo "  Repo: https://github.com/zavodil/random-ark"
+echo "  Repo: https://github.com/out-layer/random-example"
 echo "  Target: wasm32-wasip1"
 echo "  Input: {\"min\": 100, \"max\": 5000}"
 echo ""
@@ -74,7 +74,7 @@ TX1_OUTPUT=$(near contract call-function as-transaction \
   request_execution \
   json-args '{
     "code_source": {
-      "repo": "https://github.com/zavodil/random-ark",
+      "repo": "https://github.com/out-layer/random-example",
       "commit": "main",
       "build_target": "wasm32-wasip1"
     },

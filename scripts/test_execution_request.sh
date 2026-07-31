@@ -8,14 +8,14 @@ CALLER_ACCOUNT="outlayer.testnet"  # Using owner account for testing
 PAYMENT="0.1"  # 0.1 NEAR deposit
 
 echo "Calling request_execution on $CONTRACT_ID..."
-echo "Repo: https://github.com/zavodil/random-ark"
+echo "Repo: https://github.com/out-layer/random-example"
 echo "Commit: main"
 echo ""
 
 near contract call-function as-transaction $CONTRACT_ID request_execution json-args \
 '{
   "code_source": {
-    "repo": "https://github.com/zavodil/random-ark",
+    "repo": "https://github.com/out-layer/random-example",
     "commit": "main",
     "build_target": "wasm32-wasip1"
   },
