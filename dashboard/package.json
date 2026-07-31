@@ -3,7 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "llms": "node scripts/build-llms.mjs",
+    "predev": "npm run llms",
     "dev": "cross-env-shell \"PORT=${PORT:-3000}\" next dev --turbopack",
+    "prebuild": "npm run llms",
     "build": "next build --turbopack",
     "start": "cross-env-shell \"PORT=${PORT:-3000}\" next start",
     "lint": "eslint"

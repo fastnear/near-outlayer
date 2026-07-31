@@ -11,6 +11,7 @@ OutLayer lets smart contracts execute arbitrary code off-chain and receive verif
 - **HTTPS API (testnet)**: `https://testnet-api.outlayer.fastnear.com` → `/call/{owner}/{project}`
 - **Contract**: `outlayer.near` (mainnet) / `outlayer.testnet` (testnet)
 - **API reference**: [API.md](API.md) — endpoints, base URLs, and source-availability notes
+- **For AI coding assistants**: [llms.txt](https://outlayer.fastnear.com/llms.txt) — link index, or [llms-full.txt](https://outlayer.fastnear.com/llms-full.txt) for every doc in a single fetch
 - **Production App**: [near.email](https://near.email) — blockchain-native email built on OutLayer
 
 ## How It Works
@@ -121,6 +122,19 @@ See [QUICK_START.md](QUICK_START.md) for full setup instructions including datab
 | [wasi-examples/WASI_TUTORIAL.md](wasi-examples/WASI_TUTORIAL.md) | WASI development tutorial |
 | [wasi-examples/BEST_PRACTICES_OUTLAYER_NEAR.md](wasi-examples/BEST_PRACTICES_OUTLAYER_NEAR.md) | Best practices guide |
 | [dashboard/DOCS_INDEX.md](dashboard/DOCS_INDEX.md) | Dashboard documentation index |
+
+### Using OutLayer with an AI coding assistant
+
+Point the assistant at one of these instead of pasting files by hand:
+
+| File | Contents |
+|------|----------|
+| [`/llms.txt`](https://outlayer.fastnear.com/llms.txt) | Index of every documentation page, with a one-line summary each, in the [llms.txt](https://llmstxt.org) format |
+| [`/llms-full.txt`](https://outlayer.fastnear.com/llms-full.txt) | Full text of all developer docs inlined, ~310 KB, one fetch |
+| [OpenAPI spec](https://api.outlayer.fastnear.com/openapi.json) | Machine-readable HTTPS API schema |
+| [Agent Custody skill](https://skills.outlayer.ai/agent-custody/SKILL.md) | Drop-in skill file for agent frameworks |
+
+Both `llms` files are generated from [dashboard/scripts/llms-manifest.mjs](dashboard/scripts/llms-manifest.mjs) by `npm run llms` in `dashboard/`, and regenerate automatically on `npm run build`.
 
 ## Default Ports
 

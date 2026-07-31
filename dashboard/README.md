@@ -24,3 +24,16 @@ Create pages in app/:
 ```bash
 npm run dev
 ```
+
+## llms.txt
+
+`public/llms.txt` and `public/llms-full.txt` are **generated** — do not edit them by hand.
+Edit `scripts/llms-manifest.mjs` (page summaries, link sections, which repo docs get inlined)
+and regenerate:
+
+```bash
+npm run llms            # regenerate both files
+npm run llms -- --strict  # fail if a manifest entry no longer exists — use in CI
+```
+
+`predev` and `prebuild` run this automatically, so the files stay in sync with the repo docs.
