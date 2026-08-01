@@ -26,8 +26,8 @@
 	path = wasi-examples/env-test-ark
 	url = git@github.com:zavodil/env-test-ark.git
 [submodule "wasi-examples/test-secrets-ark"]
-	path = wasi-examples/test-secrets-ark
-	url = git@github.com:zavodil/test-secrets-ark/
+	path = wasi-examples/test-secrets-example
+	url = git@github.com:out-layer/test-secrets-example.git
 [submodule "wasi-examples/near-email"]
 	path = wasi-examples/near-email
 	url = git@github.com:zavodil/near-email/

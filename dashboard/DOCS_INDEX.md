@@ -83,7 +83,7 @@ dashboard/app/docs/
 | **intents-ark** | `wasi-examples/intents-ark/` | ✅ | `/docs/examples#intents-ark` | ✅ Shown | P2 | Advanced |
 | **private-dao-ark** | `wasi-examples/private-dao-ark/` | ✅ | `/docs/examples#private-dao-ark` | ✅ Shown | P2 | Advanced |
 | **captcha-ark** | `wasi-examples/captcha-ark/` | ✅ | `/docs/examples#captcha-ark` | ✅ Shown | P2 | Advanced |
-| **test-secrets-ark** | `wasi-examples/test-secrets-ark/` | ✅ | - | ❌ Hidden (test) | P2 | - |
+| **test-secrets-example** | `wasi-examples/test-secrets-example/` | ✅ | - | ❌ Hidden (test) | P2 | - |
 | **rpc-test-ark** | `wasi-examples/rpc-test-ark/` | ✅ | - | ❌ Hidden (test) | P2 | - |
 | **test-storage-ark** | `wasi-examples/test-storage-ark/` | ✅ | - | ❌ Hidden (test) | P2 | - |
 | **near-email** | `wasi-examples/near-email/` | ✅ | `/docs/examples#near-email` | ✅ Shown | P2 | Advanced |

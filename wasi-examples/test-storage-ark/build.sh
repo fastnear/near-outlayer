@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "Building test-secrets-ark for wasm32-wasip1..."
+echo "Building test-storage-ark for wasm32-wasip2..."
 
 cargo build --target wasm32-wasip2 --release
 
