@@ -2,8 +2,8 @@
 .phala/config
 
 # build keystore 
-####### old ./scripts/build_and_push_keystore.sh zavodil v1.0.3
-./scripts/build_and_push_keystore_tee.sh zavodil latest
+####### old ./scripts/build_and_push_keystore.sh zavodil v1.0.3   # personal namespace, historical
+./scripts/build_and_push_keystore_tee.sh outlayer v0.1.42
 
 # deploy keystore to phala
 cd docker
@@ -15,10 +15,10 @@ phala cvms create --name outlayer-testnet-keystore --compose ./docker-compose.ke
 /docker/.env.testnet-worker-phala
 
 # build worker-only
-./scripts/build_and_push_phala.sh zavodil latest worker
+./scripts/build_and_push_phala.sh outlayer v0.1.42 worker
 
 # build worker-compiler 
-./scripts/build_and_push_phala.sh zavodil latest worker-compiler
+./scripts/build_and_push_phala.sh outlayer v0.1.42 worker-compiler
 
 # deploy worker to phala
 cd docker 

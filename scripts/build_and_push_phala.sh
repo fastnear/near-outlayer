@@ -7,9 +7,12 @@ set -e
 #   ./scripts/build_and_push_phala.sh <dockerhub-username> <tag> [dockerfile]
 #
 # Examples:
-#   ./scripts/build_and_push_phala.sh zavodil latest                     # Build worker-compiler (default)
-#   ./scripts/build_and_push_phala.sh zavodil latest worker-compiler    # Build worker-compiler explicitly
-#   ./scripts/build_and_push_phala.sh zavodil latest worker             # Build execution-only worker
+#   ./scripts/build_and_push_phala.sh outlayer v0.1.42                   # Build worker-compiler (default)
+#   ./scripts/build_and_push_phala.sh outlayer v0.1.42 worker-compiler   # Build worker-compiler explicitly
+#   ./scripts/build_and_push_phala.sh outlayer v0.1.42 worker            # Build execution-only worker
+#
+# Push to the company org, and use a real version rather than `latest`: deploys resolve the
+# digest from the matching GitHub release, and a floating tag has no release to resolve from.
 
 # Colors for output
 RED='\033[0;31m'

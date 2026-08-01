@@ -3,11 +3,12 @@
 # Automated deployment to Phala Cloud with TEE measurements whitelisting and DAO voting
 #
 # Usage:
-#   ./scripts/deploy_phala.sh keystore [testnet|mainnet] [instance-name] [--version vX.Y.Z]
-#   ./scripts/deploy_phala.sh worker [testnet|mainnet] [instance-name] [--version vX.Y.Z]
+#   ./scripts/deploy_phala.sh keystore [testnet|mainnet] [instance-name] --version vX.Y.Z
+#   ./scripts/deploy_phala.sh worker [testnet|mainnet] [instance-name] --version vX.Y.Z
 #
 # Options:
-#   --version     Use specific version from Docker Hub (fetches digest automatically)
+#   --version     REQUIRED. Version to deploy; the digest is fetched from the GitHub
+#                 release and is Sigstore-attested.
 #   --no-build    Skip local Docker build (use image from docker-compose)
 #   --dry-run     Only show digest and verification command, don't deploy
 #   --region      Deploy to specific region (e.g., us-west, eu-central)
@@ -16,7 +17,6 @@
 #   ./scripts/deploy_phala.sh worker testnet --version v0.1.1              # deploy specific version
 #   ./scripts/deploy_phala.sh worker testnet --version v0.1.1 --dry-run    # show digest only
 #   ./scripts/deploy_phala.sh worker mainnet worker3 --version v1.0.0
-#   ./scripts/deploy_phala.sh keystore testnet                             # build + deploy
 #
 
 set -euo pipefail
@@ -88,9 +88,18 @@ if [[ "$COMPONENT" != "keystore" && "$COMPONENT" != "worker" ]]; then
     exit 1
 fi
 
-# Dry-run requires --version
-if [ "$DRY_RUN" = true ] && [ -z "$DEPLOY_VERSION" ]; then
-    echo -e "${RED}Error: --dry-run requires --version${NC}"
+# --version is required.
+#
+# Without it the script used to fall through to building and pushing an image locally, or to
+# whatever the compose file happened to reference. Both paths deploy something that was never
+# resolved from a release and never Sigstore-attested — and the resulting measurement is what
+# the DAO is then asked to approve. Passing a version is what makes the deployed image
+# verifiable, so it is not optional.
+if [ -z "$DEPLOY_VERSION" ]; then
+    echo -e "${RED}Error: --version is required (e.g. --version 0.1.42)${NC}"
+    echo "  The digest is resolved from the GitHub release and verified via Sigstore."
+    echo "  Verify independently with:"
+    echo "    gh attestation verify oci://docker.io/${DOCKERHUB_ORG}/near-outlayer-${COMPONENT}@<digest> -R fastnear/near-outlayer"
     exit 1
 fi
 

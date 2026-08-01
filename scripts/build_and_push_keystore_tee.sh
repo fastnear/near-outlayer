@@ -7,8 +7,8 @@
 #
 # Examples:
 #   ./scripts/build_and_push_keystore_tee.sh                # Uses defaults from env
-#   ./scripts/build_and_push_keystore_tee.sh zavodil       # Custom user, default version
-#   ./scripts/build_and_push_keystore_tee.sh zavodil v1.0.0  # Custom user and version
+#   ./scripts/build_and_push_keystore_tee.sh outlayer            # Company org, default version
+#   ./scripts/build_and_push_keystore_tee.sh outlayer v0.1.42    # Company org and version
 #
 
 set -e

@@ -1,3 +1,16 @@
-docker build -t zavodil/wasmedge-compiler:latest -f docker/Dockerfile.wasmedge-compiler .
+# Build and push the WASI compiler image.
+#
+# Multi-arch, and no `latest` tag on purpose: the worker pulls this image on every compile job,
+# so a floating tag would let a registry push change production with no deploy. Deployments pin
+# the digest — see docker/BUILD.md.
 
-docker push zavodil/wasmedge-compiler:latest
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  -t outlayer/wasmedge-compiler:rust1.85-wasi25 \
+  -f docker/Dockerfile.wasmedge-compiler \
+  --push \
+  .
+
+# Then read the digest and put it in the worker's env file:
+docker buildx imagetools inspect outlayer/wasmedge-compiler:rust1.85-wasi25
+# DOCKER_IMAGE=outlayer/wasmedge-compiler@sha256:5c996303f707381f463e591d7b0650e64816e63e7bc1d98ab72a62abf55b146e

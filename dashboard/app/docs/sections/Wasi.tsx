@@ -418,7 +418,7 @@ world rpc-host {
           <h4 className="text-lg font-semibold mb-2 mt-4">Option 1: Test Compiler Script (Quick Compilation Test)</h4>
           <p className="text-gray-700 mb-3">
             Use <strong>test_compiler.sh</strong> to test compilation of your GitHub repository locally without running the full worker infrastructure.
-            This script uses the same Docker image (<code className="bg-gray-100 px-1 rounded">zavodil/wasmedge-compiler:latest</code> with Rust 1.85) and compilation logic as the production worker.
+            This script uses the same Docker image (<code className="bg-gray-100 px-1 rounded">outlayer/wasmedge-compiler:rust1.85-wasi25</code>, pinned by digest) and compilation logic as the production worker.
           </p>
 
           <div className="bg-green-50 border-l-4 border-green-400 p-4 mb-3">
@@ -441,7 +441,7 @@ world rpc-host {
   https://github.com/user/myproject main wasm32-wasip1 myapp.wasm
 
 # The script will:
-# 1. Pull zavodil/wasmedge-compiler:latest Docker image (instant if already up to date)
+# 1. Pull the pinned compiler image by digest (instant if already up to date)
 # 2. Clone your repository and checkout the commit
 # 3. Run cargo build with the exact same flags as worker
 # 4. Optimize WASM (wasm-opt for P1, wasm-tools for P2)

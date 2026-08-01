@@ -74,8 +74,8 @@ The digest ensures the exact same image is used, preventing tag mutation attacks
 For quick iteration without Sigstore (not for production):
 
 ```bash
-./scripts/build_and_push_phala.sh zavodil latest worker
-./scripts/build_and_push_keystore_tee.sh zavodil latest
+./scripts/build_and_push_phala.sh outlayer v0.1.42 worker
+./scripts/build_and_push_keystore_tee.sh outlayer v0.1.42
 ```
 
 ## GitHub Repository Setup
