@@ -14,7 +14,7 @@ export function EthProofExample() {
       title="eth-proof-example"
       badges={badges}
       githubUrl="https://github.com/out-layer/eth-proof-example"
-      playgroundId="ethereum-proof"
+      playgroundId="ethereum-state-proof"
     >
       <p className="text-gray-700 mb-4">
         Bring an <strong>Ethereum value onto NEAR with a cryptographic receipt</strong>. The module reads a

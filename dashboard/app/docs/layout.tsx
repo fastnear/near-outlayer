@@ -190,7 +190,7 @@ const pageStructure = {
     { id: 'weather-ark', title: 'Weather Oracle' },
     { id: 'oracle-ark', title: 'Price Oracle' },
     { id: 'ethereum-api', title: 'Ethereum API' },
-    { id: 'eth-proof', title: 'Ethereum Proof' },
+    { id: 'eth-proof', title: 'Ethereum State Proof' },
     { id: 'botfather-ark', title: 'Bot Father' },
     { id: 'intents-ark', title: 'NEAR Intents swap' },
     { id: 'private-dao-ark', title: 'Private DAO Voting' },

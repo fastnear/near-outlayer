@@ -179,7 +179,7 @@ const DIRECT_PRESETS: DirectPreset[] = [
   },
   {
     type: 'direct',
-    name: 'Ethereum Proof',
+    name: 'Ethereum State Proof',
     description: '\ud83d\udd10 Brings the ETH/USD price from Ethereum onto NEAR with a cryptographic receipt.\n\nChainlink keeps that price in the storage of a contract on Ethereum. This reads it together with its Merkle proof \u2014 the chain of hashes leading from the value up to the block\u2019s state root \u2014 and re-computes every hash inside the TEE until they meet. A price that survives that walk cannot have been altered by whoever served it.\n\nThe block itself is taken only if several independent Ethereum providers return exactly the same one, so no single provider can invent it.\n\n\ud83d\udc40 In the result look at "verified": trie_nodes_checked is how many hashes had to line up, rpcs_agreeing is how much independent backing the block has, and block_hash is the receipt \u2014 paste it into any explorer.\n\n\u26a0\ufe0f This proves the price IS on Ethereum, not that it is correct.',
     repo: 'https://github.com/out-layer/eth-proof-example',
     commit: 'main',
