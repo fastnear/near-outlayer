@@ -224,14 +224,14 @@ const PROXY_PRESETS: ProxyPreset[] = [
     type: 'proxy',
     name: 'NEAR Intents Swap',
     args: '{"receiver_id":"v1.publishintent.near","amount":"20000","msg":"{\\"Swap\\":{\\"token_out\\":\\"wrap.near\\",\\"min_amount_out\\":\\"1000000000000000000\\"}}"}',
-    description: '⚠️ Swaps USDC to wNEAR via NEAR Intents protocol.\n\n📋 Before using:\n1. Ensure you have storage_deposit for wNEAR (wrap.near)\n2. Only use whitelisted tokens\n3. Adjust token_out and min_amount_out as needed\n4. This calls ft_transfer_call on USDC token contract\n\n🔗 Contract: https://github.com/zavodil/intents-ark/tree/main/intents-contract',
+    description: '⚠️ Swaps USDC to wNEAR via NEAR Intents protocol.\n\n📋 Before using:\n1. Ensure you have storage_deposit for wNEAR (wrap.near)\n2. Only use whitelisted tokens\n3. Adjust token_out and min_amount_out as needed\n4. This calls ft_transfer_call on USDC token contract\n\n🔗 Contract: https://github.com/out-layer/intents-example/tree/main/intents-contract',
     networks: ['mainnet'],
     proxyContractIdMainnet: '17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1', // USDC mainnet
     proxyMethod: 'ft_transfer_call',
     proxyDeposit: '1', // 1 yoctoNEAR
     proxyGas: '300000000000000', // 300 TGas
     // WASM cache check
-    wasmRepo: 'https://github.com/zavodil/intents-ark',
+    wasmRepo: 'https://github.com/out-layer/intents-example',
     wasmCommit: 'main',
     wasmBuildTarget: 'wasm32-wasip2',
     increaseDepositIfNoCache: false, // ft_transfer_call accepts only 1 yoctoNEAR

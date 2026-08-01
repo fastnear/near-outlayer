@@ -248,7 +248,7 @@ Note that most subdirectories here are **git submodules** with their own reposit
 and are governed by the `LICENSE` in those repositories rather than by these files:
 `random-example`, `ai-example`, `echo-example`, `oracle-example`, `captcha-example`, `weather-example`,
 `private-dao-example`, `botfather-example`, `env-test-example`, `test-secrets-example`,
-`vrf-example`, `near-email`.
+`vrf-example`, `intents-example`, `near-email`.
 
 See [LICENSING.md](../LICENSING.md) for the full component map.
 

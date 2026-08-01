@@ -40,3 +40,6 @@
 [submodule "wasi-examples/vrf-example"]
 	path = wasi-examples/vrf-example
 	url = git@github.com:out-layer/vrf-example.git
+[submodule "wasi-examples/intents-example"]
+	path = wasi-examples/intents-example
+	url = git@github.com:out-layer/intents-example.git

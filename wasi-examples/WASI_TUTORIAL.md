@@ -500,9 +500,9 @@ cargo update  # Can break working builds!
 
 #### For Embedded NEAR Contracts (Advanced)
 
-If your WASI app needs to **build and deploy NEAR contracts inside WASM** (like [intents-ark](./intents-ark/)), this is **EVEN MORE CRITICAL**:
+If your WASI app needs to **build and deploy NEAR contracts inside WASM** (like [intents-example](https://github.com/out-layer/intents-example/)), this is **EVEN MORE CRITICAL**:
 
-**✅ CORRECT**: Use exact versions from [intents-ark/intents-contract/Cargo.toml](./intents-ark/intents-contract/Cargo.toml):
+**✅ CORRECT**: Use exact versions from [intents-example/intents-contract/Cargo.toml](https://github.com/out-layer/intents-example/blob/main/intents-contract/Cargo.toml):
 ```toml
 [package]
 edition = "2018"  # ← Must be 2018, not 2021!
@@ -1108,7 +1108,7 @@ See [BEST_PRACTICES_OUTLAYER_NEAR.md](./BEST_PRACTICES_OUTLAYER_NEAR.md) for:
 
 ## Working with Embedded NEAR Contracts
 
-Some WASI applications need to **build, deploy, or interact with NEAR smart contracts** at runtime. Examples: [intents-ark](./intents-ark/), [random-example](./random-example/).
+Some WASI applications need to **build, deploy, or interact with NEAR smart contracts** at runtime. Examples: [intents-example](https://github.com/out-layer/intents-example/), [random-example](./random-example/).
 
 ### When to Use Embedded Contracts
 
@@ -1285,7 +1285,7 @@ fn deploy_contract(contract_wasm: &[u8]) {
    - Basic workspace setup
    - Clean build script
 
-2. **[intents-ark/intents-contract](./intents-ark/intents-contract/)** - Advanced contract
+2. **[intents-example/intents-contract](https://github.com/out-layer/intents-example/tree/main/intents-contract/)** - Advanced contract
    - Workspace with complex dependencies
    - Contract deployment at runtime
    - Full transaction handling

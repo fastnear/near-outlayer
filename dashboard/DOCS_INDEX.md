@@ -80,7 +80,7 @@ dashboard/app/docs/
 | **oracle-example** | `wasi-examples/oracle-example/` | ✅ | `/docs/examples#oracle-ark` | ✅ Shown | P2 | Advanced |
 | **ethereum-api** | `wasi-examples/ethereum-api/` | ✅ | `/docs/examples#ethereum-api` | ✅ Shown | P2 | Intermediate |
 | **botfather-example** | `wasi-examples/botfather-example/` | ✅ | `/docs/examples#botfather-ark` | ✅ Shown | P2 | Advanced |
-| **intents-ark** | `wasi-examples/intents-ark/` | ✅ | `/docs/examples#intents-ark` | ✅ Shown | P2 | Advanced |
+| **intents-example** | `wasi-examples/intents-example/` | ✅ | `/docs/examples#intents-ark` | ✅ Shown | P2 | Advanced |
 | **private-dao-example** | `wasi-examples/private-dao-example/` | ✅ | `/docs/examples#private-dao-ark` | ✅ Shown | P2 | Advanced |
 | **captcha-example** | `wasi-examples/captcha-example/` | ✅ | `/docs/examples#captcha-ark` | ✅ Shown | P2 | Advanced |
 | **test-secrets-example** | `wasi-examples/test-secrets-example/` | ✅ | - | ❌ Hidden (test) | P2 | - |

@@ -1249,7 +1249,7 @@ cargo build --release
 
 ## 📦 Examples
 
-### [random-ark](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/random-ark/) - WASI P1
+### [random-example](https://github.com/out-layer/random-example) - WASI P1
 Simple random number generator demonstrating:
 - ✅ WASI Preview 1 (wasm32-wasip1)
 - ✅ Binary format with `main()`
@@ -1259,7 +1259,7 @@ Simple random number generator demonstrating:
 
 **Use case**: Basic computations, random numbers, simple I/O
 
-### [ai-example](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/ai-example/) - WASI P2
+### [ai-example](https://github.com/out-layer/ai-example) - WASI P2
 HTTP client for AI APIs demonstrating:
 - ✅ WASI Preview 2 (wasm32-wasip2)
 - ✅ Component model
@@ -1269,7 +1269,7 @@ HTTP client for AI APIs demonstrating:
 
 **Use case**: HTTP requests, API calls, external data fetching
 
-### [oracle-example](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/oracle-example/) - WASI P2
+### [oracle-example](https://github.com/out-layer/oracle-example) - WASI P2
 On-demand price oracle demonstrating:
 - ✅ WASI Preview 2 (wasm32-wasip2)
 - ✅ Multiple HTTP sources (CoinGecko, CoinMarketCap, TwelveData)
@@ -1557,7 +1557,7 @@ NEAR OutLayer executes WASM modules off-chain using wasmtime runtime. Your code 
 - **Use case**: Simple computations, random numbers, basic I/O
 - **Features**: Core WASI functions (random, stdio, environment)
 - **Size**: Smaller binaries (~100-200KB)
-- **Example**: [random-ark](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/random-ark/)
+- **Example**: [random-example](https://github.com/out-layer/random-example)
 
 ### WASI Preview 2 (P2)
 - **Target**: `wasm32-wasip2`
@@ -1565,7 +1565,7 @@ NEAR OutLayer executes WASM modules off-chain using wasmtime runtime. Your code 
 - **Use case**: HTTP requests, complex I/O, modern features
 - **Features**: HTTP client, advanced filesystem, sockets
 - **Size**: Larger binaries (~500KB-1MB)
-- **Example**: [ai-example](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/ai-example/)
+- **Example**: [ai-example](https://github.com/out-layer/ai-example)
 
 ### Which to Choose?
 
@@ -1947,9 +1947,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #### For WASI Applications
 
 **✅ CORRECT**: Copy `Cargo.toml` from existing working examples:
-- [random-ark/Cargo.toml](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/random-ark/Cargo.toml) - WASI P1 template
-- [ai-example/Cargo.toml](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/ai-example/Cargo.toml) - WASI P2 template
-- [oracle-example/Cargo.toml](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/oracle-example/Cargo.toml) - WASI P2 with HTTP
+- [random-example/Cargo.toml](https://github.com/out-layer/random-example/blob/main/Cargo.toml) - WASI P1 template
+- [ai-example/Cargo.toml](https://github.com/out-layer/ai-example/blob/main/Cargo.toml) - WASI P2 template
+- [oracle-example/Cargo.toml](https://github.com/out-layer/oracle-example/blob/main/Cargo.toml) - WASI P2 with HTTP
 
 **Tested and working versions:**
 ```toml
@@ -1980,9 +1980,9 @@ cargo update  # Can break working builds!
 
 #### For Embedded NEAR Contracts (Advanced)
 
-If your WASI app needs to **build and deploy NEAR contracts inside WASM** (like [intents-ark](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/intents-ark/)), this is **EVEN MORE CRITICAL**:
+If your WASI app needs to **build and deploy NEAR contracts inside WASM** (like [intents-example](https://github.com/out-layer/intents-example/)), this is **EVEN MORE CRITICAL**:
 
-**✅ CORRECT**: Use exact versions from [intents-ark/intents-contract/Cargo.toml](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/intents-ark/intents-contract/Cargo.toml):
+**✅ CORRECT**: Use exact versions from [intents-example/intents-contract/Cargo.toml](https://github.com/out-layer/intents-example/blob/main/intents-contract/Cargo.toml):
 ```toml
 [package]
 edition = "2018"  # ← Must be 2018, not 2021!
@@ -2448,17 +2448,17 @@ pub fn on_outlayer_callback(
 
 ### Complete Working Examples
 
-1. **[random-ark](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/random-ark/)** - WASI P1
+1. **[random-example](https://github.com/out-layer/random-example)** - WASI P1
    - Random number generation
    - JSON input/output
    - ~111KB binary
 
-2. **[ai-example](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/ai-example/)** - WASI P2
+2. **[ai-example](https://github.com/out-layer/ai-example)** - WASI P2
    - HTTP POST requests
    - OpenAI API integration
    - Component model
 
-3. **[near-email](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/near-email/)** - WASI P2 (Complex)
+3. **[near-email](https://github.com/out-layer/self-hosted-tdx)** - WASI P2 (Complex)
    - Full email service with encryption
    - OutLayer SDK: `signer_account_id()`, `storage`
    - External HTTP API (db-api) integration
@@ -2588,7 +2588,7 @@ See [BEST_PRACTICES_OUTLAYER_NEAR.md](https://github.com/fastnear/near-outlayer/
 
 ## Working with Embedded NEAR Contracts
 
-Some WASI applications need to **build, deploy, or interact with NEAR smart contracts** at runtime. Examples: [intents-ark](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/intents-ark/), [random-ark](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/random-ark/).
+Some WASI applications need to **build, deploy, or interact with NEAR smart contracts** at runtime. Examples: [intents-example](https://github.com/out-layer/intents-example/), [random-example](https://github.com/out-layer/random-example).
 
 ### When to Use Embedded Contracts
 
@@ -2760,12 +2760,12 @@ fn deploy_contract(contract_wasm: &[u8]) {
 
 ### Examples to Study
 
-1. **[random-ark/random-contract](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/random-ark/random-contract/)** - Simple contract
+1. **[random-example/random-contract](https://github.com/out-layer/random-example/tree/main/random-contract)** - Simple contract
    - Single contract in subdirectory
    - Basic workspace setup
    - Clean build script
 
-2. **[intents-ark/intents-contract](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/intents-ark/intents-contract/)** - Advanced contract
+2. **[intents-example/intents-contract](https://github.com/out-layer/intents-example/tree/main/intents-contract/)** - Advanced contract
    - Workspace with complex dependencies
    - Contract deployment at runtime
    - Full transaction handling
@@ -2848,7 +2848,7 @@ cargo near --version
 
 ## Need Help?
 
-- Check [examples](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/random-ark/) for working code
+- Check [examples](https://github.com/out-layer/random-example) for working code
 - Use [test runner](./WASI_TEST_RUNNER.md) to validate your module
 - Review [common pitfalls](#common-pitfalls) section
 - Read [BEST_PRACTICES_OUTLAYER_NEAR.md](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/BEST_PRACTICES_OUTLAYER_NEAR.md) for frontend patterns
@@ -4294,15 +4294,15 @@ cargo near build
 
 - [WASI Tutorial](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/WASI_TUTORIAL.md) - Building WASM modules for OutLayer
 - [WASM Environment Variables](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/WASM_ENV_VARS.md) - Env vars available in WASM
-- [random-ark](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/random-ark/) - Simple coin flip example
-- [private-dao-example](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/private-dao-example/) - Complex DAO with voting
+- [random-example](https://github.com/out-layer/random-example) - Simple coin flip example
+- [private-dao-example](https://github.com/out-layer/private-dao-example) - Complex DAO with voting
 
 ## Examples in This Repository
 
 | Example | Description | Complexity |
 |---------|-------------|------------|
-| [random-ark](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/random-ark/) | Coin flip with random number | Simple |
-| [private-dao-example](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/private-dao-example/) | DAO with encrypted voting | Advanced |
+| [random-example](https://github.com/out-layer/random-example) | Coin flip with random number | Simple |
+| [private-dao-example](https://github.com/out-layer/private-dao-example) | DAO with encrypted voting | Advanced |
 
 ---
 

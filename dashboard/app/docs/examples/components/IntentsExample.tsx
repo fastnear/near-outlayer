@@ -14,9 +14,9 @@ export function IntentsExample() {
   return (
     <ExampleCard
       id="intents-ark"
-      title="intents-ark"
+      title="intents-example"
       badges={badges}
-      githubUrl="https://github.com/zavodil/intents-ark"
+      githubUrl="https://github.com/out-layer/intents-example"
       playgroundId="near-intents-swap"
     >
       <p className="text-gray-700 mb-4">
@@ -52,8 +52,8 @@ near create-account operator.near --useFaucet
 # - Secrets JSON: {"OPERATOR_PRIVATE_KEY":"ed25519:..."}
 
 # 3. Clone and deploy swap contract
-git clone https://github.com/zavodil/intents-ark.git
-cd intents-ark/contract
+git clone https://github.com/out-layer/intents-example.git
+cd intents-example/contract
 cargo near build
 near deploy swap-contract.near res/swap_contract.wasm
 
@@ -110,7 +110,7 @@ near call wrap.near ft_transfer_call '{
             </Link>
           </li>
           <li>
-            💻 <a href="https://github.com/zavodil/intents-ark" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+            💻 <a href="https://github.com/out-layer/intents-example" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
               View Source Code
             </a>
           </li>
