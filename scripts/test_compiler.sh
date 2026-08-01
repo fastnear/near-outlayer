@@ -24,7 +24,7 @@ BUILD_TARGET="${3}"
 OUTPUT_FILE="${4:-output.wasm}"
 
 # Docker image (same as worker uses)
-DOCKER_IMAGE="${DOCKER_IMAGE:-zavodil/wasmedge-compiler:latest}"
+DOCKER_IMAGE="${DOCKER_IMAGE:-outlayer/wasmedge-compiler@sha256:5c996303f707381f463e591d7b0650e64816e63e7bc1d98ab72a62abf55b146e}"
 
 # Compilation limits (same defaults as worker)
 COMPILE_MEMORY_LIMIT="${COMPILE_MEMORY_LIMIT:-2048}"  # MB

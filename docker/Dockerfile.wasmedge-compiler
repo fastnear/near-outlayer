@@ -1,7 +1,11 @@
 # Dockerfile for compiling Rust WASM for WASI Preview 1 and Preview 2
 # Supports both wasm32-wasip1 (WasmEdge) and wasm32-wasip2 (wasmtime)
 
-FROM rust:1.85
+# Pinned by digest, not by tag. This image decides which toolchain produces the wasm whose
+# hash the enclave attests, so a floating base would mean the same source can compile to a
+# different binary — the exact thing pinning Cargo.lock in every example is meant to prevent.
+# rust:1.85 as of 2025-03-19; bump deliberately, never implicitly.
+FROM rust:1.85@sha256:e51d0265072d2d9d5d320f6a44dde6b9ef13653b035098febd68cce8fa7c0bc4
 
 # Install dependencies
 RUN apt-get update && apt-get install -y \

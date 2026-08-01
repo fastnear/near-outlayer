@@ -282,8 +282,11 @@ impl Config {
             anyhow::bail!("Invalid COMPILATION_MODE: '{}'. Must be 'docker' or 'native'", compilation_mode);
         }
 
+        // Deployments should override this with a digest pin: the compiler decides which
+        // toolchain produces the wasm whose hash the enclave attests, and `ensure_image` pulls
+        // on every job, so a floating tag lets a registry push change production silently.
         let docker_image = env::var("DOCKER_IMAGE")
-            .unwrap_or_else(|_| "zavodil/wasmedge-compiler:latest".to_string());
+            .unwrap_or_else(|_| "outlayer/wasmedge-compiler:rust1.85-wasi25".to_string());
 
         let compile_timeout_seconds = env::var("COMPILE_TIMEOUT_SECONDS")
             .unwrap_or_else(|_| "300".to_string())
