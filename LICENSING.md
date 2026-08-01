@@ -35,6 +35,7 @@ against us in both fundraising and acquisition diligence.
 | Deployment tooling, docs, scripts | `deploy/`, `docs/`, `docker/`, `scripts/`, `tests/` | Apache-2.0 |
 | **Rust SDK** | `sdk/outlayer/` | **MIT OR Apache-2.0** |
 | **WASI examples** | `wasi-examples/` | **MIT OR Apache-2.0** |
+| NEAR Email | `out-layer/near-email` (submodule) | Apache-2.0 |
 | TEE auth helpers | `out-layer/shared-tee-helpers` | Apache-2.0 |
 | Attestation portal | `out-layer/attestation-portal` | Apache-2.0 |
 | Verification tool | `out-layer/outlayer-verify` | Apache-2.0 |
@@ -52,7 +53,9 @@ crates.io / npm under those terms, where the declaration cannot be retracted for
 already-released versions.
 
 `wasi-examples/` is dual-licensed specifically so customers can copy an example into a
-proprietary product without an attribution burden they might overlook.
+proprietary product without an attribution burden they might overlook. `wasi-examples/near-email`
+is the exception: it is a deployed product, not a template, so it follows the platform's
+Apache-2.0.
 
 ## Submodules
 
@@ -62,7 +65,8 @@ Several paths are git submodules and are **not** covered by this repository's
 - `self-hosted-scheduler` → `out-layer/self-hosted-scheduler`
 - `deploy/self-hosted-tdx` → `out-layer/self-hosted-tdx`
 - `wasi-examples/{ai,botfather,captcha,echo,env-test,intents,oracle,private-dao,random,test-secrets,vrf,weather}-example`
-- `wasi-examples/near-email`
+- `wasi-examples/near-email` — Apache-2.0, not dual: it is a finished product rather than a
+  template to copy from, and its cryptography makes the express patent grant worth keeping
 
 ## Third-party dependencies
 

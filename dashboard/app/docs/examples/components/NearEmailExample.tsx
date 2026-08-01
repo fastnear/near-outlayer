@@ -15,7 +15,7 @@ export function NearEmailExample() {
       id="near-email"
       title="near-email"
       badges={badges}
-      githubUrl="https://github.com/zavodil/near-email"
+      githubUrl="https://github.com/out-layer/near-email"
     >
       <p className="text-gray-700 mb-4">
         Blockchain-native email for NEAR accounts. Every NEAR account automatically has an email address:{' '}
@@ -166,7 +166,7 @@ Private Key Derivation (OutLayer TEE, requires master secret):
             </a>
           </li>
           <li>
-            <a href="https://github.com/zavodil/near-email" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+            <a href="https://github.com/out-layer/near-email" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
               View Source Code
             </a>
           </li>

@@ -250,6 +250,9 @@ and are governed by the `LICENSE` in those repositories rather than by these fil
 `private-dao-example`, `botfather-example`, `env-test-example`, `test-secrets-example`,
 `vrf-example`, `intents-example`, `near-email`.
 
+`near-email` is Apache-2.0 rather than dual-licensed: it is a finished product built on
+OutLayer, not an example to copy from.
+
 See [LICENSING.md](../LICENSING.md) for the full component map.
 
 ---

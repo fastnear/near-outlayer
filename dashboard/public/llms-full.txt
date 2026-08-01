@@ -2458,7 +2458,7 @@ pub fn on_outlayer_callback(
    - OpenAI API integration
    - Component model
 
-3. **[near-email](https://github.com/out-layer/self-hosted-tdx)** - WASI P2 (Complex)
+3. **[near-email](https://github.com/out-layer/near-email)** - WASI P2 (Complex)
    - Full email service with encryption
    - OutLayer SDK: `signer_account_id()`, `storage`
    - External HTTP API (db-api) integration

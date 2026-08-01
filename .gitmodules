@@ -30,7 +30,7 @@
 	url = git@github.com:out-layer/test-secrets-example.git
 [submodule "wasi-examples/near-email"]
 	path = wasi-examples/near-email
-	url = git@github.com:zavodil/near-email/
+	url = git@github.com:out-layer/near-email.git
 [submodule "self-hosted-scheduler"]
 	path = self-hosted-scheduler
 	url = https://github.com/out-layer/self-hosted-scheduler.git
