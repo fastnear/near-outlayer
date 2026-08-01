@@ -2442,7 +2442,7 @@ pub fn on_outlayer_callback(
 - You then manually parse the `result` field using `serde_json::from_value`
 - This two-step approach handles the wrapper format correctly
 
-**See working example**: `wasi-examples/private-dao-ark/dao-contract/src/lib.rs` (on_key_derived callback)
+**See working example**: `wasi-examples/private-dao-example/dao-contract/src/lib.rs` (on_key_derived callback)
 
 ## Examples
 
@@ -4295,14 +4295,14 @@ cargo near build
 - [WASI Tutorial](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/WASI_TUTORIAL.md) - Building WASM modules for OutLayer
 - [WASM Environment Variables](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/WASM_ENV_VARS.md) - Env vars available in WASM
 - [random-ark](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/random-ark/) - Simple coin flip example
-- [private-dao-ark](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/private-dao-ark/) - Complex DAO with voting
+- [private-dao-example](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/private-dao-example/) - Complex DAO with voting
 
 ## Examples in This Repository
 
 | Example | Description | Complexity |
 |---------|-------------|------------|
 | [random-ark](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/random-ark/) | Coin flip with random number | Simple |
-| [private-dao-ark](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/private-dao-ark/) | DAO with encrypted voting | Advanced |
+| [private-dao-example](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/private-dao-example/) | DAO with encrypted voting | Advanced |
 
 ---
 

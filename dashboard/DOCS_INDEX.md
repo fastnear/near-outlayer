@@ -81,7 +81,7 @@ dashboard/app/docs/
 | **ethereum-api** | `wasi-examples/ethereum-api/` | ✅ | `/docs/examples#ethereum-api` | ✅ Shown | P2 | Intermediate |
 | **botfather-ark** | `wasi-examples/botfather-ark/` | ✅ | `/docs/examples#botfather-ark` | ✅ Shown | P2 | Advanced |
 | **intents-ark** | `wasi-examples/intents-ark/` | ✅ | `/docs/examples#intents-ark` | ✅ Shown | P2 | Advanced |
-| **private-dao-ark** | `wasi-examples/private-dao-ark/` | ✅ | `/docs/examples#private-dao-ark` | ✅ Shown | P2 | Advanced |
+| **private-dao-example** | `wasi-examples/private-dao-example/` | ✅ | `/docs/examples#private-dao-ark` | ✅ Shown | P2 | Advanced |
 | **captcha-example** | `wasi-examples/captcha-example/` | ✅ | `/docs/examples#captcha-ark` | ✅ Shown | P2 | Advanced |
 | **test-secrets-example** | `wasi-examples/test-secrets-example/` | ✅ | - | ❌ Hidden (test) | P2 | - |
 | **rpc-test-ark** | `wasi-examples/rpc-test-ark/` | ✅ | - | ❌ Hidden (test) | P2 | - |

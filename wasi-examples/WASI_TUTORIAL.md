@@ -962,7 +962,7 @@ pub fn on_outlayer_callback(
 - You then manually parse the `result` field using `serde_json::from_value`
 - This two-step approach handles the wrapper format correctly
 
-**See working example**: `wasi-examples/private-dao-ark/dao-contract/src/lib.rs` (on_key_derived callback)
+**See working example**: `wasi-examples/private-dao-example/dao-contract/src/lib.rs` (on_key_derived callback)
 
 ## Examples
 

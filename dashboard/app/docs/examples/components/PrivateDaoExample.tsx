@@ -14,9 +14,9 @@ export function PrivateDaoExample() {
   return (
     <ExampleCard
       id="private-dao-ark"
-      title="private-dao-ark"
+      title="private-dao-example"
       badges={badges}
-      githubUrl="https://github.com/zavodil/private-dao-ark"
+      githubUrl="https://github.com/out-layer/private-dao-example"
     >
       <p className="text-gray-700 mb-4">
         Anonymous, verifiable DAO voting with cryptographic privacy. Heavy cryptography (ECIES encryption, HKDF key derivation, merkle tree proofs) executed off-chain in TEE. Each user&apos;s vote is encrypted on-chain, tallying happens in secure enclave, only aggregate counts are revealed.
@@ -146,14 +146,14 @@ openssl rand -hex 32 > dao_master_secret.txt
 
 # 2. Store master secret via Dashboard (encrypted in keystore)
 # Open https://outlayer.fastnear.com/secrets:
-# - Repo: github.com/YOUR_USERNAME/private-dao-ark
+# - Repo: github.com/YOUR_USERNAME/private-dao-example
 # - Profile: production
 # - Secrets JSON: {"DAO_MASTER_SECRET":"<paste hex from file>"}
 # - Access: AllowAll (or Whitelist for DAO admin only)
 
 # 3. Clone and build WASI module
-git clone https://github.com/zavodil/private-dao-ark.git
-cd private-dao-ark
+git clone https://github.com/out-layer/private-dao-example.git
+cd private-dao-example
 cargo build --target wasm32-wasip1 --release
 git push origin main
 
@@ -167,7 +167,7 @@ near deploy privatedao.testnet \\
     "owner_id":"owner.testnet",
     "name":"My Private DAO",
     "outlayer_contract":"outlayer.testnet",
-    "wasi_repo":"https://github.com/YOUR_USERNAME/private-dao-ark",
+    "wasi_repo":"https://github.com/YOUR_USERNAME/private-dao-example",
     "wasi_commit":"main",
     "secrets_profile":"production",
     "secrets_owner":"your.testnet",
@@ -252,7 +252,7 @@ npm run build
             </Link>
           </li>
           <li>
-            💻 <a href="https://github.com/zavodil/private-dao-ark" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+            💻 <a href="https://github.com/out-layer/private-dao-example" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
               View Source Code
             </a>
           </li>
