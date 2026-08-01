@@ -205,16 +205,18 @@ const PROXY_PRESETS: ProxyPreset[] = [
     type: 'proxy',
     name: 'VRF Coin Flip',
     args: '{"choice":"Heads"}',
-    description: '🎲 Provably fair coin flip using VRF! Choose Heads or Tails. Result includes Ed25519 proof verified on-chain via ed25519_verify.\n\n🔗 Contract: https://github.com/zavodil/vrf-ark/tree/main/vrf-contract',
+    description: '🎲 Provably fair coin flip using VRF! Choose Heads or Tails. Result includes Ed25519 proof verified on-chain via ed25519_verify.\n\n🔗 Contract: https://github.com/out-layer/vrf-example/tree/main/vrf-contract',
     networks: ['testnet', 'mainnet'],
     proxyContractIdTestnet: 'coin-flip-vrf.testnet',
     proxyContractIdMainnet: 'coin-flip-vrf.near',
     proxyMethod: 'flip_coin',
     proxyDeposit: '50000000000000000000000', // 0.05 NEAR
     proxyGas: '300000000000000', // 300 TGas
-    wasmRepo: 'https://github.com/zavodil/vrf-ark',
+    wasmRepo: 'https://github.com/out-layer/vrf-example',
     wasmCommit: 'main',
-    wasmBuildTarget: 'wasm32-wasip1',
+    // wasip2, not wasip1: the OutLayer SDK's VRF host functions are WASI Preview 2 only, and
+    // the SDK fails the build outright on wasip1.
+    wasmBuildTarget: 'wasm32-wasip2',
     increaseDepositIfNoCache: true,
     docsLink: '/docs/examples#vrf-ark',
   },

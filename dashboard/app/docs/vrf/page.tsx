@@ -230,7 +230,7 @@ assert!(valid, "VRF proof verification failed");`}
         </SyntaxHighlighter>
 
         <p className="text-sm text-gray-600 mt-2">
-          Full contract example: <a href="https://github.com/zavodil/vrf-ark/tree/main/vrf-contract" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">vrf-contract on GitHub</a>
+          Full contract example: <a href="https://github.com/out-layer/vrf-example/tree/main/vrf-contract" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">vrf-contract on GitHub</a>
         </p>
       </section>
 
@@ -397,7 +397,7 @@ console.log('Output:', output);`}
         <ul className="text-sm text-gray-700 space-y-1">
           <li>
             <Link href="/docs/examples#vrf-ark" className="text-[var(--primary-orange)] hover:underline">
-              VRF Example Project (vrf-ark)
+              VRF Example Project (vrf-example)
             </Link>
           </li>
           <li>
@@ -406,7 +406,7 @@ console.log('Output:', output);`}
             </Link>
           </li>
           <li>
-            <a href="https://github.com/zavodil/vrf-ark" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+            <a href="https://github.com/out-layer/vrf-example" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
               Source Code on GitHub
             </a>
           </li>

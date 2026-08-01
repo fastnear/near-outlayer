@@ -12,9 +12,9 @@ export function VrfExample() {
   return (
     <ExampleCard
       id="vrf-ark"
-      title="vrf-ark"
+      title="vrf-example"
       badges={badges}
-      githubUrl="https://github.com/zavodil/vrf-ark"
+      githubUrl="https://github.com/out-layer/vrf-example"
       playgroundId="vrf-coin-flip"
     >
       <p className="text-gray-700 mb-4">
@@ -124,12 +124,12 @@ let side = (bytes as u64 * 2 / (u32::MAX as u64 + 1)) as u32; // 0 or 1`}
             </Link>
           </li>
           <li>
-            <a href="https://github.com/zavodil/vrf-ark" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+            <a href="https://github.com/out-layer/vrf-example" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
               View Source Code
             </a>
           </li>
           <li>
-            <a href="https://github.com/zavodil/vrf-ark/tree/main/vrf-contract" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+            <a href="https://github.com/out-layer/vrf-example/tree/main/vrf-contract" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
               Coin Flip Contract Example
             </a>
           </li>

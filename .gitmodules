@@ -37,3 +37,6 @@
 [submodule "deploy/self-hosted-tdx"]
 	path = deploy/self-hosted-tdx
 	url = https://github.com/out-layer/self-hosted-tdx.git
+[submodule "wasi-examples/vrf-example"]
+	path = wasi-examples/vrf-example
+	url = git@github.com:out-layer/vrf-example.git

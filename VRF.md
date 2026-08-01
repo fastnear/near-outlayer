@@ -157,7 +157,7 @@ fn verify_vrf(
 }
 ```
 
-Full contract example — see [wasi-examples/vrf-ark/vrf-contract/](wasi-examples/vrf-ark/vrf-contract/).
+Full contract example — see [wasi-examples/vrf-example/vrf-contract/](https://github.com/out-layer/vrf-example/tree/main/vrf-contract/).
 
 ### Deploying a contract with VRF
 
@@ -342,5 +342,5 @@ SDK functions:
 - Host functions: [worker/src/outlayer_vrf/host_functions.rs](worker/src/outlayer_vrf/host_functions.rs)
 - SDK: [sdk/outlayer/src/vrf.rs](sdk/outlayer/src/vrf.rs)
 - WIT interface: [sdk/outlayer/wit/deps/vrf.wit](sdk/outlayer/wit/deps/vrf.wit)
-- Example WASI: [wasi-examples/vrf-ark/](wasi-examples/vrf-ark/)
-- Example contract: [wasi-examples/vrf-ark/vrf-contract/](wasi-examples/vrf-ark/vrf-contract/)
+- Example WASI: [wasi-examples/vrf-example/](https://github.com/out-layer/vrf-example/)
+- Example contract: [wasi-examples/vrf-example/vrf-contract/](https://github.com/out-layer/vrf-example/tree/main/vrf-contract/)

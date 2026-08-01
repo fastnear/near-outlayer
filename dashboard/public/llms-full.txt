@@ -8058,7 +8058,7 @@ fn verify_vrf(
 }
 ```
 
-Full contract example — see [wasi-examples/vrf-ark/vrf-contract/](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/vrf-ark/vrf-contract/).
+Full contract example — see [wasi-examples/vrf-example/vrf-contract/](https://github.com/out-layer/vrf-example/tree/main/vrf-contract/).
 
 ### Deploying a contract with VRF
 
@@ -8243,8 +8243,8 @@ SDK functions:
 - Host functions: [worker/src/outlayer_vrf/host_functions.rs](https://github.com/fastnear/near-outlayer/blob/main/worker/src/outlayer_vrf/host_functions.rs)
 - SDK: [sdk/outlayer/src/vrf.rs](https://github.com/fastnear/near-outlayer/blob/main/sdk/outlayer/src/vrf.rs)
 - WIT interface: [sdk/outlayer/wit/deps/vrf.wit](https://github.com/fastnear/near-outlayer/blob/main/sdk/outlayer/wit/deps/vrf.wit)
-- Example WASI: [wasi-examples/vrf-ark/](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/vrf-ark/)
-- Example contract: [wasi-examples/vrf-ark/vrf-contract/](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/vrf-ark/vrf-contract/)
+- Example WASI: [wasi-examples/vrf-example/](https://github.com/out-layer/vrf-example/)
+- Example contract: [wasi-examples/vrf-example/vrf-contract/](https://github.com/out-layer/vrf-example/tree/main/vrf-contract/)
 
 ---
 

@@ -73,7 +73,7 @@ dashboard/app/docs/
 | Example Name | Source Location | README | Dashboard Page | Status | WASI | Level |
 |--------------|----------------|--------|----------------|--------|------|-------|
 | **random-example** | `wasi-examples/random-example/` | ✅ | `/docs/examples#random-ark` | ✅ Shown | P1 | Beginner |
-| **vrf-ark** | `wasi-examples/vrf-ark/` | ✅ | `/docs/examples#vrf-ark` | ✅ Shown | P1 | Intermediate |
+| **vrf-example** | `wasi-examples/vrf-example/` | ✅ | `/docs/examples#vrf-ark` | ✅ Shown | P1 | Intermediate |
 | **echo-example** | `wasi-examples/echo-example/` | ✅ | `/docs/examples#echo-ark` | ✅ Shown | P1 | Beginner |
 | **ai-ark** | `wasi-examples/ai-ark/` | ✅ | `/docs/examples#ai-ark` | ✅ Shown | P2 | Intermediate |
 | **weather-example** | `wasi-examples/weather-example/` | ✅ | `/docs/examples#weather-ark` | ✅ Shown | P2 | Intermediate |
