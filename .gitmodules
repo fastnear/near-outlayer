@@ -11,8 +11,8 @@
 	path = wasi-examples/oracle-ark
 	url = git@github.com:zavodil/oracle-ark.git
 [submodule "wasi-examples/captcha-ark"]
-	path = wasi-examples/captcha-ark
-	url = git@github.com:zavodil/captcha-ark.git
+	path = wasi-examples/captcha-example
+	url = git@github.com:out-layer/captcha-example.git
 [submodule "wasi-examples/weather-ark"]
 	path = wasi-examples/weather-example
 	url = git@github.com:out-layer/weather-example.git

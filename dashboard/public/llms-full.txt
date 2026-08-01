@@ -2366,7 +2366,7 @@ await wallet.signAndSendTransaction({
 
 **Why**: @near-wallet-selector expects properly formatted actions from `@near-js/transactions`, not raw objects.
 
-**See working example**: `wasi-examples/captcha-ark/launchpad-app/src/App.tsx`
+**See working example**: `wasi-examples/captcha-example/launchpad-app/src/App.tsx`
 
 ### 9. OutLayer callback deserialization errors
 

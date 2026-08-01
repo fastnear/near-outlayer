@@ -14,9 +14,9 @@ export function CaptchaExample() {
   return (
     <ExampleCard
       id="captcha-ark"
-      title="captcha-ark"
+      title="captcha-example"
       badges={badges}
-      githubUrl="https://github.com/zavodil/captcha-ark"
+      githubUrl="https://github.com/out-layer/captcha-example"
     >
       <p className="text-gray-700 mb-4">
         Token sale with mandatory CAPTCHA verification. Transaction won&apos;t complete until user solves CAPTCHA. WASI worker receives session ID from backend and waits for verification signal. Example implementation demonstrating async human verification pattern.
@@ -65,8 +65,8 @@ Flow:
 # - Create site and get Site Key + Secret Key
 
 # 2. Clone repository
-git clone https://github.com/zavodil/captcha-ark.git
-cd captcha-ark
+git clone https://github.com/out-layer/captcha-example.git
+cd captcha-example
 
 # 3. Setup backend
 cd launchpad-backend
@@ -91,7 +91,7 @@ npm run build
 # Deploy build/ to your web server
 
 # 5. Build WASI worker
-cd ../captcha-ark
+cd ../captcha-example
 cargo build --target wasm32-wasip2 --release
 git push origin main
 
@@ -111,7 +111,7 @@ near deploy tokensale.testnet \\
 
       <div className="mt-4 p-3 bg-blue-50 border-l-4 border-blue-400">
         <p className="text-sm text-gray-700 mb-2">
-          <strong>Production Setup:</strong> Requires SSL certificates for both frontend and backend domains. See <a href="https://github.com/zavodil/captcha-ark/blob/main/CONFIGURATION.md" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">CONFIGURATION.md</a> for complete deployment guide.
+          <strong>Production Setup:</strong> Requires SSL certificates for both frontend and backend domains. See <a href="https://github.com/out-layer/captcha-example/blob/main/CONFIGURATION.md" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">CONFIGURATION.md</a> for complete deployment guide.
         </p>
       </div>
 
@@ -141,12 +141,12 @@ near deploy tokensale.testnet \\
             </Link>
           </li>
           <li>
-            💻 <a href="https://github.com/zavodil/captcha-ark" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+            💻 <a href="https://github.com/out-layer/captcha-example" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
               View Source Code
             </a>
           </li>
           <li>
-            📋 <a href="https://github.com/zavodil/captcha-ark/blob/main/CONFIGURATION.md" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+            📋 <a href="https://github.com/out-layer/captcha-example/blob/main/CONFIGURATION.md" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
               Deployment Configuration Guide
             </a>
           </li>

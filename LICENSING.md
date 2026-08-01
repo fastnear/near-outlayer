@@ -61,7 +61,8 @@ Several paths are git submodules and are **not** covered by this repository's
 
 - `self-hosted-scheduler` → `out-layer/self-hosted-scheduler`
 - `deploy/self-hosted-tdx` → `out-layer/self-hosted-tdx`
-- `wasi-examples/{random,ai,echo,oracle,captcha,weather,private-dao,botfather,env-test,test-secrets}-ark`, `wasi-examples/near-email`
+- `wasi-examples/{captcha,echo,env-test,random,test-secrets,weather}-example`
+- `wasi-examples/{ai,botfather,oracle,private-dao}-ark`, `wasi-examples/near-email`
 
 ## Third-party dependencies
 
