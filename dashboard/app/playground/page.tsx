@@ -179,15 +179,15 @@ const DIRECT_PRESETS: DirectPreset[] = [
   },
   {
     type: 'direct',
-    name: 'Ethereum Proof (Chainlink)',
-    description: '\ud83d\udd10 Reads a Chainlink price from Ethereum through eth_getProof instead of eth_call, and verifies the Merkle-Patricia proof inside the TEE.\n\nWhy it matters: an eth_call result is just a number the node hands you, with nothing to check it against. A proof either hashes together against the block state root or it does not.\n\nThe state root itself is agreed by several independent RPCs first, so one provider cannot invent it. The response carries the block hash as evidence \u2014 check it against any explorer.\n\n\u26a0\ufe0f This proves the value IS on Ethereum, not that it is correct.',
+    name: 'Ethereum Proof',
+    description: '\ud83d\udd10 Brings the ETH/USD price from Ethereum onto NEAR with a cryptographic receipt.\n\nChainlink keeps that price in the storage of a contract on Ethereum. This reads it together with its Merkle proof \u2014 the chain of hashes leading from the value up to the block\u2019s state root \u2014 and re-computes every hash inside the TEE until they meet. A price that survives that walk cannot have been altered by whoever served it.\n\nThe block itself is taken only if several independent Ethereum providers return exactly the same one, so no single provider can invent it.\n\n\ud83d\udc40 In the result look at "verified": trie_nodes_checked is how many hashes had to line up, rpcs_agreeing is how much independent backing the block has, and block_hash is the receipt \u2014 paste it into any explorer.\n\n\u26a0\ufe0f This proves the price IS on Ethereum, not that it is correct.',
     repo: 'https://github.com/out-layer/eth-proof-example',
     commit: 'main',
     buildTarget: 'wasm32-wasip2',
-    args: '{"proxy":"0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419","decimals":8}',
+    args: '{"proxy":"0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419","pair":"ETH/USD"}',
     responseFormat: 'Json',
     networks: ['testnet', 'mainnet'],
-    docsLink: '/docs/examples',
+    docsLink: '/docs/examples#eth-proof',
   },
 ];
 

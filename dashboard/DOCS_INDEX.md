@@ -79,6 +79,7 @@ dashboard/app/docs/
 | **weather-example** | `wasi-examples/weather-example/` | ✅ | `/docs/examples#weather-ark` | ✅ Shown | P2 | Intermediate |
 | **oracle-example** | `wasi-examples/oracle-example/` | ✅ | `/docs/examples#oracle-ark` | ✅ Shown | P2 | Advanced |
 | **ethereum-api** | `wasi-examples/oracle-example/` (same module, `alchemy` secrets profile) | ✅ | `/docs/examples#ethereum-api` | ✅ Shown | P2 | Intermediate |
+| **eth-proof-example** | `wasi-examples/eth-proof-example/` | ✅ | `/docs/examples#eth-proof` | ✅ Shown | P2 | Advanced |
 | **botfather-example** | `wasi-examples/botfather-example/` | ✅ | `/docs/examples#botfather-ark` | ✅ Shown | P2 | Advanced |
 | **intents-example** | `wasi-examples/intents-example/` | ✅ | `/docs/examples#intents-ark` | ✅ Shown | P2 | Advanced |
 | **private-dao-example** | `wasi-examples/private-dao-example/` | ✅ | `/docs/examples#private-dao-ark` | ✅ Shown | P2 | Advanced |
@@ -254,6 +255,7 @@ const pageStructure = {
     { id: 'botfather-ark', title: 'Bot Father' },
     { id: 'oracle-ark', title: 'Price Oracle' },
     { id: 'ethereum-api', title: 'Ethereum API' },
+    { id: 'eth-proof', title: 'Ethereum Proof' },
     { id: 'intents-ark', title: 'NEAR Intents swap' },
     { id: 'private-dao-ark', title: 'Private DAO Voting' },
     { id: 'captcha-ark', title: '2FA Verification' },

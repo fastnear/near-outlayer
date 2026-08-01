@@ -9,6 +9,7 @@ import {
   WeatherExample,
   OracleExample,
   EthereumExample,
+  EthProofExample,
   BotfatherExample,
   IntentsExample,
   PrivateDaoExample,
@@ -34,6 +35,7 @@ export default function ExamplesPage() {
         <WeatherExample />
         <OracleExample />
         <EthereumExample />
+        <EthProofExample />
         <BotfatherExample />
         <IntentsExample />
         <PrivateDaoExample />
