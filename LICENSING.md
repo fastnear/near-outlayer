@@ -64,7 +64,7 @@ Several paths are git submodules and are **not** covered by this repository's
 
 - `self-hosted-scheduler` → `out-layer/self-hosted-scheduler`
 - `deploy/self-hosted-tdx` → `out-layer/self-hosted-tdx`
-- `wasi-examples/{ai,botfather,captcha,echo,env-test,intents,oracle,private-dao,random,test-secrets,vrf,weather}-example`
+- `wasi-examples/{ai,botfather,captcha,echo,env-test,eth-proof,intents,oracle,private-dao,random,test-secrets,vrf,weather}-example`
 - `wasi-examples/near-email` — Apache-2.0, not dual: it is a finished product rather than a
   template to copy from, and its cryptography makes the express patent grant worth keeping
 

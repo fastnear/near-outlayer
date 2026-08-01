@@ -329,7 +329,7 @@ let name = std::env::var("OUTLAYER_PROJECT_NAME").ok();
   "code_source": {
     "Project": {
       "project_id": "alice.near/my-app",
-      "version_key": "zavodil/my-app@v2.0.0"  // Optional: specific version
+      "version_key": "username/my-app@v2.0.0"  // Optional: specific version
     }
   },
   "input_data": "...",

@@ -78,7 +78,7 @@ dashboard/app/docs/
 | **ai-example** | `wasi-examples/ai-example/` | ✅ | `/docs/examples#ai-ark` | ✅ Shown | P2 | Intermediate |
 | **weather-example** | `wasi-examples/weather-example/` | ✅ | `/docs/examples#weather-ark` | ✅ Shown | P2 | Intermediate |
 | **oracle-example** | `wasi-examples/oracle-example/` | ✅ | `/docs/examples#oracle-ark` | ✅ Shown | P2 | Advanced |
-| **ethereum-api** | `wasi-examples/ethereum-api/` | ✅ | `/docs/examples#ethereum-api` | ✅ Shown | P2 | Intermediate |
+| **ethereum-api** | `wasi-examples/oracle-example/` (same module, `alchemy` secrets profile) | ✅ | `/docs/examples#ethereum-api` | ✅ Shown | P2 | Intermediate |
 | **botfather-example** | `wasi-examples/botfather-example/` | ✅ | `/docs/examples#botfather-ark` | ✅ Shown | P2 | Advanced |
 | **intents-example** | `wasi-examples/intents-example/` | ✅ | `/docs/examples#intents-ark` | ✅ Shown | P2 | Advanced |
 | **private-dao-example** | `wasi-examples/private-dao-example/` | ✅ | `/docs/examples#private-dao-ark` | ✅ Shown | P2 | Advanced |

@@ -43,3 +43,6 @@
 [submodule "wasi-examples/intents-example"]
 	path = wasi-examples/intents-example
 	url = git@github.com:out-layer/intents-example.git
+[submodule "wasi-examples/eth-proof-example"]
+	path = wasi-examples/eth-proof-example
+	url = git@github.com:out-layer/eth-proof-example.git
