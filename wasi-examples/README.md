@@ -247,7 +247,7 @@ be copied into your own product without an attribution burden you might overlook
 Note that most subdirectories here are **git submodules** with their own repositories,
 and are governed by the `LICENSE` in those repositories rather than by these files:
 `random-example`, `ai-example`, `echo-example`, `oracle-example`, `captcha-example`, `weather-example`,
-`private-dao-example`, `botfather-ark`, `env-test-example`, `test-secrets-example`,
+`private-dao-example`, `botfather-example`, `env-test-example`, `test-secrets-example`,
 `vrf-example`, `near-email`.
 
 See [LICENSING.md](../LICENSING.md) for the full component map.

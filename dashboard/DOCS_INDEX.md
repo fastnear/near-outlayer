@@ -79,7 +79,7 @@ dashboard/app/docs/
 | **weather-example** | `wasi-examples/weather-example/` | ✅ | `/docs/examples#weather-ark` | ✅ Shown | P2 | Intermediate |
 | **oracle-example** | `wasi-examples/oracle-example/` | ✅ | `/docs/examples#oracle-ark` | ✅ Shown | P2 | Advanced |
 | **ethereum-api** | `wasi-examples/ethereum-api/` | ✅ | `/docs/examples#ethereum-api` | ✅ Shown | P2 | Intermediate |
-| **botfather-ark** | `wasi-examples/botfather-ark/` | ✅ | `/docs/examples#botfather-ark` | ✅ Shown | P2 | Advanced |
+| **botfather-example** | `wasi-examples/botfather-example/` | ✅ | `/docs/examples#botfather-ark` | ✅ Shown | P2 | Advanced |
 | **intents-ark** | `wasi-examples/intents-ark/` | ✅ | `/docs/examples#intents-ark` | ✅ Shown | P2 | Advanced |
 | **private-dao-example** | `wasi-examples/private-dao-example/` | ✅ | `/docs/examples#private-dao-ark` | ✅ Shown | P2 | Advanced |
 | **captcha-example** | `wasi-examples/captcha-example/` | ✅ | `/docs/examples#captcha-ark` | ✅ Shown | P2 | Advanced |

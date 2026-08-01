@@ -20,8 +20,8 @@
 	path = wasi-examples/private-dao-example
 	url = git@github.com:out-layer/private-dao-example.git
 [submodule "wasi-examples/botfather-ark"]
-	path = wasi-examples/botfather-ark
-	url = git@github.com:zavodil/botfather-ark.git
+	path = wasi-examples/botfather-example
+	url = git@github.com:out-layer/botfather-example.git
 [submodule "wasi-examples/env-test-ark"]
 	path = wasi-examples/env-test-example
 	url = git@github.com:out-layer/env-test-example.git

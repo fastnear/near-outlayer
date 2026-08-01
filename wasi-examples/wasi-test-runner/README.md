@@ -92,32 +92,32 @@ cargo build --release
 ### Test with NEAR RPC (Transactions)
 
 ```bash
-# Test botfather-ark - create accounts (requires credentials via env)
+# Test botfather-example - create accounts (requires credentials via env)
 ./target/release/wasi-test \
-  --wasm ../botfather-ark/target/wasm32-wasip2/release/bot-father.wasm \
+  --wasm ../botfather-example/target/wasm32-wasip2/release/bot-father.wasm \
   --input '{"action":"create_accounts","prompt":"space theme","count":3,"deposit_per_account":"1000000000000000000000000"}' \
   --env OPENAI_API_KEY=sk-... \
-  --env BOT_FATHER_MASTER_KEY=ed25519:... \
+  --env PROTECTED_MASTER_KEY=ed25519:... \
   --env NEAR_SENDER_ID=alice.testnet \
   --env NEAR_SENDER_PRIVATE_KEY=ed25519:... \
   --rpc \
   --rpc-allow-transactions \
   --max-instructions 50000000000
 
-# Test botfather-ark - list accounts (no credentials needed)
+# Test botfather-example - list accounts (no credentials needed)
 ./target/release/wasi-test \
-  --wasm ../botfather-ark/target/wasm32-wasip2/release/bot-father.wasm \
+  --wasm ../botfather-example/target/wasm32-wasip2/release/bot-father.wasm \
   --input '{"action":"list_accounts","indices":[]}' \
-  --env BOT_FATHER_MASTER_KEY=ed25519:... \
+  --env PROTECTED_MASTER_KEY=ed25519:... \
   --env NEAR_SENDER_ID=alice.testnet \
   --rpc \
   --max-instructions 50000000000
 
-# Test botfather-ark - fund specific accounts
+# Test botfather-example - fund specific accounts
 ./target/release/wasi-test \
-  --wasm ../botfather-ark/target/wasm32-wasip2/release/bot-father.wasm \
+  --wasm ../botfather-example/target/wasm32-wasip2/release/bot-father.wasm \
   --input '{"action":"fund_accounts","total_amount":"30000000000000000000000000","indices":[0,2]}' \
-  --env BOT_FATHER_MASTER_KEY=ed25519:... \
+  --env PROTECTED_MASTER_KEY=ed25519:... \
   --env NEAR_SENDER_ID=alice.testnet \
   --env NEAR_SENDER_PRIVATE_KEY=ed25519:... \
   --rpc \
@@ -406,7 +406,7 @@ Pass secrets and configuration to WASM using `--env` flag:
 --env NEAR_SENDER_ID=alice.testnet \
 --env NEAR_SENDER_PRIVATE_KEY=ed25519:... \
 --env OPENAI_API_KEY=sk-... \
---env BOT_FATHER_MASTER_KEY=ed25519:...
+--env PROTECTED_MASTER_KEY=ed25519:...
 ```
 
 WASM code accesses these via standard `std::env::var("KEY_NAME")`.
@@ -456,7 +456,7 @@ Test this WASM:
 - [random-example](../random-example/) - Example WASI P1 module
 - [ai-example](../ai-example/) - Example WASI P2 component
 - [rpc-test-ark](../rpc-test-ark/) - Example with NEAR RPC host functions
-- [botfather-ark](../botfather-ark/) - Example with RPC transactions and secrets
+- [botfather-example](../botfather-example/) - Example with RPC transactions and secrets
 - [SECURITY_AUDIT_REPORT.md](../SECURITY_AUDIT_REPORT.md) - Security model for transaction signing
 
 ---

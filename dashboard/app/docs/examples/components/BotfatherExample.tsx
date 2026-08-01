@@ -13,9 +13,9 @@ export function BotfatherExample() {
   return (
     <ExampleCard
       id="botfather-ark"
-      title="botfather-ark"
+      title="botfather-example"
       badges={badges}
-      githubUrl="https://github.com/zavodil/botfather-ark"
+      githubUrl="https://github.com/out-layer/botfather-example"
     >
       <p className="text-gray-700 mb-4">
         Account factory pattern for NEAR - create and manage multiple NEAR accounts with AI-generated names using hierarchical key derivation. Demonstrates advanced host function usage with <code className="bg-gray-100 px-2 py-1 rounded">call()</code> and <code className="bg-gray-100 px-2 py-1 rounded">transfer()</code>, providing access to private NEAR RPC endpoints (powered by Fastnear).
