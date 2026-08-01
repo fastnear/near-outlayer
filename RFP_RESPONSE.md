@@ -2,7 +2,7 @@
 
 **Submitted by:** FastNEAR Team
 **Original Proposal:** [ORACLE_RFP_PROPOSAL.md](ORACLE_RFP_PROPOSAL.md)
-**Repository:** https://github.com/zavodil/oracle-ark
+**Repository:** https://github.com/out-layer/oracle-example
 **Date:** February 2026
 
 ---
@@ -20,7 +20,7 @@ All **Critical** deliverables from the proposal have been implemented and deploy
 | 5 | Testnet deployment & verification | All 3 contracts live |
 | 6 | Mainnet deployment & verification | TBD |
 
-Repository: https://github.com/zavodil/oracle-ark
+Repository: https://github.com/out-layer/oracle-example
 
 ---
 
@@ -28,7 +28,7 @@ Repository: https://github.com/zavodil/oracle-ark
 
 ### 1. Oracle-Ark WASI Module (core engine)
 
-**Source:** [src/](https://github.com/zavodil/oracle-ark/tree/main/src)
+**Source:** [src/](https://github.com/out-layer/oracle-example/tree/main/src)
 
 The core price-fetching engine runs inside a TEE (Intel TDX via Phala Cloud) as a WASI P2 binary. It fetches prices from external APIs, aggregates them, and returns validated results.
 
@@ -49,7 +49,7 @@ List of required assets was provided by RHEA team.
 | 9 | **Binance Alpha** | REST | 1 token (RHEA — BSC contract address) |
 | 10 | **Custom** | Any HTTP | Unlimited — any URL with JSON path extraction, supports GET/POST |
 
-Source code: [sources/](https://github.com/zavodil/oracle-ark/tree/main/sources) (shared library used by both WASI and scheduler)
+Source code: [sources/](https://github.com/out-layer/oracle-example/tree/main/sources) (shared library used by both WASI and scheduler)
 
 #### Supported Tokens (13 tokens configured)
 
@@ -69,7 +69,7 @@ Source code: [sources/](https://github.com/zavodil/oracle-ark/tree/main/sources)
 | **ZEC** | `zec.omft.near` | CoinGecko, Binance, Binance US, Pyth, Huobi, KuCoin, Gate (7) |
 | **RHEA** | `token.rhealab.near` | Binance Alpha, Pyth (2) |
 
-Configuration: [tokens.json](https://github.com/zavodil/oracle-ark/blob/main/tokens.json)
+Configuration: [tokens.json](https://github.com/out-layer/oracle-example/blob/main/tokens.json)
 
 #### Aggregation Methods
 
@@ -101,7 +101,7 @@ Configuration: [tokens.json](https://github.com/zavodil/oracle-ark/blob/main/tok
 
 ### 2. Oracle Smart Contract (caching layer)
 
-**Source:** [contract/](https://github.com/zavodil/oracle-ark/tree/main/contract)
+**Source:** [contract/](https://github.com/out-layer/oracle-example/tree/main/contract)
 **Deployed:** `price-oracle.testnet`
 
 On-chain contract that caches prices and integrates with the OutLayer platform for on-demand TEE execution.
@@ -151,7 +151,7 @@ On-chain contract that caches prices and integrates with the OutLayer platform f
 
 ### 3. Simple Wrapper Contract
 
-**Source:** [wrapper-contract/](https://github.com/zavodil/oracle-ark/tree/main/wrapper-contract)
+**Source:** [wrapper-contract/](https://github.com/out-layer/oracle-example/tree/main/wrapper-contract)
 **Deployed:** `price-oracle-wrapper.testnet`
 
 Simple contract that demonstrates how to integrate with the oracle. Also includes a prediction market example.
@@ -171,7 +171,7 @@ The prediction market demonstrates cross-contract calls, oracle callbacks, and `
 
 ### 4. Pyth-Compatible Wrapper Contract
 
-**Source:** [pyth-compatible-wrapper/](https://github.com/zavodil/oracle-ark/tree/main/pyth-compatible-wrapper)
+**Source:** [pyth-compatible-wrapper/](https://github.com/out-layer/oracle-example/tree/main/pyth-compatible-wrapper)
 **Deployed:** `price-oracle-pyth.testnet`
 
 Drop-in replacement for `pyth-oracle.near`. Implements the same public API so DeFi protocols can switch from Pyth to Oracle-Ark with **zero code changes** — just change the contract address.
@@ -231,7 +231,7 @@ Reference: [Pyth receiver contract ext.rs](https://github.com/pyth-network/pyth-
 
 ### 5. Scheduler (proactive price updates)
 
-**Source:** [scheduler/](https://github.com/zavodil/oracle-ark/tree/main/scheduler)
+**Source:** [scheduler/](https://github.com/out-layer/oracle-example/tree/main/scheduler)
 **Status:** Running on VPS (Docker, `restart: unless-stopped`)
 
 #### Architecture
@@ -320,7 +320,7 @@ Built-in alerting (currently Telegram, production monitoring TBD):
 
 ### 6. Price Dashboard
 
-**Source:** [oracle-prices-ui/](https://github.com/zavodil/oracle-ark/tree/main/oracle-prices-ui)
+**Source:** [oracle-prices-ui/](https://github.com/out-layer/oracle-example/tree/main/oracle-prices-ui)
 
 Standalone web dashboard showing live oracle prices. Deployed as a separate app for independent maintenance.
 
@@ -338,22 +338,22 @@ Standalone web dashboard showing live oracle prices. Deployed as a separate app 
 
 | Document | Description | Link |
 |----------|-------------|------|
-| **README.md** | Project overview, features, quick start, API reference | [Link](https://github.com/zavodil/oracle-ark/blob/main/README.md) |
-| **integration.md** | Integration guide: view methods, call methods, custom data, Rust/JS examples | [Link](https://github.com/zavodil/oracle-ark/blob/main/integration.md) |
-| **sdk.md** | SDK reference: data types, all contract methods, code snippets | [Link](https://github.com/zavodil/oracle-ark/blob/main/sdk.md) |
-| **contract/README.md** | Contract API: backward-compatible methods, new methods, admin | [Link](https://github.com/zavodil/oracle-ark/blob/main/contract/README.md) |
-| **wrapper-contract/README.md** | Simple wrapper usage guide | [Link](https://github.com/zavodil/oracle-ark/blob/main/wrapper-contract/README.md) |
-| **pyth-compatible-wrapper/README.md** | Pyth wrapper usage + migration guide | [Link](https://github.com/zavodil/oracle-ark/blob/main/pyth-compatible-wrapper/README.md) |
-| **pyth-compatible-wrapper/SPEC.md** | Technical specification for Pyth wrapper | [Link](https://github.com/zavodil/oracle-ark/blob/main/pyth-compatible-wrapper/SPEC.md) |
-| **DEPLOY.md** | Full deployment guide (contract, WASI, scheduler, costs) | [Link](https://github.com/zavodil/oracle-ark/blob/main/DEPLOY.md) |
-| **TROUBLESHOOTING.md** | Operational runbook (scheduler, contract, WASI, UI, API issues) | [Link](https://github.com/zavodil/oracle-ark/blob/main/TROUBLESHOOTING.md) |
-| **SECURITY.md** | Security best practices (TEE, key management, access control, DeFi) | [Link](https://github.com/zavodil/oracle-ark/blob/main/SECURITY.md) |
-| **SECURITY_PR.md** | URL validation / SSRF protection details | [Link](https://github.com/zavodil/oracle-ark/blob/main/SECURITY_PR.md) |
-| **SOURCES.md** | Price sources reference | [Link](https://github.com/zavodil/oracle-ark/blob/main/SOURCES.md) |
-| **PARALLEL_EXECUTION.md** | Parallel execution details | [Link](https://github.com/zavodil/oracle-ark/blob/main/PARALLEL_EXECUTION.md) |
-| **CUSTOM_POST_BODY.md** | Custom POST request examples | [Link](https://github.com/zavodil/oracle-ark/blob/main/CUSTOM_POST_BODY.md) |
-| **contract/UPGRADE.md** | Contract upgrade documentation | [Link](https://github.com/zavodil/oracle-ark/blob/main/contract/UPGRADE.md) |
-| **oracle-prices-ui/README.md** | Dashboard setup guide | [Link](https://github.com/zavodil/oracle-ark/blob/main/oracle-prices-ui/README.md) |
+| **README.md** | Project overview, features, quick start, API reference | [Link](https://github.com/out-layer/oracle-example/blob/main/README.md) |
+| **integration.md** | Integration guide: view methods, call methods, custom data, Rust/JS examples | [Link](https://github.com/out-layer/oracle-example/blob/main/integration.md) |
+| **sdk.md** | SDK reference: data types, all contract methods, code snippets | [Link](https://github.com/out-layer/oracle-example/blob/main/sdk.md) |
+| **contract/README.md** | Contract API: backward-compatible methods, new methods, admin | [Link](https://github.com/out-layer/oracle-example/blob/main/contract/README.md) |
+| **wrapper-contract/README.md** | Simple wrapper usage guide | [Link](https://github.com/out-layer/oracle-example/blob/main/wrapper-contract/README.md) |
+| **pyth-compatible-wrapper/README.md** | Pyth wrapper usage + migration guide | [Link](https://github.com/out-layer/oracle-example/blob/main/pyth-compatible-wrapper/README.md) |
+| **pyth-compatible-wrapper/SPEC.md** | Technical specification for Pyth wrapper | [Link](https://github.com/out-layer/oracle-example/blob/main/pyth-compatible-wrapper/SPEC.md) |
+| **DEPLOY.md** | Full deployment guide (contract, WASI, scheduler, costs) | [Link](https://github.com/out-layer/oracle-example/blob/main/DEPLOY.md) |
+| **TROUBLESHOOTING.md** | Operational runbook (scheduler, contract, WASI, UI, API issues) | [Link](https://github.com/out-layer/oracle-example/blob/main/TROUBLESHOOTING.md) |
+| **SECURITY.md** | Security best practices (TEE, key management, access control, DeFi) | [Link](https://github.com/out-layer/oracle-example/blob/main/SECURITY.md) |
+| **SECURITY_PR.md** | URL validation / SSRF protection details | [Link](https://github.com/out-layer/oracle-example/blob/main/SECURITY_PR.md) |
+| **SOURCES.md** | Price sources reference | [Link](https://github.com/out-layer/oracle-example/blob/main/SOURCES.md) |
+| **PARALLEL_EXECUTION.md** | Parallel execution details | [Link](https://github.com/out-layer/oracle-example/blob/main/PARALLEL_EXECUTION.md) |
+| **CUSTOM_POST_BODY.md** | Custom POST request examples | [Link](https://github.com/out-layer/oracle-example/blob/main/CUSTOM_POST_BODY.md) |
+| **contract/UPGRADE.md** | Contract upgrade documentation | [Link](https://github.com/out-layer/oracle-example/blob/main/contract/UPGRADE.md) |
+| **oracle-prices-ui/README.md** | Dashboard setup guide | [Link](https://github.com/out-layer/oracle-example/blob/main/oracle-prices-ui/README.md) |
 
 ---
 
@@ -415,7 +415,7 @@ Standalone web dashboard showing live oracle prices. Deployed as a separate app 
 
 | Deliverable | Status | Details |
 |-------------|--------|---------|
-| WASI execution in TEE | Done | oracle-ark.wasm runs in Phala Cloud TEE workers |
+| WASI execution in TEE | Done | oracle-example.wasm runs in Phala Cloud TEE workers |
 | Immutable WASM storage | Done | `ExecutionSource::WasmUrl` (IPFS/FastFS with hash), `ExecutionSource::Project` |
 | Proactive pushing | Done | `scheduler/` — time-based + price deviation triggers |
 | Operator documentation | Done | `DEPLOY.md`, `TROUBLESHOOTING.md`, `SECURITY.md` |
@@ -475,7 +475,7 @@ Standalone web dashboard showing live oracle prices. Deployed as a separate app 
 │  TEE Worker  │ │  Worker  │ │  Scheduler   │
 │  (Phala)     │ │  (Phala) │ │  (VPS)       │
 │              │ │          │ │              │
-│ oracle-ark   │ │ oracle-  │ │ Monitors     │
+│ oracle-example   │ │ oracle-  │ │ Monitors     │
 │ .wasm        │ │ ark.wasm │ │ prices,      │
 │              │ │          │ │ triggers     │
 │ Fetches:     │ │          │ │ updates      │

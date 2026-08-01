@@ -1269,7 +1269,7 @@ HTTP client for AI APIs demonstrating:
 
 **Use case**: HTTP requests, API calls, external data fetching
 
-### [oracle-ark](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/oracle-ark/) - WASI P2
+### [oracle-example](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/oracle-example/) - WASI P2
 On-demand price oracle demonstrating:
 - ✅ WASI Preview 2 (wasm32-wasip2)
 - ✅ Multiple HTTP sources (CoinGecko, CoinMarketCap, TwelveData)
@@ -1949,7 +1949,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 **✅ CORRECT**: Copy `Cargo.toml` from existing working examples:
 - [random-ark/Cargo.toml](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/random-ark/Cargo.toml) - WASI P1 template
 - [ai-ark/Cargo.toml](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/ai-ark/Cargo.toml) - WASI P2 template
-- [oracle-ark/Cargo.toml](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/oracle-ark/Cargo.toml) - WASI P2 with HTTP
+- [oracle-example/Cargo.toml](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/oracle-example/Cargo.toml) - WASI P2 with HTTP
 
 **Tested and working versions:**
 ```toml

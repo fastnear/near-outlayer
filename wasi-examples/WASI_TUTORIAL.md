@@ -469,7 +469,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 **✅ CORRECT**: Copy `Cargo.toml` from existing working examples:
 - [random-example/Cargo.toml](./random-example/Cargo.toml) - WASI P1 template
 - [ai-ark/Cargo.toml](./ai-ark/Cargo.toml) - WASI P2 template
-- [oracle-ark/Cargo.toml](./oracle-ark/Cargo.toml) - WASI P2 with HTTP
+- [oracle-example/Cargo.toml](./oracle-example/Cargo.toml) - WASI P2 with HTTP
 
 **Tested and working versions:**
 ```toml

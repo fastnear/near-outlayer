@@ -1,7 +1,7 @@
 //! Payment Keys with Intents - WASI module for swapping tokens to USDC for payment key top-up
 //!
 //! This module:
-//! 1. Reads token price from oracle-ark storage
+//! 1. Reads token price from oracle-example storage
 //! 2. Validates minimum value ($0.01 USDC)
 //! 3. Swaps token to USDC via 1Click API
 //! 4. Sends USDC to outlayer.near via ft_transfer_call with payment key nonce in msg
@@ -68,7 +68,7 @@ struct TokenConfig {
 }
 
 // ============================================================================
-// Oracle Price Types (from oracle-ark)
+// Oracle Price Types (from oracle-example)
 // ============================================================================
 
 #[derive(Deserialize, Debug)]

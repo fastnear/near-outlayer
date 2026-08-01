@@ -14,9 +14,9 @@ export function OracleExample() {
   return (
     <ExampleCard
       id="oracle-ark"
-      title="oracle-ark"
+      title="oracle-example"
       badges={badges}
-      githubUrl="https://github.com/zavodil/oracle-ark"
+      githubUrl="https://github.com/out-layer/oracle-example"
       playgroundId="multi-source-data-oracle"
     >
       <p className="text-gray-700 mb-4">
@@ -86,15 +86,15 @@ export function OracleExample() {
 # - Secrets JSON: {"CMC_API_KEY":"...", "TWELVE_DATA_KEY":"..."}
 
 # 3. Clone and build
-git clone https://github.com/zavodil/oracle-ark.git
-cd oracle-ark
+git clone https://github.com/out-layer/oracle-example.git
+cd oracle-example
 cargo build --target wasm32-wasip2 --release
 
 # 4. Request price data
 near call outlayer.testnet request_execution '{
   "source": {
     "GitHub": {
-      "repo": "https://github.com/YOUR_USERNAME/oracle-ark",
+      "repo": "https://github.com/YOUR_USERNAME/oracle-example",
       "commit": "main",
       "build_target": "wasm32-wasip2"
     }
@@ -142,7 +142,7 @@ near call outlayer.testnet request_execution '{
             </Link>
           </li>
           <li>
-            💻 <a href="https://github.com/zavodil/oracle-ark" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+            💻 <a href="https://github.com/out-layer/oracle-example" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
               View Source Code
             </a>
           </li>

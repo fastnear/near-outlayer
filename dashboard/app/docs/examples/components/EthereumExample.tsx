@@ -16,7 +16,7 @@ export function EthereumExample() {
       id="ethereum-api"
       title="Ethereum API Oracle"
       badges={badges}
-      githubUrl="https://github.com/zavodil/oracle-ark"
+      githubUrl="https://github.com/out-layer/oracle-example"
       playgroundId="ethereum-api"
     >
       <p className="text-gray-700 mb-4">
@@ -81,7 +81,7 @@ near contract call-function as-transaction outlayer.testnet request_execution \\
   json-args '{
     "source": {
       "GitHub": {
-        "repo": "https://github.com/zavodil/oracle-ark",
+        "repo": "https://github.com/out-layer/oracle-example",
         "commit": "main",
         "build_target": "wasm32-wasip2"
       }
@@ -114,7 +114,7 @@ near contract call-function as-transaction outlayer.testnet request_execution \\
 
       <h4 className="font-semibold mt-4 mb-2">Notes:</h4>
       <ul className="list-disc list-inside text-gray-700 space-y-1">
-        <li>Same codebase as <code className="bg-gray-100 px-2 py-1 rounded">oracle-ark</code>, different secrets configuration</li>
+        <li>Same codebase as <code className="bg-gray-100 px-2 py-1 rounded">oracle-example</code>, different secrets configuration</li>
         <li>Requires Alchemy API key (free tier: 300M compute units/month)</li>
         <li>Supports any Ethereum JSON-RPC method (eth_call, eth_getTransactionReceipt, etc.)</li>
         <li>Pre-configured secrets available on testnet: <code className="bg-gray-100 px-2 py-1 rounded">zavodil2.testnet</code></li>
@@ -149,7 +149,7 @@ near contract call-function as-transaction outlayer.testnet request_execution \\
             </Link>
           </li>
           <li>
-            💻 <a href="https://github.com/zavodil/oracle-ark" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+            💻 <a href="https://github.com/out-layer/oracle-example" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
               View Source Code
             </a>
           </li>

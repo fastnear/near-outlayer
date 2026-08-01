@@ -297,7 +297,7 @@ storage::clear_version("abc123...")?;`}
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
               <tr>
-                <td className="px-4 py-3 text-sm font-mono">oracle-ark</td>
+                <td className="px-4 py-3 text-sm font-mono">oracle-example</td>
                 <td className="px-4 py-3 text-sm text-gray-600">
                   <code>storage::set_worker_with_options()</code> — stores prices as public (unencrypted) worker data for cross-project reads
                 </td>

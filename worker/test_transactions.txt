@@ -46,7 +46,7 @@ near contract call-function as-transaction \
   request_execution \
   json-args '{
     "code_source": {
-      "repo": "https://github.com/zavodil/oracle-ark",
+      "repo": "https://github.com/out-layer/oracle-example",
       "commit": "88b72003a06dc8d1972b39240e01aa9c0c7bbe24",
       "build_target": "wasm32-wasip2"
     },

@@ -16,7 +16,7 @@
 
 We propose an **alternative approach** to the RFP: instead of funding a dedicated oracle network with 5+ nodes that only push prices, we propose to **enhance the existing OutLayer platform** (live on mainnet at `outlayer.near`) to provide **TEE-secured, on-demand price feeds** as one of its workloads.
 
-**Key Innovation:** Rather than deploying dedicated oracle-only infrastructure that sits idle 95%+ of the time, we extend NEAR's existing **general-purpose off-chain computation platform** ([OutLayer](https://github.com/fastnear/near-outlayer)) with a specialized oracle WASM module ([`oracle-ark`](https://github.com/zavodil/oracle-ark)) that **already works in production** (see [mainnet transaction](https://nearblocks.io/txns/81EqJwxpbAdcArmjaJnaWU8VED3t8DemZ4ezr2TSPw5p)).
+**Key Innovation:** Rather than deploying dedicated oracle-only infrastructure that sits idle 95%+ of the time, we extend NEAR's existing **general-purpose off-chain computation platform** ([OutLayer](https://github.com/fastnear/near-outlayer)) with a specialized oracle WASM module ([`oracle-example`](https://github.com/out-layer/oracle-example)) that **already works in production** (see [mainnet transaction](https://nearblocks.io/txns/81EqJwxpbAdcArmjaJnaWU8VED3t8DemZ4ezr2TSPw5p)).
 
 **Why This Approach?**
 - 💰 **Shared infrastructure**: OutLayer nodes serve oracle + AI inference + arbitrary computation (oracle gets priority)
@@ -30,7 +30,7 @@ We propose an **alternative approach** to the RFP: instead of funding a dedicate
 - ✅ **Logical for bootstrapping**: New oracle with zero clients → on-demand makes sense, avoid wasted gas
 - ✅ **Self-sustaining growth**: As usage grows, operators earn fees and can add push workers (no perpetual grants)
 - ✅ **Battle-tested foundation**: OutLayer contract deployed and operational on mainnet
-- ✅ **Immediate availability**: oracle-ark WASM module functional today (proven in production)
+- ✅ **Immediate availability**: oracle-example WASM module functional today (proven in production)
 - ✅ **TEE-native design**: Phala/Dstack integration planned from day one
 - ✅ **Flexible architecture**: Supports **any asset** with public APIs - crypto, stocks (AAPL, TSLA), commodities (gold, oil), forex (EUR/USD), even game prices (Steam, Epic Games) - unlimited coverage
 - ✅ **Optional caching layer**: For protocols needing instant prices (90%+ cache hit rate)
@@ -69,7 +69,7 @@ Unlike traditional oracles where dedicated nodes continuously push prices (even 
 graph LR
     A[Smart Contract] -->|1. Calls outlayer.near| B[OutLayer Contract]
     B -->|2. Emits event| C[TEE Worker Pool]
-    C -->|3. Executes oracle-ark WASM| D[Price APIs]
+    C -->|3. Executes oracle-example WASM| D[Price APIs]
     D -->|4. Returns aggregated price| C
     C -->|5. Submits result| B
     B -->|6. Calls back| A
@@ -83,7 +83,7 @@ graph LR
 # Protocol calls outlayer.near with full configuration:
 near call outlayer.near request_execution '{
   "code_source": {
-    "repo": "https://github.com/zavodil/oracle-ark",
+    "repo": "https://github.com/out-layer/oracle-example",
     "commit": "main",
     "build_target": "wasm32-wasip2"
   },
@@ -132,7 +132,7 @@ impl OracleWrapper {
         // Build request with pre-configured sources
         let request = json!({
             "code_source": {
-                "repo": "https://github.com/zavodil/oracle-ark",
+                "repo": "https://github.com/out-layer/oracle-example",
                 "commit": "stable-v1.0",  // Fixed version for security
                 "build_target": "wasm32-wasip2"
             },
@@ -178,10 +178,10 @@ impl OracleWrapper {
 - ✅ **Pre-configured sources**: No need to know GitHub URLs, API names, etc.
 - ✅ **Version stability**: Uses fixed `stable-v1.0` branch, not `main`
 - ✅ **Governance**: Wrapper owner can update sources/configs via DAO
-- ✅ **Backwards compatible**: Protocols don't break when oracle-ark updates
+- ✅ **Backwards compatible**: Protocols don't break when oracle-example updates
 
 ```json
-// 2. TEE worker executes oracle-ark WASM in Phala enclave
+// 2. TEE worker executes oracle-example WASM in Phala enclave
 // 3. Fetches from 4+ sources (CoinGecko, Binance, KuCoin, Pyth)
 // 4. Validates deviation ≤5%, aggregates via median
 // 5. Returns result with TEE attestation:
@@ -232,7 +232,7 @@ impl OracleWrapper {
 │  │ ┌──────────────┐ │  │ ┌──────────────┐ │  │             │  │
 │  │ │ Phala Enclave│ │  │ │ Phala Enclave│ │  │             │  │
 │  │ │              │ │  │ │              │ │  │             │  │
-│  │ │ oracle-ark   │ │  │ │ oracle-ark   │ │  │             │  │
+│  │ │ oracle-example   │ │  │ │ oracle-example   │ │  │             │  │
 │  │ │ WASM module  │ │  │ │ WASM module  │ │  │             │  │
 │  │ │              │ │  │ │              │ │  │             │  │
 │  │ │ - Fetch APIs │ │  │ │ - Fetch APIs │ │  │             │  │
@@ -293,7 +293,7 @@ impl OracleWrapper {
   - Full source code: contract, coordinator, workers, examples
 - ✅ **NEAR.social** - Decentralized social platform (Eugene founder)
 - ✅ **FastNEAR** - High-performance NEAR infrastructure services (validators, indexers, APIs)
-- ✅ **oracle-ark** - Working price oracle WASM module ([GitHub](https://github.com/zavodil/oracle-ark), [mainnet tx](https://nearblocks.io/txns/81EqJwxpbAdcArmjaJnaWU8VED3t8DemZ4ezr2TSPw5p))
+- ✅ **oracle-example** - Working price oracle WASM module ([GitHub](https://github.com/out-layer/oracle-example), [mainnet tx](https://nearblocks.io/txns/81EqJwxpbAdcArmjaJnaWU8VED3t8DemZ4ezr2TSPw5p))
 
 **Why We're Uniquely Qualified:**
 - 📊 **Built the previous native oracle**: We understand what works and what doesn't
@@ -305,7 +305,7 @@ impl OracleWrapper {
 
 ## Technical Implementation
 
-### 1. Oracle WASM Module (oracle-ark)
+### 1. Oracle WASM Module (oracle-example)
 
 **Status:** ✅ Already working in production
 
@@ -318,7 +318,7 @@ The core oracle logic exists as a WASM module that:
 - Handles **batch requests** (up to 10 assets per call)
 - Supports **encrypted API keys** via WASI environment variables
 
-**Code:** https://github.com/zavodil/oracle-ark
+**Code:** https://github.com/out-layer/oracle-example
 **Live Example:** https://nearblocks.io/txns/81EqJwxpbAdcArmjaJnaWU8VED3t8DemZ4ezr2TSPw5p
 
 #### Request Format
@@ -388,7 +388,7 @@ The OutLayer contract provides:
 - **Result Verification**: Validates TEE attestation before accepting results
 - **Timeout Handling**: Allows cancellation of stale requests (10 min timeout)
 - **Secrets Management**: Stores encrypted API keys for oracle workers
-- **Immutable WASM Storage**: Can store oracle-ark WASM directly on-chain for faster execution (no GitHub fetch)
+- **Immutable WASM Storage**: Can store oracle-example WASM directly on-chain for faster execution (no GitHub fetch)
 
 **Contract API:**
 ```rust
@@ -418,7 +418,7 @@ pub fn store_immutable_wasm(
 **Option A: GitHub (flexible, slower first execution)**
 ```rust
 CodeSource {
-    repo: "https://github.com/zavodil/oracle-ark",
+    repo: "https://github.com/out-layer/oracle-example",
     commit: "stable-v1.0",
     build_target: "wasm32-wasip2"
 }
@@ -536,7 +536,7 @@ impl CachedOracle {
         // Call OutLayer with immutable WASM (faster, no GitHub dependency)
         ext_outlayer::request_execution(
             CodeSource {
-                immutable_hash: "sha256:oracle-ark-v1.0".to_string(), // Pre-stored on-chain
+                immutable_hash: "sha256:oracle-example-v1.0".to_string(), // Pre-stored on-chain
                 build_target: None,  // Pre-compiled
             },
             serde_json::to_string(&oracle_request).unwrap(),
@@ -691,7 +691,7 @@ pub struct OracleWorker {
     // Monitors NEAR blockchain for ExecutionRequested events
     event_monitor: EventMonitor,
 
-    // Executes oracle-ark WASM in isolated environment
+    // Executes oracle-example WASM in isolated environment
     wasm_executor: WasmiExecutor,
 
     // Submits results back to outlayer.near
@@ -711,7 +711,7 @@ impl OracleWorker {
             // 3. Decrypt secrets inside TEE
             let api_keys = self.decrypt_in_enclave(&secrets);
 
-            // 4. Execute oracle-ark WASM with API keys
+            // 4. Execute oracle-example WASM with API keys
             let result = self.wasm_executor.execute(
                 &request.input_data,
                 api_keys,
@@ -735,7 +735,7 @@ impl OracleWorker {
 
 - ✅ **Code Attestation**: Phala enclave provides cryptographic proof of exact code running
 - ✅ **Secret Isolation**: API keys decrypted only inside enclave, never exposed to operator
-- ✅ **Result Integrity**: Attestation proves output came from unmodified oracle-ark WASM
+- ✅ **Result Integrity**: Attestation proves output came from unmodified oracle-example WASM
 - ✅ **Operator Independence**: 5+ independent operators (diversified geographically and organizationally)
 
 ### 4. API Key Management
@@ -754,7 +754,7 @@ const encryptedSecrets = await encrypt({
 
 // 2. Store on-chain (one-time setup)
 await outlayer.store_secrets({
-  repo: "github.com/zavodil/oracle-ark",
+  repo: "github.com/out-layer/oracle-example",
   branch: "main",
   profile: "production",
   encrypted_secrets_base64: encryptedSecrets,
@@ -889,9 +889,9 @@ Adding support for new assets requires **zero code changes** - just specify diff
 
 | Requirement | Status | Implementation |
 |-------------|--------|----------------|
-| **Open-source code with documentation** | ✅ Ready | [OutLayer Platform](https://github.com/fastnear/near-outlayer) (contract, coordinator, workers), [oracle-ark WASM](https://github.com/zavodil/oracle-ark), Apache 2.0 license |
+| **Open-source code with documentation** | ✅ Ready | [OutLayer Platform](https://github.com/fastnear/near-outlayer) (contract, coordinator, workers), [oracle-example WASM](https://github.com/out-layer/oracle-example), Apache 2.0 license |
 | **Easy maintainer transfer** | ✅ Ready | Clear documentation, modular architecture, no vendor lock-in |
-| **Support top 30 crypto assets** | ✅ Ready | oracle-ark supports any asset with ≥5 APIs, currently 10+ sources integrated |
+| **Support top 30 crypto assets** | ✅ Ready | oracle-example supports any asset with ≥5 APIs, currently 10+ sources integrated |
 | **Support top 10 NEAR tokens** | ✅ Ready | CoinGecko, Binance, KuCoin, Gate.io all support NEAR ecosystem tokens |
 | **Support committee-requested assets** | ✅ Ready | Custom API source type allows arbitrary data sources |
 | **Minimum 5 price APIs per asset** | ✅ Enforced | `min_sources_num` parameter validated on-chain |
@@ -922,7 +922,7 @@ This reduces complexity while maintaining security (TEE attestation is the trust
 
 | Requirement | Status | Implementation |
 |-------------|--------|----------------|
-| **Fetch from 10 APIs (min 5)** | ✅ Ready | oracle-ark currently supports 10+ sources, validated via `min_sources_num` |
+| **Fetch from 10 APIs (min 5)** | ✅ Ready | oracle-example currently supports 10+ sources, validated via `min_sources_num` |
 | **Run in TEE (Dstack/Phala)** | ⏳ Phase 2 | Deploy workers on Phala Cloud (3 weeks) |
 | **Provide attestation** | ⏳ Phase 2 | Integrate Phala attestation API (2 weeks) |
 | **Global distribution** | ⏳ Phase 2 | Deploy nodes in 5+ regions (US, EU, Asia, etc.) |
@@ -937,7 +937,7 @@ This reduces complexity while maintaining security (TEE attestation is the trust
 | **Node operator coordination** | ✅ Committed | Assist operators with updates, monitor uptime |
 | **Code hash updates** | ✅ Committed | Provide reproducible builds, assist with verification |
 | **Add new assets** | ✅ Committed | No code changes needed - just configure new sources |
-| **Update APIs** | ✅ Committed | Monitor for API changes, update oracle-ark as needed |
+| **Update APIs** | ✅ Committed | Monitor for API changes, update oracle-example as needed |
 | **Track operating costs** | ✅ Committed | Publish monthly cost reports |
 
 ### Documentation Requirements
@@ -955,7 +955,7 @@ This reduces complexity while maintaining security (TEE attestation is the trust
 | Requirement | Status | Plan |
 |-------------|--------|------|
 | **Cost analysis report** | ⏳ Before Phase 1 | Detailed breakdown of on-demand oracle economics |
-| **Support custom data sources** | ✅ Ready | oracle-ark `custom` source type supports arbitrary APIs |
+| **Support custom data sources** | ✅ Ready | oracle-example `custom` source type supports arbitrary APIs |
 | **Cross-chain via chain signatures** | 🔮 Future | OutLayer's modular design supports cross-chain extension |
 | **Migration to non-Phala TEEs** | 🔮 Future | Dstack supports multiple TEE providers (Intel SGX, AWS Nitro, etc.) |
 
@@ -1126,7 +1126,7 @@ Total: 8 weeks (2 months)
 
 **Aggressive but achievable because:**
 - ✅ OutLayer contract already deployed and tested
-- ✅ oracle-ark WASM already working in production
+- ✅ oracle-example WASM already working in production
 - ✅ Team has deep NEAR expertise (built NEAR.social, FastNEAR)
 - ✅ Parallel development on independent components
 - ✅ Reference implementations exist (Sputnik DAO, Dstack SDK)
@@ -1268,13 +1268,13 @@ Total: 8 weeks (2 months)
 - **Simple wrapper contract** (`oracle-wrapper.near`) - **Recommended for most protocols**
   - `get_price(asset)` → simple API, just pass "BTC", "ETH", etc.
   - Pre-configured sources per asset (5+ APIs)
-  - Fixed stable version of oracle-ark (no breaking changes)
+  - Fixed stable version of oracle-example (no breaking changes)
   - DAO governance for config updates
   - **Benefit**: Hide complexity of GitHub URLs, source configs, resource limits
 - **Pyth-compatible wrapper contract** (`pyth-wrapper.near`) - **For Pyth migration**
   - `get_price(price_id)` → returns `{price, conf, expo, publish_time}`
   - `get_price_no_older_than(price_id, max_age)` → staleness check
-  - Internally calls `outlayer.near` with appropriate oracle-ark request
+  - Internally calls `outlayer.near` with appropriate oracle-example request
   - **Benefit**: Zero-code migration from Pyth to OutLayer oracle
 - **Caching oracle contract** (reference implementation) - **For instant prices**
   - `get_price(asset_id)` → instant if cached, async if stale
@@ -1319,7 +1319,7 @@ Total: 8 weeks (2 months)
 - Workers use neardata API for event monitoring (not direct blockchain access)
 
 ✅ **Contract Enhancements:**
-- **Immutable WASM storage**: Store oracle-ark on-chain for instant execution (no GitHub dependency)
+- **Immutable WASM storage**: Store oracle-example on-chain for instant execution (no GitHub dependency)
 - Attestation verification logic (validates Phala/Dstack reports)
 - Worker reputation tracking (uptime, success rate)
 - Fallback mechanisms (if worker offline, route to another)
@@ -1348,7 +1348,7 @@ Total: 8 weeks (2 months)
 - Proposal types:
   - Add/remove approved operators
   - Update pricing parameters
-  - **Store new immutable WASM versions** (oracle-ark updates)
+  - **Store new immutable WASM versions** (oracle-example updates)
   - Upgrade contract code hash
   - Emergency pause
 
@@ -1390,7 +1390,7 @@ Total: 8 weeks (2 months)
 | **API rate limits** | Medium | Support 10+ sources per asset; encrypted API key management; cache non-critical data |
 | **Worker downtime** | Low | Deploy 5+ independent nodes; automatic failover via event monitoring |
 | **Price deviation attacks** | Low | Configurable `max_price_deviation_percent`; multi-source aggregation (median) |
-| **WASM execution failures** | Low | oracle-ark battle-tested in production; comprehensive error handling |
+| **WASM execution failures** | Low | oracle-example battle-tested in production; comprehensive error handling |
 
 ### Operational Risks
 
@@ -1455,7 +1455,7 @@ While other oracles add TEE as an afterthought, OutLayer was architected for TEE
 - Secrets management via encrypted contract storage
 - WASI environment variable injection
 - Result attestation verification
-- **Immutable WASM storage on-chain**: oracle-ark can be stored directly in contract (no GitHub dependency)
+- **Immutable WASM storage on-chain**: oracle-example can be stored directly in contract (no GitHub dependency)
 
 **Unique advantages:**
 - ⚡ **Instant execution**: Load WASM from contract storage (1 sec vs 2-3 min GitHub compilation)
@@ -1544,7 +1544,7 @@ OutLayer integrates with Shade Agent Framework and Dstack, supporting NEAR's AI 
 
 ### Year 2: Custom Data Oracles
 
-- Extend oracle-ark to support arbitrary APIs
+- Extend oracle-example to support arbitrary APIs
 - Enable protocols to request custom data (weather, sports, IoT)
 - Launch oracle marketplace (users publish data sources)
 - Push workers can serve multiple data feeds simultaneously
@@ -1558,7 +1558,7 @@ OutLayer integrates with Shade Agent Framework and Dstack, supporting NEAR's AI 
 
 ### Year 4+: AI-Powered Oracles
 
-- Integrate AI models into oracle-ark WASM modules
+- Integrate AI models into oracle-example WASM modules
 - Predictive analytics (price forecasting, risk scoring)
 - Real-time data synthesis from unstructured sources
 
@@ -1574,7 +1574,7 @@ OutLayer integrates with Shade Agent Framework and Dstack, supporting NEAR's AI 
 **Ourlayer Dashboard:** https://outlayer.fastnear.com
 **GitHub:**
 - OutLayer Platform: https://github.com/fastnear/near-outlayer
-- Oracle WASM Module: https://github.com/zavodil/oracle-ark
+- Oracle WASM Module: https://github.com/out-layer/oracle-example
 
 **For Questions:**
 - Technical, business: Email vadim@fastnear.com
@@ -1740,7 +1740,7 @@ impl LendingProtocol {
 
         ext_outlayer::request_execution(
             CodeSource {
-                repo: "https://github.com/zavodil/oracle-ark".to_string(),
+                repo: "https://github.com/out-layer/oracle-example".to_string(),
                 commit: "main".to_string(),
                 build_target: "wasm32-wasip2".to_string(),
             },
@@ -1835,7 +1835,7 @@ For protocols already using Pyth, we provide a drop-in replacement:
 impl PythWrapper {
     /// Pyth-compatible interface
     pub fn get_price(&self, price_id: String) -> PythPrice {
-        // Translate Pyth price_id to oracle-ark sources
+        // Translate Pyth price_id to oracle-example sources
         let sources = self.map_price_id_to_sources(&price_id);
 
         // Call outlayer.near
@@ -1850,7 +1850,7 @@ impl PythWrapper {
         }
     }
 
-    /// Map Pyth price ID to oracle-ark sources
+    /// Map Pyth price ID to oracle-example sources
     fn map_price_id_to_sources(&self, price_id: &str) -> Vec<PriceSource> {
         // BTC/USD: 0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43
         match price_id {
@@ -1919,7 +1919,7 @@ impl PythWrapper {
 - **Good for testing** - can use any branch/commit
 
 **Production recommendation:**
-1. Store oracle-ark as immutable WASM on-chain (~0.02 NEAR one-time deposit)
+1. Store oracle-example as immutable WASM on-chain (~0.02 NEAR one-time deposit)
 2. DAO governs updates to new versions
 3. Zero external dependencies (GitHub, npm, etc.)
 
@@ -1955,7 +1955,7 @@ The FastNEAR team proposes an **alternative to the RFP's dedicated oracle model*
 2. **Shared infrastructure efficiency**: Same $750/month hosting serves multiple workloads (not dedicated idle nodes)
 3. **89% lower grant dependency**: $2,750/month vs. $24,153/month for dedicated oracle
 4. **Path to sustainability**: Operators earn user fees → can fund dedicated push workers later (no perpetual grants)
-5. **Battle-tested foundation**: OutLayer live on mainnet, oracle-ark proven in production
+5. **Battle-tested foundation**: OutLayer live on mainnet, oracle-example proven in production
 6. **Fast delivery**: 2 months to TEE integration (not 5-6 months from scratch)
 
 **What we deliver:**

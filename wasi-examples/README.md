@@ -42,7 +42,7 @@ HTTP client for AI APIs demonstrating:
 
 **Use case**: HTTP requests, API calls, external data fetching
 
-### [oracle-ark](./oracle-ark/) - WASI P2
+### [oracle-example](./oracle-example/) - WASI P2
 On-demand price oracle demonstrating:
 - ✅ WASI Preview 2 (wasm32-wasip2)
 - ✅ Multiple HTTP sources (CoinGecko, CoinMarketCap, TwelveData)
@@ -246,7 +246,7 @@ be copied into your own product without an attribution burden you might overlook
 
 Note that most subdirectories here are **git submodules** with their own repositories,
 and are governed by the `LICENSE` in those repositories rather than by these files:
-`random-example`, `ai-ark`, `echo-example`, `oracle-ark`, `captcha-example`, `weather-example`,
+`random-example`, `ai-ark`, `echo-example`, `oracle-example`, `captcha-example`, `weather-example`,
 `private-dao-example`, `botfather-ark`, `env-test-example`, `test-secrets-example`, `near-email`.
 
 See [LICENSING.md](../LICENSING.md) for the full component map.

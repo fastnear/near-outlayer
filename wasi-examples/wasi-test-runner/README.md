@@ -63,9 +63,9 @@ cargo build --release
   --wasm ../ai-ark/target/wasm32-wasip2/release/ai-ark.wasm \
   --input '{"prompt":"What is NEAR Protocol?"}'
 
-# Test oracle-ark (WASI P2)
+# Test oracle-example (WASI P2)
 ./target/release/wasi-test \
-  --wasm ../oracle-ark/target/wasm32-wasip2/release/oracle-ark.wasm \
+  --wasm ../oracle-example/target/wasm32-wasip2/release/oracle-example.wasm \
   --input '{"tokens":[{"token_id":"bitcoin","sources":[{"name":"coingecko","token_id":null}],"aggregation_method":"average","min_sources_num":1}],"max_price_deviation_percent":10.0}' \
   --max-instructions 50000000000
 ```

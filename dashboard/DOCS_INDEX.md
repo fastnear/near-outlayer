@@ -77,7 +77,7 @@ dashboard/app/docs/
 | **echo-example** | `wasi-examples/echo-example/` | ✅ | `/docs/examples#echo-ark` | ✅ Shown | P1 | Beginner |
 | **ai-ark** | `wasi-examples/ai-ark/` | ✅ | `/docs/examples#ai-ark` | ✅ Shown | P2 | Intermediate |
 | **weather-example** | `wasi-examples/weather-example/` | ✅ | `/docs/examples#weather-ark` | ✅ Shown | P2 | Intermediate |
-| **oracle-ark** | `wasi-examples/oracle-ark/` | ✅ | `/docs/examples#oracle-ark` | ✅ Shown | P2 | Advanced |
+| **oracle-example** | `wasi-examples/oracle-example/` | ✅ | `/docs/examples#oracle-ark` | ✅ Shown | P2 | Advanced |
 | **ethereum-api** | `wasi-examples/ethereum-api/` | ✅ | `/docs/examples#ethereum-api` | ✅ Shown | P2 | Intermediate |
 | **botfather-ark** | `wasi-examples/botfather-ark/` | ✅ | `/docs/examples#botfather-ark` | ✅ Shown | P2 | Advanced |
 | **intents-ark** | `wasi-examples/intents-ark/` | ✅ | `/docs/examples#intents-ark` | ✅ Shown | P2 | Advanced |
