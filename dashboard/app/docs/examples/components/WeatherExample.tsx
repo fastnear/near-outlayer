@@ -13,9 +13,9 @@ export function WeatherExample() {
   return (
     <ExampleCard
       id="weather-ark"
-      title="weather-ark"
+      title="weather-example"
       badges={badges}
-      githubUrl="https://github.com/zavodil/weather-ark"
+      githubUrl="https://github.com/out-layer/weather-example"
       playgroundId="weather"
     >
       <p className="text-gray-700 mb-4">
@@ -125,7 +125,7 @@ export function WeatherExample() {
             </Link>
           </li>
           <li>
-            💻 <a href="https://github.com/zavodil/weather-ark" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+            💻 <a href="https://github.com/out-layer/weather-example" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
               View Source Code
             </a>
           </li>

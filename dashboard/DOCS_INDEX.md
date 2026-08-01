@@ -76,7 +76,7 @@ dashboard/app/docs/
 | **vrf-ark** | `wasi-examples/vrf-ark/` | ✅ | `/docs/examples#vrf-ark` | ✅ Shown | P1 | Intermediate |
 | **echo-example** | `wasi-examples/echo-example/` | ✅ | `/docs/examples#echo-ark` | ✅ Shown | P1 | Beginner |
 | **ai-ark** | `wasi-examples/ai-ark/` | ✅ | `/docs/examples#ai-ark` | ✅ Shown | P2 | Intermediate |
-| **weather-ark** | `wasi-examples/weather-ark/` | ✅ | `/docs/examples#weather-ark` | ✅ Shown | P2 | Intermediate |
+| **weather-example** | `wasi-examples/weather-example/` | ✅ | `/docs/examples#weather-ark` | ✅ Shown | P2 | Intermediate |
 | **oracle-ark** | `wasi-examples/oracle-ark/` | ✅ | `/docs/examples#oracle-ark` | ✅ Shown | P2 | Advanced |
 | **ethereum-api** | `wasi-examples/ethereum-api/` | ✅ | `/docs/examples#ethereum-api` | ✅ Shown | P2 | Intermediate |
 | **botfather-ark** | `wasi-examples/botfather-ark/` | ✅ | `/docs/examples#botfather-ark` | ✅ Shown | P2 | Advanced |
@@ -263,7 +263,7 @@ const pageStructure = {
 ```
 
 **Adding Order**:
-1. Determine difficulty level (Beginner → after echo-example, Intermediate → after weather-ark, Advanced → at end)
+1. Determine difficulty level (Beginner → after echo-example, Intermediate → after weather-example, Advanced → at end)
 2. Add entry to `pageStructure['/docs/examples']` array in `layout.tsx`
 3. Use same `id` as in `page.tsx` (e.g., `botfather-ark`)
 4. Provide clear `title` for menu (e.g., `Bot Father`)

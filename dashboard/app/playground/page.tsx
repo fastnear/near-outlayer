@@ -108,7 +108,7 @@ const DIRECT_PRESETS: DirectPreset[] = [
     type: 'direct',
     name: 'Weather Data Oracle',
     description: '🌤️ Get real-time weather for any city. Build weather-based smart contracts, agricultural apps, or travel planning tools. Pre-configured secrets ready to test!',
-    repo: 'https://github.com/zavodil/weather-ark',
+    repo: 'https://github.com/out-layer/weather-example',
     commit: 'main',
     buildTarget: 'wasm32-wasip2',
     args: '{"city":"London","units":"metric"}',
