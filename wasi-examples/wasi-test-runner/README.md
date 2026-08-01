@@ -58,9 +58,9 @@ cargo build --release
   --wasm ../random-example/target/wasm32-wasip1/release/random-example.wasm \
   --input '{"min":1,"max":100}'
 
-# Test ai-ark (WASI P2)
+# Test ai-example (WASI P2)
 ./target/release/wasi-test \
-  --wasm ../ai-ark/target/wasm32-wasip2/release/ai-ark.wasm \
+  --wasm ../ai-example/target/wasm32-wasip2/release/ai-example.wasm \
   --input '{"prompt":"What is NEAR Protocol?"}'
 
 # Test oracle-example (WASI P2)
@@ -454,7 +454,7 @@ Test this WASM:
 
 - [WASI_TUTORIAL.md](../WASI_TUTORIAL.md) - Complete WASI development guide
 - [random-example](../random-example/) - Example WASI P1 module
-- [ai-ark](../ai-ark/) - Example WASI P2 component
+- [ai-example](../ai-example/) - Example WASI P2 component
 - [rpc-test-ark](../rpc-test-ark/) - Example with NEAR RPC host functions
 - [botfather-ark](../botfather-ark/) - Example with RPC transactions and secrets
 - [SECURITY_AUDIT_REPORT.md](../SECURITY_AUDIT_REPORT.md) - Security model for transaction signing

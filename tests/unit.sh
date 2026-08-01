@@ -20,12 +20,12 @@ cd "$PROJECT_ROOT/wasi-examples/random-ark"
 cargo build --release --target wasm32-wasip1 --quiet
 echo "✓ random-ark built successfully"
 
-# Build ai-ark (WASI P2) if needed
-if [ -d "$PROJECT_ROOT/wasi-examples/ai-ark" ]; then
-    echo "📦 Building ai-ark (WASI P2)..."
-    cd "$PROJECT_ROOT/wasi-examples/ai-ark"
+# Build ai-example (WASI P2) if needed
+if [ -d "$PROJECT_ROOT/wasi-examples/ai-example" ]; then
+    echo "📦 Building ai-example (WASI P2)..."
+    cd "$PROJECT_ROOT/wasi-examples/ai-example"
     cargo build --release --target wasm32-wasip2 --quiet
-    echo "✓ ai-ark built successfully"
+    echo "✓ ai-example built successfully"
 fi
 
 echo ""

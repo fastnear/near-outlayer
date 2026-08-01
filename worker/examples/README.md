@@ -7,15 +7,15 @@ Development examples and standalone test programs.
 **Purpose**: Standalone test for WASI P2 component fuel metering.
 
 **What it does**:
-- Loads a WASI P2 component (ai-ark)
+- Loads a WASI P2 component (ai-example)
 - Executes with wasmtime
 - Measures fuel consumption
 - Demonstrates component instantiation
 
 **Usage**:
 ```bash
-# Build ai-ark component first
-cd ../../wasi-examples/ai-ark
+# Build ai-example component first
+cd ../../wasi-examples/ai-example
 cargo build --release --target wasm32-wasip2
 
 # Run example

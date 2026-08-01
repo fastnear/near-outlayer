@@ -127,8 +127,8 @@ Expected WASM checksum: ba2c7a75c93b7cd7bc3e2f7e12943ba2dacac6ea444f6a2e853023b8
 cd ../wasi-examples/get-random
 cargo build --release --target wasm32-wasip1
 
-# Build ai-ark example (WASI P2)
-cd ../wasi-examples/ai-ark
+# Build ai-example example (WASI P2)
+cd ../wasi-examples/ai-example
 cargo build --release --target wasm32-wasip2
 
 # Return to worker
@@ -195,7 +195,7 @@ cargo build --release
 
 # Test WASI P2 component
 ./target/release/wasi-test \
-  --wasm ../ai-ark/target/wasm32-wasip2/release/ai-ark.wasm \
+  --wasm ../ai-example/target/wasm32-wasip2/release/ai-example.wasm \
   --input '{"prompt":"test"}'
 ```
 
@@ -282,7 +282,7 @@ cd ../keystore-worker
 near call outlayer.testnet request_execution '{
   "code_source": {
     "type": "GitHub",
-    "repo": "https://github.com/user/ai-ark",
+    "repo": "https://github.com/user/ai-example",
     "commit": "main",
     "build_target": "wasm32-wasip2"
   },
@@ -369,8 +369,8 @@ Expected metrics for test modules:
 | Module | Size | Build Time | Execution Time | Instructions |
 |--------|------|------------|----------------|--------------|
 | get-random | ~111 KB | ~30s | ~5ms | ~20,000 |
-| ai-ark (no HTTP) | ~500 KB | ~45s | ~10ms | ~8,000 |
-| ai-ark (with HTTP) | ~500 KB | ~45s | ~2000ms | ~80,000 |
+| ai-example (no HTTP) | ~500 KB | ~45s | ~10ms | ~8,000 |
+| ai-example (with HTTP) | ~500 KB | ~45s | ~2000ms | ~80,000 |
 
 ## CI/CD Integration
 

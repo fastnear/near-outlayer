@@ -46,7 +46,7 @@ cd tests
 **File**: `unit.sh`
 
 **What it tests**:
-- ✅ Building WASM test modules (get-random, ai-ark)
+- ✅ Building WASM test modules (get-random, ai-example)
 - ✅ Worker unit tests with cargo
 - ✅ WASM execution functionality
 - ✅ Fuel metering
@@ -69,8 +69,8 @@ cd tests
 
 📦 Building get-random (WASI P1)...
 ✓ get-random built successfully
-📦 Building ai-ark (WASI P2)...
-✓ ai-ark built successfully
+📦 Building ai-example (WASI P2)...
+✓ ai-example built successfully
 
 🧪 Running worker unit tests...
 

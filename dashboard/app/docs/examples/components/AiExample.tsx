@@ -13,9 +13,9 @@ export function AiExample() {
   return (
     <ExampleCard
       id="ai-ark"
-      title="ai-ark"
+      title="ai-example"
       badges={badges}
-      githubUrl="https://github.com/zavodil/ai-ark"
+      githubUrl="https://github.com/out-layer/ai-example"
       playgroundId="ai"
     >
       <p className="text-gray-700 mb-4">
@@ -83,7 +83,7 @@ export function AiExample() {
           </li>
           <li>Create new secret with key <code>OPENAI_API_KEY</code> and your OpenAI API key as value</li>
           <li>
-            Set repo to your GitHub project (e.g., <code>github.com/alice/ai-ark</code>)
+            Set repo to your GitHub project (e.g., <code>github.com/alice/ai-example</code>)
           </li>
           <li>Choose access condition (e.g., AllowAll for testing, Whitelist for production)</li>
           <li>Worker will automatically decrypt and inject into WASM environment</li>
@@ -115,7 +115,7 @@ export function AiExample() {
             </Link>
           </li>
           <li>
-            💻 <a href="https://github.com/zavodil/ai-ark" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
+            💻 <a href="https://github.com/out-layer/ai-example" target="_blank" rel="noopener noreferrer" className="text-[var(--primary-orange)] hover:underline">
               View Source Code
             </a>
           </li>

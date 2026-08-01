@@ -2,7 +2,7 @@ use wasmtime::*;
 use wasmtime::component::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let wasm = std::fs::read("../wasi-examples/ai-ark/target/wasm32-wasip2/release/ai-ark.wasm")?;
+    let wasm = std::fs::read("../wasi-examples/ai-example/target/wasm32-wasip2/release/ai-example.wasm")?;
     
     let mut config = Config::new();
     config.consume_fuel(true);

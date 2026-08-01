@@ -32,7 +32,7 @@ Simple random number generator demonstrating:
 
 **Use case**: Basic computations, random numbers, simple I/O
 
-### [ai-ark](./ai-ark/) - WASI P2
+### [ai-example](./ai-example/) - WASI P2
 HTTP client for AI APIs demonstrating:
 - ✅ WASI Preview 2 (wasm32-wasip2)
 - ✅ Component model
@@ -246,7 +246,7 @@ be copied into your own product without an attribution burden you might overlook
 
 Note that most subdirectories here are **git submodules** with their own repositories,
 and are governed by the `LICENSE` in those repositories rather than by these files:
-`random-example`, `ai-ark`, `echo-example`, `oracle-example`, `captcha-example`, `weather-example`,
+`random-example`, `ai-example`, `echo-example`, `oracle-example`, `captcha-example`, `weather-example`,
 `private-dao-example`, `botfather-ark`, `env-test-example`, `test-secrets-example`,
 `vrf-example`, `near-email`.
 

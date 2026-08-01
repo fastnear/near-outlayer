@@ -2,8 +2,8 @@
 	path = wasi-examples/random-example
 	url = git@github.com:out-layer/random-example.git
 [submodule "wasi-examples/ai-ark"]
-	path = wasi-examples/ai-ark
-	url = git@github.com:zavodil/ai-ark.git
+	path = wasi-examples/ai-example
+	url = git@github.com:out-layer/ai-example.git
 [submodule "wasi-examples/echo-ark"]
 	path = wasi-examples/echo-example
 	url = git@github.com:out-layer/echo-example.git

@@ -73,10 +73,12 @@ TX1_OUTPUT=$(near contract call-function as-transaction \
   "$CONTRACT_ID" \
   request_execution \
   json-args '{
-    "code_source": {
-      "repo": "https://github.com/out-layer/random-example",
-      "commit": "main",
-      "build_target": "wasm32-wasip1"
+    "source": {
+      "GitHub": {
+        "repo": "https://github.com/out-layer/random-example",
+        "commit": "main",
+        "build_target": "wasm32-wasip1"
+      }
     },
     "resource_limits": {
       "max_instructions": 10000000000,
@@ -145,10 +147,12 @@ TX2_OUTPUT=$(near contract call-function as-transaction \
   "$CONTRACT_ID" \
   request_execution \
   json-args '{
-    "code_source": {
-      "repo": "https://github.com/out-layer/echo-example",
-      "commit": "main",
-      "build_target": "wasm32-wasip1"
+    "source": {
+      "GitHub": {
+        "repo": "https://github.com/out-layer/echo-example",
+        "commit": "main",
+        "build_target": "wasm32-wasip1"
+      }
     },
     "resource_limits": {
       "max_instructions": 10000000000,
@@ -203,12 +207,12 @@ sleep 3
 
 echo ""
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
-echo -e "${BLUE}Test 3/3: WASI P2 Execution (ai-ark)${NC}"
+echo -e "${BLUE}Test 3/3: WASI P2 Execution (ai-example)${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
 echo ""
 
 echo "📦 Sending execution request..."
-echo "  Repo: https://github.com/zavodil/ai-ark"
+echo "  Repo: https://github.com/out-layer/ai-example"
 echo "  Target: wasm32-wasip2"
 echo "  Input: AI prompt with encrypted secrets"
 echo ""
@@ -222,10 +226,12 @@ TX2_OUTPUT=$(near contract call-function as-transaction \
   "$CONTRACT_ID" \
   request_execution \
   json-args '{
-    "code_source": {
-      "repo": "https://github.com/zavodil/ai-ark",
-      "commit": "main",
-      "build_target": "wasm32-wasip2"
+    "source": {
+      "GitHub": {
+        "repo": "https://github.com/out-layer/ai-example",
+        "commit": "main",
+        "build_target": "wasm32-wasip2"
+      }
     },
     "resource_limits": {
       "max_instructions": 10000000000,

@@ -138,7 +138,7 @@ curl http://localhost:8080/public/executions | jq
 curl http://localhost:8080/public/stats | jq
 
 # Check WASM cache
-curl "http://localhost:8080/public/wasm/info?repo_url=https://github.com/zavodil/ai-ark&commit_hash=main&build_target=wasm32-wasip2" | jq
+curl "http://localhost:8080/public/wasm/info?repo_url=https://github.com/out-layer/ai-example&commit_hash=main&build_target=wasm32-wasip2" | jq
 
 # Get user earnings (replace with actual account)
 curl http://localhost:8080/public/users/alice.testnet/earnings | jq
@@ -160,7 +160,7 @@ Open browser to http://localhost:3000 and navigate:
 1. Go to http://localhost:3000/playground
 2. Click "Connect Wallet"
 3. Fill in:
-   - Repo: `https://github.com/zavodil/ai-ark`
+   - Repo: `https://github.com/out-layer/ai-example`
    - Commit: `main`
    - Build Target: `wasm32-wasip2`
    - Args: `{}`

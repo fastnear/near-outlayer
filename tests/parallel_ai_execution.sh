@@ -12,7 +12,7 @@ CONTRACT_ID="${CONTRACT_ID:-outlayer.testnet}"
 USER_ACCOUNT="${USER_ACCOUNT:-zavodil.testnet}"
 
 # GitHub repo that uses NEAR.ai API (free, no API key needed)
-GITHUB_REPO="https://github.com/zavodil/ai-ark"
+GITHUB_REPO="https://github.com/out-layer/ai-example"
 GITHUB_COMMIT="main"
 BUILD_TARGET="wasm32-wasip2"
 
@@ -74,7 +74,7 @@ submit_ai_task() {
     local json_payload="{
     \"source\": {
       \"GitHub\": {
-        \"repo\": \"https://github.com/zavodil/ai-ark\",
+        \"repo\": \"https://github.com/out-layer/ai-example\",
         \"commit\": \"main\",
         \"build_target\": \"wasm32-wasip2\"
       }

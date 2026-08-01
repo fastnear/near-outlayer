@@ -163,7 +163,7 @@ cargo test --lib executor
 cd ../wasi-examples/get-random
 cargo build --target wasm32-wasip1 --release
 
-cd ../ai-ark
+cd ../ai-example
 cargo build --target wasm32-wasip2 --release
 
 # Run tests

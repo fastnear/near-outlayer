@@ -85,7 +85,7 @@ NEAR OutLayer executes WASM modules off-chain using wasmtime runtime. Your code 
 - **Use case**: HTTP requests, complex I/O, modern features
 - **Features**: HTTP client, advanced filesystem, sockets
 - **Size**: Larger binaries (~500KB-1MB)
-- **Example**: [ai-ark](./ai-ark/)
+- **Example**: [ai-example](./ai-example/)
 
 ### Which to Choose?
 
@@ -468,7 +468,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 **✅ CORRECT**: Copy `Cargo.toml` from existing working examples:
 - [random-example/Cargo.toml](./random-example/Cargo.toml) - WASI P1 template
-- [ai-ark/Cargo.toml](./ai-ark/Cargo.toml) - WASI P2 template
+- [ai-example/Cargo.toml](./ai-example/Cargo.toml) - WASI P2 template
 - [oracle-example/Cargo.toml](./oracle-example/Cargo.toml) - WASI P2 with HTTP
 
 **Tested and working versions:**
@@ -811,7 +811,7 @@ if output.len() > 800 {
 
 **Problem**: Test dependencies in WASM build
 
-**Solution**: Use optional dependencies with features (see ai-ark example)
+**Solution**: Use optional dependencies with features (see ai-example example)
 
 ### 6. HTTP requests fail
 
@@ -973,7 +973,7 @@ pub fn on_outlayer_callback(
    - JSON input/output
    - ~111KB binary
 
-2. **[ai-ark](./ai-ark/)** - WASI P2
+2. **[ai-example](./ai-example/)** - WASI P2
    - HTTP POST requests
    - OpenAI API integration
    - Component model
