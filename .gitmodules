@@ -23,8 +23,8 @@
 	path = wasi-examples/botfather-ark
 	url = git@github.com:zavodil/botfather-ark.git
 [submodule "wasi-examples/env-test-ark"]
-	path = wasi-examples/env-test-ark
-	url = git@github.com:zavodil/env-test-ark.git
+	path = wasi-examples/env-test-example
+	url = git@github.com:out-layer/env-test-example.git
 [submodule "wasi-examples/test-secrets-ark"]
 	path = wasi-examples/test-secrets-example
 	url = git@github.com:out-layer/test-secrets-example.git
