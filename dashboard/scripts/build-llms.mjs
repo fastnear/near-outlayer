@@ -4,7 +4,7 @@
 // Run automatically by `npm run dev` and `npm run build` (see predev/prebuild).
 // Pass --strict to fail on a missing source file instead of warning — use that in CI.
 
-import { statSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { posix } from 'node:path'
@@ -12,9 +12,57 @@ import { fileURLToPath } from 'node:url'
 
 import { FULL_TEXT_SOURCES, SECTIONS, SITE } from './llms-manifest.mjs'
 
+/**
+ * Submodule path -> the URL of the repository it lives in.
+ *
+ * Needed because a submodule is a gitlink, not a directory: GitHub cannot render
+ * `<monorepo>/tree/main/wasi-examples/oracle-example`, it 404s. Every example under
+ * wasi-examples/ is a submodule, so without this every example link in llms-full.txt is dead.
+ */
+function readSubmodules() {
+  const map = new Map()
+  let gitmodules
+  try {
+    gitmodules = readFileSync(resolve(repoRoot, '.gitmodules'), 'utf8')
+  } catch {
+    return map
+  }
+  let path = null
+  for (const line of gitmodules.split('\n')) {
+    const p = line.match(/^\s*path\s*=\s*(\S+)/)
+    if (p) path = p[1]
+    const u = line.match(/^\s*url\s*=\s*(\S+)/)
+    if (u && path) {
+      const url = u[1]
+        .replace(/^git@github\.com:/, 'https://github.com/')
+        .replace(/\.git$/, '')
+        .replace(/\/$/, '')
+      map.set(path, url)
+      path = null
+    }
+  }
+  return map
+}
+
+/** If `target` is a submodule or a path inside one, the URL that actually resolves. */
+function submoduleUrl(target) {
+  for (const [path, url] of SUBMODULES) {
+    if (target === path) return { url, rest: '' }
+    if (target.startsWith(path + '/')) return { url, rest: target.slice(path.length + 1) }
+  }
+  return null
+}
+
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const dashboardDir = resolve(scriptDir, '..')
 const repoRoot = resolve(dashboardDir, '..')
+
+// Declared after repoRoot on purpose: readSubmodules() needs it. An empty map here would
+// silently send every example link back to a 404, so it is loud rather than best-effort.
+const SUBMODULES = readSubmodules()
+if (SUBMODULES.size === 0) {
+  console.warn('llms: no submodules found in .gitmodules — example links will not resolve')
+}
 const publicDir = resolve(dashboardDir, 'public')
 
 const strict = process.argv.includes('--strict')
@@ -57,6 +105,18 @@ function absolutizeLinks(markdown, sourcePath) {
     const resolved = posix.normalize(posix.join(sourceDir, pathPart))
     if (resolved.startsWith('..')) return match
     if (resolved === '.') return `](${SITE.repoUrl}${anchor}${title})`
+
+    const sub = submoduleUrl(resolved.replace(/\/$/, ''))
+    if (sub) {
+      if (!sub.rest) return `](${sub.url}${anchor}${title})`
+      let subKind = 'blob'
+      try {
+        if (statSync(resolve(repoRoot, resolved)).isDirectory()) subKind = 'tree'
+      } catch {
+        return match
+      }
+      return `](${sub.url}/${subKind}/main/${sub.rest}${anchor}${title})`
+    }
 
     let stats
     try {
