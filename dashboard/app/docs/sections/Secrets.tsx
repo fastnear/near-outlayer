@@ -45,7 +45,7 @@ export default function SecretsSection() {
                 <p className="font-semibold text-gray-800 mb-1">1. Manual Secrets</p>
                 <p className="text-sm text-gray-700 mb-2">Provide key-value pairs directly (e.g., API keys you already have)</p>
                 <ul className="list-disc list-inside text-sm text-gray-700 ml-4">
-                  <li>Encrypted client-side with ChaCha20-Poly1305</li>
+                  <li>Encrypted in your browser with ECIES (X25519 ECDH + HKDF-SHA256 + ChaCha20-Poly1305) — only the TEE can decrypt</li>
                   <li>Example: <code className="bg-gray-100 px-2 py-1 rounded">{`{"OPENAI_KEY": "sk-..."}`}</code></li>
                   <li className="text-amber-700">Cannot use <code className="bg-amber-100 px-1 rounded">PROTECTED_*</code> prefix (reserved for auto-generated)</li>
                 </ul>
@@ -175,8 +175,18 @@ export default function SecretsSection() {
         <section id="security-model">
           <AnchorHeading id="security-model">Security Model</AnchorHeading>
           <p className="text-gray-700">
-            Secrets are encrypted with ChaCha20-Poly1305 AEAD (authenticated encryption with associated data).
-            Decryption happens in TEE workers with attestation verification. Your secrets never leave the secure enclave.
+            Secrets are encrypted in your browser using ECIES: an ephemeral X25519 ECDH exchange
+            against the keystore&apos;s public key, HKDF-SHA256 to derive the symmetric key, and
+            ChaCha20-Poly1305 AEAD for the payload. The matching private key exists only inside
+            the TEE, so <strong>not even the browser that encrypted a secret can decrypt it
+            again</strong> — the public key published by the keystore can encrypt and nothing else.
+          </p>
+          <p className="text-gray-700 mt-3">
+            Decryption happens in TEE workers with attestation verification, so plaintext exists
+            only inside the enclave. Ciphertext is stored on-chain and is useless without the
+            enclave-held key. Each encryption uses a fresh ephemeral keypair and nonce, so
+            encrypting the same value twice produces different ciphertext, and the AEAD tag makes
+            tampering detectable rather than silently decrypting to garbage.
           </p>
         </section>
 

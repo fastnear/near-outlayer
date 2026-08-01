@@ -1241,10 +1241,10 @@ export function SecretsForm({
         <div className="mt-6 bg-blue-50 border border-blue-200 rounded-lg p-4">
           <h3 className="text-sm font-medium text-blue-900 mb-2">💡 How it works</h3>
           <ul className="text-xs text-blue-800 space-y-1 list-disc list-inside">
-            <li><strong>Manual secrets</strong>: Encrypted client-side with ChaCha20-Poly1305 AEAD</li>
+            <li><strong>Manual secrets</strong>: Encrypted in this browser with ECIES — ephemeral X25519 ECDH + HKDF-SHA256 + ChaCha20-Poly1305 AEAD</li>
             <li><strong>Generated secrets</strong>: Keystore generates inside TEE (you never see values)</li>
             <li><strong>Combined flow</strong>: Manual secrets encrypted → sent with generation specs → keystore decrypts, generates, merges, re-encrypts</li>
-            <li>Uses keystore&apos;s public key (coordinator never sees plaintext)</li>
+            <li>Uses the keystore&apos;s public key — it can encrypt but not decrypt, so the coordinator never sees plaintext and neither can this browser once the secret is sent</li>
             <li>Encrypted data is stored on NEAR contract</li>
             <li>Only verified TEE workers can decrypt secrets during execution</li>
             <li>You can provide manual secrets, generated secrets, or both</li>

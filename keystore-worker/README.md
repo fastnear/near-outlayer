@@ -260,10 +260,11 @@ Secrets are encrypted in browser and stored on contract.
 4. Build with appropriate target
 
 **Key Changes for TEE:**
-- Replace XOR encryption with proper AEAD (ChaCha20-Poly1305)
-- Use X25519 ECDH instead of Ed25519 for encryption
 - Implement sealed storage for private key persistence
 - Add remote attestation with hardware root of trust
+
+(AEAD encryption and X25519 ECDH were previously listed here as pending; both are
+implemented — see `src/crypto.rs`.)
 
 ## Confidential Key Derivation (CKD)
 
@@ -344,7 +345,10 @@ Production-ready security features:
 1. **TEE:** Intel TDX via Phala Network with hardware attestation
 2. **Attestation:** On-chain verification via worker registration contract
 3. **Key Storage:** TEE sealed storage with hardware binding
-4. **Encryption:** XOR with derived keys (keystore runs in TEE)
+4. **Encryption:** ECIES — ephemeral X25519 ECDH + HKDF-SHA256 + ChaCha20-Poly1305
+   AEAD. Wire format: `[0x01 | ephemeral_pubkey(32) | nonce(12) | ciphertext | tag(16)]`.
+   Only the TEE holds the private key; the key published by `/pubkey` can encrypt but
+   not decrypt.
 
 ### Security Best Practices
 
@@ -394,7 +398,7 @@ Production-ready security features:
 - Linear scaling with CPU cores (tokio async runtime)
 
 **Latency:**
-- < 1ms for decryption operation (XOR)
+- < 1ms for decryption operation (X25519 ECDH + ChaCha20-Poly1305)
 - ~10-50ms with SGX remote attestation
 - Network latency depends on deployment topology
 

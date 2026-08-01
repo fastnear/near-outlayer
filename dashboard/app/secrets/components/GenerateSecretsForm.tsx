@@ -289,7 +289,7 @@ export function GenerateSecretsForm({
           <h3 className="text-sm font-medium text-blue-900 mb-2">💡 How it works</h3>
           <ul className="text-xs text-blue-800 space-y-1 list-disc list-inside">
             <li>Keystore generates secrets inside TEE (you never see the values)</li>
-            <li>Generated secrets are immediately encrypted with ChaCha20-Poly1305</li>
+            <li>Generated secrets are encrypted inside the TEE before they ever leave it (ChaCha20-Poly1305 AEAD), so the plaintext never reaches your browser or the chain</li>
             <li>You only see the list of key names (for verification)</li>
             <li>Secrets can be added incrementally to existing encrypted data</li>
             <li>Perfect for HKDF seeds, API keys, passwords, and ED25519 keys</li>
