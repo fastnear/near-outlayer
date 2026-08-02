@@ -167,6 +167,12 @@ pub struct VaultVersionInfo {
 /// verifies ONLY that slot; keep small (gas).
 const MAX_COLLATERALS: usize = 2;
 
+/// Max keys per `revoke_keystore_keys` ballot. Bounds the threshold-crossing call: each key
+/// costs an UnorderedSet remove + a DeleteKey receipt + a log, and an ml-dsa-65 key is ~2 KB
+/// of args and a ~1953-byte set element — 16 of those stays well inside 300 Tgas, where a
+/// 62-key ml-dsa batch plausibly would not. Larger cleanups run as several ballots.
+const MAX_REVOKE_BATCH: usize = 16;
+
 /// Keystore DAO Contract
 ///
 /// This contract manages keystore registration through DAO governance.
@@ -307,6 +313,16 @@ pub struct ApprovalArgs {
 pub enum VaultVersionAction {
     Approve { hash: Base58CryptoHash },
     Revoke { hash: Base58CryptoHash },
+    /// Keystore-key revocation ballot (despite the enum's name, the
+    /// `vault_version_votes` ledger is the DAO's generic multisig
+    /// ledger). `batch_hash` = sha256 over the concatenated bytes of
+    /// the canonically sorted `public_keys` passed to
+    /// `revoke_keystore_keys` — voters submitting the same SET of keys
+    /// (any order) land on the same ballot.
+    /// Appended AFTER the existing variants: borsh encodes variants by
+    /// index, so existing on-chain ledger entries stay readable and no
+    /// state migration is needed.
+    RevokeKeystoreKeys { batch_hash: Base58CryptoHash },
 }
 
 #[cfg_attr(
@@ -652,6 +668,113 @@ impl KeystoreDao {
         env::log_str(&format!("Approved measurements removed. Remaining: {}", self.approved_measurements.len()));
     }
 
+    /// Quorum-gated revocation of keystore keys: removes them from `approved_keystores` and
+    /// deletes their access keys from this account, cutting them off from `request_key` (CKD),
+    /// `mark_vault_verified` and `ban_vault`. Same multisig pattern as
+    /// `approve_vault_version` / `revoke_vault_version` — each DAO member calls this with the
+    /// SAME set of `public_keys` (the array is sorted canonically before hashing, so argument
+    /// order does not matter); when live votes reach `approval_threshold` the revocation
+    /// executes and the ballot is cleared. No single member — and not the owner — can revoke
+    /// alone once the DAO has more than one member.
+    ///
+    /// Safety: a key is revocable only if it is in `approved_keystores`. Every key in that set
+    /// was installed by `internal_execute_proposal` as a method-restricted FunctionCall key;
+    /// the owner's full-access key was never inserted there, so this method cannot delete a
+    /// full-access key and cannot lock the account. The contract has no way to introspect an
+    /// access key's permission at runtime — set membership is the proof of how the key was
+    /// installed.
+    ///
+    /// Membership is checked at vote time (clear errors early) and enforced again at
+    /// execution: a panic on any key (no longer approved, or duplicated in the input) reverts
+    /// the whole executing call, including deletions already scheduled in it. Each deletion is
+    /// its own detached promise, so if an access key is somehow already absent on-chain, only
+    /// that promise fails asynchronously while the set removal stands — which is the desired
+    /// end state (key gone, bookkeeping gone).
+    ///
+    /// Operational warning: revoking the key of a LIVE keystore instance leaves it serving
+    /// from RAM but unable to derive new vault masters or to re-derive after a restart.
+    /// Identify the live instance's key (newest executed proposal / the keystore's reported
+    /// registration key) before voting.
+    ///
+    /// Returns the number of live votes recorded so far for this ballot.
+    pub fn revoke_keystore_keys(&mut self, public_keys: Vec<PublicKey>) -> u32 {
+        self.assert_dao_member();
+        require!(!public_keys.is_empty(), "public_keys must not be empty");
+        require!(
+            public_keys.len() <= MAX_REVOKE_BATCH,
+            "Too many keys in one ballot (gas headroom); split into several ballots"
+        );
+        // Canonical order: voters passing the same SET of keys in any order land on the same
+        // ballot. Execution below iterates the sorted vec too — removal order is irrelevant.
+        let mut public_keys = public_keys;
+        public_keys.sort_unstable_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+        for (i, public_key) in public_keys.iter().enumerate() {
+            require!(
+                self.approved_keystores.contains(public_key),
+                "Key not in approved_keystores: only DAO-installed keystore keys can be revoked"
+            );
+            // A duplicate would pass the contains() check but panic at execution (second
+            // remove() returns false), permanently stranding the ballot at threshold-1 —
+            // reject it at vote time instead. O(n²) is fine at fleet sizes (~tens of keys).
+            require!(
+                !public_keys[..i].contains(public_key),
+                "Duplicate key in public_keys"
+            );
+        }
+
+        // Ballot id: hash of the canonically sorted key list. Voters passing a different SET
+        // land on a different ballot and neither blocks the other. Injective across mixed
+        // curve types: as_bytes() is [tag ++ fixed-length-per-tag data], a prefix code.
+        let mut ballot_bytes: Vec<u8> = Vec::new();
+        for public_key in public_keys.iter() {
+            ballot_bytes.extend_from_slice(public_key.as_bytes());
+        }
+        let batch_hash: Base58CryptoHash = env::sha256_array(&ballot_bytes).into();
+        let action = VaultVersionAction::RevokeKeystoreKeys { batch_hash };
+
+        let voter = env::predecessor_account_id();
+        let mut voters = self.vault_version_votes.get(&action).unwrap_or_default();
+        // Same stale-member defense as approve_vault_version: drop votes from ex-members so
+        // shrinking the DAO cannot retroactively push an old ballot past threshold.
+        voters.retain(|v| self.dao_members.contains(v));
+        if !voters.contains(&voter) {
+            voters.push(voter);
+        }
+        let count = voters.len() as u32;
+
+        if count >= self.approval_threshold {
+            self.vault_version_votes.remove(&action);
+            for public_key in public_keys {
+                require!(
+                    self.approved_keystores.remove(&public_key),
+                    "Key not in approved_keystores: only DAO-installed keystore keys can be revoked"
+                );
+                Promise::new(env::current_account_id())
+                    .delete_key(public_key.clone())
+                    .detach();
+                // Short fingerprint only: an ml-dsa-65 key debug-prints to ~19 KB (over the log limit).
+                env::log_str(&format!(
+                    "🗑️ Revoked keystore key (curve={:?}, sha256={})",
+                    public_key.curve_type(),
+                    hex::encode(env::sha256_array(public_key.as_bytes()))
+                ));
+            }
+            env::log_str(&format!(
+                "Approved keystores remaining: {}",
+                self.approved_keystores.len()
+            ));
+        } else {
+            self.vault_version_votes.insert(&action, &voters);
+            env::log_str(&format!(
+                "keystore_revocation_vote batch={} votes={}/{}",
+                String::from(&batch_hash),
+                count,
+                self.approval_threshold,
+            ));
+        }
+        count
+    }
+
     /// Owner: Add DAO member
     pub fn add_dao_member(&mut self, member: AccountId) {
         self.assert_owner();
@@ -743,6 +866,16 @@ impl KeystoreDao {
         } else {
             false
         }
+    }
+
+    /// Paginated list of approved keystore public keys (revocation targets for
+    /// `revoke_keystore_keys`; cross-check against the account's access-key list via RPC).
+    pub fn get_approved_keystores(&self, from_index: u64, limit: u64) -> Vec<PublicKey> {
+        self.approved_keystores
+            .iter()
+            .skip(from_index as usize)
+            .take(limit as usize)
+            .collect()
     }
 
     /// Get owner
@@ -1505,6 +1638,133 @@ mod tests {
         testing_env!(ctx(member_b()).build());
         dao.revoke_vault_version(h);
         assert!(!dao.is_vault_code_approved(h));
+    }
+
+    // ===== Keystore key revocation (quorum) =====
+
+    fn test_key(byte: u8) -> PublicKey {
+        // Not a valid curve point — PublicKey only validates length, which is all we need.
+        PublicKey::from_parts(CurveType::ED25519, vec![byte; 32]).unwrap()
+    }
+
+    #[test]
+    fn revoke_keystore_keys_requires_quorum_and_executes_at_threshold() {
+        let mut dao = fresh_dao();
+        dao.approved_keystores.insert(&test_key(1));
+        dao.approved_keystores.insert(&test_key(2));
+
+        testing_env!(ctx(member_a()).build());
+        let votes = dao.revoke_keystore_keys(vec![test_key(1), test_key(2)]);
+        assert_eq!(votes, 1);
+        assert!(
+            dao.approved_keystores.contains(&test_key(1)),
+            "must NOT execute on 1 of 2 votes"
+        );
+
+        testing_env!(ctx(member_b()).build());
+        let votes = dao.revoke_keystore_keys(vec![test_key(1), test_key(2)]);
+        assert_eq!(votes, 2);
+        assert_eq!(dao.approved_keystores.len(), 0);
+        // Ballot cleared after execution: a fresh vote for a re-approved key starts at 1.
+        dao.approved_keystores.insert(&test_key(1));
+        dao.approved_keystores.insert(&test_key(2));
+        testing_env!(ctx(member_a()).build());
+        assert_eq!(dao.revoke_keystore_keys(vec![test_key(1), test_key(2)]), 1);
+    }
+
+    #[test]
+    fn revoke_keystore_keys_different_sets_are_different_ballots() {
+        let mut dao = fresh_dao();
+        dao.approved_keystores.insert(&test_key(1));
+        dao.approved_keystores.insert(&test_key(2));
+
+        testing_env!(ctx(member_a()).build());
+        dao.revoke_keystore_keys(vec![test_key(1)]);
+        testing_env!(ctx(member_b()).build());
+        dao.revoke_keystore_keys(vec![test_key(2)]);
+
+        // Two singleton ballots with 1 vote each — nothing executes.
+        assert!(dao.approved_keystores.contains(&test_key(1)));
+        assert!(dao.approved_keystores.contains(&test_key(2)));
+    }
+
+    #[test]
+    fn revoke_keystore_keys_is_order_insensitive() {
+        let mut dao = fresh_dao();
+        dao.approved_keystores.insert(&test_key(1));
+        dao.approved_keystores.insert(&test_key(2));
+
+        // Same set, opposite order → same ballot → quorum → executes.
+        testing_env!(ctx(member_a()).build());
+        assert_eq!(dao.revoke_keystore_keys(vec![test_key(1), test_key(2)]), 1);
+        testing_env!(ctx(member_b()).build());
+        assert_eq!(dao.revoke_keystore_keys(vec![test_key(2), test_key(1)]), 2);
+        assert_eq!(dao.approved_keystores.len(), 0);
+    }
+
+    /// Same stale-vote class as the vault-version multisig tests: an
+    /// owner shrinking the DAO must not let removed members' recorded
+    /// votes satisfy the lowered threshold for deleting signing keys.
+    #[test]
+    fn revoke_keystore_keys_does_not_count_removed_members() {
+        let mut dao = fresh_dao_5();
+        assert_eq!(dao.approval_threshold, 3);
+        dao.approved_keystores.insert(&test_key(1));
+        let m = |s: &str| -> AccountId { s.parse().unwrap() };
+
+        testing_env!(ctx(m("m1.near")).build());
+        dao.revoke_keystore_keys(vec![test_key(1)]);
+        testing_env!(ctx(m("m2.near")).build());
+        dao.revoke_keystore_keys(vec![test_key(1)]);
+        assert!(dao.approved_keystores.contains(&test_key(1)));
+
+        testing_env!(ctx("owner.near".parse().unwrap()).build());
+        dao.remove_dao_member(m("m1.near"));
+        dao.remove_dao_member(m("m2.near"));
+        assert_eq!(dao.approval_threshold, 2); // (3/2)+1
+
+        testing_env!(ctx(m("m3.near")).build());
+        let count = dao.revoke_keystore_keys(vec![test_key(1)]);
+        assert_eq!(count, 1, "stale votes from removed members must not count");
+        assert!(dao.approved_keystores.contains(&test_key(1)));
+    }
+
+    #[test]
+    #[should_panic(expected = "Too many keys in one ballot")]
+    fn revoke_keystore_keys_rejects_oversized_batch() {
+        let mut dao = fresh_dao();
+        for b in 0..=MAX_REVOKE_BATCH as u8 {
+            dao.approved_keystores.insert(&test_key(b));
+        }
+        testing_env!(ctx(member_a()).build());
+        let batch: Vec<PublicKey> = (0..=MAX_REVOKE_BATCH as u8).map(test_key).collect();
+        dao.revoke_keystore_keys(batch);
+    }
+
+    #[test]
+    #[should_panic(expected = "Duplicate key in public_keys")]
+    fn revoke_keystore_keys_rejects_duplicates_at_vote_time() {
+        let mut dao = fresh_dao();
+        dao.approved_keystores.insert(&test_key(1));
+        testing_env!(ctx(member_a()).build());
+        dao.revoke_keystore_keys(vec![test_key(1), test_key(1)]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Key not in approved_keystores")]
+    fn revoke_keystore_keys_rejects_unknown_key() {
+        let mut dao = fresh_dao();
+        testing_env!(ctx(member_a()).build());
+        dao.revoke_keystore_keys(vec![test_key(7)]);
+    }
+
+    #[test]
+    #[should_panic(expected = "only DAO members can call this method")]
+    fn revoke_keystore_keys_rejects_non_member() {
+        let mut dao = fresh_dao();
+        dao.approved_keystores.insert(&test_key(1));
+        testing_env!(ctx(outsider()).build());
+        dao.revoke_keystore_keys(vec![test_key(1)]);
     }
 
     #[test]
