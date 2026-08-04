@@ -8,7 +8,9 @@ When users want to execute code that requires secrets (API keys, credentials, et
 
 **Security Model:**
 - Private key **NEVER** leaves TEE memory
-- Only verified workers (via TEE attestation) can request decryption
+- Only verified workers can request decryption: the handshake checks that the worker's key is an
+  access key on the operator account (`OPERATOR_ACCOUNT_ID`) — where `register_worker_key` puts
+  it after verifying a TDX quote — and every later request carries the resulting session
 - Token-based authentication for API access
 - Public key is published on-chain in the NEAR contract
 
@@ -31,14 +33,14 @@ When users want to execute code that requires secrets (API keys, credentials, et
 ┌─────────────────────────────────────┐
 │  Executor Worker (in TEE)           │
 │  - Receives task with encrypted     │
-│  - Generates attestation proof      │
+│  - Opens a TEE session              │
 │  - Requests decryption              │
 └────────┬────────────────────────────┘
          │
-         ↓ POST /decrypt (with attestation)
+         ↓ POST /decrypt (X-TEE-Session)
 ┌─────────────────────────────────────┐
 │  Keystore Worker (in TEE)           │
-│  ✓ Verify attestation               │
+│  ✓ Verify the TEE session           │
 │  ✓ Decrypt with private key         │
 │  ✓ Return plaintext (over TLS)      │
 │  - Private key stays in TEE         │
@@ -49,7 +51,8 @@ When users want to execute code that requires secrets (API keys, credentials, et
 
 - **TEE-Ready:** Designed for Intel SGX, AMD SEV-SNP, or simulated TEE
 - **High Performance:** Async/await with Tokio for parallel request handling
-- **Secure:** Attestation verification prevents unauthorized access
+- **Secure:** Workers authenticate with a bearer token plus a challenge-response TEE session; a
+  request without a live session is refused
 - **Simple API:** RESTful HTTP endpoints
 - **Contract Integration:** Publishes public key to NEAR contract
 - **Token Auth:** SHA256 bearer tokens for additional security layer
@@ -58,19 +61,21 @@ When users want to execute code that requires secrets (API keys, credentials, et
 ## API Endpoints
 
 ### `GET /health`
-Health check and public key info (no auth required)
+Liveness only, no auth. Deliberately carries nothing about fleet state — see
+`/admin/loaded-vaults` for that.
 
 **Response:**
 ```json
 {
   "status": "ok",
-  "public_key": "a1b2c3d4...",
-  "tee_mode": "Sgx"
+  "tee_mode": "OutlayerTee"
 }
 ```
 
-### `GET /pubkey`
-Get keystore public key (no auth required)
+### `POST /pubkey`
+Get keystore public key. Public for `vault_id = null`; a vault-scoped request requires a
+coordinator or worker token, because it can trigger an on-chain CKD derivation paid by that
+vault.
 
 **Response:**
 ```json
@@ -86,18 +91,13 @@ Decrypt secrets for verified TEE worker (requires auth)
 **Headers:**
 ```
 Authorization: Bearer <worker-token>
+X-TEE-Session: <session-id>
 ```
 
 **Request:**
 ```json
 {
   "encrypted_secrets": "base64-encoded-ciphertext",
-  "attestation": {
-    "tee_type": "sgx",
-    "quote": "base64-encoded-attestation-quote",
-    "worker_pubkey": "optional-worker-pubkey",
-    "timestamp": 1234567890
-  },
   "task_id": "optional-task-id"
 }
 ```
@@ -112,7 +112,7 @@ Authorization: Bearer <worker-token>
 **Error Response:**
 ```json
 {
-  "error": "Attestation verification failed: ..."
+  "error": "TEE session not found"
 }
 ```
 
@@ -220,6 +220,18 @@ INFO  Keystore worker API server started, addr=0.0.0.0:8081
 INFO  Ready to serve decryption requests from executor workers
 ```
 
+## Deploying
+
+**Keystore first, then the workers for it.** A worker has its keystore's address baked in
+(`KEYSTORE_BASE_URL`), so it only ever talks to the keystore it was deployed for — the new
+worker needs that keystore to already exist. The same pinning is why the two can change their
+shared request shape in a single release with no deprecation window: a worker never meets a
+keystore of a different version.
+
+Restarting the keystore mints a fresh ephemeral registration key and needs a DAO vote within
+~30 minutes, so schedule the release when a voter is on hand. Retire the previous version's
+keys afterwards with `scripts/revoke_old_keystore_keys.sh <network>`.
+
 ## Testing
 
 ### Test Health Endpoint
@@ -241,9 +253,10 @@ Secrets are encrypted in browser and stored on contract.
 
 ### Current Status
 - ✅ Production TEE via Intel TDX (Phala Network)
-- ✅ Attestation verification implemented
+- ✅ Worker TEE sessions (challenge-response over a key held on the operator account)
 - ✅ Worker registration with on-chain verification
-- ✅ Sealed storage for master keys
+- ✅ Masters never persisted: the default master is CKD-derived at boot, per-vault masters on
+  first touch, and the registration keypair lives only in memory
 
 ### Alternative TEE Deployment Options
 
@@ -371,15 +384,17 @@ Production-ready security features:
 3. Call `set_keystore_pubkey` on contract with correct public key
 4. Or generate a new keystore and update contract
 
-### "Attestation verification failed"
+### "TEE session not found" / "session expired"
 
-**Cause:** Worker's attestation is invalid or expired.
+**Cause:** The keystore has no live session for this worker — it restarted (sessions live in
+memory only), or the worker never completed the challenge-response handshake.
 
 **Fix:**
-1. Check worker is using correct TEE mode
-2. Verify attestation timestamp is recent (< 5 minutes)
-3. Check expected measurements are configured correctly
-4. For simulated mode: ensure worker binary hash matches expected
+1. The worker re-registers automatically on this error for `/decrypt`, `/encrypt` and
+   `/decrypt-raw`; check its logs for a failed re-handshake and its cause
+2. Verify the worker's key is still an access key on the operator account (removed keys, e.g.
+   by `remove_worker_keys`, invalidate the handshake)
+3. Jobs that were mid-execution when the keystore restarted fail by design — retry them
 
 ### "Unauthorized" error
 

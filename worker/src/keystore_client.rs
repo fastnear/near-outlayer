@@ -1,23 +1,9 @@
 //! Client for communicating with keystore worker
 //!
-//! Handles TEE attestation generation and secret decryption requests.
+//! Handles secret decryption requests and the TEE session handshake.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-
-/// TEE attestation for keystore verification
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Attestation {
-    /// Type of TEE (outlayer_tee, none)
-    pub tee_type: String,
-    /// Raw attestation quote/report (base64 encoded)
-    pub quote: String,
-    /// Worker's ephemeral public key
-    pub worker_pubkey: Option<String>,
-    /// Timestamp when attestation was generated
-    pub timestamp: u64,
-}
 
 /// Response with decrypted secrets
 #[derive(Debug, Deserialize)]
@@ -57,7 +43,6 @@ pub struct KeystoreClient {
     base_url: String,
     auth_token: String,
     http_client: reqwest::Client,
-    tee_mode: String,
     /// TEE session ID (set after successful challenge-response registration)
     tee_session_id: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     /// TEE signing info for auto-reconnect (public key bytes + signing key)
@@ -66,7 +51,7 @@ pub struct KeystoreClient {
 
 impl KeystoreClient {
     /// Create new keystore client
-    pub fn new(base_url: String, auth_token: String, tee_mode: String) -> Self {
+    pub fn new(base_url: String, auth_token: String) -> Self {
         Self {
             base_url,
             auth_token,
@@ -75,7 +60,6 @@ impl KeystoreClient {
                 .connect_timeout(std::time::Duration::from_secs(10))
                 .build()
                 .expect("Failed to build keystore HTTP client"),
-            tee_mode,
             tee_session_id: std::sync::Arc::new(std::sync::Mutex::new(None)),
             tee_signing_info: None,
         }
@@ -201,6 +185,69 @@ impl KeystoreClient {
         Ok(())
     }
 
+    /// POST a JSON body, re-establishing the TEE session and retrying once when the keystore
+    /// rejects the request because the session is gone.
+    ///
+    /// Only `/decrypt` used to recover this way; `/encrypt` and `/decrypt-raw` failed hard until
+    /// the worker was restarted by hand. One keystore restart invalidates every session at once
+    /// (they live in its memory), so these paths recover on their own now.
+    ///
+    /// Deliberately NOT covering `/storage/*` and `/vrf/generate`: those run inside a WASI
+    /// execution on blocking clients that were handed a session id by value at job start, so a
+    /// keystore restart mid-job fails that job — accepted behaviour, not an oversight.
+    ///
+    /// `build_body` is a closure so the retry re-serializes from scratch rather than reusing a
+    /// half-consumed request.
+    async fn post_with_session_retry<T: Serialize>(
+        &self,
+        url: &str,
+        build_body: impl Fn() -> Result<T>,
+        what: &str,
+    ) -> Result<reqwest::Response> {
+        let response = self
+            .add_auth_headers(self.http_client.post(url))
+            .json(&build_body()?)
+            .send()
+            .await
+            .with_context(|| format!("Failed to send {} request", what))?;
+
+        if response.status().is_success() {
+            return Ok(response);
+        }
+
+        let status = response.status();
+        let error_text = response.text().await.unwrap_or_default();
+        if !Self::is_tee_session_expired(status, &error_text) {
+            anyhow::bail!("{} request failed ({}): {}", what, status, error_text);
+        }
+
+        // Unlike `/decrypt`, which keeps its own inline retry so it can map keystore 4xx into
+        // user-facing messages, these endpoints have no such mapping — so the reconnect
+        // failure is surfaced as the error itself rather than logged and swallowed.
+        self.try_reconnect_tee_session()
+            .await
+            .with_context(|| format!("{} got {} and the TEE session reconnect failed", what, status))?;
+
+        let retry = self
+            .add_auth_headers(self.http_client.post(url))
+            .json(&build_body()?)
+            .send()
+            .await
+            .with_context(|| format!("Failed to send {} retry request", what))?;
+
+        if !retry.status().is_success() {
+            let retry_status = retry.status();
+            let retry_body = retry.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "{} failed again after session reconnect ({}): {}",
+                what,
+                retry_status,
+                retry_body
+            );
+        }
+        Ok(retry)
+    }
+
     /// Parse a successful decrypt response into a HashMap of env vars.
     fn parse_decrypt_response(response_bytes: &[u8]) -> Result<std::collections::HashMap<String, String>> {
         let decrypt_response: DecryptResponse = serde_json::from_slice(response_bytes)
@@ -220,55 +267,6 @@ impl KeystoreClient {
             builder.header("X-TEE-Session", session_id.as_str())
         } else {
             builder
-        }
-    }
-
-    /// Generate TEE attestation for this worker
-    ///
-    /// TEE modes:
-    /// - outlayer_tee: Uses binary hash attestation (real TDX quote only used for worker registration)
-    /// - none: Generate stub attestation for development
-    pub fn generate_attestation(&self) -> Result<Attestation> {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        match self.tee_mode.as_str() {
-            "outlayer_tee" => {
-                // OutLayer TEE mode: binary hash attestation for keystore
-                // Real TDX quote is only used for worker registration on register-contract
-                tracing::info!("Generating attestation for keystore (outlayer_tee mode)");
-
-                let binary_path = std::env::current_exe()
-                    .context("Failed to get current executable path")?;
-
-                let binary = std::fs::read(&binary_path)
-                    .context("Failed to read worker binary")?;
-
-                let mut hasher = Sha256::new();
-                hasher.update(&binary);
-                let measurement = hasher.finalize();
-
-                Ok(Attestation {
-                    tee_type: "outlayer_tee".to_string(),
-                    quote: base64::encode(measurement),
-                    worker_pubkey: None,
-                    timestamp,
-                })
-            }
-            "none" => {
-                // Dev mode: No attestation
-                Ok(Attestation {
-                    tee_type: "none".to_string(),
-                    quote: base64::encode(b"no-attestation"),
-                    worker_pubkey: None,
-                    timestamp,
-                })
-            }
-            other => {
-                anyhow::bail!("Unsupported TEE mode: {}", other);
-            }
         }
     }
 
@@ -332,10 +330,6 @@ impl KeystoreClient {
             accessor_desc, profile, owner, task_id
         );
 
-        // Generate attestation
-        let attestation = self.generate_attestation()
-            .context("Failed to generate attestation")?;
-
         // Prepare request with accessor
         #[derive(Debug, Serialize)]
         struct DecryptRequest {
@@ -343,7 +337,6 @@ impl KeystoreClient {
             profile: String,
             owner: String,
             user_account_id: String,
-            attestation: Attestation,
             task_id: Option<String>,
         }
 
@@ -352,7 +345,6 @@ impl KeystoreClient {
             profile: profile.to_string(),
             owner: owner.to_string(),
             user_account_id: user_account_id.to_string(),
-            attestation,
             task_id: task_id.map(|s| s.to_string()),
         };
 
@@ -388,16 +380,21 @@ impl KeystoreClient {
 
             // Auto-reconnect: if 403 with session expired, re-register and retry once
             if Self::is_tee_session_expired(status, &error_text) {
-                if let Ok(()) = self.try_reconnect_tee_session().await {
+                // Log why a reconnect failed before falling through. Discarding it (the old
+                // `if let Ok(())`) left only the original 403 in the logs, which reads as
+                // "the keystore rejected us" even when the real cause is on our side — e.g.
+                // no signing key to re-handshake with.
+                let reconnected = self.try_reconnect_tee_session().await;
+                if let Err(ref e) = reconnected {
+                    tracing::error!(error = %e, "TEE session reconnect failed; reporting the original error");
+                }
+                if reconnected.is_ok() {
                     // Retry the request with new session
-                    let attestation = self.generate_attestation()
-                        .context("Failed to generate attestation for retry")?;
                     let retry_request = DecryptRequest {
                         accessor: accessor.clone(),
                         profile: profile.to_string(),
                         owner: owner.to_string(),
                         user_account_id: user_account_id.to_string(),
-                        attestation,
                         task_id: task_id.map(|s| s.to_string()),
                     };
                     let retry_response = self.add_auth_headers(self.http_client.post(&url))
@@ -555,16 +552,11 @@ impl KeystoreClient {
             "🔐 Encrypting data via keystore"
         );
 
-        // Generate attestation
-        let attestation = self.generate_attestation()
-            .context("Failed to generate attestation")?;
-
         // Prepare request
         #[derive(Debug, Serialize)]
         struct EncryptRequest {
             seed: String,
             plaintext_base64: String,
-            attestation: Attestation,
         }
 
         #[derive(Debug, Deserialize)]
@@ -572,26 +564,23 @@ impl KeystoreClient {
             encrypted_base64: String,
         }
 
-        let request = EncryptRequest {
-            seed: seed.to_string(),
-            plaintext_base64: base64::encode(plaintext),
-            attestation,
-        };
+        let plaintext_base64 = base64::encode(plaintext);
 
         // Send request to keystore
         let url = format!("{}/encrypt", self.base_url);
 
-        let response = self.add_auth_headers(self.http_client.post(&url))
-            .json(&request)
-            .send()
-            .await
-            .context("Failed to send encrypt request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
-            anyhow::bail!("Encrypt request failed ({}): {}", status, error_text);
-        }
+        let response = self
+            .post_with_session_retry(
+                &url,
+                || {
+                    Ok(EncryptRequest {
+                        seed: seed.to_string(),
+                        plaintext_base64: plaintext_base64.clone(),
+                    })
+                },
+                "Encrypt",
+            )
+            .await?;
 
         let encrypt_response: EncryptResponse = response
             .json()
@@ -628,17 +617,12 @@ impl KeystoreClient {
         // The keystore's /decrypt endpoint expects accessor/profile/owner
         // For Payment Keys, we need to use the System accessor
 
-        // Generate attestation
-        let attestation = self.generate_attestation()
-            .context("Failed to generate attestation")?;
-
         // For TopUp, we pass encrypted data directly (from the event)
         // and keystore decrypts using the seed
         #[derive(Debug, Serialize)]
         struct DecryptRawRequest {
             seed: String,
             encrypted_base64: String,
-            attestation: Attestation,
         }
 
         #[derive(Debug, Deserialize)]
@@ -646,26 +630,21 @@ impl KeystoreClient {
             plaintext_base64: String,
         }
 
-        let request = DecryptRawRequest {
-            seed: seed.to_string(),
-            encrypted_base64: encrypted_base64.to_string(),
-            attestation,
-        };
-
         // Send request to keystore (using /decrypt-raw endpoint for direct decryption)
         let url = format!("{}/decrypt-raw", self.base_url);
 
-        let response = self.add_auth_headers(self.http_client.post(&url))
-            .json(&request)
-            .send()
-            .await
-            .context("Failed to send decrypt-raw request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
-            anyhow::bail!("Decrypt-raw request failed ({}): {}", status, error_text);
-        }
+        let response = self
+            .post_with_session_retry(
+                &url,
+                || {
+                    Ok(DecryptRawRequest {
+                        seed: seed.to_string(),
+                        encrypted_base64: encrypted_base64.to_string(),
+                    })
+                },
+                "Decrypt-raw",
+            )
+            .await?;
 
         let decrypt_response: DecryptRawResponse = response
             .json()
@@ -703,29 +682,119 @@ mod base64 {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_generate_attestation_outlayer_tee() {
-        let client = KeystoreClient::new(
-            "http://localhost:8081".to_string(),
-            "test-token".to_string(),
-            "outlayer_tee".to_string(),
-        );
+    // ===== post_with_session_retry: recovery after the keystore forgets its sessions =====
 
-        let attestation = client.generate_attestation().unwrap();
-        assert_eq!(attestation.tee_type, "outlayer_tee");
-        assert!(!attestation.quote.is_empty());
+    /// A throwaway keystore: answers the first business request with the keystore's own
+    /// session-expired 403, serves the challenge-response handshake, then answers 200.
+    ///
+    /// Every response closes the connection so the client's pool cannot outlive a step.
+    fn fake_keystore(reject_first: bool) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let handle = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            let mut business_calls = 0;
+            for stream in listener.incoming().take(if reject_first { 4 } else { 1 }) {
+                let mut stream = match stream {
+                    Ok(s) => s,
+                    Err(_) => break,
+                };
+                let mut buf = [0u8; 8192];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let path = req
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("/")
+                    .to_string();
+                seen.push(path.clone());
+
+                let (code, body) = match path.as_str() {
+                    "/tee-challenge" => (200, r#"{"challenge":"deadbeef"}"#.to_string()),
+                    "/register-tee" => (
+                        200,
+                        r#"{"session_id":"6f1e9d3a-0000-4000-8000-000000000001"}"#.to_string(),
+                    ),
+                    _ => {
+                        business_calls += 1;
+                        if reject_first && business_calls == 1 {
+                            (403, r#"{"error":"TEE session not found"}"#.to_string())
+                        } else {
+                            (200, r#"{"encrypted_base64":"Y2lwaGVy"}"#.to_string())
+                        }
+                    }
+                };
+
+                let response = format!(
+                    "HTTP/1.1 {code} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+            seen
+        });
+        (format!("http://{}", addr), handle)
     }
 
-    #[test]
-    fn test_generate_attestation_none() {
-        let client = KeystoreClient::new(
-            "http://localhost:8081".to_string(),
-            "test-token".to_string(),
-            "none".to_string(),
-        );
+    fn client_with_signing_key(base_url: String) -> KeystoreClient {
+        let mut client = KeystoreClient::new(base_url, "test-token".to_string());
+        client.set_tee_signing_info(near_crypto::SecretKey::from_random(
+            near_crypto::KeyType::ED25519,
+        ));
+        client.set_tee_session_id("stale-session".to_string());
+        client
+    }
 
-        let attestation = client.generate_attestation().unwrap();
-        assert_eq!(attestation.tee_type, "none");
+    /// The keystore restarted and forgot every session. The worker must re-handshake and finish
+    /// the original call on its own — before this existed, only `/decrypt` recovered and every
+    /// other endpoint stayed broken until someone restarted the worker.
+    #[tokio::test]
+    async fn encrypt_reestablishes_a_dropped_tee_session_and_succeeds() {
+        let (url, server) = fake_keystore(true);
+        let client = client_with_signing_key(url);
+
+        let out = client.encrypt("seed", b"plaintext").await;
+
+        let seen = server.join().expect("server thread");
+        assert!(out.is_ok(), "expected recovery, got {out:?}");
+        assert_eq!(
+            seen,
+            vec![
+                "/encrypt".to_string(),
+                "/tee-challenge".to_string(),
+                "/register-tee".to_string(),
+                "/encrypt".to_string(),
+            ],
+            "expected: rejected call, handshake, then the same call again"
+        );
+    }
+
+    /// Without a signing key there is nothing to re-handshake with. The failure must name that
+    /// cause — the old code discarded it and reported only the keystore's 403, which reads as
+    /// "the keystore rejected us" when the problem is on our side.
+    #[tokio::test]
+    async fn encrypt_reports_why_a_reconnect_could_not_happen() {
+        let (url, server) = fake_keystore(true);
+        // No `set_tee_signing_info` — this is a worker that never got its key.
+        let client = KeystoreClient::new(url, "test-token".to_string());
+
+        let err = client
+            .encrypt("seed", b"plaintext")
+            .await
+            .expect_err("must fail without a way to re-handshake");
+        let chain = format!("{err:#}");
+
+        assert!(
+            chain.contains("No TEE signing info"),
+            "the reconnect failure must be in the error chain, got: {chain}"
+        );
+        assert!(
+            chain.contains("403"),
+            "the original keystore status should still be visible, got: {chain}"
+        );
+        drop(server);
     }
 
     /// Test SecretAccessor::Repo serialization (with branch)

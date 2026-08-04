@@ -7,7 +7,7 @@
 //! All encryption/decryption is done by keystore (TEE), not locally.
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tracing::{debug, error, warn};
@@ -29,43 +29,8 @@ pub struct StorageConfig {
     pub wasm_hash: String,
     /// Account ID of the signer (NEAR account)
     pub account_id: String,
-    /// TEE mode for attestation
-    pub tee_mode: String,
     /// Keystore TEE session ID (set after challenge-response registration)
     pub keystore_tee_session_id: Option<String>,
-}
-
-/// Attestation for keystore requests
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Attestation {
-    pub tee_type: String,
-    pub quote: String,
-    pub measurements: serde_json::Value,
-    pub timestamp: u64,
-}
-
-impl Attestation {
-    /// Create a dev-mode attestation stub
-    fn dev_stub() -> Self {
-        Self {
-            tee_type: "none".to_string(),
-            quote: "".to_string(),
-            measurements: serde_json::json!({}),
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-        }
-    }
-
-    /// Create attestation based on TEE mode
-    pub fn for_mode(tee_mode: &str) -> Self {
-        match tee_mode {
-            "outlayer_tee" => Self::dev_stub(), // Attestation is a no-op; TEE sessions handle auth
-            "none" => Self::dev_stub(),
-            _ => Self::dev_stub(),
-        }
-    }
 }
 
 /// HTTP client for coordinator storage API
@@ -114,7 +79,6 @@ impl StorageClient {
             "account_id": account_id,
             "key": key,
             "value_base64": base64_encode(value),
-            "attestation": Attestation::for_mode(&self.config.tee_mode),
         });
 
         let response = self
@@ -154,7 +118,6 @@ impl StorageClient {
             "account_id": account_id,
             "encrypted_key_base64": base64_encode(encrypted_key),
             "encrypted_value_base64": base64_encode(encrypted_value),
-            "attestation": Attestation::for_mode(&self.config.tee_mode),
         });
 
         let response = self
@@ -456,7 +419,6 @@ impl StorageClient {
                     "account_id": self.config.account_id,
                     "encrypted_key_base64": base64_encode(&enc_key),
                     "encrypted_value_base64": base64_encode(&enc_value),
-                    "attestation": Attestation::for_mode(&self.config.tee_mode),
                 });
 
                 let response = self

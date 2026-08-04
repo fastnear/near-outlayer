@@ -268,13 +268,19 @@ pub struct CkdResponse {
 pub struct MpcCkdClient {
     config: MpcCkdConfig,
     rpc_client: JsonRpcClient,
+    /// Separate, far more patient client for the CKD broadcast. The derivation result comes
+    /// back as the transaction's own `SuccessValue`, so the request stays open until the MPC
+    /// nodes resume the yielded receipt — cutting it short would abandon a transaction that
+    /// is already on-chain. Queries keep the fast client above: they sit on the signing path.
+    rpc_client_tx: JsonRpcClient,
 }
 
 impl MpcCkdClient {
     /// Create new MPC CKD client
     pub fn new(config: MpcCkdConfig) -> Self {
-        let rpc_client = JsonRpcClient::connect(&config.near_rpc_url);
-        Self { config, rpc_client }
+        let rpc_client = crate::near::rpc_client(&config.near_rpc_url);
+        let rpc_client_tx = crate::near::rpc_client_tx(&config.near_rpc_url);
+        Self { config, rpc_client, rpc_client_tx }
     }
 
     /// Request deterministic secret from MPC network using CKD via the
@@ -605,7 +611,7 @@ impl MpcCkdClient {
             ),
         };
 
-        let outcome = match self.rpc_client.call(request).await {
+        let outcome = match self.rpc_client_tx.call(request).await {
             Ok(o) => o,
             Err(e) => {
                 // Surface the exact RPC/broadcast error. Without this the
@@ -738,7 +744,7 @@ pub async fn check_keystore_approval(
     dao_contract: &str,
     public_key: &str,
 ) -> Result<bool> {
-    let client = JsonRpcClient::connect(near_rpc_url);
+    let client = crate::near::rpc_client(near_rpc_url);
 
     // Prepare view call arguments
     let args = serde_json::json!({
@@ -788,7 +794,7 @@ pub async fn check_access_key_methods(
 
     const REQUIRED: &[&str] = &["request_key", "mark_vault_verified", "ban_vault"];
 
-    let client = JsonRpcClient::connect(near_rpc_url);
+    let client = crate::near::rpc_client(near_rpc_url);
     let request = methods::query::RpcQueryRequest {
         block_reference: BlockReference::Finality(Finality::Final),
         request: Qr::ViewAccessKey {
@@ -1095,9 +1101,11 @@ pub async fn ensure_customer_loaded(
     // after recovery" guarantee (two parties would hold the secret:
     // the sovereign customer AND the OutLayer keystore cache).
     //
-    // Cost: 2 RPC view-calls per signing op. Acceptable — view-calls
-    // are ~100-300ms each and signing operations on the wallet path
-    // are not bulk-loop hot.
+    // Cost: 2 RPC view-calls per signing op, ~100-300ms each. For an
+    // already-loaded vault — which is every vault an active agent
+    // signs with — they are issued concurrently, so the gate costs one
+    // round-trip of latency rather than two. See `assert_serving_allowed`
+    // for why an unknown vault deliberately keeps the sequential path.
     assert_serving_allowed(near_client, keystore_dao_id, vault_id, keystore).await?;
 
     if keystore.has_customer(vault_id) {
@@ -1120,19 +1128,51 @@ pub async fn ensure_customer_loaded(
 /// On unlocked detection we proactively evict the cached master so
 /// subsequent calls don't even reach the cache check; the next attempt
 /// will re-fail this gate cleanly with the same actionable error.
+///
+/// **Concurrency.** The two reads are independent, so for a vault whose
+/// master is already in memory they are issued together and this gate
+/// costs one round-trip instead of two — it sits on every signing
+/// operation, so that is the difference between ~200-600 ms and half
+/// of it, on every signature an agent makes.
+///
+/// This is deliberately NOT done for a vault we have never served.
+/// `vault_id` is caller-supplied — the coordinator forwards
+/// `X-Customer-Vault` verbatim — so anything at all can arrive here
+/// wearing a vault's clothes, and speculating on the second call would
+/// double the RPC traffic an arbitrary caller can make us generate.
+/// A vault that is already loaded is one that has previously passed
+/// this same gate AND paid for an on-chain CKD derivation; garbage
+/// cannot be in that set, so the fast path is closed to it. The
+/// ordering below is unchanged either way: `is_vault_verified` is
+/// still settled first and still decides on its own, a speculative
+/// `get_state` result is only *read* after it, and neither response is
+/// interpreted unless it has exactly the shape we expect — a
+/// non-bool, a malformed payload or an unreadable account is refused
+/// with a stated reason, never guessed at.
 async fn assert_serving_allowed(
     near_client: &crate::near::NearClient,
     keystore_dao_id: &AccountId,
     vault_id: &AccountId,
     keystore: &Keystore,
 ) -> Result<()> {
-    let response = near_client
-        .view_call_json(
-            keystore_dao_id,
-            "is_vault_verified",
-            serde_json::json!({ "vault_id": vault_id }),
-        )
-        .await
+    let verified_call = near_client.view_call_json(
+        keystore_dao_id,
+        "is_vault_verified",
+        serde_json::json!({ "vault_id": vault_id }),
+    );
+
+    // Only speculate for a vault we have already served (see above).
+    let (verified_result, speculative_state) = if keystore.has_customer(vault_id) {
+        let (verified, state) = tokio::join!(
+            verified_call,
+            near_client.view_call_json(vault_id, "get_state", serde_json::json!({}))
+        );
+        (verified, Some(state))
+    } else {
+        (verified_call.await, None)
+    };
+
+    let response = verified_result
         .with_context(|| format!("is_vault_verified({}) view-call failed", vault_id))?;
 
     let verified: bool = serde_json::from_value(response.clone()).with_context(|| {
@@ -1166,10 +1206,20 @@ async fn assert_serving_allowed(
     // / `does not exist` for case (a) and arbitrary transport / timeout
     // text for case (b). We only evict on (a); for (b) we keep the
     // cache and propagate the error so the caller can retry.
-    let state = match near_client
-        .view_call_json(vault_id, "get_state", serde_json::json!({}))
-        .await
-    {
+    //
+    // Read the speculative result if we launched one — it was issued
+    // alongside the check above, not before it, and is only consulted
+    // now that the vault is known to be verified. Otherwise make the
+    // call here, exactly as this function always has.
+    let state_result = match speculative_state {
+        Some(result) => result,
+        None => {
+            near_client
+                .view_call_json(vault_id, "get_state", serde_json::json!({}))
+                .await
+        }
+    };
+    let state = match state_result {
         Ok(v) => v,
         Err(e) => {
             let msg = format!("{e:#}");
@@ -1231,6 +1281,204 @@ mod tests {
 
     fn vault(s: &str) -> AccountId {
         AccountId::from_str(s).unwrap()
+    }
+
+    // ===== assert_serving_allowed: the per-signature on-chain gate =====
+
+    /// A throwaway NEAR RPC. Answers `call_function` queries by looking at the plaintext
+    /// `method_name` in the request (only `args` are base64), records every method it was
+    /// asked for, and sleeps `delay` before replying so the two calls can be told apart by
+    /// wall-clock. One thread per connection — otherwise the server itself would serialize
+    /// requests and a concurrency assertion would prove nothing.
+    fn fake_rpc(
+        delay: std::time::Duration,
+        answers: Vec<(&'static str, &'static str)>,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let seen_for_thread = seen.clone();
+
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let seen = seen_for_thread.clone();
+                let answers = answers.clone();
+                std::thread::spawn(move || {
+                    // The request is a few hundred bytes; read until the body is in hand.
+                    let mut raw = Vec::new();
+                    let mut buf = [0u8; 4096];
+                    loop {
+                        let n = stream.read(&mut buf).unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        raw.extend_from_slice(&buf[..n]);
+                        let text = String::from_utf8_lossy(&raw);
+                        if text.contains("\r\n\r\n") && text.contains("method_name") {
+                            break;
+                        }
+                    }
+                    let text = String::from_utf8_lossy(&raw).into_owned();
+                    let method = answers
+                        .iter()
+                        .find(|(name, _)| text.contains(&format!("\"method_name\":\"{name}\"")))
+                        .map(|(name, payload)| (name.to_string(), payload.to_string()));
+
+                    let Some((name, payload)) = method else {
+                        let _ = stream.write_all(b"HTTP/1.1 400 X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        return;
+                    };
+                    seen.lock().unwrap().push(name);
+                    std::thread::sleep(delay);
+
+                    // A NEAR `CallResult`: the contract's JSON return value as a byte array.
+                    let bytes = payload
+                        .as_bytes()
+                        .iter()
+                        .map(|b| b.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    let body = format!(
+                        r#"{{"jsonrpc":"2.0","id":"dontcare","result":{{"result":[{bytes}],"logs":[],"block_height":1,"block_hash":"11111111111111111111111111111111"}}}}"#
+                    );
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                });
+            }
+        });
+
+        (format!("http://{}", addr), seen)
+    }
+
+    /// `vault_id` arrives from the caller: the coordinator forwards `X-Customer-Vault` verbatim
+    /// under its OWN token, and nothing proves the caller owns the vault it names. On the
+    /// `/secrets/pubkey` path the coordinator's own route takes no credentials at all, so the
+    /// value can originate with an anonymous caller. Either way anything can be presented as a
+    /// vault, and such a request must cost ONE view call and then stop. If the gate ever
+    /// speculates on `get_state` unconditionally, an arbitrary caller doubles the RPC traffic we
+    /// generate on their behalf, and this is the assertion that catches it.
+    #[tokio::test]
+    async fn unknown_vault_is_refused_after_a_single_view_call() {
+        let (url, seen) = fake_rpc(
+            std::time::Duration::ZERO,
+            vec![("is_vault_verified", "false"), ("get_state", r#"{"unlocked":false}"#)],
+        );
+        let near_client = crate::near::NearClient::new(&url, "dao.testnet").unwrap();
+        let ks = Keystore::generate();
+        let garbage = vault("not-a-vault-of-ours.testnet");
+
+        let err = assert_serving_allowed(&near_client, &vault("dao.testnet"), &garbage, &ks)
+            .await
+            .expect_err("an unverified vault must be refused");
+
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            ["is_vault_verified"],
+            "an unknown vault must not cost a second view call"
+        );
+        // And the refusal has to say why, in terms the caller can act on.
+        let msg = format!("{err:#}");
+        assert!(msg.contains("not verified"), "unclear refusal: {msg}");
+    }
+
+    /// The hot path: a vault whose master is already loaded is one that has passed this gate
+    /// before and paid for a CKD derivation. Both reads are independent, so they go out
+    /// together — this gate runs on EVERY signature, and serializing them doubles its latency.
+    #[tokio::test]
+    async fn loaded_vault_issues_both_view_calls_concurrently() {
+        let per_call = std::time::Duration::from_millis(300);
+        let (url, seen) = fake_rpc(
+            per_call,
+            vec![("is_vault_verified", "true"), ("get_state", r#"{"unlocked":false}"#)],
+        );
+        let near_client = crate::near::NearClient::new(&url, "dao.testnet").unwrap();
+        let ks = Keystore::generate();
+        let v = vault("vault.alice.testnet");
+        ks.add_customer(v.clone(), [7u8; 32]);
+
+        let started = std::time::Instant::now();
+        assert_serving_allowed(&near_client, &vault("dao.testnet"), &v, &ks)
+            .await
+            .expect("a verified, locked vault must be served");
+        let elapsed = started.elapsed();
+
+        let mut methods = seen.lock().unwrap().clone();
+        methods.sort();
+        assert_eq!(methods, ["get_state", "is_vault_verified"], "both checks must still run");
+        assert!(
+            elapsed < per_call * 2,
+            "the two view calls ran one after the other ({elapsed:?} for 2x{per_call:?})"
+        );
+    }
+
+    /// Concurrency must not change WHO decides. `is_vault_verified` still settles first and
+    /// still refuses on its own: a speculative `get_state` saying the vault is perfectly fine
+    /// cannot rescue a vault the DAO has de-verified or banned.
+    #[tokio::test]
+    async fn a_healthy_get_state_cannot_override_a_de_verified_vault() {
+        let (url, _seen) = fake_rpc(
+            std::time::Duration::ZERO,
+            vec![("is_vault_verified", "false"), ("get_state", r#"{"unlocked":false}"#)],
+        );
+        let near_client = crate::near::NearClient::new(&url, "dao.testnet").unwrap();
+        let ks = Keystore::generate();
+        let v = vault("vault.alice.testnet");
+        ks.add_customer(v.clone(), [7u8; 32]);
+
+        let err = assert_serving_allowed(&near_client, &vault("dao.testnet"), &v, &ks)
+            .await
+            .expect_err("a de-verified vault must be refused even when its state looks healthy");
+
+        assert!(format!("{err:#}").contains("not verified"));
+        // And the cached master is dropped, so nothing is served from memory afterwards.
+        assert!(
+            !ks.has_customer(&v),
+            "a de-verified vault must have its cached master evicted"
+        );
+    }
+
+    /// Garbage in, refusal out — never a guess. A response that is not the exact shape the
+    /// contract promises is an error with a stated reason, not something we try to interpret.
+    #[tokio::test]
+    async fn malformed_responses_are_refused_rather_than_interpreted() {
+        // `is_vault_verified` must be a bool; a JSON object is not "truthy".
+        let (url, _s) = fake_rpc(
+            std::time::Duration::ZERO,
+            vec![("is_vault_verified", r#"{"junk":1}"#), ("get_state", r#"{"unlocked":false}"#)],
+        );
+        let near_client = crate::near::NearClient::new(&url, "dao.testnet").unwrap();
+        let ks = Keystore::generate();
+        let err = assert_serving_allowed(
+            &near_client,
+            &vault("dao.testnet"),
+            &vault("vault.alice.testnet"),
+            &ks,
+        )
+        .await
+        .expect_err("a non-bool verification answer must be refused");
+        assert!(format!("{err:#}").contains("non-bool"), "got: {err:#}");
+
+        // `get_state` without `unlocked` must not be read as "locked".
+        let (url, _s) = fake_rpc(
+            std::time::Duration::ZERO,
+            vec![("is_vault_verified", "true"), ("get_state", r#"{"something_else":true}"#)],
+        );
+        let near_client = crate::near::NearClient::new(&url, "dao.testnet").unwrap();
+        let ks = Keystore::generate();
+        let v = vault("vault.alice.testnet");
+        ks.add_customer(v.clone(), [7u8; 32]);
+        let err = assert_serving_allowed(&near_client, &vault("dao.testnet"), &v, &ks)
+            .await
+            .expect_err("a malformed state payload must be refused");
+        assert!(format!("{err:#}").contains("malformed payload"), "got: {err:#}");
+        // Not a customer-side fault, so the master stays put — see the comment on that branch.
+        assert!(ks.has_customer(&v), "a contract/version mismatch must not drain the cache");
     }
 
     #[test]

@@ -82,12 +82,11 @@ impl AccessCondition {
 
 ```rust
 async fn decrypt_handler(State(state): State<AppState>, Json(req): Json<DecryptRequest>) -> Result<Json<DecryptResponse>, ApiError> {
-    // 1. Verify TEE attestation
-    // 2. Read secrets from contract
-    // 3. Parse AccessCondition
+    // 1. Read secrets from contract
+    // 2. Parse AccessCondition
     let access_condition: AccessCondition = serde_json::from_value(secret_profile["access"].clone())?;
 
-    // 4. Validate with NEAR client for balance checks
+    // 3. Validate with NEAR client for balance checks
     let access_granted = access_condition.validate(
         caller,
         state.near_client.as_ref().map(|c| c.as_ref())
@@ -375,8 +374,7 @@ To test balance checks end-to-end:
      -d '{
        "repo": "github.com/user/repo",
        "profile": "test",
-       "owner": "alice.near",
-       "attestation": {"tee_type": "none", "quote": "", "timestamp": 0}
+       "owner": "alice.near"
      }'
    ```
 

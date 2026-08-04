@@ -28,6 +28,16 @@ const GENERATION_TYPES = [
   { value: 'password:128', label: 'Password (128 chars)' },
 ];
 
+/**
+ * How many secrets one generate call may carry.
+ *
+ * Mirrors `MAX_GENERATED_SECRETS` in the keystore (`keystore-worker/src/api.rs`), which refuses
+ * a larger batch. Generation is free and off-chain; the cap exists because the endpoint takes no
+ * user credential, so the batch size is whatever a caller sends. Splitting across calls works —
+ * the existing secrets are passed back in on each one.
+ */
+const MAX_GENERATED_SECRETS = 16;
+
 export function GenerateSecretsForm({
   isConnected,
   accountId,
@@ -90,6 +100,16 @@ export function GenerateSecretsForm({
     const uniqueNames = new Set(names);
     if (names.length !== uniqueNames.size) {
       setError('Duplicate secret names are not allowed');
+      return;
+    }
+
+    // The keystore refuses a larger batch outright; say so here rather than sending a request
+    // that comes back as a 400.
+    if (validSecrets.length > MAX_GENERATED_SECRETS) {
+      setError(
+        `Too many secrets in one batch: ${validSecrets.length} (limit ${MAX_GENERATED_SECRETS}). ` +
+        `Generate them in several batches — the ones you already have are carried over each time.`
+      );
       return;
     }
 
@@ -236,7 +256,12 @@ export function GenerateSecretsForm({
 
           <button
             onClick={addSecretRow}
-            disabled={generating}
+            disabled={generating || secretsToGenerate.length >= MAX_GENERATED_SECRETS}
+            title={
+              secretsToGenerate.length >= MAX_GENERATED_SECRETS
+                ? `Limit is ${MAX_GENERATED_SECRETS} per batch — generate the rest in another batch`
+                : undefined
+            }
             className="mt-2 px-3 py-1 text-sm border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 disabled:opacity-50"
           >
             + Add Another Secret

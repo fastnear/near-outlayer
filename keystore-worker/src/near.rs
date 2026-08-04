@@ -9,6 +9,89 @@ use near_primitives::types::{AccountId, Balance, BlockReference, Gas};
 use serde_json::json;
 use std::str::FromStr;
 
+/// Pooled client for the handcrafted JSON-RPC calls in this module.
+///
+/// A few queries bypass the typed `near-jsonrpc-client` bindings (NEP-591 global-contract
+/// fields the bindings cannot decode) and post raw JSON. They used `raw_rpc_client()`,
+/// i.e. a fresh connection and NO timeout, which is the same silent-hang exposure
+/// [`rpc_client`] exists to close — a stalled connection here pins the handler that called it.
+/// Same 30s ceiling as the query client for that reason.
+fn raw_rpc_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("Failed to build raw JSON-RPC client")
+    })
+}
+
+/// Read-path RPC client: view calls, access keys, block queries.
+///
+/// `JsonRpcClient::connect` builds its reqwest client with headers only and **no timeout**
+/// (near-jsonrpc-client 0.22, `lib.rs:364`), and reqwest without an explicit timeout waits
+/// forever. A connection that is established but never answered would hang the signing request
+/// that triggered it, and through it the coordinator handler waiting on us. A provider that
+/// load-balances internally does not help: the failure mode is a silent connection, not an
+/// error response.
+///
+/// 30s is far above a healthy view call (~100-300ms) and these sit on the signing hot path, so
+/// they should fail fast rather than hold a request open.
+pub fn rpc_client(rpc_url: &str) -> JsonRpcClient {
+    build_rpc_client(rpc_url, 30)
+}
+
+/// Transaction-path RPC client: `broadcast_tx_commit`.
+///
+/// Deliberately far more patient than [`rpc_client`]. The MPC CKD call returns its result as
+/// the `SuccessValue` of the transaction itself, so this request stays open until the MPC
+/// nodes resume the yielded receipt — the protocol allows that to take up to ~200 blocks.
+/// A short timeout here would abort a derivation whose transaction is already on-chain and
+/// will succeed: the caller would see a failure, the vault would be charged gas, and the
+/// keystore would derive again on the next attempt.
+pub fn rpc_client_tx(rpc_url: &str) -> JsonRpcClient {
+    build_rpc_client(rpc_url, 240)
+}
+
+/// Both clients are built once per (url, timeout) and cloned afterwards: `JsonRpcClient` is
+/// cheap to clone and keeps its connection pool, whereas building one allocates a fresh TLS
+/// connector and pool that is then thrown away. Callers construct these per cold-vault load.
+fn build_rpc_client(rpc_url: &str, timeout_secs: u64) -> JsonRpcClient {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<Vec<(String, u64, JsonRpcClient)>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(Vec::new()));
+
+    let mut entries = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, _, client)) = entries
+        .iter()
+        .find(|(url, secs, _)| url == rpc_url && *secs == timeout_secs)
+    {
+        return client.clone();
+    }
+
+    // `JsonRpcClient::with` takes the client verbatim: unlike `JsonRpcClient::connect`, which
+    // goes through the crate's own `new_client()`, it sets no default headers — and the crate
+    // sends its payload with `.body()`, not `.json()`. Without this header every NEAR RPC call
+    // answers HTTP 415, i.e. the keystore cannot read the chain at all. Covered by
+    // `rpc_client_sends_json_content_type`.
+    let mut headers = reqwest_rpc::header::HeaderMap::with_capacity(1);
+    headers.insert(
+        reqwest_rpc::header::CONTENT_TYPE,
+        reqwest_rpc::header::HeaderValue::from_static("application/json"),
+    );
+
+    let http = reqwest_rpc::Client::builder()
+        .default_headers(headers)
+        .timeout(std::time::Duration::from_secs(timeout_secs))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .expect("Failed to build NEAR RPC HTTP client");
+    let client = JsonRpcClient::with(http).connect(rpc_url);
+    entries.push((rpc_url.to_string(), timeout_secs, client.clone()));
+    client
+}
+
 // NOTE: a weaker `normalize_repo_url` lived here pre-Phase-4.3. It was
 // strictly less complete than `crate::utils::normalize_repo_url` (no
 // ssh://, no git@, no .git stripping) — keeping two normalisers risked
@@ -48,8 +131,13 @@ pub struct SecretWithVault {
 
 /// NEAR client for reading secrets from contract (read-only)
 pub struct NearClient {
-    /// JSON-RPC client
+    /// JSON-RPC client for queries
     rpc_client: JsonRpcClient,
+    /// Patient client for `broadcast_tx_commit`. `mark_vault_verified` / `ban_vault` are plain
+    /// calls that normally land in seconds, but giving up early on a transaction that is
+    /// already included reports a failure for work that succeeded — and consumes the signer
+    /// nonce either way. Waiting for the real answer is strictly more informative.
+    rpc_client_tx: JsonRpcClient,
     /// Raw RPC URL — kept around for handcrafted JSON-RPC calls that
     /// the typed `near-primitives 0.26` bindings can't decode (NEP-591
     /// global-contract account fields).
@@ -63,13 +151,15 @@ impl NearClient {
     ///
     /// Only needs RPC URL and contract ID - no private key required for reading.
     pub fn new(rpc_url: &str, contract_id: &str) -> Result<Self> {
-        let rpc_client = JsonRpcClient::connect(rpc_url);
+        let rpc_client = rpc_client(rpc_url);
+        let rpc_client_tx = rpc_client_tx(rpc_url);
 
         let contract_id = AccountId::from_str(contract_id)
             .context("Invalid contract ID")?;
 
         Ok(Self {
             rpc_client,
+            rpc_client_tx,
             rpc_url: rpc_url.to_string(),
             contract_id,
         })
@@ -542,7 +632,7 @@ impl NearClient {
                 "account_id": account_id.as_str(),
             },
         });
-        let resp: serde_json::Value = reqwest::Client::new()
+        let resp: serde_json::Value = raw_rpc_client()
             .post(&self.rpc_url)
             .json(&body)
             .send()
@@ -711,7 +801,7 @@ impl NearClient {
             signed_transaction: signed,
         };
         let outcome = self
-            .rpc_client
+            .rpc_client_tx
             .call(request)
             .await
             .with_context(|| format!("broadcast_tx_commit for {receiver_id}.{method_name}"))?;
@@ -837,5 +927,42 @@ impl NearClient {
                 public_key, account_id
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The RPC client must send `Content-Type: application/json`.
+    ///
+    /// `JsonRpcClient::with()` — which we use to attach a timeout — does NOT set it, unlike
+    /// `JsonRpcClient::connect()`, and the crate sends its payload with `.body()`. Omitting it
+    /// makes every NEAR RPC call return HTTP 415, i.e. the keystore cannot read the chain at
+    /// all: no secrets, no policies, no CKD. This test talks to a throwaway socket and asserts
+    /// on the bytes we actually put on the wire.
+    #[tokio::test]
+    async fn rpc_client_sends_json_content_type() {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}");
+            String::from_utf8_lossy(&buf[..n]).into_owned()
+        });
+
+        // The response is deliberately not valid JSON-RPC; only the request matters here.
+        let client = rpc_client(&format!("http://{}", addr));
+        let _ = client.call(methods::status::RpcStatusRequest).await;
+
+        let request = server.join().expect("server thread");
+        assert!(
+            request.to_lowercase().contains("content-type: application/json"),
+            "RPC request is missing Content-Type: application/json — NEAR answers 415:\n{request}"
+        );
     }
 }

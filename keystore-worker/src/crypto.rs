@@ -187,6 +187,17 @@ impl Keystore {
         self.masters.read().unwrap().contains_key(customer)
     }
 
+    /// Vault ids whose master is currently in memory — addresses only, never key material.
+    ///
+    /// Operational visibility for `/admin/loaded-vaults`: the map is rebuilt from scratch after
+    /// every restart, one on-chain CKD derivation per vault, so this is also the record of which
+    /// vaults have paid that cost since this instance came up.
+    pub fn loaded_customers(&self) -> Vec<AccountId> {
+        let mut ids: Vec<AccountId> = self.masters.read().unwrap().keys().cloned().collect();
+        ids.sort();
+        ids
+    }
+
     /// Drop every cache entry whose key references the given customer.
     fn evict_customer_cache(&self, customer: &AccountId) {
         let mut cache = self.keypair_cache.write().unwrap();
@@ -201,17 +212,27 @@ impl Keystore {
     ///   diagnostic error if missing — the lazy-load layer must run
     ///   `add_customer` before invoking any derive_* method.
     fn master_for(&self, customer: Option<&AccountId>) -> Result<[u8; 32]> {
+        let masters = self.masters.read().unwrap();
+        Self::master_from_loaded(self.default_master, &masters, customer)
+    }
+
+    /// Same resolution as [`Self::master_for`], but reading from a guard the caller already
+    /// holds. Exists so [`Self::derive_keypair`] can keep the `masters` read lock from the
+    /// lookup until after it has written the derived keypair into the cache — see the lock
+    /// discipline note there. One implementation so the two cannot answer differently.
+    fn master_from_loaded(
+        default_master: [u8; 32],
+        masters: &HashMap<AccountId, [u8; 32]>,
+        customer: Option<&AccountId>,
+    ) -> Result<[u8; 32]> {
         match customer {
-            None => Ok(self.default_master),
-            Some(c) => {
-                let masters = self.masters.read().unwrap();
-                masters.get(c).copied().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "per-customer master not loaded for {c}; \
-                         run mpc_ckd::add_customer first"
-                    )
-                })
-            }
+            None => Ok(default_master),
+            Some(c) => masters.get(c).copied().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "per-customer master not loaded for {c}; \
+                     run mpc_ckd::add_customer first"
+                )
+            }),
         }
     }
 
@@ -296,7 +317,23 @@ impl Keystore {
         }
 
         // Derive keypair using HMAC-SHA256 over the appropriate master.
-        let master = self.master_for(customer)?;
+        //
+        // LOCK DISCIPLINE: the `masters` read guard is held from the lookup until AFTER the
+        // cache insert below, and this is load-bearing. `evict_customer` removes the master
+        // and THEN purges this cache, as two separate critical sections. If the guard were
+        // released here (as it was before), an eviction could land in between and the insert
+        // would put a live `SigningKey` for that vault back into the cache — surviving the
+        // very purge the eviction exists to perform, and leaving usable key material in TEE
+        // memory for a vault that is no longer ours to serve. Holding the guard makes the two
+        // orders the only possible ones: either we insert first and the eviction's purge
+        // catches it, or the eviction wins and the lookup below fails, so nothing is inserted.
+        //
+        // Deadlock-free because the order is always `masters` → `keypair_cache`, the same as
+        // in `add_customer`/`evict_customer`, and nothing takes `masters` while holding the
+        // cache. The section contains no `.await` and no fallible allocation — only an HMAC
+        // over 32 bytes — so a writer waits microseconds.
+        let masters = self.masters.read().unwrap();
+        let master = Self::master_from_loaded(self.default_master, &masters, customer)?;
         let mut mac = <HmacSha256 as Mac>::new_from_slice(&master)
             .expect("HMAC can take key of any size");
         mac.update(seed.as_bytes());
@@ -316,11 +353,12 @@ impl Keystore {
             hex::encode(verifying_key.as_bytes())
         );
 
-        // Cache the result
+        // Cache the result — still under the `masters` guard taken above.
         {
             let mut cache = self.keypair_cache.write().unwrap();
             cache.insert(cache_key, (signing_key.clone(), verifying_key));
         }
+        drop(masters);
 
         Ok((signing_key, verifying_key))
     }
@@ -769,6 +807,73 @@ mod tests {
         let keystore = Keystore::generate();
         let pubkey = keystore.public_key_hex(None, "test-seed").unwrap();
         assert_eq!(pubkey.len(), 64); // 32 bytes = 64 hex chars
+    }
+
+    /// Eviction must actually remove key material, even under concurrent derivation.
+    ///
+    /// `evict_customer` drops the master and then purges the keypair cache, as two separate
+    /// critical sections. A derivation that had already read the master could slip between
+    /// them and insert a live `SigningKey` for the evicted vault back into the cache, where it
+    /// would stay until the process restarted — defeating `/admin/evict-customer`, which the
+    /// race-attack monitor calls precisely to get that key material out of TEE memory.
+    ///
+    /// The property under test: once `evict_customer` has returned, NOTHING may put a key for
+    /// that vault back into the cache, because there is no longer a master to derive from.
+    /// The test cannot fail spuriously — the fixed code makes that state unreachable — but it
+    /// samples a race, so it is deliberately run over many rounds. Verified to catch the
+    /// original code.
+    #[test]
+    fn eviction_cannot_be_outrun_by_an_in_flight_derivation() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let keystore = Keystore::generate();
+        let vault: AccountId = "vault.alice.testnet".parse().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+
+        // Hammer derivations for this vault. Each uses a fresh seed so every call misses the
+        // cache and reaches the master lookup — that is the window being tested.
+        let hammers: Vec<_> = (0..4)
+            .map(|t| {
+                let keystore = keystore.clone();
+                let vault = vault.clone();
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    let mut i = 0u64;
+                    while !stop.load(Ordering::Relaxed) {
+                        let _ = keystore.derive_keypair(Some(&vault), &format!("wallet:{t}:{i}"));
+                        i += 1;
+                    }
+                })
+            })
+            .collect();
+
+        for round in 0..200u32 {
+            keystore.add_customer(vault.clone(), [round as u8; 32]);
+            // Leave the master in place long enough for the hammering threads to be somewhere
+            // inside a derivation when the eviction below lands.
+            std::thread::sleep(std::time::Duration::from_micros(200));
+            keystore.evict_customer(&vault);
+
+            for _ in 0..50 {
+                let leaked: Vec<String> = keystore
+                    .keypair_cache
+                    .read()
+                    .unwrap()
+                    .keys()
+                    .filter(|(c, _)| c.as_ref() == Some(&vault))
+                    .map(|(_, seed)| seed.clone())
+                    .collect();
+                assert!(
+                    leaked.is_empty(),
+                    "round {round}: signing keys for an evicted vault survived in the cache: {leaked:?}"
+                );
+            }
+        }
+
+        stop.store(true, Ordering::Relaxed);
+        for h in hammers {
+            h.join().expect("hammer thread");
+        }
     }
 
     #[test]

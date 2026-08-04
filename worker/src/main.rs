@@ -199,7 +199,6 @@ async fn main() -> Result<()> {
         Some(KeystoreClient::new(
             keystore_url.clone(),
             keystore_token.clone(),
-            config.tee_mode.clone(),
         ))
     } else {
         info!("Keystore not configured - encrypted secrets will not be supported");
@@ -2086,7 +2085,6 @@ async fn handle_execute_job(
                 project_uuid: uuid.clone(),
                 wasm_hash: wasm_checksum.clone(),
                 account_id: storage_account_id,
-                tee_mode: config.tee_mode.clone(),
                 keystore_tee_session_id: keystore_client
                     .and_then(|kc| kc.get_tee_session_id()),
             })

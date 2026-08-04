@@ -41,7 +41,27 @@ use serde::{Deserialize, Serialize};
 use shared_tee_helpers::{is_evm_chain, is_solana_chain};
 use tower_http::trace::TraceLayer;
 
-use crate::attestation::Attestation;
+/// How many approval (or rejection) votes one signing request may carry.
+///
+/// Verifying a vote costs a NEP-413 signature check, so an uncapped ballot is CPU an
+/// unauthenticated-to-us caller can spend on our behalf. Thresholds are single digits in
+/// practice; this is well above any real multisig and is a size check, not a policy rule — the
+/// on-chain contract has no such limit and is not being changed.
+const MAX_APPROVAL_VOTES: usize = 16;
+
+/// How many secrets one `/add_generated_secret` call may generate.
+///
+/// Generation itself is free and entirely off-chain — random bytes plus one encryption of the
+/// resulting map, no transaction, no gas. What the cap bounds is the work and the log volume of
+/// a request nobody pays for: the coordinator's `/secrets/add_generated_secret` proxy takes no
+/// user credential (IP rate limit only) and forwards under the coordinator's own token, so the
+/// body is effectively caller-chosen. The one on-chain cost anywhere near this path is the
+/// first-touch vault CKD derivation, which is why the check runs before `ensure_customer_loaded`.
+///
+/// Matched to [`MAX_APPROVAL_VOTES`] and to the dashboard's own limit in
+/// `dashboard/app/secrets/components/GenerateSecretsForm.tsx`. Callers needing more split across
+/// calls; the refusal says so.
+const MAX_GENERATED_SECRETS: usize = 16;
 
 /// In-memory TEE challenge entry (for challenge-response protocol)
 struct TeeChallenge {
@@ -51,7 +71,6 @@ struct TeeChallenge {
 /// In-memory TEE session entry
 #[derive(Clone)]
 struct TeeSession {
-    #[allow(dead_code)]
     worker_public_key: String,
     #[allow(dead_code)]
     created_at: std::time::Instant,
@@ -87,7 +106,6 @@ pub struct MpcContext {
 pub struct AppState {
     pub keystore: std::sync::Arc<tokio::sync::RwLock<crate::crypto::Keystore>>,
     pub config: crate::config::Config,
-    pub expected_measurements: crate::attestation::ExpectedMeasurements,
     pub near_client: Option<std::sync::Arc<crate::near::NearClient>>,
     pub is_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// MPC CKD context — config + dao id + worker's keystore-dao
@@ -136,7 +154,6 @@ impl AppState {
         Self {
             keystore: std::sync::Arc::new(tokio::sync::RwLock::new(keystore)),
             config: config.clone(),
-            expected_measurements: crate::attestation::ExpectedMeasurements::default(),
             near_client: near_client.map(std::sync::Arc::new),
             is_ready: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(is_ready)),
             mpc_context: std::sync::Arc::new(std::sync::OnceLock::new()),
@@ -242,8 +259,10 @@ impl AppState {
     /// "sovereign after recovery" property even if the indexer-driven
     /// `/admin/evict-customer` is delayed: a vault under parent
     /// FullAccess control will trip the unlocked check and have its
-    /// cached master evicted on the next request. Cost: ~200-600 ms
-    /// of view-calls per signing op; acceptable on the wallet path.
+    /// cached master evicted on the next request. Cost: two view-calls
+    /// per signing op, issued concurrently once the vault is loaded, so
+    /// ~100-300 ms rather than ~200-600 ms on the hot path; acceptable
+    /// on the wallet path.
     pub async fn ensure_customer_loaded(
         &self,
         customer: Option<&near_primitives::types::AccountId>,
@@ -406,9 +425,6 @@ pub struct DecryptRequest {
     /// User account ID (who is requesting execution)
     /// This is used for access control validation
     pub user_account_id: String,
-
-    /// TEE attestation proving worker identity
-    pub attestation: Attestation,
 
     /// Optional task ID for logging
     pub task_id: Option<String>,
@@ -590,8 +606,6 @@ pub struct StorageEncryptRequest {
     pub key: String,
     /// Plaintext value (base64 encoded)
     pub value_base64: String,
-    /// TEE attestation proving worker identity
-    pub attestation: Attestation,
 }
 
 /// Response with encrypted storage data
@@ -618,8 +632,6 @@ pub struct StorageDecryptRequest {
     pub encrypted_key_base64: String,
     /// Encrypted value (base64)
     pub encrypted_value_base64: String,
-    /// TEE attestation proving worker identity
-    pub attestation: Attestation,
 }
 
 /// Response with decrypted storage data
@@ -638,8 +650,6 @@ pub struct StorageDecryptResponse {
 pub struct VrfGenerateRequest {
     /// Alpha string (VRF pre-image). Format: "vrf:{request_id}:{user_seed}"
     pub alpha: String,
-    /// TEE attestation proving worker identity
-    pub attestation: Attestation,
 }
 
 /// Response with VRF output and signature (proof)
@@ -656,6 +666,45 @@ pub struct VrfGenerateResponse {
 pub struct VrfPublicKeyResponse {
     /// VRF public key (Ed25519), 32 bytes hex
     pub vrf_public_key_hex: String,
+}
+
+/// `GET /admin/loaded-vaults` response.
+#[derive(Debug, Serialize)]
+pub struct LoadedVaultsResponse {
+    /// Vault ids whose master is in memory right now — addresses only, no key material.
+    pub vaults: Vec<String>,
+    /// How many of them there are.
+    pub count: usize,
+    /// Live TEE sessions. Reported here rather than on the public `/health` so that reading it
+    /// requires a token that is checked by real auth middleware, which also logs failures.
+    pub tee_sessions: usize,
+}
+
+/// `GET /admin/loaded-vaults` — which vaults this instance has derived a master for.
+///
+/// Every entry cost one on-chain CKD derivation (~30 mNEAR of that vault's balance). The map
+/// lives in memory only, so a restart or a version upgrade empties it and the first request per
+/// vault pays again — expected, once per instance lifetime. This endpoint makes that visible:
+/// after a restart it answers "who has come back", and an entry for a vault nobody expected is
+/// the signal that someone probed it.
+async fn admin_loaded_vaults_handler(
+    State(state): State<AppState>,
+) -> Result<Json<LoadedVaultsResponse>, ApiError> {
+    let vaults: Vec<String> = state
+        .keystore
+        .read()
+        .await
+        .loaded_customers()
+        .into_iter()
+        .map(|id| id.to_string())
+        .collect();
+    let tee_sessions = state.tee_sessions.lock().map(|s| s.len()).unwrap_or(0);
+
+    Ok(Json(LoadedVaultsResponse {
+        count: vaults.len(),
+        vaults,
+        tee_sessions,
+    }))
 }
 
 /// `POST /admin/evict-customer` request body.
@@ -786,8 +835,6 @@ pub struct EncryptRequest {
     pub seed: String,
     /// Plaintext data to encrypt (base64 encoded)
     pub plaintext_base64: String,
-    /// TEE attestation proving worker identity
-    pub attestation: Attestation,
 }
 
 /// Response with encrypted data
@@ -1169,6 +1216,7 @@ pub fn create_router(state: AppState) -> Router {
     // that already speaks to /decrypt can also evict — see the route's
     // doc-comment on `/admin/evict-customer` for the threat model.
     let admin_routes = Router::new()
+        .route("/admin/loaded-vaults", get(admin_loaded_vaults_handler))
         .route("/admin/evict-customer", post(admin_evict_customer_handler))
         // Race-attack monitor calls this. Worker-token-only —
         // unlike vault_routes, this MUTATES on-chain state by submitting
@@ -1242,6 +1290,11 @@ pub fn create_router(state: AppState) -> Router {
 }
 
 /// Health check endpoint (no auth required)
+/// Public and unauthenticated by design — it must stay a bare liveness signal. Anything that
+/// reports fleet state (session counts, loaded vaults) belongs on `/admin/loaded-vaults`, where
+/// a token is checked by auth middleware that also LOGS rejections: an unauthenticated,
+/// unrate-limited, silent endpoint would otherwise let anyone test a candidate token by whether
+/// the extra field appears.
 async fn health_handler(State(state): State<AppState>) -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok".to_string(),
@@ -1260,6 +1313,22 @@ async fn health_handler(State(state): State<AppState>) -> Json<HealthResponse> {
 /// (~30 mNEAR/call). Public reads of pubkeys are still allowed for
 /// `vault_id = None`, which preserves the dashboard's
 /// pre-store-secrets pubkey-fetch flow on the legacy default master.
+///
+/// The cost is bounded and intended: a derivation is paid ONCE per vault per instance
+/// lifetime. The master then stays in memory (`Keystore::masters`), so every later request for
+/// that vault is served from RAM. A restart or a version upgrade empties the map and the first
+/// request per vault pays again — that is how a new keystore version recovers vault keys, not a
+/// leak. `/admin/loaded-vaults` reports what is currently loaded.
+///
+/// NOTE (2026-08-03 audit): the coordinator's `/secrets/pubkey` proxy is itself unauthenticated
+/// and forwards a caller-supplied `X-Customer-Vault` under its own coordinator token, so an
+/// anonymous caller CAN reach this path and make a vault pay for its own derivation. Accepted
+/// (Vadim, 2026-08-03): the cost is one derivation per vault per instance lifetime, and the
+/// vault set is not secret to whoever already knows a vault id. What must NOT leak to such a
+/// caller is the keystore's address — the coordinator therefore strips the URL from the errors
+/// it returns on that path. The loaded-vault list is worker-token-only
+/// (`/admin/loaded-vaults`); enumeration by a holder of that token was considered and accepted
+/// (Vadim, 2026-08-03): the same list is derivable from a chain indexer anyway.
 fn has_authenticated_caller(state: &AppState, headers: &axum::http::HeaderMap) -> bool {
     let Some(auth) = headers.get("Authorization").and_then(|h| h.to_str().ok()) else {
         return false;
@@ -1450,6 +1519,7 @@ fn accessor_to_contract_json(a: &SecretAccessor) -> serde_json::Value {
 /// Decrypt secrets from contract for authorized TEE worker
 async fn decrypt_handler(
     State(state): State<AppState>,
+    worker: Option<axum::Extension<WorkerIdentity>>,
     Json(req): Json<DecryptRequest>,
 ) -> Result<Json<DecryptResponse>, ApiError> {
     // Check if keystore is ready (has master key from MPC)
@@ -1461,13 +1531,19 @@ async fn decrypt_handler(
     }
 
     let task_id_str = req.task_id.as_deref().unwrap_or("unknown");
+    // Which worker instance asked. Absent only in dev mode (`TeeMode::None`), where sessions
+    // are not enforced at all.
+    let worker_key = worker
+        .as_ref()
+        .map(|w| w.0 .0.as_str())
+        .unwrap_or("no-session");
 
     // Log request based on accessor type
     match &req.accessor {
         SecretAccessor::Repo { repo, branch } => {
             tracing::info!(
                 task_id = %task_id_str,
-                tee_type = %req.attestation.tee_type,
+                worker = %worker_key,
                 repo = %repo,
                 branch = ?branch,
                 profile = %req.profile,
@@ -1478,7 +1554,7 @@ async fn decrypt_handler(
         SecretAccessor::WasmHash { hash } => {
             tracing::info!(
                 task_id = %task_id_str,
-                tee_type = %req.attestation.tee_type,
+                worker = %worker_key,
                 wasm_hash = %hash,
                 profile = %req.profile,
                 owner = %req.owner,
@@ -1488,7 +1564,7 @@ async fn decrypt_handler(
         SecretAccessor::Project { project_id } => {
             tracing::info!(
                 task_id = %task_id_str,
-                tee_type = %req.attestation.tee_type,
+                worker = %worker_key,
                 project_id = %project_id,
                 profile = %req.profile,
                 owner = %req.owner,
@@ -1498,7 +1574,7 @@ async fn decrypt_handler(
         SecretAccessor::System { secret_type } => {
             tracing::info!(
                 task_id = %task_id_str,
-                tee_type = %req.attestation.tee_type,
+                worker = %worker_key,
                 secret_type = ?secret_type,
                 profile = %req.profile,
                 owner = %req.owner,
@@ -1507,20 +1583,7 @@ async fn decrypt_handler(
         }
     }
 
-    // 1. Verify TEE attestation
-    // Note: Primary authentication is via bearer token (checked in auth_middleware).
-    // When both keystore and worker are in TEE, attestation verification relies on token auth.
-    crate::attestation::verify_attestation(
-        &req.attestation,
-        &state.config.tee_mode,
-        &state.expected_measurements,
-    )
-    .map_err(|e| {
-        tracing::warn!(task_id = %task_id_str, error = %e, "Attestation verification failed");
-        ApiError::Unauthorized(format!("Attestation verification failed: {}", e))
-    })?;
-
-    // 2. Read secrets + vault binding from NEAR contract.
+    // 1. Read secrets + vault binding from NEAR contract.
     //
     // Mechanism: on-chain side-table. A single combined
     // view call returns BOTH the encrypted secret profile AND the
@@ -1599,7 +1662,7 @@ async fn decrypt_handler(
         "Successfully read secrets from contract"
     );
 
-    // 3. Validate access conditions
+    // 2. Validate access conditions
     let access_condition: crate::types::AccessCondition = serde_json::from_value(secret_profile["access"].clone())
         .map_err(|e| {
             tracing::error!(task_id = %task_id_str, error = %e, "Failed to parse access condition");
@@ -1626,7 +1689,7 @@ async fn decrypt_handler(
 
     tracing::info!(task_id = %task_id_str, caller = %caller, "Access granted");
 
-    // 4. Build seed based on accessor type
+    // 3. Build seed based on accessor type
     // SECURITY NOTE:
     // - For Repo: use branch from SECRET PROFILE (not request) to construct seed
     // - This is correct because seed must match the one used during encryption
@@ -1743,7 +1806,7 @@ async fn decrypt_handler(
         }
     };
 
-    // 5. Decrypt using derived keypair
+    // 4. Decrypt using derived keypair
     let encrypted_secrets_base64 = secret_profile["encrypted_secrets"]
         .as_str()
         .ok_or_else(|| ApiError::InternalError("Missing encrypted_secrets field".to_string()))?;
@@ -1757,7 +1820,7 @@ async fn decrypt_handler(
         ApiError::InternalError(format!("Decryption failed: {}", e))
     })?;
 
-    // 6. Encode plaintext as base64 for safe JSON transport
+    // 5. Encode plaintext as base64 for safe JSON transport
     let plaintext_b64 = base64::encode(&plaintext_bytes);
 
     tracing::info!(
@@ -1785,16 +1848,6 @@ async fn vrf_generate_handler(
     if req.alpha.is_empty() {
         return Err(ApiError::BadRequest("alpha must not be empty".to_string()));
     }
-
-    crate::attestation::verify_attestation(
-        &req.attestation,
-        &state.config.tee_mode,
-        &state.expected_measurements,
-    )
-    .map_err(|e| {
-        tracing::warn!(error = %e, "VRF attestation verification failed");
-        ApiError::Unauthorized(format!("Attestation verification failed: {}", e))
-    })?;
 
     let keystore = state.keystore.read().await;
     let (output_hex, signature_hex) = keystore
@@ -2269,17 +2322,6 @@ async fn encrypt_handler(
         "Received encrypt request"
     );
 
-    // Verify TEE attestation
-    crate::attestation::verify_attestation(
-        &req.attestation,
-        &state.config.tee_mode,
-        &state.expected_measurements,
-    )
-    .map_err(|e| {
-        tracing::warn!(error = %e, "Encrypt attestation verification failed");
-        ApiError::Unauthorized(format!("Attestation verification failed: {}", e))
-    })?;
-
     // Decode plaintext from base64
     let plaintext_bytes = base64::decode(&req.plaintext_base64)
         .map_err(|e| ApiError::BadRequest(format!("Invalid base64 in plaintext: {}", e)))?;
@@ -2309,8 +2351,6 @@ pub struct DecryptRawRequest {
     pub seed: String,
     /// Base64-encoded encrypted data
     pub encrypted_base64: String,
-    /// TEE attestation from requesting worker
-    pub attestation: Attestation,
 }
 
 /// Response with decrypted data
@@ -2343,17 +2383,6 @@ async fn decrypt_raw_handler(
         seed = %req.seed,
         "Received decrypt-raw request"
     );
-
-    // Verify TEE attestation
-    crate::attestation::verify_attestation(
-        &req.attestation,
-        &state.config.tee_mode,
-        &state.expected_measurements,
-    )
-    .map_err(|e| {
-        tracing::warn!(error = %e, "Decrypt-raw attestation verification failed");
-        ApiError::Unauthorized(format!("Attestation verification failed: {}", e))
-    })?;
 
     // Decode encrypted data from base64
     let encrypted_bytes = base64::decode(&req.encrypted_base64)
@@ -2395,6 +2424,18 @@ async fn add_generated_secret_handler(
         return Err(ApiError::Unauthorized(
             "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string()
         ));
+    }
+
+    // Size check FIRST — before the vault is loaded. Loading a cold vault runs an on-chain MPC
+    // CKD derivation paid out of that vault's balance, so an oversized request must be refused
+    // without ever getting that far.
+    if req.new_secrets.len() > MAX_GENERATED_SECRETS {
+        return Err(ApiError::BadRequest(format!(
+            "too many generated secrets in one request: {} (limit {}). \
+             Split them across several calls.",
+            req.new_secrets.len(),
+            MAX_GENERATED_SECRETS
+        )));
     }
 
     // Vault scope from request body. The decrypt+re-encrypt
@@ -2498,16 +2539,20 @@ async fn add_generated_secret_handler(
                 spec.name, spec.generation_type, e
             )))?;
 
-        tracing::info!(
-            key = %spec.name,
-            gen_type = %spec.generation_type,
-            "Generated secret"
-        );
-
         // Add to secrets map
         secrets_map.insert(spec.name.clone(), serde_json::Value::String(generated_value));
         generated_keys.push(spec.name.clone());
     }
+
+    // One line for the batch, not one per secret. This used to log inside the loop, which turned
+    // a single request into as many log lines as it carried secrets — cheap for the sender,
+    // expensive for our disk and for anyone reading the log afterwards. `MAX_GENERATED_SECRETS`
+    // now bounds it too, but the aggregate line is the right shape regardless.
+    tracing::info!(
+        count = generated_keys.len(),
+        keys = ?generated_keys,
+        "Generated secrets"
+    );
 
     // 4. Validate no reserved keywords (final check)
     const RESERVED_KEYWORDS: &[&str] = &[
@@ -3019,17 +3064,6 @@ async fn storage_encrypt_handler(
         ));
     }
 
-    // Verify TEE attestation
-    crate::attestation::verify_attestation(
-        &req.attestation,
-        &state.config.tee_mode,
-        &state.expected_measurements,
-    )
-    .map_err(|e| {
-        tracing::warn!(error = %e, "Storage encrypt attestation verification failed");
-        ApiError::Unauthorized(format!("Attestation verification failed: {}", e))
-    })?;
-
     // Build seed for key derivation
     // For projects: storage:{project_uuid}:{account_id}
     // For standalone WASM: storage:wasm:{wasm_hash}:{account_id}
@@ -3095,17 +3129,6 @@ async fn storage_decrypt_handler(
             "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string()
         ));
     }
-
-    // Verify TEE attestation
-    crate::attestation::verify_attestation(
-        &req.attestation,
-        &state.config.tee_mode,
-        &state.expected_measurements,
-    )
-    .map_err(|e| {
-        tracing::warn!(error = %e, "Storage decrypt attestation verification failed");
-        ApiError::Unauthorized(format!("Attestation verification failed: {}", e))
-    })?;
 
     // Build seed for key derivation (same as encrypt)
     let seed = if let Some(ref project_uuid) = req.project_uuid {
@@ -3440,9 +3463,17 @@ fn parse_optional_vault_id(
     Ok(Some(vault_id))
 }
 
-fn validate_tee_session(state: &AppState, headers: &axum::http::HeaderMap) -> Result<(), ApiError> {
+/// Validate the session and return the worker public key it was registered with.
+///
+/// The key is what makes a decrypt attributable to a specific worker instance. Before the
+/// vestigial `attestation` field was removed the log line carried `tee_type` — a self-reported
+/// constant that identified nothing — so this is the first time the record names the caller.
+fn validate_tee_session(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+) -> Result<Option<String>, ApiError> {
     if state.config.tee_mode == crate::config::TeeMode::None {
-        return Ok(());
+        return Ok(None);
     }
 
     let session_header = headers
@@ -3456,11 +3487,12 @@ fn validate_tee_session(state: &AppState, headers: &axum::http::HeaderMap) -> Re
         .map_err(|_| ApiError::Forbidden("Invalid TEE session ID format".to_string()))?;
 
     let sessions = state.tee_sessions.lock().unwrap();
-    if !sessions.contains_key(&session_id) {
-        return Err(ApiError::Forbidden("TEE session not found or expired".to_string()));
+    match sessions.get(&session_id) {
+        Some(session) => Ok(Some(session.worker_public_key.clone())),
+        None => Err(ApiError::Forbidden(
+            "TEE session not found or expired".to_string(),
+        )),
     }
-
-    Ok(())
 }
 
 /// TEE session middleware
@@ -3470,12 +3502,21 @@ fn validate_tee_session(state: &AppState, headers: &axum::http::HeaderMap) -> Re
 /// Runs after worker_auth_middleware (inner layer) on worker-only routes.
 async fn tee_session_middleware(
     State(state): State<AppState>,
-    req: axum::http::Request<axum::body::Body>,
+    mut req: axum::http::Request<axum::body::Body>,
     next: middleware::Next,
 ) -> Result<Response, ApiError> {
-    validate_tee_session(&state, req.headers())?;
+    // Hand the validated worker identity to the handlers so a decrypt can be attributed to the
+    // instance that asked for it — the only worker identifier the keystore can trust.
+    if let Some(worker_public_key) = validate_tee_session(&state, req.headers())? {
+        req.extensions_mut().insert(WorkerIdentity(worker_public_key));
+    }
     Ok(next.run(req).await)
 }
+
+/// Worker public key taken from a validated TEE session, injected by
+/// [`tee_session_middleware`] for logging.
+#[derive(Clone)]
+pub struct WorkerIdentity(pub String);
 
 /// Worker authentication middleware
 ///
@@ -4274,6 +4315,28 @@ async fn verify_approvals(
             "This wallet requires multisig approval, but none were provided.".to_string(),
         )
     })?;
+
+    // Cap the ballot before verifying anything in it. Each vote past the (cheap) approver-set
+    // filter costs a NEP-413 signature verification, and nothing else bounds the array — only
+    // axum's implicit 2 MB body limit, i.e. thousands of votes on one request.
+    //
+    // Repeating a single known approver id is enough to reach that cost: the duplicate check in
+    // the approval loop skips an id only once it has been SUCCESSFULLY verified, so invalid
+    // repeats sail past it. No on-chain setup and no gas is needed to try this.
+    //
+    // The cap is on votes in this request, not on approvers in the policy, and it is far above
+    // any real threshold — a multisig with more than 16 approvers is not a thing we support.
+    // Deliberately checked before `recipient` so an oversized body is rejected on its size
+    // alone, without touching its contents.
+    if info.approvals.len() > MAX_APPROVAL_VOTES || info.rejections.len() > MAX_APPROVAL_VOTES {
+        return Err(ApiError::BadRequest(format!(
+            "too many approval votes: {} approvals / {} rejections (limit {} each). \
+             Send only the votes that count toward the threshold.",
+            info.approvals.len(),
+            info.rejections.len(),
+            MAX_APPROVAL_VOTES
+        )));
+    }
 
     // recipient = THIS keystore's contract (the on-chain trust anchor). Assert the
     // coordinator agrees, so a config mismatch fails loudly instead of looking like a
@@ -5767,12 +5830,6 @@ mod tests {
             "profile": "production",
             "owner": "owner.testnet",
             "user_account_id": "caller.testnet",
-            "attestation": {
-                "tee_type": "outlayer_tee",
-                "quote": "",
-                "measurements": {},
-                "timestamp": 1704067200
-            },
             "task_id": "task123"
         }"#;
 
@@ -5974,12 +6031,6 @@ mod tests {
             "profile": "production",
             "owner": "owner.testnet",
             "user_account_id": "caller.testnet",
-            "attestation": {
-                "tee_type": "outlayer_tee",
-                "quote": "",
-                "measurements": {},
-                "timestamp": 1704067200
-            },
             "task_id": "task123"
         }"#;
 
@@ -6006,13 +6057,7 @@ mod tests {
             },
             "profile": "default",
             "owner": "alice.near",
-            "user_account_id": "bob.near",
-            "attestation": {
-                "tee_type": "none",
-                "quote": "",
-                "measurements": {},
-                "timestamp": 1704067200
-            }
+            "user_account_id": "bob.near"
         }"#;
 
         let req: DecryptRequest = serde_json::from_str(json).unwrap();
@@ -6026,6 +6071,384 @@ mod tests {
         assert_eq!(req.owner, "alice.near");
         assert_eq!(req.user_account_id, "bob.near");
         assert!(req.task_id.is_none());
+    }
+
+    // ============== request-size caps ==============
+
+    /// Oversized batches must be refused BEFORE the vault is loaded — loading a cold vault runs
+    /// an on-chain MPC CKD derivation paid out of that vault's balance, so a spam request must
+    /// never get that far. `test_state()` has no MPC context, so if the handler reached
+    /// `ensure_customer_loaded` with a vault id it would fail differently; asserting on the
+    /// message is what pins the ordering.
+    #[tokio::test]
+    async fn oversized_generated_secret_batches_are_refused_before_any_vault_work() {
+        let state = test_state();
+        state.mark_ready();
+
+        let too_many: Vec<GeneratedSecretSpec> = (0..=MAX_GENERATED_SECRETS)
+            .map(|i| GeneratedSecretSpec {
+                name: format!("PROTECTED_K{i}"),
+                generation_type: "hex32".to_string(),
+            })
+            .collect();
+
+        let err = add_generated_secret_handler(
+            State(state),
+            Json(AddGeneratedSecretRequest {
+                seed: "repo:alice".to_string(),
+                encrypted_secrets_base64: None,
+                new_secrets: too_many,
+                // A vault id that WOULD trigger a derivation if the size check ran too late.
+                vault_id: Some("vault.alice.testnet".to_string()),
+            }),
+        )
+        .await
+        .expect_err("over the limit must be refused");
+
+        match err {
+            ApiError::BadRequest(msg) => {
+                assert!(msg.contains("too many generated secrets"), "wrong reason: {msg}");
+                assert!(msg.contains(&MAX_GENERATED_SECRETS.to_string()), "state the limit: {msg}");
+            }
+            other => panic!("expected BadRequest about the batch size, got {other:?}"),
+        }
+    }
+
+    /// A batch AT the limit is not refused for its size — it proceeds and fails later for an
+    /// unrelated reason (no MPC context in tests). Guards against an off-by-one that would
+    /// reject legitimate batches.
+    #[tokio::test]
+    async fn a_batch_at_the_limit_is_not_refused_for_its_size() {
+        let state = test_state();
+        state.mark_ready();
+
+        let at_limit: Vec<GeneratedSecretSpec> = (0..MAX_GENERATED_SECRETS)
+            .map(|i| GeneratedSecretSpec {
+                name: format!("PROTECTED_K{i}"),
+                generation_type: "hex32".to_string(),
+            })
+            .collect();
+
+        let result = add_generated_secret_handler(
+            State(state),
+            Json(AddGeneratedSecretRequest {
+                seed: "repo:alice".to_string(),
+                encrypted_secrets_base64: None,
+                new_secrets: at_limit,
+                vault_id: Some("vault.alice.testnet".to_string()),
+            }),
+        )
+        .await;
+
+        if let Err(ApiError::BadRequest(msg)) = &result {
+            assert!(
+                !msg.contains("too many generated secrets"),
+                "a batch at the limit must not be refused for its size: {msg}"
+            );
+        }
+    }
+
+    fn state_with_dead_rpc() -> AppState {
+        let config = crate::config::Config {
+            server_addr: "127.0.0.1:0".parse().unwrap(),
+            near_network: "testnet".into(),
+            near_rpc_url: "http://127.0.0.1:1".into(),
+            offchainvm_contract_id: "outlayer.test".into(),
+            allowed_worker_token_hashes: vec![],
+            allowed_coordinator_token_hashes: vec![],
+            tee_mode: crate::config::TeeMode::None,
+            operator_account_id: None,
+            keystore_key_type: near_crypto::KeyType::ED25519,
+            tee_allowed_key_types: shared_tee_helpers::AllowedKeyTypes { ed25519: true, ml_dsa_65: true },
+        };
+        // Nothing listens on port 1 — any RPC call would fail, which is the point: the cap must
+        // be enforced without one.
+        let near_client = crate::near::NearClient::new("http://127.0.0.1:1", "outlayer.test").unwrap();
+        AppState::new(crate::crypto::Keystore::generate(), config, Some(near_client))
+    }
+
+    fn one_approver_policy() -> shared_tee_helpers::wallet_policy::Policy {
+        serde_json::from_value(serde_json::json!({
+            "approval": {
+                "threshold": { "required": 1 },
+                "approvers": [{ "id": "alice.testnet", "role": "admin" }]
+            }
+        }))
+        .expect("policy")
+    }
+
+    fn votes(n: usize) -> Vec<ApproverSig> {
+        (0..n)
+            .map(|_| ApproverSig {
+                // The SAME approver repeated: the duplicate check skips an id only once it has
+                // been successfully verified, so invalid repeats each cost a signature check.
+                // No on-chain setup is needed to send these.
+                approver_id: "alice.testnet".to_string(),
+                public_key: "ed25519:11111111111111111111111111111111".to_string(),
+                signature: "AA==".to_string(),
+                nonce: "AA==".to_string(),
+            })
+            .collect()
+    }
+
+    /// A ballot larger than the cap is rejected on its SIZE, before anything in it is verified.
+    /// The recipient below is deliberately wrong too — if the cap ran later, the error would be
+    /// about the recipient instead, so the message is what proves the ordering.
+    #[tokio::test]
+    async fn an_oversized_ballot_is_refused_without_verifying_a_single_vote() {
+        let state = state_with_dead_rpc();
+
+        let err = verify_approvals(
+            &state,
+            &one_approver_policy(),
+            "ed25519:wallet",
+            "hash",
+            Some(&ApprovalInfo {
+                approval_id: "a1".to_string(),
+                recipient: "definitely-not-this-keystore.testnet".to_string(),
+                approvals: votes(MAX_APPROVAL_VOTES + 1),
+                rejections: vec![],
+            }),
+            1,
+        )
+        .await
+        .expect_err("an oversized ballot must be refused");
+
+        match err {
+            ApiError::BadRequest(msg) => {
+                assert!(msg.contains("too many approval votes"), "wrong reason: {msg}");
+                assert!(msg.contains(&MAX_APPROVAL_VOTES.to_string()), "state the limit: {msg}");
+            }
+            other => panic!("expected BadRequest about ballot size, got {other:?}"),
+        }
+    }
+
+    /// Rejections are capped on the same terms — a veto ballot is just as expensive to verify.
+    #[tokio::test]
+    async fn oversized_rejection_ballots_are_refused_too() {
+        let state = state_with_dead_rpc();
+
+        let err = verify_approvals(
+            &state,
+            &one_approver_policy(),
+            "ed25519:wallet",
+            "hash",
+            Some(&ApprovalInfo {
+                approval_id: "a1".to_string(),
+                recipient: "outlayer.test".to_string(),
+                approvals: vec![],
+                rejections: votes(MAX_APPROVAL_VOTES + 1),
+            }),
+            1,
+        )
+        .await
+        .expect_err("an oversized veto ballot must be refused");
+
+        assert!(
+            matches!(&err, ApiError::BadRequest(m) if m.contains("too many approval votes")),
+            "got {err:?}"
+        );
+    }
+
+    /// A ballot AT the cap passes the size check and fails for a real reason instead — here the
+    /// recipient mismatch. Guards the off-by-one: a legitimate full-threshold vote must not be
+    /// refused for its size.
+    #[tokio::test]
+    async fn a_ballot_at_the_cap_passes_the_size_check() {
+        let state = state_with_dead_rpc();
+
+        let err = verify_approvals(
+            &state,
+            &one_approver_policy(),
+            "ed25519:wallet",
+            "hash",
+            Some(&ApprovalInfo {
+                approval_id: "a1".to_string(),
+                recipient: "definitely-not-this-keystore.testnet".to_string(),
+                approvals: votes(MAX_APPROVAL_VOTES),
+                rejections: vec![],
+            }),
+            1,
+        )
+        .await
+        .expect_err("the wrong recipient must still be refused");
+
+        let msg = format!("{err:?}");
+        assert!(
+            !msg.contains("too many approval votes"),
+            "a ballot at the cap must not be refused for its size: {msg}"
+        );
+        assert!(msg.contains("recipient"), "expected the recipient check to fire: {msg}");
+    }
+
+    // ============== /admin/loaded-vaults + TEE worker identity ==============
+
+    /// Build a state whose worker token is `token`, so the router's auth layer can be exercised.
+    fn state_with_worker_token(token: &str) -> AppState {
+        use sha2::{Digest, Sha256};
+        let mut state_config = crate::config::Config {
+            server_addr: "127.0.0.1:0".parse().unwrap(),
+            near_network: "testnet".into(),
+            near_rpc_url: "http://127.0.0.1:1".into(),
+            offchainvm_contract_id: "outlayer.test".into(),
+            allowed_worker_token_hashes: vec![],
+            allowed_coordinator_token_hashes: vec![],
+            tee_mode: crate::config::TeeMode::None,
+            operator_account_id: None,
+            keystore_key_type: near_crypto::KeyType::ED25519,
+            tee_allowed_key_types: shared_tee_helpers::AllowedKeyTypes { ed25519: true, ml_dsa_65: true },
+        };
+        state_config.allowed_worker_token_hashes =
+            vec![hex::encode(Sha256::digest(token.as_bytes()))];
+        let state = AppState::new(crate::crypto::Keystore::generate(), state_config, None);
+        state.mark_ready();
+        state
+    }
+
+    async fn get_loaded_vaults(state: AppState, auth: Option<&str>) -> (axum::http::StatusCode, String) {
+        use tower::ServiceExt;
+        let mut builder = axum::http::Request::builder()
+            .method("GET")
+            .uri("/admin/loaded-vaults");
+        if let Some(a) = auth {
+            builder = builder.header("Authorization", a);
+        }
+        let response = create_router(state)
+            .oneshot(builder.body(axum::body::Body::empty()).unwrap())
+            .await
+            .expect("router");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("body");
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// This endpoint lists which vaults this keystore holds a master for. That list is
+    /// operational detail, not public information, and the route must stay behind the worker
+    /// token — a router refactor that dropped the auth layer would otherwise go unnoticed.
+    #[tokio::test]
+    async fn loaded_vaults_is_refused_without_a_worker_token() {
+        let (status, body) = get_loaded_vaults(state_with_worker_token("s3cret"), None).await;
+        assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED, "body: {body}");
+        assert!(
+            !body.contains("vaults"),
+            "an unauthorized caller must not see the vault list: {body}"
+        );
+
+        let (status, _) =
+            get_loaded_vaults(state_with_worker_token("s3cret"), Some("Bearer wrong")).await;
+        assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+
+        // A token that is right but presented in the wrong scheme is still a refusal.
+        let (status, _) = get_loaded_vaults(state_with_worker_token("s3cret"), Some("s3cret")).await;
+        assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    /// With the token it reports what is actually in memory — vault ids only, sorted, plus the
+    /// counts an operator reads after a restart to see who has come back.
+    #[tokio::test]
+    async fn loaded_vaults_reports_the_masters_in_memory() {
+        let state = state_with_worker_token("s3cret");
+        {
+            let ks = state.keystore.read().await;
+            ks.add_customer("vault.zoe.testnet".parse().unwrap(), [1u8; 32]);
+            ks.add_customer("vault.alice.testnet".parse().unwrap(), [2u8; 32]);
+        }
+
+        let (status, body) = get_loaded_vaults(state, Some("Bearer s3cret")).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "body: {body}");
+
+        let json: serde_json::Value = serde_json::from_str(&body).expect("json");
+        assert_eq!(json["count"], 2);
+        assert_eq!(json["vaults"][0], "vault.alice.testnet", "must be sorted");
+        assert_eq!(json["vaults"][1], "vault.zoe.testnet");
+        assert_eq!(json["tee_sessions"], 0);
+        // Addresses only — never key material.
+        assert!(!body.contains("0101010101"), "key material leaked: {body}");
+    }
+
+    /// `/decrypt` logs which worker instance asked, taken from the validated TEE session. That
+    /// is the only worker identifier the keystore can trust, and it is the first time the record
+    /// names the caller at all — before this it logged a self-declared constant.
+    #[test]
+    fn a_live_session_yields_the_worker_key_that_opened_it() {
+        let state = state_with_worker_token("s3cret");
+        let mut config = state.config.clone();
+        config.tee_mode = crate::config::TeeMode::OutlayerTee;
+        let state = AppState::new(crate::crypto::Keystore::generate(), config, None);
+
+        let session_id = uuid::Uuid::new_v4();
+        state.tee_sessions.lock().unwrap().insert(
+            session_id,
+            TeeSession {
+                worker_public_key: "ed25519:WorkerAAA".to_string(),
+                created_at: std::time::Instant::now(),
+            },
+        );
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("X-TEE-Session", session_id.to_string().parse().unwrap());
+        assert_eq!(
+            validate_tee_session(&state, &headers).unwrap(),
+            Some("ed25519:WorkerAAA".to_string())
+        );
+
+        // An unknown session is refused outright — the identity is not optional in TEE mode.
+        let mut unknown = axum::http::HeaderMap::new();
+        unknown.insert("X-TEE-Session", uuid::Uuid::new_v4().to_string().parse().unwrap());
+        assert!(validate_tee_session(&state, &unknown).is_err());
+    }
+
+    /// The identity has to survive the trip from the middleware to the handler. If the extension
+    /// stopped being inserted, `/decrypt` would silently log `worker=no-session` and every
+    /// decrypt would become unattributable, with nothing failing.
+    #[tokio::test]
+    async fn the_middleware_hands_the_worker_identity_to_the_handler() {
+        use tower::ServiceExt;
+
+        let mut config = state_with_worker_token("s3cret").config.clone();
+        config.tee_mode = crate::config::TeeMode::OutlayerTee;
+        let state = AppState::new(crate::crypto::Keystore::generate(), config, None);
+
+        let session_id = uuid::Uuid::new_v4();
+        state.tee_sessions.lock().unwrap().insert(
+            session_id,
+            TeeSession {
+                worker_public_key: "ed25519:WorkerBBB".to_string(),
+                created_at: std::time::Instant::now(),
+            },
+        );
+
+        // A throwaway route behind the real middleware, echoing whatever identity arrived.
+        async fn echo(worker: Option<axum::Extension<WorkerIdentity>>) -> String {
+            worker.map(|w| w.0 .0).unwrap_or_else(|| "no-session".to_string())
+        }
+        let app = Router::new()
+            .route("/echo", get(echo))
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                tee_session_middleware,
+            ))
+            .with_state(state);
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/echo")
+                    .header("X-TEE-Session", session_id.to_string())
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("router");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&bytes),
+            "ed25519:WorkerBBB",
+            "the validated worker identity never reached the handler"
+        );
     }
 
     // ============== AppState::ensure_customer_loaded gate ==============

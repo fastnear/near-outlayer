@@ -7,8 +7,6 @@ use anyhow::Result;
 use tracing::debug;
 use wasmtime::component::Linker;
 
-use crate::keystore_client::Attestation;
-
 // Generate bindings from WIT
 wasmtime::component::bindgen!({
     path: "wit",
@@ -43,8 +41,8 @@ pub struct VrfHostState {
 impl VrfHostState {
     /// Create VRF host state
     ///
-    /// `tee_session_id` provides the actual auth — attestation in the body is a stub
-    /// (same pattern as storage client: TEE sessions handle auth).
+    /// `tee_session_id` carries the auth: the keystore validates the session, nothing else in
+    /// the body identifies the caller.
     pub fn new(
         request_id: u64,
         sender_id: &str,
@@ -67,21 +65,6 @@ impl VrfHostState {
             tee_session_id,
             call_count: 0,
             max_calls: 10,
-        }
-    }
-
-    /// Stub attestation — real auth is via X-TEE-Session header
-    /// (same approach as outlayer_storage::client::Attestation::for_mode)
-    fn stub_attestation() -> Attestation {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        Attestation {
-            tee_type: "none".to_string(),
-            quote: base64_encode(b"session-auth"),
-            worker_pubkey: None,
-            timestamp,
         }
     }
 }
@@ -121,9 +104,6 @@ impl near::vrf::api::Host for VrfHostState {
         // Construct alpha with auto-prepended request_id and sender_id
         let alpha = format!("vrf:{}:{}:{}", self.request_id, self.sender_id, user_seed);
 
-        // Call keystore (TEE session header provides auth, attestation is a stub)
-        let attestation = Self::stub_attestation();
-
         let url = format!("{}/vrf/generate", self.keystore_url);
 
         let mut request = self
@@ -132,12 +112,6 @@ impl near::vrf::api::Host for VrfHostState {
             .header("Authorization", format!("Bearer {}", self.auth_token))
             .json(&serde_json::json!({
                 "alpha": alpha,
-                "attestation": serde_json::json!({
-                    "tee_type": attestation.tee_type,
-                    "quote": attestation.quote,
-                    "worker_pubkey": attestation.worker_pubkey,
-                    "timestamp": attestation.timestamp,
-                }),
             }));
 
         if let Some(ref session_id) = self.tee_session_id {
@@ -218,11 +192,6 @@ pub fn add_vrf_to_linker<T: Send + 'static>(
     get_state: impl Fn(&mut T) -> &mut VrfHostState + Send + Sync + Copy + 'static,
 ) -> Result<()> {
     near::vrf::api::add_to_linker(linker, get_state)
-}
-
-fn base64_encode(data: &[u8]) -> String {
-    use base64::Engine;
-    base64::engine::general_purpose::STANDARD.encode(data)
 }
 
 #[cfg(test)]

@@ -21,6 +21,27 @@ interface WalletInfo {
   vault_id?: string | null;
 }
 
+/**
+ * Largest approver set a policy may declare.
+ *
+ * Mirrors `MAX_APPROVAL_VOTES` in the keystore (`keystore-worker/src/api.rs`), which caps how
+ * many votes one signing request may carry: verifying a vote costs a NEP-413 signature check, so
+ * an uncapped ballot is CPU a caller can spend on our behalf. A policy with more approvers than
+ * this is not merely discouraged — its threshold could never be met, because the votes would not
+ * fit in the request. The on-chain contract does not enforce this, so it is checked here, where
+ * the policy is written, rather than at the first signature that needs approval.
+ */
+const MAX_APPROVERS = 16;
+
+/** Count the approvers a policy would declare: the primary one plus each non-empty extra line. */
+function countApprovers(primaryOwner: string, additional: string): number {
+  const extra = additional
+    .split('\n')
+    .filter((line) => line.split(',')[0]?.trim())
+    .length;
+  return (primaryOwner ? 1 : 0) + extra;
+}
+
 export default function WalletHandoffPage() {
   return (
     <Suspense fallback={<div className="max-w-4xl mx-auto py-8 text-gray-400">Loading...</div>}>
@@ -222,6 +243,17 @@ function WalletHandoffContent() {
     // Manual mode requires connected wallet to sign the transaction
     if (ownerMode === 'manual' && !isConnected) {
       setError('Connect your NEAR wallet to sign the transaction. The manual account will be set as owner.');
+      return;
+    }
+
+    // The keystore refuses a signing request carrying more than MAX_APPROVAL_VOTES (16) votes,
+    // so a policy needing more approvers than that could never be satisfied. Catch it here,
+    // while the policy is being written, instead of at the first signature that needs approval.
+    if (requireApproval && countApprovers(effectiveOwner ?? '', additionalApprovers) > MAX_APPROVERS) {
+      setError(
+        `Too many approvers: ${countApprovers(effectiveOwner ?? '', additionalApprovers)} (limit ${MAX_APPROVERS}, including the primary approver). ` +
+        `A signing request cannot carry more votes than that, so a larger set could never reach its threshold.`
+      );
       return;
     }
 
@@ -492,6 +524,16 @@ function WalletHandoffContent() {
                         className="w-full border border-gray-300 rounded px-3 py-2 text-sm font-mono"
                       />
                       <p className="text-xs text-gray-400 mt-1">Roles: admin (can update policy), signer (can only approve)</p>
+                      {(() => {
+                        const total = countApprovers(effectiveOwner ?? '', additionalApprovers);
+                        return total > MAX_APPROVERS ? (
+                          <p className="text-xs text-red-600 mt-1">
+                            {total} approvers — the limit is {MAX_APPROVERS} including the primary one.
+                            A signing request cannot carry more votes than that, so this policy could
+                            never reach its threshold.
+                          </p>
+                        ) : null;
+                      })()}
                     </div>
 
                     <div>
