@@ -64,12 +64,12 @@ RPC_URL="${RPC_URL:-https://rpc.${NETWORK}.fastnear.com}"
 
 case "$NETWORK" in
   testnet)
-    COORDINATOR_URL="${COORDINATOR_URL:-https://testnet-api.outlayer.fastnear.com}"
+    COORDINATOR_URL="${COORDINATOR_URL:-https://testnet-api.outlayer.ai}"
     MPC_CONTRACT_ID="${MPC_CONTRACT_ID:-v1.signer-prod.testnet}"
     NEARBLOCKS_URL="${NEARBLOCKS_URL:-https://api-testnet.nearblocks.io}"
     ;;
   mainnet)
-    COORDINATOR_URL="${COORDINATOR_URL:-https://api.outlayer.fastnear.com}"
+    COORDINATOR_URL="${COORDINATOR_URL:-https://api.outlayer.ai}"
     MPC_CONTRACT_ID="${MPC_CONTRACT_ID:-v1.signer}"
     NEARBLOCKS_URL="${NEARBLOCKS_URL:-https://api.nearblocks.io}"
     ;;

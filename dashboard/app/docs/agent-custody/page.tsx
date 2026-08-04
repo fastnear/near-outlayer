@@ -533,7 +533,7 @@ Approver 2: Signs approval via NEAR wallet (dashboard)
 
         <h3 className="text-lg font-semibold mt-2 mb-2">1. Register a wallet</h3>
         <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
-{`curl -s -X POST https://api.outlayer.fastnear.com/register
+{`curl -s -X POST https://api.outlayer.ai/register
 
 # Response:
 # {
@@ -549,7 +549,7 @@ Approver 2: Signs approval via NEAR wallet (dashboard)
 {`# NEAR address (wallet identity; chain=near only — native ETH/SOL
 # addresses are not issued, see Multi-Chain Support above)
 curl -s -H "Authorization: Bearer $API_KEY" \\
-  "https://api.outlayer.fastnear.com/wallet/v1/address?chain=near"
+  "https://api.outlayer.ai/wallet/v1/address?chain=near"
 
 # To fund from another chain, request a cross-chain deposit address
 # (via 1Click / NEAR Intents). Pass a defuse \`source_asset\` from
@@ -561,7 +561,7 @@ curl -s -H "Authorization: Bearer $API_KEY" \\
 curl -s -X POST -H "Content-Type: application/json" \\
   -H "Authorization: Bearer $API_KEY" \\
   -d '{"source_asset":"nep141:eth-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.omft.near","amount":"10000000"}' \\
-  "https://api.outlayer.fastnear.com/wallet/v1/intents/deposit/cross-chain"
+  "https://api.outlayer.ai/wallet/v1/intents/deposit/cross-chain"
 
 # Returned \`deposit_address\` format depends on the source chain:
 # NEAR — 64-char hex implicit account; EVM — 0x + 40 hex;
@@ -574,11 +574,11 @@ curl -s -X POST -H "Content-Type: application/json" \\
         <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
 {`# Native NEAR balance
 curl -s -H "Authorization: Bearer $API_KEY" \\
-  "https://api.outlayer.fastnear.com/wallet/v1/balance?chain=near"
+  "https://api.outlayer.ai/wallet/v1/balance?chain=near"
 
 # FT token balance (e.g. USDT)
 curl -s -H "Authorization: Bearer $API_KEY" \\
-  "https://api.outlayer.fastnear.com/wallet/v1/balance?chain=near&token=usdt.tether-token.near"`}
+  "https://api.outlayer.ai/wallet/v1/balance?chain=near&token=usdt.tether-token.near"`}
         </SyntaxHighlighter>
 
         <h3 className="text-lg font-semibold mt-4 mb-2">4. Transfer NEAR</h3>
@@ -586,7 +586,7 @@ curl -s -H "Authorization: Bearer $API_KEY" \\
 {`curl -s -X POST -H "Content-Type: application/json" \\
   -H "Authorization: Bearer $API_KEY" \\
   -d '{"to":"bob.near","amount":"1000000000000000000000000"}' \\
-  "https://api.outlayer.fastnear.com/wallet/v1/transfer"`}
+  "https://api.outlayer.ai/wallet/v1/transfer"`}
         </SyntaxHighlighter>
 
         <h3 className="text-lg font-semibold mt-4 mb-2">5. Swap tokens</h3>
@@ -595,7 +595,7 @@ curl -s -H "Authorization: Bearer $API_KEY" \\
 curl -s -X POST -H "Content-Type: application/json" \\
   -H "Authorization: Bearer $API_KEY" \\
   -d '{"token_in":"nep141:wrap.near","token_out":"nep141:usdt.tether-token.near","amount_in":"1000000000000000000000000"}' \\
-  "https://api.outlayer.fastnear.com/wallet/v1/intents/swap"`}
+  "https://api.outlayer.ai/wallet/v1/intents/swap"`}
         </SyntaxHighlighter>
 
         <h3 className="text-lg font-semibold mt-4 mb-2">6. Call a NEAR contract</h3>
@@ -603,7 +603,7 @@ curl -s -X POST -H "Content-Type: application/json" \\
 {`curl -s -X POST -H "Content-Type: application/json" \\
   -H "Authorization: Bearer $API_KEY" \\
   -d '{"receiver_id":"wrap.near","method_name":"near_deposit","args":{},"deposit":"10000000000000000000000"}' \\
-  "https://api.outlayer.fastnear.com/wallet/v1/call"`}
+  "https://api.outlayer.ai/wallet/v1/call"`}
         </SyntaxHighlighter>
 
         <p className="text-gray-700 mt-2">
@@ -635,26 +635,26 @@ curl -s -X POST -H "Content-Type: application/json" \\
 curl -s -X POST -H "Content-Type: application/json" \\
   -H "Authorization: Bearer $API_KEY" \\
   -d '{"to":"receiver.near","amount":"1000000000000000000000000","token":"near","chain":"near"}' \\
-  "https://api.outlayer.fastnear.com/wallet/v1/intents/withdraw"
+  "https://api.outlayer.ai/wallet/v1/intents/withdraw"
 
 # Withdraw wNEAR (NEP-141) instead — explicit opt-in; recipient must be
 # storage-registered on wrap.near (POST /wallet/v1/storage-deposit):
 curl -s -X POST -H "Content-Type: application/json" \\
   -H "Authorization: Bearer $API_KEY" \\
   -d '{"to":"receiver.near","amount":"1000000000000000000000000","token":"nep141:wrap.near","chain":"near"}' \\
-  "https://api.outlayer.fastnear.com/wallet/v1/intents/withdraw"
+  "https://api.outlayer.ai/wallet/v1/intents/withdraw"
 
 # Withdraw USDT (NEP-141) to a NEAR account (recipient must have usdt storage):
 curl -s -X POST -H "Content-Type: application/json" \\
   -H "Authorization: Bearer $API_KEY" \\
   -d '{"to":"receiver.near","amount":"1000000","token":"usdt.tether-token.near","chain":"near"}' \\
-  "https://api.outlayer.fastnear.com/wallet/v1/intents/withdraw"
+  "https://api.outlayer.ai/wallet/v1/intents/withdraw"
 
 # Withdraw cross-chain to an external address (1Click bridges + delivers native):
 curl -s -X POST -H "Content-Type: application/json" \\
   -H "Authorization: Bearer $API_KEY" \\
   -d '{"to":"0xRecipient...","amount":"1000000","token":"usdt.tether-token.near","chain":"ethereum"}' \\
-  "https://api.outlayer.fastnear.com/wallet/v1/intents/withdraw"`}
+  "https://api.outlayer.ai/wallet/v1/intents/withdraw"`}
         </SyntaxHighlighter>
 
         <p className="text-gray-700 mt-3 mb-2">
@@ -700,7 +700,7 @@ curl -s -X POST -H "Content-Type: application/json" \\
 curl -s -X POST -H "Content-Type: application/json" \\
   -H "Authorization: Bearer $API_KEY" \\
   -d '{"to":"partner.near","amount":"1000000","token":"nep141:usdt.tether-token.near"}' \\
-  "https://api.outlayer.fastnear.com/wallet/v1/intents/transfer"`}
+  "https://api.outlayer.ai/wallet/v1/intents/transfer"`}
         </SyntaxHighlighter>
 
         <h3 className="text-lg font-semibold mt-4 mb-2">9. Delete wallet (irreversible)</h3>
@@ -709,7 +709,7 @@ curl -s -X POST -H "Content-Type: application/json" \\
 {`curl -s -X POST -H "Content-Type: application/json" \\
   -H "Authorization: Bearer $API_KEY" \\
   -d '{"beneficiary":"receiver.near","chain":"near"}' \\
-  "https://api.outlayer.fastnear.com/wallet/v1/delete"`}
+  "https://api.outlayer.ai/wallet/v1/delete"`}
         </SyntaxHighlighter>
         <div className="bg-red-50 border-l-4 border-red-500 p-4 mt-2 mb-4">
           <p className="text-sm text-gray-700">
@@ -866,9 +866,9 @@ curl -s -X POST -H "Content-Type: application/json" \\
         </div>
 
         <p className="text-gray-700 mb-3">
-          Base URL: <code className="bg-gray-100 px-1 rounded">https://api.outlayer.fastnear.com</code> (mainnet)
+          Base URL: <code className="bg-gray-100 px-1 rounded">https://api.outlayer.ai</code> (mainnet)
           {' · '}
-          <code className="bg-gray-100 px-1 rounded">https://testnet-api.outlayer.fastnear.com</code> (testnet)
+          <code className="bg-gray-100 px-1 rounded">https://testnet-api.outlayer.ai</code> (testnet)
         </p>
 
         <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 text-sm text-gray-700">
@@ -946,11 +946,11 @@ curl -s -X POST -H "Content-Type: application/json" \\
 curl -s -X POST -H "Content-Type: application/json" \\
   -H "Authorization: Bearer $API_KEY" \\
   -d '{"token":"nep141:wrap.near","amount":"10000000000000000000000"}' \\
-  "https://api.outlayer.fastnear.com/wallet/v1/confidential/shield"
+  "https://api.outlayer.ai/wallet/v1/confidential/shield"
 
 # Read confidential balances
 curl -s -H "Authorization: Bearer $API_KEY" \\
-  "https://api.outlayer.fastnear.com/wallet/v1/confidential/balance"`}
+  "https://api.outlayer.ai/wallet/v1/confidential/balance"`}
         </SyntaxHighlighter>
       </section>
 
@@ -983,7 +983,7 @@ curl -s -H "Authorization: Bearer $API_KEY" \\
 {`curl -s -X POST -H "Content-Type: application/json" \\
   -H "Authorization: Bearer $API_KEY" \\
   -d '{"beneficiary":"receiver.near","chain":"near"}' \\
-  "https://api.outlayer.fastnear.com/wallet/v1/delete"`}
+  "https://api.outlayer.ai/wallet/v1/delete"`}
         </SyntaxHighlighter>
 
         <h3 className="text-lg font-semibold mt-4 mb-2">Response</h3>
@@ -1015,7 +1015,7 @@ curl -s -H "Authorization: Bearer $API_KEY" \\
 {`curl -s -X POST -H "Content-Type: application/json" \\
   -H "Authorization: Bearer $API_KEY" \\
   -d '{"message":"Login to example.com","recipient":"example.com"}' \\
-  "https://api.outlayer.fastnear.com/wallet/v1/sign-message"`}
+  "https://api.outlayer.ai/wallet/v1/sign-message"`}
         </SyntaxHighlighter>
 
         <h3 className="text-lg font-semibold mt-4 mb-2">Response</h3>
@@ -1153,7 +1153,7 @@ curl -s -X POST -H "Content-Type: application/json" \\
     "message": "register:user-42:1712000000",
     "signature": "<base58_signature>"
   }' \\
-  "https://api.outlayer.fastnear.com/register"
+  "https://api.outlayer.ai/register"
 
 # Timestamp window: ±5 minutes for registration
 # Response: { "wallet_id": "...", "near_account_id": "..." }
@@ -1195,12 +1195,12 @@ curl -s -X POST -H "Content-Type: application/json" \\
 # key_hash = SHA256("wk_" + derived_key_hex)
 curl -s -X PUT -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \\
   -d '{"seed": "sub-task", "key_hash": "<sha256_hex_of_wk_key>"}' \\
-  "https://api.outlayer.fastnear.com/wallet/v1/api-key"
+  "https://api.outlayer.ai/wallet/v1/api-key"
 # Response: { "wallet_id": "...", "near_account_id": "..." }
 
 # Sub-agent: simple Bearer token, no crypto
 curl -H "Authorization: Bearer wk_derived_key_here" \\
-  "https://api.outlayer.fastnear.com/wallet/v1/balance?chain=near"
+  "https://api.outlayer.ai/wallet/v1/balance?chain=near"
 
 # Revoke: DELETE /wallet/v1/api-key/{key_hash}
 # Returns 409 if last active key for the wallet`}

@@ -33,7 +33,7 @@ APPLY=false
 
 NETWORK="${NETWORK:-testnet}"
 PARENT="${PARENT:-}"
-COORDINATOR_URL="${COORDINATOR_URL:-https://testnet-api.outlayer.fastnear.com}"
+COORDINATOR_URL="${COORDINATOR_URL:-https://testnet-api.outlayer.ai}"
 TS="$(date +%s)"
 VAULT_A_NAME="${VAULT_A:-iso-a-$TS}"
 VAULT_B_NAME="${VAULT_B:-iso-b-$TS}"

@@ -63,7 +63,7 @@ KEYSTORE_DAO_ID="${KEYSTORE_DAO_ID:-dao.outlayer.testnet}"
 
 case "$NETWORK" in
   testnet)
-    COORDINATOR_URL="${COORDINATOR_URL:-https://testnet-api.outlayer.fastnear.com}"
+    COORDINATOR_URL="${COORDINATOR_URL:-https://testnet-api.outlayer.ai}"
     MPC_CONTRACT_ID="${MPC_CONTRACT_ID:-v1.signer-prod.testnet}"
     NEARBLOCKS_URL="${NEARBLOCKS_URL:-https://api-testnet.nearblocks.io}"
     ;;

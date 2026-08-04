@@ -165,10 +165,10 @@ Full contract example — see [wasi-examples/vrf-example/vrf-contract/](https://
 
 ```bash
 # Mainnet
-curl -s https://api.outlayer.fastnear.com/vrf/pubkey | jq -r .vrf_public_key_hex
+curl -s https://api.outlayer.ai/vrf/pubkey | jq -r .vrf_public_key_hex
 
 # Testnet
-curl -s https://testnet-api.outlayer.fastnear.com/vrf/pubkey | jq -r .vrf_public_key_hex
+curl -s https://testnet-api.outlayer.ai/vrf/pubkey | jq -r .vrf_public_key_hex
 ```
 
 **Step 2.** Initialize contract with the pubkey:
@@ -233,7 +233,7 @@ assert!(valid, "VRF proof verification failed");
 ### 1. Get the VRF public key
 
 ```bash
-curl https://api.outlayer.fastnear.com/vrf/pubkey
+curl https://api.outlayer.ai/vrf/pubkey
 # {"vrf_public_key_hex":"a1b2c3d4..."}  (64 hex chars = 32 bytes)
 ```
 

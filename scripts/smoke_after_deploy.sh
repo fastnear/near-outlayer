@@ -41,10 +41,27 @@ var() { eval "printf '%s' \"\${${1}_${UP}:-}\""; }
 API_URL="$(var SMOKE_API_URL)"
 API_URL_LEGACY="$(var SMOKE_API_URL_LEGACY)"
 KEYSTORE_URL="$(var SMOKE_KEYSTORE_URL)"
-WORKER_TOKEN="$(var SMOKE_WORKER_TOKEN)"
+# TWO different tokens — they authenticate to two different services and are not
+# interchangeable. The worker holds both: `KEYSTORE_AUTH_TOKEN` (→ keystore) and
+# `API_AUTH_TOKEN` (→ coordinator), see deploy/self-hosted-tdx/worker/.env.*
+KEYSTORE_TOKEN="$(var SMOKE_KEYSTORE_TOKEN)"
+COORDINATOR_TOKEN="$(var SMOKE_COORDINATOR_TOKEN)"
 VAULT_ID="$(var SMOKE_VAULT_ID)"
 BIG_REPO="$(var SMOKE_BIG_REPO)"
 BIG_REPO_COMMIT="$(var SMOKE_BIG_REPO_COMMIT)"
+
+# Accept a pasted GitHub commit URL where a bare SHA belongs — it is the natural thing to copy out
+# of a browser, and the alternative is a confusing 404 much later, from an endpoint that looks
+# broken rather than misconfigured. The repo is derived from the same URL when it was not given
+# separately, so one line is enough to enable this check.
+case "$BIG_REPO_COMMIT" in
+  https://github.com/*/commit/*)
+    if [ -z "$BIG_REPO" ]; then
+      BIG_REPO="$(printf '%s' "$BIG_REPO_COMMIT" | sed -E 's#(https://github\.com/[^/]+/[^/]+)/commit/.*#\1#')"
+    fi
+    BIG_REPO_COMMIT="$(printf '%s' "$BIG_REPO_COMMIT" | sed -E 's#.*/commit/##' | sed -E 's#[^0-9a-fA-F].*##')"
+    ;;
+esac
 
 PASS=0; FAIL=0; SKIP=0
 pass() { printf '  \033[32mPASS\033[0m  %s\n' "$1"; PASS=$((PASS+1)); }
@@ -89,18 +106,18 @@ fi
 
 # 3. The new admin endpoint, and the fact that it is NOT public. Both directions matter: the list
 #    of loaded vaults is operational detail, and a router refactor could expose it.
-if [ -z "$KEYSTORE_URL" ] || [ -z "$WORKER_TOKEN" ]; then
-  skip "/admin/loaded-vaults (auth + shape)" "needs SMOKE_KEYSTORE_URL_$UP and SMOKE_WORKER_TOKEN_$UP"
+if [ -z "$KEYSTORE_URL" ] || [ -z "$KEYSTORE_TOKEN" ]; then
+  skip "/admin/loaded-vaults (auth + shape)" "needs SMOKE_KEYSTORE_URL_$UP and SMOKE_KEYSTORE_TOKEN_$UP"
 else
   code="$(req "$KEYSTORE_URL/admin/loaded-vaults")"
   if [ "$code" = "401" ]; then pass "/admin/loaded-vaults refuses an anonymous caller (401)"
   else fail "/admin/loaded-vaults refuses an anonymous caller" "got $code — MUST be 401. Anyone can list vaults."; fi
 
-  code="$(req -H "Authorization: Bearer $WORKER_TOKEN" "$KEYSTORE_URL/admin/loaded-vaults")"
+  code="$(req -H "Authorization: Bearer $KEYSTORE_TOKEN" "$KEYSTORE_URL/admin/loaded-vaults")"
   if [ "$code" = "200" ] && body | grep -q '"count"'; then
-    pass "/admin/loaded-vaults with worker token ($(body | head -c 120))"
+    pass "/admin/loaded-vaults with the keystore token ($(body | head -c 120))"
   else
-    fail "/admin/loaded-vaults with worker token" "got $code: $(body | head -c 200)"
+    fail "/admin/loaded-vaults with the keystore token" "got $code: $(body | head -c 200)"
   fi
 fi
 
@@ -131,11 +148,14 @@ fi
 #    CKD derivation) and the vault gate. On a COLD vault the first call is the slow one — that is
 #    expected, and it is the call that proves the derivation path works end to end.
 if [ -z "$API_URL" ] || [ -z "$VAULT_ID" ]; then
-  skip "vault-scoped /secrets/pubkey" "needs SMOKE_API_URL_$UP and SMOKE_VAULT_ID_$UP"
+  skip "vault-scoped /secrets/pubkey" "OPTIONAL — set SMOKE_VAULT_ID_$UP only if you want it; the first call after a keystore restart pays for an on-chain CKD derivation out of that vault"
 else
   started=$(date +%s)
+  # Shape verified against the live endpoint: accessor + owner + secrets_json are all required
+  # (a bare {"seed":...} is rejected 422 by the body deserializer, before anything is exercised).
   code="$(req -X POST -H 'Content-Type: application/json' -H "X-Customer-Vault: $VAULT_ID" \
-        -d '{"seed":"smoke-test"}' "$API_URL/secrets/pubkey")"
+        -d '{"accessor":{"type":"Repo","repo":"github.com/outlayer/smoke-check"},"owner":"smoke.testnet","secrets_json":"{}"}' \
+        "$API_URL/secrets/pubkey")"
   elapsed=$(( $(date +%s) - started ))
   if [ "$code" = "200" ]; then pass "vault-scoped /secrets/pubkey (${elapsed}s, vault $VAULT_ID)"
   elif [ "$code" = "402" ]; then fail "vault-scoped /secrets/pubkey" "402 — the vault cannot pay for its CKD derivation: $(body | head -c 200)"
@@ -144,14 +164,19 @@ fi
 
 # 6. The branch-count guard. Only reachable with a worker token (the route is worker-protected),
 #    and it is the one check that needs a repository with more than 5 branches.
-if [ -z "$API_URL" ] || [ -z "$WORKER_TOKEN" ] || [ -z "$BIG_REPO" ] || [ -z "$BIG_REPO_COMMIT" ]; then
-  skip "branch-count guard returns 422" "needs SMOKE_BIG_REPO_$UP + SMOKE_BIG_REPO_COMMIT_$UP (a repo with >5 branches)"
+if [ -z "$API_URL" ] || [ -z "$COORDINATOR_TOKEN" ] || [ -z "$BIG_REPO" ] || [ -z "$BIG_REPO_COMMIT" ]; then
+  skip "branch-count guard returns 422" "needs SMOKE_COORDINATOR_TOKEN_$UP + SMOKE_BIG_REPO_$UP + SMOKE_BIG_REPO_COMMIT_$UP (repo with >5 branches)"
 else
-  code="$(req -H "Authorization: Bearer $WORKER_TOKEN" \
+  code="$(req -H "Authorization: Bearer $COORDINATOR_TOKEN" \
         --get --data-urlencode "repo=$BIG_REPO" --data-urlencode "commit=$BIG_REPO_COMMIT" \
         "$API_URL/github/resolve-branch")"
   if [ "$code" = "422" ] && body | grep -q "branches (limit"; then
     pass "branch-count guard returns 422 with an actionable message"
+  elif [ "$code" = "200" ]; then
+    # NOT a failure: the fast path (`branches-where-head`, a single GitHub call) resolved it, so
+    # the per-branch scan the guard protects was never entered. Only a commit that is not the head
+    # of any branch reaches the guard — pick an older one.
+    skip "branch-count guard" "inconclusive: this commit is the HEAD of a branch, so it resolved via the fast path without reaching the guard. Use an OLDER commit: $(body | head -c 120)"
   else
     fail "branch-count guard" "got $code (expected 422): $(body | head -c 200)"
   fi

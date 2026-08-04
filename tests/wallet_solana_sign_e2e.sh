@@ -24,7 +24,7 @@
 #
 # Prerequisites:
 #   - Coordinator reachable at COORDINATOR_URL (default: mainnet
-#     https://api.outlayer.fastnear.com; override for testnet/local, e.g.
+#     https://api.outlayer.ai; override for testnet/local, e.g.
 #     COORDINATOR_URL=http://localhost:8080 ./tests/wallet_solana_sign_e2e.sh)
 #   - Keystore running behind that coordinator
 #   - Keystore configured with a reachable NEAR RPC. The sign endpoints
@@ -36,7 +36,7 @@
 
 set -euo pipefail
 
-COORDINATOR_URL="${COORDINATOR_URL:-https://api.outlayer.fastnear.com}"
+COORDINATOR_URL="${COORDINATOR_URL:-https://api.outlayer.ai}"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'

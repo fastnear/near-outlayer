@@ -24,7 +24,7 @@ APPLY=false
 [[ "${1:-}" == "--apply" ]] && APPLY=true
 
 NETWORK="${NETWORK:-testnet}"
-COORDINATOR_URL="${COORDINATOR_URL:-https://testnet-api.outlayer.fastnear.com}"
+COORDINATOR_URL="${COORDINATOR_URL:-https://testnet-api.outlayer.ai}"
 
 log()  { printf '\n\033[36m▶ %s\033[0m\n' "$*" >&2; }
 warn() { printf '\033[33m⚠ %s\033[0m\n' "$*" >&2; }

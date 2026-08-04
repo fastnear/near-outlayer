@@ -26,7 +26,7 @@
 #
 # Environment:
 #   API_KEY        — wallet API key with USDC balance (required)
-#   API_URL        — default https://api.outlayer.fastnear.com
+#   API_URL        — default https://api.outlayer.ai
 #   TOKEN          — token contract ID (default: USDC on NEAR mainnet)
 #   SWAP_TOKEN_OUT — token to swap to (default: nep141:wrap.near)
 #   DEPOSIT_AMOUNT — amount to deposit into intents (default: 100000 = 0.10 USDC, 6 decimals)
@@ -37,7 +37,7 @@
 
 set -euo pipefail
 
-API_URL="${API_URL:-https://api.outlayer.fastnear.com}"
+API_URL="${API_URL:-https://api.outlayer.ai}"
 # USDC on NEAR mainnet
 TOKEN="${TOKEN:-17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1}"
 SWAP_TOKEN_OUT="${SWAP_TOKEN_OUT:-nep141:wrap.near}"

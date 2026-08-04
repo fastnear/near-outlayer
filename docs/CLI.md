@@ -102,7 +102,7 @@ outlayer run --wasm https://example.com/file.wasm --hash abc123... '{}'
 
 **HTTPS mode** (when payment key is available):
 ```
-POST https://api.outlayer.fastnear.com/call/{owner}/{project}
+POST https://api.outlayer.ai/call/{owner}/{project}
 X-Payment-Key: owner:nonce:secret
 Content-Type: application/json
 

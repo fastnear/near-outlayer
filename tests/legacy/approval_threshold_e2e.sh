@@ -40,7 +40,7 @@ APPROVER1="${APPROVER1:-zavodil.testnet}"
 APPROVER2="${APPROVER2:-}"
 RPC_URL="${RPC_URL:-https://rpc.${NETWORK}.fastnear.com}"
 CONTRACT_ID="${CONTRACT_ID:-outlayer.testnet}"
-COORDINATOR_URL="${COORDINATOR_URL:-https://testnet-api.outlayer.fastnear.com}"
+COORDINATOR_URL="${COORDINATOR_URL:-https://testnet-api.outlayer.ai}"
 
 [[ -n "$PARENT"    ]] || { echo "USAGE: PARENT=... APPROVER2=... $0 --apply" >&2; exit 1; }
 [[ -n "$APPROVER2" ]] || { echo "✗ APPROVER2 is required (second distinct approver)" >&2; exit 1; }

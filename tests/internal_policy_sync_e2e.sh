@@ -18,7 +18,7 @@
 # Required env:
 #   PARENT              NEAR account that owns the vault (must have outlayer login)
 #   API_AUTH_TOKEN      plaintext worker token (hash is in worker_auth_tokens)
-#   COORDINATOR_URL     default https://testnet-api.outlayer.fastnear.com
+#   COORDINATOR_URL     default https://testnet-api.outlayer.ai
 #
 # Run:
 #   API_AUTH_TOKEN=... PARENT=zavodil2.testnet \
@@ -34,7 +34,7 @@ NETWORK="${NETWORK:-testnet}"
 PARENT="${PARENT:-}"
 RPC_URL="${RPC_URL:-https://rpc.${NETWORK}.fastnear.com}"
 CONTRACT_ID="${CONTRACT_ID:-outlayer.testnet}"
-COORDINATOR_URL="${COORDINATOR_URL:-https://testnet-api.outlayer.fastnear.com}"
+COORDINATOR_URL="${COORDINATOR_URL:-https://testnet-api.outlayer.ai}"
 APPROVER="${APPROVER:-zavodil.testnet}"
 
 [[ -n "$PARENT" ]] || { echo "USAGE: PARENT=... API_AUTH_TOKEN=... $0 --apply" >&2; exit 1; }

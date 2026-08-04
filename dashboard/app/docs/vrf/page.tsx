@@ -179,10 +179,10 @@ fn verify_vrf(
         <p className="text-gray-700 mb-2"><strong>Step 1.</strong> Get the VRF public key:</p>
         <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
 {`# Mainnet
-curl -s https://api.outlayer.fastnear.com/vrf/pubkey | jq -r .vrf_public_key_hex
+curl -s https://api.outlayer.ai/vrf/pubkey | jq -r .vrf_public_key_hex
 
 # Testnet
-curl -s https://testnet-api.outlayer.fastnear.com/vrf/pubkey | jq -r .vrf_public_key_hex`}
+curl -s https://testnet-api.outlayer.ai/vrf/pubkey | jq -r .vrf_public_key_hex`}
         </SyntaxHighlighter>
 
         <p className="text-gray-700 mt-4 mb-2"><strong>Step 2.</strong> Initialize contract with the pubkey:</p>
@@ -277,7 +277,7 @@ assert!(valid, "VRF proof verification failed");`}
 
         <h3 className="text-lg font-semibold mt-4 mb-2">1. Get the VRF Public Key</h3>
         <SyntaxHighlighter language="bash" style={vscDarkPlus} customStyle={{ borderRadius: '0.5rem', fontSize: '0.875rem' }}>
-{`curl https://api.outlayer.fastnear.com/vrf/pubkey
+{`curl https://api.outlayer.ai/vrf/pubkey
 # {"vrf_public_key_hex":"a1b2c3d4..."}  (64 hex chars = 32 bytes)`}
         </SyntaxHighlighter>
 

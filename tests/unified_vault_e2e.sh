@@ -97,7 +97,7 @@ EXTERNAL_ACCT="${EXTERNAL_ACCT:-$APPROVER1}"
 BENEFICIARY="${BENEFICIARY:-$([ "$NETWORK" = mainnet ] && echo zavodil.near || echo zavodil.testnet)}"
 RPC_URL="${RPC_URL:-https://rpc.${NETWORK}.fastnear.com}"
 CONTRACT_ID="${CONTRACT_ID:-outlayer.testnet}"
-COORDINATOR_URL="${COORDINATOR_URL:-https://testnet-api.outlayer.fastnear.com}"
+COORDINATOR_URL="${COORDINATOR_URL:-https://testnet-api.outlayer.ai}"
 WNEAR="${WNEAR:-wrap.testnet}"
 # MPC-CKD signer config for vault mode (V1–V5). NOT secret (public key + contract id + domain — per
 # user "это не секрет, можно хранить"). TESTNET defaults (this suite is testnet — override all three for

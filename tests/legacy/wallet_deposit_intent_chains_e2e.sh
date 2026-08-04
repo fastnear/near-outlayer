@@ -15,7 +15,7 @@
 #   ./tests/wallet_deposit_intent_chains_e2e.sh
 #
 # Environment:
-#   COORDINATOR_URL  — default https://api.outlayer.fastnear.com
+#   COORDINATOR_URL  — default https://api.outlayer.ai
 #   WALLET_API_KEY   — reuse existing key (optional; new wallet registered if absent)
 #   CHAINS           — comma-separated list (default: all six below)
 #   DEST_ASSET       — destination intents asset (default: USDC NEP-141 on NEAR)
@@ -23,7 +23,7 @@
 # ============================================================================
 set -euo pipefail
 
-COORDINATOR_URL="${COORDINATOR_URL:-https://api.outlayer.fastnear.com}"
+COORDINATOR_URL="${COORDINATOR_URL:-https://api.outlayer.ai}"
 CHAINS="${CHAINS:-near,ethereum,base,arbitrum,solana,bitcoin}"
 DEST_ASSET="${DEST_ASSET:-nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1}"
 VERBOSE="${VERBOSE:-0}"

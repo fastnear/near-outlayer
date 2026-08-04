@@ -24,7 +24,7 @@
 # Environment:
 #   SENDER_API_KEY    — API key for Agent A (check creator)
 #   RECEIVER_API_KEY  — API key for Agent B (check claimer)
-#   API_URL           — default https://api.outlayer.fastnear.com
+#   API_URL           — default https://api.outlayer.ai
 #   TOKEN             — token contract ID (default: USDC on NEAR mainnet)
 #   TOTAL_AMOUNT      — total check amount in smallest units (default: 10000 = 0.01 USDC)
 #   CLAIM_1           — first partial claim amount (default: 3000)
@@ -36,7 +36,7 @@
 
 set -euo pipefail
 
-API_URL="${API_URL:-https://api.outlayer.fastnear.com}"
+API_URL="${API_URL:-https://api.outlayer.ai}"
 # USDC on NEAR mainnet
 TOKEN="${TOKEN:-17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1}"
 TOTAL_AMOUNT="${TOTAL_AMOUNT:-10000}"

@@ -294,11 +294,11 @@ The ephemeral account ID = hex(public_key) on intents.near.`}
       <section id="quick-start" className="mb-10 scroll-mt-4">
         <AnchorHeading id="quick-start">Quick Start</AnchorHeading>
 
-        <p className="text-gray-700 mb-4">All examples use the OutLayer API at <code className="text-xs bg-gray-100 px-1 rounded">https://api.outlayer.fastnear.com</code>.</p>
+        <p className="text-gray-700 mb-4">All examples use the OutLayer API at <code className="text-xs bg-gray-100 px-1 rounded">https://api.outlayer.ai</code>.</p>
 
         <h3 className="font-semibold text-gray-900 mb-3">1. Create a check</h3>
         <SyntaxHighlighter language="bash" style={vscDarkPlus} className="rounded-lg text-sm mb-4">
-{`curl -X POST https://api.outlayer.fastnear.com/wallet/v1/payment-check/create \\
+{`curl -X POST https://api.outlayer.ai/wallet/v1/payment-check/create \\
   -H "Authorization: Bearer wk_YOUR_API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{
@@ -330,13 +330,13 @@ The ephemeral account ID = hex(public_key) on intents.near.`}
         <h3 className="font-semibold text-gray-900 mb-3">3. Receiver claims the check</h3>
         <SyntaxHighlighter language="bash" style={vscDarkPlus} className="rounded-lg text-sm mb-4">
 {`# Full claim (all funds)
-curl -X POST https://api.outlayer.fastnear.com/wallet/v1/payment-check/claim \\
+curl -X POST https://api.outlayer.ai/wallet/v1/payment-check/claim \\
   -H "Authorization: Bearer wk_RECEIVER_API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{"check_key": "7f3a9b2c...64 hex chars..."}'
 
 # Partial claim (specific amount)
-curl -X POST https://api.outlayer.fastnear.com/wallet/v1/payment-check/claim \\
+curl -X POST https://api.outlayer.ai/wallet/v1/payment-check/claim \\
   -H "Authorization: Bearer wk_RECEIVER_API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{"check_key": "7f3a9b2c...", "amount": "500000"}'`}
@@ -355,7 +355,7 @@ curl -X POST https://api.outlayer.fastnear.com/wallet/v1/payment-check/claim \\
 
         <h3 className="font-semibold text-gray-900 mb-3">4. Sender reclaims unclaimed funds (optional)</h3>
         <SyntaxHighlighter language="bash" style={vscDarkPlus} className="rounded-lg text-sm mb-4">
-{`curl -X POST https://api.outlayer.fastnear.com/wallet/v1/payment-check/reclaim \\
+{`curl -X POST https://api.outlayer.ai/wallet/v1/payment-check/reclaim \\
   -H "Authorization: Bearer wk_SENDER_API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{"check_id": "a1b2c3d4-..."}'`}
@@ -377,7 +377,7 @@ curl -X POST https://api.outlayer.fastnear.com/wallet/v1/payment-check/claim \\
         <AnchorHeading id="api-reference">API Reference</AnchorHeading>
 
         <p className="text-gray-700 mb-4">
-          Base URL: <code className="text-xs bg-gray-100 px-1 rounded">https://api.outlayer.fastnear.com/wallet/v1/payment-check</code>.
+          Base URL: <code className="text-xs bg-gray-100 px-1 rounded">https://api.outlayer.ai/wallet/v1/payment-check</code>.
           All endpoints require wallet API key authentication via <code className="text-xs bg-gray-100 px-1 rounded">Authorization: Bearer wk_...</code> header.
         </p>
 

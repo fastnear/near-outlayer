@@ -12,13 +12,13 @@
 #
 # Usage:
 #   ./trial_tier.sh
-#   COORDINATOR_URL=https://api.outlayer.fastnear.com ./trial_tier.sh
+#   COORDINATOR_URL=https://api.outlayer.ai ./trial_tier.sh
 #   TEST_PROJECT="out-layer/random-example" ./trial_tier.sh
 # ============================================================================
 
 set -euo pipefail
 
-COORDINATOR_URL="${COORDINATOR_URL:-https://testnet-api.outlayer.fastnear.com}"
+COORDINATOR_URL="${COORDINATOR_URL:-https://testnet-api.outlayer.ai}"
 ADMIN_TOKEN="${ADMIN_TOKEN:-}"
 TEST_PROJECT="${TEST_PROJECT:-zavodil.testnet/test-storage}"
 PROJECT_OWNER="${TEST_PROJECT%%/*}"

@@ -32,7 +32,7 @@
 #
 # Usage:
 #   ./tests/wallet_dry_run_e2e.sh
-#   COORDINATOR_URL=https://api.outlayer.fastnear.com ./tests/wallet_dry_run_e2e.sh
+#   COORDINATOR_URL=https://api.outlayer.ai ./tests/wallet_dry_run_e2e.sh
 #   SKIP_PARITY=1 ./tests/wallet_dry_run_e2e.sh   # dry-run assertions only
 # ============================================================================
 

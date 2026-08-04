@@ -73,7 +73,7 @@ The ephemeral account ID = hex(public_key) on intents.near.
 
 ## API Reference
 
-Base URL: `https://api.outlayer.fastnear.com/wallet/v1/payment-check`
+Base URL: `https://api.outlayer.ai/wallet/v1/payment-check`
 
 All endpoints require `Authorization: Bearer wk_...` header.
 

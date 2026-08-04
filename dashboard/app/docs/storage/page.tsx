@@ -389,11 +389,11 @@ let price = storage::get_worker_from_project(
 
         <SyntaxHighlighter language="bash" style={vscDarkPlus} className="rounded-lg mb-4">
           {`# JSON format (default) - value is base64-encoded
-curl "https://api.outlayer.fastnear.com/public/storage/get?project_uuid=p0000000000000001&key=oracle:ETH"
+curl "https://api.outlayer.ai/public/storage/get?project_uuid=p0000000000000001&key=oracle:ETH"
 # {"exists":true,"value":"eyJwcmljZSI6IjM1MDAuMDAifQ=="}
 
 # Raw format - returns raw bytes directly
-curl "https://api.outlayer.fastnear.com/public/storage/get?project_uuid=p0000000000000001&key=oracle:ETH&format=raw"
+curl "https://api.outlayer.ai/public/storage/get?project_uuid=p0000000000000001&key=oracle:ETH&format=raw"
 # {"price":"3500.00"}`}
         </SyntaxHighlighter>
 

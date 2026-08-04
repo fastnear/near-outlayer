@@ -299,7 +299,7 @@ Built-in alerting (currently Telegram, production monitoring TBD):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `COORDINATOR_URL` | `https://api.outlayer.fastnear.com` | OutLayer API URL |
+| `COORDINATOR_URL` | `https://api.outlayer.ai` | OutLayer API URL |
 | `PROJECT_OWNER` | required | NEAR account owning the project |
 | `PROJECT_NAME` | required | OutLayer project name |
 | `PROJECT_UUID` | required | Project UUID for public storage reads |

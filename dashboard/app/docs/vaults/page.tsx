@@ -310,7 +310,7 @@ outlayer vault init --name treasury --exit-window 7d`}
           <code>{`{"vault_id": "<vault>"}`}</code> separately:
         </p>
         <SyntaxHighlighter language="bash" style={vscDarkPlus}>
-{`curl -sS -X POST https://api.outlayer.fastnear.com/register \\
+{`curl -sS -X POST https://api.outlayer.ai/register \\
     -H 'Content-Type: application/json' \\
     -d '{"vault_id": "vault.alice.near"}'
 # returns: { api_key: "wk_...", wallet_id: "<uuid>",

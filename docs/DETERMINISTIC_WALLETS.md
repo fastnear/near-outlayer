@@ -417,12 +417,12 @@ A developer wants to try the API. No NEAR account needed.
 
 ```python
 # 1. Register — one call, no auth
-resp = requests.post("https://api.outlayer.fastnear.com/register")
+resp = requests.post("https://api.outlayer.ai/register")
 api_key = resp.json()["api_key"]          # "wk_a1b2c3..."
 account = resp.json()["near_account_id"]  # "hex64..."
 
 # 2. Use wallet — simple Bearer token
-requests.get("https://api.outlayer.fastnear.com/wallet/v1/balance",
+requests.get("https://api.outlayer.ai/wallet/v1/balance",
     headers={"Authorization": f"Bearer {api_key}"})
 
 # Same with curl:
@@ -447,7 +447,7 @@ NEAR_SECRET = load_near_secret_bytes()          # 32 bytes from env
 NEAR_KEY = SigningKey(NEAR_SECRET)
 NEAR_PUBKEY = f"ed25519:{base58.b58encode(NEAR_KEY.verify_key.encode()).decode()}"
 ACCOUNT_ID = "my-tg-bot.near"
-API_BASE = "https://api.outlayer.fastnear.com"
+API_BASE = "https://api.outlayer.ai"
 
 # ── Helpers ───────────────────────────────────────────────────────────
 def _sign_message(message: str) -> str:
@@ -555,7 +555,7 @@ Parent agent has a `wk_` API key (custody wallet). No NEAR key needed.
 ```python
 import hashlib, requests
 
-API = "https://api.outlayer.fastnear.com"
+API = "https://api.outlayer.ai"
 PARENT_KEY = "wk_..."
 HEADERS = {"Authorization": f"Bearer {PARENT_KEY}", "Content-Type": "application/json"}
 

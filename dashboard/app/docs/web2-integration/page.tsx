@@ -134,7 +134,7 @@ export default function Web2IntegrationPage() {
         </div>
 
         <SyntaxHighlighter language="bash" style={vscDarkPlus} className="rounded-lg mb-4">
-          {`curl -X POST https://api.outlayer.fastnear.com/call/alice.near/my-project \\
+          {`curl -X POST https://api.outlayer.ai/call/alice.near/my-project \\
   -H "X-Payment-Key: alice.near:1:your_secret_key" \\
   -H "Content-Type: application/json" \\
   -d '{"city": "Tokyo"}'`}
@@ -176,7 +176,7 @@ export default function Web2IntegrationPage() {
 
         <SyntaxHighlighter language="javascript" style={vscDarkPlus} className="rounded-lg mb-4">
           {`// Response includes job_id for attestation lookup
-const result = await fetch('https://api.outlayer.fastnear.com/call/alice.near/my-api', {
+const result = await fetch('https://api.outlayer.ai/call/alice.near/my-api', {
   method: 'POST',
   headers: { 'X-Payment-Key': 'alice.near:1:secret' },
   body: JSON.stringify({ query: 'data' })
@@ -319,7 +319,7 @@ if payment < 100_000 {  // Require $0.10 minimum
         <AnchorHeading id="example-javascript" level={3}>JavaScript / TypeScript</AnchorHeading>
         <SyntaxHighlighter language="javascript" style={vscDarkPlus} className="rounded-lg mb-6">
           {`async function callOutLayer(project, input, options = {}) {
-  const response = await fetch(\`https://api.outlayer.fastnear.com/call/\${project}\`, {
+  const response = await fetch(\`https://api.outlayer.ai/call/\${project}\`, {
     method: 'POST',
     headers: {
       'X-Payment-Key': process.env.OUTLAYER_PAYMENT_KEY,
@@ -359,7 +359,7 @@ def call_outlayer(project: str, input_data: dict, payment: int = 0) -> dict:
         headers["X-Attached-Deposit"] = str(payment)
 
     response = requests.post(
-        f"https://api.outlayer.fastnear.com/call/{project}",
+        f"https://api.outlayer.ai/call/{project}",
         headers=headers,
         json={"input": input_data},
     )

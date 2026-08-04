@@ -193,7 +193,7 @@ dcap-qvl fetch-collateral \
 
 ```bash
 # Coordinator caches collateral after first worker registration
-curl https://api.outlayer.fastnear.com/tdx/collateral > collateral.json
+curl https://api.outlayer.ai/tdx/collateral > collateral.json
 ```
 
 ---
@@ -211,7 +211,7 @@ set -e
 # Configuration
 NEAR_ACCOUNT="outlayer.near"
 REGISTER_CONTRACT="worker.outlayer.near"
-COORDINATOR_URL="https://api.outlayer.fastnear.com"
+COORDINATOR_URL="https://api.outlayer.ai"
 LOG_FILE="/var/log/outlayer/collateral-update.log"
 
 log() {
@@ -433,7 +433,7 @@ If workers are failing registration:
 near view worker.outlayer.near get_collateral | jq '.tcbInfo.issueDate'
 
 # 2. Get fresh collateral (fastest method)
-curl https://api.outlayer.fastnear.com/tdx/collateral > collateral.json
+curl https://api.outlayer.ai/tdx/collateral > collateral.json
 
 # 3. Update immediately
 near call worker.outlayer.near update_collateral \

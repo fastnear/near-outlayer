@@ -38,7 +38,7 @@ PARENT="${PARENT:-}"
 APPROVER="${APPROVER:-zavodil.testnet}"
 RPC_URL="${RPC_URL:-https://rpc.${NETWORK}.fastnear.com}"
 CONTRACT_ID="${CONTRACT_ID:-outlayer.testnet}"
-COORDINATOR_URL="${COORDINATOR_URL:-https://testnet-api.outlayer.fastnear.com}"
+COORDINATOR_URL="${COORDINATOR_URL:-https://testnet-api.outlayer.ai}"
 
 [[ -n "$PARENT" ]] || { echo "USAGE: PARENT=... APPROVER=... $0 --apply" >&2; exit 1; }
 

@@ -9,8 +9,8 @@ wallet over plain HTTPS.
 
 | Network | Base URL | Contract |
 |---------|----------|----------|
-| Mainnet | `https://api.outlayer.fastnear.com` | `outlayer.near` |
-| Testnet | `https://testnet-api.outlayer.fastnear.com` | `outlayer.testnet` |
+| Mainnet | `https://api.outlayer.ai` | `outlayer.near` |
+| Testnet | `https://testnet-api.outlayer.ai` | `outlayer.testnet` |
 
 The paths below are identical on both networks — only the host differs. Pick the
 base URL that matches the network your project / wallet is deployed on.
@@ -22,8 +22,8 @@ base URL that matches the network your project / wallet is deployed on.
 > the **mainnet** API only. The rest of the wallet API (address, balance,
 > transfer, `call`, `sign-message`, policy, approval) works on both networks.
 
-- **Interactive reference (Scalar UI)**: `https://api.outlayer.fastnear.com/docs`
-- **OpenAPI 3.1 spec**: `https://api.outlayer.fastnear.com/openapi.json` — source of truth at [out-layer/api-spec](https://github.com/out-layer/api-spec)
+- **Interactive reference (Scalar UI)**: `https://api.outlayer.ai/docs`
+- **OpenAPI 3.1 spec**: `https://api.outlayer.ai/openapi.json` — source of truth at [out-layer/api-spec](https://github.com/out-layer/api-spec)
 - **TypeScript SDK**: [`@outlayer/sdk`](https://www.npmjs.com/package/@outlayer/sdk) ([source](https://github.com/out-layer/sdk-js))
 
 ## Authentication

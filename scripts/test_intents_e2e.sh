@@ -27,7 +27,7 @@
 set -euo pipefail
 
 # ---- Configuration ----
-BASE_URL="${BASE_URL:-https://api.outlayer.fastnear.com}"
+BASE_URL="${BASE_URL:-https://api.outlayer.ai}"
 API_KEY="${API_KEY:-}"
 USER_ACCOUNT="${USER_ACCOUNT:-}"
 START_STEP="${START_STEP:-1}"

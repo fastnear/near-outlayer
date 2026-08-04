@@ -49,7 +49,7 @@ CONTRACT_ID="${CONTRACT_ID:-outlayer.testnet}"
 
 case "$NETWORK" in
   testnet)
-    COORDINATOR_URL="${COORDINATOR_URL:-https://testnet-api.outlayer.fastnear.com}"
+    COORDINATOR_URL="${COORDINATOR_URL:-https://testnet-api.outlayer.ai}"
     ;;
   *) echo "✗ unsupported NETWORK=$NETWORK (only testnet)" >&2; exit 1;;
 esac

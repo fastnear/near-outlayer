@@ -46,7 +46,7 @@
 # (outlayer-coordinator/scripts/backfill_collateral_versions.py).
 #
 # Put the coordinator credentials in a `.env` NEXT TO THIS SCRIPT (gitignored):
-#   COORDINATOR_URL_MAINNET=https://api.outlayer.fastnear.com
+#   COORDINATOR_URL_MAINNET=https://api.outlayer.ai
 #   ADMIN_BEARER_TOKEN_MAINNET=...
 #   COORDINATOR_URL_TESTNET=https://api-testnet.outlayer.fastnear.com
 #   ADMIN_BEARER_TOKEN_TESTNET=...

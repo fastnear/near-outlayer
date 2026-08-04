@@ -100,7 +100,7 @@ OUTLAYER_MONITOR_START_BLOCK=190000000 \
 OUTLAYER_MONITOR_CHECKPOINT_PATH=/var/lib/outlayer-monitor/checkpoint \
 OUTLAYER_MONITOR_KEYSTORE_URL=https://keystore-abc123.phala.cloud \
 OUTLAYER_MONITOR_WORKER_TOKEN=$WORKER_TOKEN \
-OUTLAYER_MONITOR_COORDINATOR_URL=https://api.outlayer.fastnear.com \
+OUTLAYER_MONITOR_COORDINATOR_URL=https://api.outlayer.ai \
 OUTLAYER_MONITOR_SLACK_WEBHOOK=$SLACK_URL \
 ./outlayer-monitor --network mainnet
 ```

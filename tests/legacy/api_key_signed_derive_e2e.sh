@@ -29,7 +29,7 @@
 # Requires:
 #   PARENT           NEAR account that owns the vault (must have a
 #                    credentials file at ~/.near-credentials/testnet/<PARENT>.json)
-#   COORDINATOR_URL  default https://testnet-api.outlayer.fastnear.com
+#   COORDINATOR_URL  default https://testnet-api.outlayer.ai
 #
 # Run:
 #   PARENT=zavodil2.testnet ./tests/api_key_signed_derive_e2e.sh --apply
@@ -42,7 +42,7 @@ APPLY=false
 
 NETWORK="${NETWORK:-testnet}"
 PARENT="${PARENT:-}"
-COORDINATOR_URL="${COORDINATOR_URL:-https://testnet-api.outlayer.fastnear.com}"
+COORDINATOR_URL="${COORDINATOR_URL:-https://testnet-api.outlayer.ai}"
 CREDS_FILE="${CREDS_FILE:-$HOME/.near-credentials/$NETWORK/$PARENT.json}"
 
 log()  { printf '\n\033[36m▶ %s\033[0m\n' "$*" >&2; }

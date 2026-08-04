@@ -18,7 +18,7 @@
 #     this script — we mint fresh ones from /register.
 #
 # Run:
-#   COORDINATOR_URL=https://testnet-api.outlayer.fastnear.com \
+#   COORDINATOR_URL=https://testnet-api.outlayer.ai \
 #   VAULT_ID=vault-multi.alice.testnet \
 #       ./tests/multi_wallet_vault_e2e.sh --apply
 #
@@ -29,7 +29,7 @@ set -euo pipefail
 APPLY=false
 [[ "${1:-}" == "--apply" ]] && APPLY=true
 
-COORDINATOR_URL="${COORDINATOR_URL:-https://testnet-api.outlayer.fastnear.com}"
+COORDINATOR_URL="${COORDINATOR_URL:-https://testnet-api.outlayer.ai}"
 VAULT_ID="${VAULT_ID:-}"
 N_WALLETS="${N_WALLETS:-3}"
 SUB_AGENT_SEED="${SUB_AGENT_SEED:-multi-wallet-e2e-sub-1}"

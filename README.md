@@ -7,8 +7,8 @@ OutLayer lets smart contracts execute arbitrary code off-chain and receive verif
 ## Quick Links
 
 - **Dashboard & Docs**: [outlayer.fastnear.com](https://outlayer.fastnear.com/dashboard)
-- **HTTPS API (mainnet)**: `https://api.outlayer.fastnear.com` → `/call/{owner}/{project}`
-- **HTTPS API (testnet)**: `https://testnet-api.outlayer.fastnear.com` → `/call/{owner}/{project}`
+- **HTTPS API (mainnet)**: `https://api.outlayer.ai` → `/call/{owner}/{project}`
+- **HTTPS API (testnet)**: `https://testnet-api.outlayer.ai` → `/call/{owner}/{project}`
 - **Contract**: `outlayer.near` (mainnet) / `outlayer.testnet` (testnet)
 - **API reference**: [API.md](API.md) — endpoints, base URLs, and source-availability notes
 - **For AI coding assistants**: [llms.txt](https://outlayer.fastnear.com/llms.txt) — link index, or [llms-full.txt](https://outlayer.fastnear.com/llms-full.txt) for every doc in a single fetch
@@ -62,7 +62,7 @@ trait OutLayer {
 Call the API directly with a payment key. Best for web apps, bots, and services that need off-chain computation without a smart contract.
 
 ```bash
-curl -X POST https://api.outlayer.fastnear.com/call/alice.near/my-project \
+curl -X POST https://api.outlayer.ai/call/alice.near/my-project \
   -H "X-Payment-Key: alice.near:1:your_secret_key" \
   -H "Content-Type: application/json" \
   -d '{"prompt": "Hello"}'
@@ -131,7 +131,7 @@ Point the assistant at one of these instead of pasting files by hand:
 |------|----------|
 | [`/llms.txt`](https://outlayer.fastnear.com/llms.txt) | Index of every documentation page, with a one-line summary each, in the [llms.txt](https://llmstxt.org) format |
 | [`/llms-full.txt`](https://outlayer.fastnear.com/llms-full.txt) | Full text of all developer docs inlined, ~310 KB, one fetch |
-| [OpenAPI spec](https://api.outlayer.fastnear.com/openapi.json) | Machine-readable HTTPS API schema |
+| [OpenAPI spec](https://api.outlayer.ai/openapi.json) | Machine-readable HTTPS API schema |
 | [Agent Custody skill](https://skills.outlayer.ai/agent-custody/SKILL.md) | Drop-in skill file for agent frameworks |
 
 Both `llms` files are generated from [dashboard/scripts/llms-manifest.mjs](dashboard/scripts/llms-manifest.mjs) by `npm run llms` in `dashboard/`, and regenerate automatically on `npm run build`.

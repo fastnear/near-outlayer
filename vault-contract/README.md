@@ -356,7 +356,7 @@ Use Path A or B above for vault-scoped sub-wallets.
 Pre-vault customers register with empty body:
 
 ```bash
-curl -X POST https://api.outlayer.fastnear.com/register -d '{}'
+curl -X POST https://api.outlayer.ai/register -d '{}'
 ```
 
 This produces a wk_ tied to the **OutLayer default master** (no

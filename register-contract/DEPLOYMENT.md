@@ -91,7 +91,7 @@ curl "https://api.trustedservices.intel.com/sgx/certification/v4/tcb?fmspc=<FMSP
 
 ```bash
 # After first worker runs, get collateral from coordinator cache
-curl https://api.outlayer.fastnear.com/tdx/collateral > collateral.json
+curl https://api.outlayer.ai/tdx/collateral > collateral.json
 ```
 
 ### Step 4: Update collateral in contract
@@ -204,7 +204,7 @@ CONTRACT="worker.outlayer.near"
 echo "$LOG_PREFIX Starting collateral update..."
 
 # Get latest collateral from coordinator cache
-COLLATERAL=$(curl -s https://api.outlayer.fastnear.com/tdx/collateral)
+COLLATERAL=$(curl -s https://api.outlayer.ai/tdx/collateral)
 
 if [ -z "$COLLATERAL" ]; then
     echo "$LOG_PREFIX ERROR: Failed to fetch collateral"
@@ -297,7 +297,7 @@ near generate-key worker1.outlayer.near
 ```bash
 # Worker configuration
 WORKER_ID=worker1
-API_BASE_URL=https://api.outlayer.fastnear.com
+API_BASE_URL=https://api.outlayer.ai
 API_AUTH_TOKEN=<coordinator-token>
 
 # TEE configuration

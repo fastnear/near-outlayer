@@ -65,7 +65,7 @@ export function VrfExample() {
   "verification": {
     "vrf_public_key": "a1b2c3d4...",
     "steps": ["1. Get VRF public key...", "2. Verify ed25519...", "..."],
-    "pubkey_endpoint": "https://api.outlayer.fastnear.com/vrf/pubkey",
+    "pubkey_endpoint": "https://api.outlayer.ai/vrf/pubkey",
     "near_code": "let valid = env::ed25519_verify(...);"
   }
 }`}

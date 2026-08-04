@@ -12,7 +12,7 @@ Two integration modes:
 
 **Contract**: `outlayer.near` (mainnet) / `outlayer.testnet` (testnet)
 **Dashboard**: https://outlayer.fastnear.com/dashboard
-**API**: https://api.outlayer.fastnear.com
+**API**: https://api.outlayer.ai
 
 ---
 
@@ -373,7 +373,7 @@ Minimum top-up: $0.01 (`MIN_TOP_UP_AMOUNT = 10_000` micro-units).
 
 ### HTTPS API
 
-**Endpoint**: `POST https://api.outlayer.fastnear.com/call/{project_owner}/{project_name}`
+**Endpoint**: `POST https://api.outlayer.ai/call/{project_owner}/{project_name}`
 
 **Headers**:
 
@@ -757,7 +757,7 @@ Multi-chain custody wallets for AI agents. Agent gets an API key, private keys l
 
 ### API Endpoints
 
-Base: `https://api.outlayer.fastnear.com`
+Base: `https://api.outlayer.ai`
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|

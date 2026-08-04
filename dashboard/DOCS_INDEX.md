@@ -26,8 +26,8 @@ Both modes provide the same cryptographic proof via Intel TDX attestation.
 - **Examples**: `/wasi-examples/*/README.md` - Source for example documentation
 - **Navigation**: `/dashboard/app/docs/layout.tsx` - Sidebar menu configuration
 - **Vault runbook**: `/docs/LEAVING_OUTLAYER.md` — source-of-truth procedure for taking a vault out from under OutLayer's keystore (linked from `/docs/vaults` page; auditors should treat it as canonical)
-- **API Base URLs**: mainnet `https://api.outlayer.fastnear.com` · testnet `https://testnet-api.outlayer.fastnear.com` (same paths on both; documented on `/docs/https-api#base-urls` and in [`API.md`](../API.md))
-- **API Spec (OpenAPI 3.1)**: [out-layer/api-spec](https://github.com/out-layer/api-spec) — single source of truth for the HTTP API; rendered at https://api.outlayer.fastnear.com/docs (Scalar UI)
+- **API Base URLs**: mainnet `https://api.outlayer.ai` · testnet `https://testnet-api.outlayer.ai` (same paths on both; documented on `/docs/https-api#base-urls` and in [`API.md`](../API.md))
+- **API Spec (OpenAPI 3.1)**: [out-layer/api-spec](https://github.com/out-layer/api-spec) — single source of truth for the HTTP API; rendered at https://api.outlayer.ai/docs (Scalar UI)
 - **TypeScript SDK**: [`@outlayer/sdk`](https://www.npmjs.com/package/@outlayer/sdk) — source at [out-layer/sdk-js](https://github.com/out-layer/sdk-js); covers all wallet, policy, approval, and audit endpoints
 - **Live Site**: https://outlayer.fastnear.com/docs
 
@@ -522,11 +522,11 @@ let data = storage::get_worker_from_project("oracle:ETH", Some("p000000000000000
 **External HTTP API:**
 ```bash
 # JSON format (default) - base64 encoded value
-curl "https://api.outlayer.fastnear.com/public/storage/get?project_uuid=p0000000000000001&key=oracle:ETH"
+curl "https://api.outlayer.ai/public/storage/get?project_uuid=p0000000000000001&key=oracle:ETH"
 # {"exists":true,"value":"<base64-encoded-value>"}
 
 # Raw format - returns raw bytes directly
-curl "https://api.outlayer.fastnear.com/public/storage/get?...&format=raw"
+curl "https://api.outlayer.ai/public/storage/get?...&format=raw"
 ```
 
 **Key points:**
@@ -593,7 +593,7 @@ HTTPS API is one of two equal ways to use OutLayer (alongside Blockchain/NEAR in
 
 **How it works:**
 1. Create Payment Key at `/payment-keys` with USD deposit
-2. Call: `POST https://api.outlayer.fastnear.com/call/{owner}/{project}` with `X-Payment-Key` header
+2. Call: `POST https://api.outlayer.ai/call/{owner}/{project}` with `X-Payment-Key` header
 3. Optionally attach payment to project author via `X-Attached-Deposit` header
 4. WASM reads payment via `USD_PAYMENT` env var
 

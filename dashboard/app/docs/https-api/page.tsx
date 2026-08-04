@@ -55,7 +55,7 @@ export default function HttpsApiPage() {
 
         <SyntaxHighlighter language="bash" style={vscDarkPlus} className="rounded-lg mb-4">
           {`# Simple example
-curl -X POST https://api.outlayer.fastnear.com/call/alice.near/my-assistant \\
+curl -X POST https://api.outlayer.ai/call/alice.near/my-assistant \\
   -H "X-Payment-Key: bob.near:1:K7xR2mN9pQs5vW3yZ8bF..." \\
   -H "Content-Type: application/json" \\
   -d '{"input": {"prompt": "Hello!"}}'`}
@@ -69,11 +69,11 @@ curl -X POST https://api.outlayer.fastnear.com/call/alice.near/my-assistant \\
         <AnchorHeading id="endpoint" level={3}>Endpoint</AnchorHeading>
 
         <SyntaxHighlighter language="text" style={vscDarkPlus} className="rounded-lg mb-4">
-          {`POST https://api.outlayer.fastnear.com/call/{project_owner}/{project_name}`}
+          {`POST https://api.outlayer.ai/call/{project_owner}/{project_name}`}
         </SyntaxHighlighter>
 
         <p className="text-gray-700 mb-4">
-          Example: <code>POST https://api.outlayer.fastnear.com/call/alice.near/weather-api</code>
+          Example: <code>POST https://api.outlayer.ai/call/alice.near/weather-api</code>
         </p>
 
         <AnchorHeading id="base-urls" level={3}>Base URLs (Networks)</AnchorHeading>
@@ -96,12 +96,12 @@ curl -X POST https://api.outlayer.fastnear.com/call/alice.near/my-assistant \\
             <tbody className="bg-white divide-y divide-gray-200">
               <tr>
                 <td className="px-4 py-3 text-sm font-semibold text-gray-900">Mainnet</td>
-                <td className="px-4 py-3 text-sm font-mono"><code>https://api.outlayer.fastnear.com</code></td>
+                <td className="px-4 py-3 text-sm font-mono"><code>https://api.outlayer.ai</code></td>
                 <td className="px-4 py-3 text-sm font-mono">outlayer.near</td>
               </tr>
               <tr className="bg-yellow-50">
                 <td className="px-4 py-3 text-sm font-semibold text-gray-900">Testnet</td>
-                <td className="px-4 py-3 text-sm font-mono"><code>https://testnet-api.outlayer.fastnear.com</code></td>
+                <td className="px-4 py-3 text-sm font-mono"><code>https://testnet-api.outlayer.ai</code></td>
                 <td className="px-4 py-3 text-sm font-mono">outlayer.testnet</td>
               </tr>
             </tbody>
@@ -321,7 +321,7 @@ curl -X POST https://api.outlayer.fastnear.com/call/alice.near/my-assistant \\
 {
   "call_id": "550e8400-e29b-41d4-a716-446655440000",
   "status": "pending",
-  "poll_url": "https://api.outlayer.fastnear.com/calls/550e8400-e29b-41d4-a716-446655440000"
+  "poll_url": "https://api.outlayer.ai/calls/550e8400-e29b-41d4-a716-446655440000"
 }`}
         </SyntaxHighlighter>
 
@@ -331,7 +331,7 @@ curl -X POST https://api.outlayer.fastnear.com/call/alice.near/my-assistant \\
 
         <SyntaxHighlighter language="bash" style={vscDarkPlus} className="rounded-lg mb-4">
           {`curl -H "X-Payment-Key: bob.near:1:..." \\
-  https://api.outlayer.fastnear.com/calls/550e8400-e29b-41d4-a716-446655440000`}
+  https://api.outlayer.ai/calls/550e8400-e29b-41d4-a716-446655440000`}
         </SyntaxHighlighter>
 
         <AnchorHeading id="response-fields" level={3}>Response Fields</AnchorHeading>
@@ -542,7 +542,7 @@ if usd_payment >= MIN_PREMIUM_USD {
         </p>
 
         <SyntaxHighlighter language="bash" style={vscDarkPlus} className="rounded-lg mb-4">
-          {`curl -X POST https://api.outlayer.fastnear.com/call/alice.near/weather-api \\
+          {`curl -X POST https://api.outlayer.ai/call/alice.near/weather-api \\
   -H "X-Payment-Key: bob.near:1:K7xR2mN9pQs5vW3yZ8bF..." \\
   -H "Content-Type: application/json" \\
   -d '{
@@ -674,13 +674,13 @@ let db_url = std::env::var("DATABASE_URL")
 
         <SyntaxHighlighter language="bash" style={vscDarkPlus} className="rounded-lg mb-4">
           {`# Basic call
-curl -X POST https://api.outlayer.fastnear.com/call/alice.near/weather-api \\
+curl -X POST https://api.outlayer.ai/call/alice.near/weather-api \\
   -H "X-Payment-Key: bob.near:1:K7xR2mN9pQs5vW3yZ8bF..." \\
   -H "Content-Type: application/json" \\
   -d '{"input": {"city": "Tokyo"}}'
 
 # With compute limit and author payment
-curl -X POST https://api.outlayer.fastnear.com/call/alice.near/premium-api \\
+curl -X POST https://api.outlayer.ai/call/alice.near/premium-api \\
   -H "X-Payment-Key: bob.near:1:K7xR2mN9pQs5vW3yZ8bF..." \\
   -H "X-Compute-Limit: 500000" \\
   -H "X-Attached-Deposit: 100000" \\
@@ -688,7 +688,7 @@ curl -X POST https://api.outlayer.fastnear.com/call/alice.near/premium-api \\
   -d '{"input": {"query": "complex analysis"}}'
 
 # Async mode
-curl -X POST https://api.outlayer.fastnear.com/call/alice.near/long-running \\
+curl -X POST https://api.outlayer.ai/call/alice.near/long-running \\
   -H "X-Payment-Key: bob.near:1:K7xR2mN9pQs5vW3yZ8bF..." \\
   -H "Content-Type: application/json" \\
   -d '{"input": {...}, "async": true}'`}
@@ -698,7 +698,7 @@ curl -X POST https://api.outlayer.fastnear.com/call/alice.near/long-running \\
 
         <SyntaxHighlighter language="typescript" style={vscDarkPlus} className="rounded-lg mb-4">
           {`async function callOutLayer(projectId: string, input: object) {
-  const response = await fetch(\`https://api.outlayer.fastnear.com/call/\${projectId}\`, {
+  const response = await fetch(\`https://api.outlayer.ai/call/\${projectId}\`, {
     method: 'POST',
     headers: {
       'X-Payment-Key': process.env.OUTLAYER_PAYMENT_KEY!,
@@ -737,7 +737,7 @@ import requests
 def call_outlayer(project_id: str, input_data: dict) -> dict:
     """Call an OutLayer project via HTTPS API."""
     response = requests.post(
-        f"https://api.outlayer.fastnear.com/call/{project_id}",
+        f"https://api.outlayer.ai/call/{project_id}",
         headers={
             "X-Payment-Key": os.environ["OUTLAYER_PAYMENT_KEY"],
             "X-Compute-Limit": "100000",  # $0.10 max

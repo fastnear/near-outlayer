@@ -51,7 +51,7 @@ NETWORK=mainnet PARENT=fastjambo.near EXTERNAL_ACCT=zavodil.near \
 ONECLICK_CONFIDENTIAL_JWT=1 ./tests/unified_op_e2e_intents.sh --apply   # (with the env above)
 
 # ── 3. CONFIDENTIAL deep-dive (optional, mainnet, phase-based) ────────────────
-ONECLICK_CONFIDENTIAL_JWT=1 COORDINATOR_URL=https://api.outlayer.fastnear.com \
+ONECLICK_CONFIDENTIAL_JWT=1 COORDINATOR_URL=https://api.outlayer.ai \
   NETWORK=mainnet PARENT=fastjambo.near ./tests/wallet_confidential_e2e.sh roundtrip
 
 # ── 4. VAULT sovereign-exit (testnet) — planned ──────────────────────────────

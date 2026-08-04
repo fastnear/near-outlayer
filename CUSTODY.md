@@ -40,7 +40,7 @@ const result = await client.withdraw({
 - **SDK source**: [out-layer/sdk-js](https://github.com/out-layer/sdk-js) (MIT)
 - **SDK on npm**: [`@outlayer/sdk`](https://www.npmjs.com/package/@outlayer/sdk)
 - **OpenAPI spec**: [out-layer/api-spec](https://github.com/out-layer/api-spec)
-- **Interactive API docs**: https://api.outlayer.fastnear.com/docs (Scalar UI)
+- **Interactive API docs**: https://api.outlayer.ai/docs (Scalar UI)
 
 The SDK auto-generates types from the OpenAPI spec, adds typed error classes (`PolicyDeniedError`, `WalletFrozenError`, etc.), automatic idempotency keys, and retry with backoff on 5xx + network errors. SDK feature parity with the raw HTTP API; the rest of this document is the reference for both.
 
@@ -48,9 +48,9 @@ For other languages, generate a client from the OpenAPI spec:
 
 ```bash
 # Python
-openapi-python-client generate --url https://api.outlayer.fastnear.com/openapi.json
+openapi-python-client generate --url https://api.outlayer.ai/openapi.json
 # Go
-oapi-codegen -generate types https://api.outlayer.fastnear.com/openapi.json > types.go
+oapi-codegen -generate types https://api.outlayer.ai/openapi.json > types.go
 ```
 
 ---
@@ -568,7 +568,7 @@ from the generic approval trigger.
 
 ## API Endpoints
 
-Base: `https://api.outlayer.fastnear.com` (mainnet) · `https://testnet-api.outlayer.fastnear.com` (testnet)
+Base: `https://api.outlayer.ai` (mainnet) · `https://testnet-api.outlayer.ai` (testnet)
 
 > **NEAR Intents are mainnet-only.** There are no testnet Intents solvers, so on testnet the
 > coordinator returns **HTTP 503** for every intents-dependent endpoint — the whole

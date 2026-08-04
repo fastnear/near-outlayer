@@ -21,8 +21,8 @@ export const SITE = {
     'and Solana without a key ever leaving the enclave.',
 
   details: [
-    'Two integration modes. **On-chain:** a NEAR contract calls `request_execution` and receives the result in a callback. **Web2:** a backend calls `POST https://api.outlayer.fastnear.com/call/{project_owner}/{project_name}` over HTTPS.',
-    '**API base URL is `https://api.outlayer.fastnear.com`** — the `api.` subdomain. `https://outlayer.fastnear.com` is the dashboard and docs site and serves no API. Testnet API base is `https://testnet-api.outlayer.fastnear.com`.',
+    'Two integration modes. **On-chain:** a NEAR contract calls `request_execution` and receives the result in a callback. **Web2:** a backend calls `POST https://api.outlayer.ai/call/{project_owner}/{project_name}` over HTTPS.',
+    '**API base URL is `https://api.outlayer.ai`** — the `api.` subdomain. `https://outlayer.fastnear.com` is the dashboard and docs site and serves no API. Testnet API base is `https://testnet-api.outlayer.ai`.',
     'HTTPS authentication is either a payment key (`X-Payment-Key: {owner}:{nonce}:{secret}`) or a trial worker key (`Authorization: Bearer wk_...`). There is no `X-API-Key` header.',
     'Mainnet contract: `outlayer.near`. Testnet contract: `outlayer.testnet`. NEAR RPC: `https://rpc.mainnet.fastnear.com` / `https://rpc.testnet.fastnear.com`.',
     'Full text of every document below is available in one fetch at ' + 'https://outlayer.fastnear.com/llms-full.txt.',
@@ -175,7 +175,7 @@ export const SECTIONS = [
     pages: [
       {
         title: 'OpenAPI specification',
-        url: 'https://api.outlayer.fastnear.com/openapi.json',
+        url: 'https://api.outlayer.ai/openapi.json',
         summary: 'Complete HTTPS API schema — endpoints, request and response types, error codes',
       },
       {
