@@ -675,8 +675,10 @@ pub struct LoadedVaultsResponse {
     pub vaults: Vec<String>,
     /// How many of them there are.
     pub count: usize,
-    /// Live TEE sessions. Reported here rather than on the public `/health` so that reading it
-    /// requires a token that is checked by real auth middleware, which also logs failures.
+    /// TEE handshakes since boot — NOT live workers. Sessions are never expired (`created_at` is
+    /// unread), so this only ever climbs until a restart; two workers reconnecting concurrently
+    /// add two. Reported here rather than on the public `/health` so that reading it requires a
+    /// token checked by real auth middleware, which also logs failures.
     pub tee_sessions: usize,
 }
 
@@ -1215,8 +1217,15 @@ pub fn create_router(state: AppState) -> Router {
     // vault is banned. Auth piggybacks on the worker token so anything
     // that already speaks to /decrypt can also evict — see the route's
     // doc-comment on `/admin/evict-customer` for the threat model.
-    let admin_routes = Router::new()
+    // Read-only admin: worker OR coordinator token (see `admin_read_auth_middleware`).
+    let admin_read_routes = Router::new()
         .route("/admin/loaded-vaults", get(admin_loaded_vaults_handler))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            admin_read_auth_middleware,
+        ));
+
+    let admin_routes = Router::new()
         .route("/admin/evict-customer", post(admin_evict_customer_handler))
         // Race-attack monitor calls this. Worker-token-only —
         // unlike vault_routes, this MUTATES on-chain state by submitting
@@ -1281,6 +1290,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/vrf/pubkey", get(vrf_pubkey_handler)) // Public VRF public key
         .merge(worker_routes)
         .merge(coordinator_routes)
+        .merge(admin_read_routes)
         .merge(admin_routes)
         .merge(vault_sign_routes)
         .merge(vault_derive_routes)
@@ -3621,6 +3631,53 @@ async fn coordinator_auth_middleware(
         token_hash = %token_hash,
         "✅ Coordinator authenticated successfully"
     );
+
+    Ok(next.run(req).await)
+}
+
+/// Auth for READ-ONLY admin endpoints: accepts a worker OR a coordinator token.
+///
+/// Deliberately separate from `worker_auth_middleware`, which guards the MUTATING admin routes
+/// (`/admin/evict-customer` drops a vault master and makes that vault pay for a fresh CKD
+/// derivation). Those stay worker-only.
+///
+/// The coordinator is admitted here so it can surface fleet state in its own `/health/detailed`,
+/// which the monitoring collector already relays. The alternative — giving the collector a worker
+/// token and the keystore's URL — would put a mutation-capable credential in the monitoring stack
+/// and undo the deliberate choice in `keystore_probe.rs` to keep the keystore's address out of it.
+/// Reading which vaults are loaded tells the coordinator nothing it does not already know: it is
+/// the party sending the traffic that loads them.
+async fn admin_read_auth_middleware(
+    State(state): State<AppState>,
+    req: axum::http::Request<axum::body::Body>,
+    next: middleware::Next,
+) -> Result<Response, ApiError> {
+    let auth_header = req
+        .headers()
+        .get("Authorization")
+        .and_then(|h| h.to_str().ok())
+        .ok_or_else(|| {
+            tracing::warn!("Missing Authorization header in admin read request");
+            ApiError::Unauthorized("Missing Authorization header".to_string())
+        })?;
+
+    let token = auth_header.strip_prefix("Bearer ").ok_or_else(|| {
+        tracing::warn!("Invalid Authorization format (expected 'Bearer <token>')");
+        ApiError::Unauthorized("Invalid Authorization format".to_string())
+    })?;
+
+    use sha2::{Digest, Sha256};
+    let token_hash = hex::encode(Sha256::digest(token.as_bytes()));
+
+    // Constant-time membership, same as the worker path — an admin endpoint is no place to leak
+    // a token prefix through timing.
+    let worker_ok = token_hash_allowed_ct(&state.config.allowed_worker_token_hashes, &token_hash);
+    let coordinator_ok =
+        token_hash_allowed_ct(&state.config.allowed_coordinator_token_hashes, &token_hash);
+    if !worker_ok && !coordinator_ok {
+        tracing::warn!(token_hash = %token_hash, "Unauthorized: token in neither allowed list");
+        return Err(ApiError::Unauthorized("Invalid token".to_string()));
+    }
 
     Ok(next.run(req).await)
 }
@@ -6300,6 +6357,10 @@ mod tests {
         };
         state_config.allowed_worker_token_hashes =
             vec![hex::encode(Sha256::digest(token.as_bytes()))];
+        // A DIFFERENT coordinator token, so the tests can tell the two lists apart rather than
+        // passing because one value happens to be in both.
+        state_config.allowed_coordinator_token_hashes =
+            vec![hex::encode(Sha256::digest(format!("coordinator-{token}").as_bytes()))];
         let state = AppState::new(crate::crypto::Keystore::generate(), state_config, None);
         state.mark_ready();
         state
@@ -6343,6 +6404,43 @@ mod tests {
         // A token that is right but presented in the wrong scheme is still a refusal.
         let (status, _) = get_loaded_vaults(state_with_worker_token("s3cret"), Some("s3cret")).await;
         assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    /// The coordinator reads this to publish fleet state in its own health output, which the
+    /// monitoring collector relays. Admitting it here is what lets monitoring see the numbers
+    /// WITHOUT holding a worker token — which would also open `/admin/evict-customer`.
+    #[tokio::test]
+    async fn loaded_vaults_accepts_the_coordinator_token_too() {
+        let state = state_with_worker_token("s3cret");
+        let (status, body) = get_loaded_vaults(state, Some("Bearer coordinator-s3cret")).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "body: {body}");
+        assert!(body.contains("\"count\""), "body: {body}");
+    }
+
+    /// ...and that read access must NOT extend to the mutating admin route. `/admin/evict-customer`
+    /// drops a vault master, forcing that vault to pay for a fresh on-chain CKD derivation — a
+    /// credential that can only read must never be able to trigger it.
+    #[tokio::test]
+    async fn the_coordinator_token_cannot_reach_the_mutating_admin_route() {
+        use tower::ServiceExt;
+        let state = state_with_worker_token("s3cret");
+        let response = create_router(state)
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/admin/evict-customer")
+                    .header("Authorization", "Bearer coordinator-s3cret")
+                    .header("Content-Type", "application/json")
+                    .body(axum::body::Body::from(r#"{"vault_id":"vault.alice.testnet"}"#))
+                    .unwrap(),
+            )
+            .await
+            .expect("router");
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::UNAUTHORIZED,
+            "the coordinator token must not be able to evict a vault master"
+        );
     }
 
     /// With the token it reports what is actually in memory — vault ids only, sorted, plus the

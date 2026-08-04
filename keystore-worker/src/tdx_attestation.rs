@@ -155,14 +155,44 @@ impl TdxClient {
 
         // Extract and log measurements (debug level — logged at info during registration)
         if let Some(m) = extract_all_measurements_from_bytes(&tdx_quote) {
-            tracing::debug!("TDX Measurements: MRTD={}, RTMR0={}, RTMR1={}, RTMR2={}, RTMR3={}",
-                m.mrtd, m.rtmr0, m.rtmr1, m.rtmr2, m.rtmr3);
+            // INFO, not DEBUG, and deliberately so: `scripts/deploy_tdx.sh` step [3/6] greps this
+            // line out of the keystore's log to learn which measurements to approve. At DEBUG it
+            // is only emitted when the env filter happens to include `keystore_worker=debug` —
+            // the process default does, but an explicit `RUST_LOG=info` silently drops it and the
+            // deploy then waits ~4 minutes and aborts with "Could not read measurements". The
+            // values are public (they end up on chain), so there is nothing to hide at INFO.
+            info!("{}", format_measurements_line(&m));
         } else {
             warn!("⚠️ Quote too short to extract measurements: {} bytes (need {})", tdx_quote.len(), RTMR3_OFFSET + MEASUREMENT_SIZE);
         }
 
         Ok(tdx_quote)
     }
+}
+
+/// The one place the measurement line's wire format is defined.
+///
+/// `scripts/deploy_tdx.sh` parses this with `grep -oE 'MRTD=[a-f0-9]{96}'` (and the same per
+/// RTMR), so the `KEY=<96 hex>` shape and the comma separator are a contract with the deploy
+/// flow, not cosmetics. Note it is the `=` form — the worker logs a different `MRTD:  <hex>`
+/// colon form, and the script's own comment calls out the difference. Covered by
+/// `measurement_line_matches_what_the_deploy_script_greps`.
+pub fn format_measurements_line(m: &TdxMeasurements) -> String {
+    format!(
+        "TDX Measurements: MRTD={}, RTMR0={}, RTMR1={}, RTMR2={}, RTMR3={}",
+        m.mrtd, m.rtmr0, m.rtmr1, m.rtmr2, m.rtmr3
+    )
+}
+
+/// Ready-to-paste `measurements` argument for the DAO's `add_approved_measurements`.
+///
+/// Printed when registration is blocked so the operator can approve without reassembling five
+/// hex strings by hand. Field names match the contract's `ApprovedMeasurements`.
+pub fn measurements_approval_args(m: &TdxMeasurements) -> String {
+    format!(
+        r#"{{"measurements":{{"mrtd":"{}","rtmr0":"{}","rtmr1":"{}","rtmr2":"{}","rtmr3":"{}"}},"clear_others":false}}"#,
+        m.mrtd, m.rtmr0, m.rtmr1, m.rtmr2, m.rtmr3
+    )
 }
 
 /// Extract all TEE measurements (MRTD + RTMR0-3) from raw TDX quote bytes.
@@ -185,4 +215,93 @@ fn extract_all_measurements_from_bytes(tdx_quote: &[u8]) -> Option<TdxMeasuremen
 pub fn extract_all_measurements_from_quote_hex(tdx_quote_hex: &str) -> Option<TdxMeasurements> {
     let tdx_quote = hex::decode(tdx_quote_hex).ok()?;
     extract_all_measurements_from_bytes(&tdx_quote)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample() -> TdxMeasurements {
+        // 96 hex chars each — the real width of MRTD/RTMR0-3 (48 bytes).
+        TdxMeasurements {
+            mrtd: "7f".repeat(48),
+            rtmr0: "a0".repeat(48),
+            rtmr1: "b1".repeat(48),
+            rtmr2: "c2".repeat(48),
+            rtmr3: "d3".repeat(48),
+        }
+    }
+
+    /// Emulate `grep -oE '<KEY>=[a-f0-9]{96}'` — what `scripts/deploy_tdx.sh` step [3/6] runs
+    /// against this line to learn which measurements to approve.
+    fn grep_measurement(line: &str, key: &str) -> Option<String> {
+        let start = line.find(&format!("{key}="))? + key.len() + 1;
+        let value: String = line[start..]
+            .chars()
+            .take_while(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+            .collect();
+        (value.len() == 96).then_some(value)
+    }
+
+    /// The deploy flow parses this line out of the keystore's log; the format is therefore a
+    /// contract, not cosmetics. If it drifts, `deploy_tdx.sh` does not fail fast — it polls for
+    /// ~4 minutes and then aborts with "Could not read measurements", which reads like a broken
+    /// node rather than a renamed log field. This test is here so that becomes a failing build.
+    #[test]
+    fn measurement_line_matches_what_the_deploy_script_greps() {
+        let m = sample();
+        let line = format_measurements_line(&m);
+
+        assert_eq!(grep_measurement(&line, "MRTD").as_ref(), Some(&m.mrtd));
+        assert_eq!(grep_measurement(&line, "RTMR0").as_ref(), Some(&m.rtmr0));
+        assert_eq!(grep_measurement(&line, "RTMR1").as_ref(), Some(&m.rtmr1));
+        assert_eq!(grep_measurement(&line, "RTMR2").as_ref(), Some(&m.rtmr2));
+        assert_eq!(grep_measurement(&line, "RTMR3").as_ref(), Some(&m.rtmr3));
+
+        // The `=` form specifically. The worker logs a `MRTD:  <hex>` colon form and the deploy
+        // script's own comment calls out that these must not be confused; "harmonising" them
+        // would silently break the keystore path.
+        assert!(line.contains("MRTD="), "must use the = form: {line}");
+        assert!(!line.contains("MRTD:"), "must NOT use the worker's colon form: {line}");
+    }
+
+    /// The printed approval command has to be pasteable as-is; a wrong field name means an
+    /// operator approves a set that never matches and the keystore keeps refusing to register.
+    #[test]
+    fn approval_args_match_the_contract_argument_shape() {
+        let m = sample();
+        let v: serde_json::Value =
+            serde_json::from_str(&measurements_approval_args(&m)).expect("must be valid JSON");
+
+        assert_eq!(v["measurements"]["mrtd"], m.mrtd);
+        assert_eq!(v["measurements"]["rtmr0"], m.rtmr0);
+        assert_eq!(v["measurements"]["rtmr1"], m.rtmr1);
+        assert_eq!(v["measurements"]["rtmr2"], m.rtmr2);
+        assert_eq!(v["measurements"]["rtmr3"], m.rtmr3);
+        // Approving a new set must never wipe the ones already approved: other live instances
+        // are still registering against them.
+        assert_eq!(v["clear_others"], false);
+    }
+
+    /// The line is built from the same values the pre-check sends to the DAO, so an operator
+    /// approving what they read in the log approves exactly what the keystore will ask about.
+    #[test]
+    fn the_logged_line_and_the_approval_args_agree() {
+        let m = sample();
+        let line = format_measurements_line(&m);
+        let v: serde_json::Value = serde_json::from_str(&measurements_approval_args(&m)).unwrap();
+
+        for (key, field) in [
+            ("MRTD", "mrtd"),
+            ("RTMR0", "rtmr0"),
+            ("RTMR1", "rtmr1"),
+            ("RTMR2", "rtmr2"),
+            ("RTMR3", "rtmr3"),
+        ] {
+            assert_eq!(
+                grep_measurement(&line, key).as_deref(),
+                v["measurements"][field].as_str(),
+                "{key} differs between the log line and the approval args"
+            );
+        }
+    }
 }

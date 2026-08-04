@@ -304,6 +304,63 @@ async fn perform_tee_registration(config: &Config) -> Result<TeeRegistrationResu
         tracing::info!("📡 Generated TEE attestation (mode: {:?})", config.tee_mode);
         tracing::info!("   Quote will be verified by DAO contract against approved RTMR3 list");
 
+        // Do not pay to be told something a free view call answers.
+        //
+        // `submit_keystore_registration` verifies the DCAP quote and extracts the measurements
+        // BEFORE it checks them against the approved list, so an unapproved set burns virtually
+        // the whole verification — measured at 183.6 TGas / 0.0183 NEAR on a real rejection, and
+        // repeated on every container restart until an operator approves. The measurements are
+        // already in hand here (the quote was just generated and the line above logged them), so
+        // ask the DAO first and submit only when the answer is yes.
+        //
+        // Nothing is lost by deciding locally: the keystore parses the same measurements the
+        // contract does — verified against a live rejection where both values matched exactly —
+        // and `scripts/deploy_tdx.sh` already reads them from this log rather than from the
+        // contract's receipt.
+        if let Some(measurements) =
+            crate::tdx_attestation::extract_all_measurements_from_quote_hex(&tdx_quote)
+        {
+            let approved = mpc_ckd::check_measurements_approved(
+                &near_rpc_url,
+                &dao_contract,
+                &measurements,
+            )
+            .await
+            .unwrap_or_else(|e| {
+                // An RPC failure must not become a silent refusal to register: fall through to
+                // the submit and let the chain be the authority, exactly as before this check.
+                tracing::warn!(error = %e, "Could not check measurements against the DAO; submitting anyway");
+                true
+            });
+
+            if !approved {
+                tracing::error!("⏸️  Registration NOT submitted — these measurements are not approved yet");
+                tracing::error!("   No transaction was sent, so no gas was spent.");
+                tracing::error!("");
+                tracing::error!("📝 Approve them (owner key), then restart the keystore:");
+                tracing::error!(
+                    "   near contract call-function as-transaction {} add_approved_measurements \\",
+                    dao_contract
+                );
+                tracing::error!(
+                    "     json-args '{}' \\",
+                    crate::tdx_attestation::measurements_approval_args(&measurements)
+                );
+                tracing::error!("     prepaid-gas '100.0 Tgas' attached-deposit '0 NEAR' sign-as <owner> ...");
+                tracing::error!("");
+                tracing::error!("   (scripts/deploy_tdx.sh does this automatically at step [4/6].)");
+                anyhow::bail!(
+                    "TEE measurements not approved on {} — approve them and restart",
+                    dao_contract
+                );
+            }
+            tracing::info!("✅ Measurements already approved by the DAO — submitting registration");
+        } else {
+            // Malformed/short quote: leave the decision to the contract rather than blocking a
+            // registration on our own parsing.
+            tracing::warn!("Could not extract measurements from the quote; submitting without the pre-check");
+        }
+
         // Get Phala app_id for TEE verification (will be logged in blockchain tx)
         let app_id = crate::tdx_attestation::get_phala_app_info()
             .await

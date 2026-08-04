@@ -739,6 +739,55 @@ impl MpcCkdClient {
 }
 
 /// Check if keystore is approved by DAO contract
+/// Are these TEE measurements in the DAO's approved list?
+///
+/// A FREE view call, and the whole point of it is that it is free. Without this check the
+/// keystore submits `submit_keystore_registration` blind: the contract verifies the DCAP quote,
+/// extracts the measurements, and only THEN panics if they are unapproved — so essentially all
+/// of the verification gas is burnt for an outcome we could have predicted. Measured on a real
+/// rejection: 183.6 TGas / 0.0183 NEAR, repeated on every container restart until an operator
+/// approves.
+///
+/// The keystore parses the same measurements out of the same quote the contract does; this was
+/// confirmed against a live rejection, where the keystore's log line and the contract's own
+/// receipt log carried identical values. `scripts/deploy_tdx.sh` already trusts that local parse
+/// (it greps the keystore's log, not the contract's receipt), so nothing is lost by deciding
+/// here instead of paying the chain to tell us.
+pub async fn check_measurements_approved(
+    near_rpc_url: &str,
+    dao_contract: &str,
+    measurements: &crate::tdx_attestation::TdxMeasurements,
+) -> Result<bool> {
+    let client = crate::near::rpc_client(near_rpc_url);
+
+    let args = serde_json::json!({
+        "measurements": {
+            "mrtd": measurements.mrtd,
+            "rtmr0": measurements.rtmr0,
+            "rtmr1": measurements.rtmr1,
+            "rtmr2": measurements.rtmr2,
+            "rtmr3": measurements.rtmr3,
+        }
+    });
+
+    let request = methods::query::RpcQueryRequest {
+        block_reference: BlockReference::Finality(Finality::Final),
+        request: QueryRequest::CallFunction {
+            account_id: dao_contract.parse()?,
+            method_name: "is_measurements_approved".to_string(),
+            args: FunctionArgs::from(serde_json::to_vec(&args)?),
+        },
+    };
+
+    let response = client.call(request).await?;
+
+    if let QueryResponseKind::CallResult(CallResult { result, .. }) = response.kind {
+        Ok(serde_json::from_slice(&result)?)
+    } else {
+        Ok(false)
+    }
+}
+
 pub async fn check_keystore_approval(
     near_rpc_url: &str,
     dao_contract: &str,
@@ -1354,6 +1403,60 @@ mod tests {
         });
 
         (format!("http://{}", addr), seen)
+    }
+
+    /// The gas-saving pre-check must ask the DAO exactly what the DAO would assert.
+    ///
+    /// `submit_keystore_registration` gates on `approved_measurements.contains(&measurements)`
+    /// (keystore-dao `lib.rs:508`) and `is_measurements_approved` evaluates the SAME expression
+    /// over the SAME collection — so a mismatch here can only come from us sending the wrong
+    /// argument shape. That is what this pins: the method name, the `measurements` wrapper, and
+    /// all five field names.
+    ///
+    /// Getting it wrong degrades safely (a malformed view call errors, and `main.rs` submits
+    /// anyway rather than blocking) — but it would silently stop saving the gas this exists for.
+    #[tokio::test]
+    async fn measurements_check_asks_the_dao_the_question_the_dao_answers() {
+        let (url, seen) = fake_rpc(
+            std::time::Duration::ZERO,
+            vec![("is_measurements_approved", "true")],
+        );
+        let m = crate::tdx_attestation::TdxMeasurements {
+            mrtd: "7f".repeat(48),
+            rtmr0: "a0".repeat(48),
+            rtmr1: "b1".repeat(48),
+            rtmr2: "c2".repeat(48),
+            rtmr3: "d3".repeat(48),
+        };
+
+        let approved = check_measurements_approved(&url, "dao.testnet", &m)
+            .await
+            .expect("view call must succeed");
+
+        assert!(approved, "a `true` answer must be read as approved");
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            ["is_measurements_approved"],
+            "must call exactly the method the contract gates on"
+        );
+    }
+
+    /// A `false` answer is what stops the paid registration. If this were misread the whole
+    /// point — not spending 183.6 TGas to be told something a free view already knew — is lost.
+    #[tokio::test]
+    async fn a_false_answer_is_read_as_not_approved() {
+        let (url, _seen) = fake_rpc(
+            std::time::Duration::ZERO,
+            vec![("is_measurements_approved", "false")],
+        );
+        let m = crate::tdx_attestation::TdxMeasurements {
+            mrtd: "00".repeat(48),
+            rtmr0: "00".repeat(48),
+            rtmr1: "00".repeat(48),
+            rtmr2: "00".repeat(48),
+            rtmr3: "00".repeat(48),
+        };
+        assert!(!check_measurements_approved(&url, "dao.testnet", &m).await.unwrap());
     }
 
     /// `vault_id` arrives from the caller: the coordinator forwards `X-Customer-Vault` verbatim
