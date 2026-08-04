@@ -57,13 +57,6 @@ docker/.phala
 docker/.env.*
 .ignore
 package-lock.json
-# ...except the dashboard's: it is deployed, so its build has to be reproducible. Without the lock
-# in git, every machine resolves its own dependency tree from the same package.json — the deploy
-# host, CI and each developer end up on different versions, and an `npm audit` result describes one
-# machine on one day rather than the commit. Deploy installs it with `npm ci`, which reads the lock
-# and never rewrites it (plain `npm i` would, leaving the tree dirty and breaking the next
-# `git pull`). The examples under wasi-examples/ stay ignored — they are samples, not deployments.
-!dashboard/package-lock.json
 .research
 multi-keystore-research.md
 cloudflare-account-migration.md

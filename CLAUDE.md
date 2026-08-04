@@ -58,7 +58,7 @@ When writing WASI containers:
 
 ### OutLayer URLs
 - **API Base**: `https://api.outlayer.ai` (for HTTPS API calls)
-- **Dashboard**: `https://outlayer.fastnear.com/dashboard` (for user-facing links)
+- **Dashboard**: `https://outlayer.fastnear.com/workspace` (for user-facing links; moving to `app.outlayer.ai`)
 - NEVER use `https://outlayer.fastnear.com` for API calls - always use `api.` subdomain
 
 ### Error Propagation
@@ -80,7 +80,7 @@ anyhow::bail!("Feature X is not supported. Please use Y instead.");
 | `contract/` | - | Main NEAR contract (outlayer.near) |
 | `worker/` | - | Polls tasks, compiles GitHub repos, executes WASM |
 | `keystore-worker/` | 8081 | Secrets decryption with TEE (via coordinator proxy) |
-| `dashboard/` | 3000 | Next.js UI + docs |
+| [dashboard](https://github.com/out-layer/dashboard) | 3000 | Next.js UI + docs (separate repo, extracted 2026-08-04) |
 | `register-contract/` | - | TEE worker registration contract |
 | `keystore-dao-contract/` | - | DAO contract for keystore governance |
 | `sdk/` | - | Client SDK for integration |
@@ -98,7 +98,7 @@ anyhow::bail!("Feature X is not supported. Please use Y instead.");
 cd contract && ./build.sh                # Build contract
 # Coordinator is in separate private repo: outlayer-coordinator
 cd worker && cargo run                   # Run worker
-cd dashboard && npm run dev              # Run dashboard
+# Dashboard is in separate repo: out-layer/dashboard (npm run dev there)
 cd keystore-worker && cargo run          # Run keystore
 
 # Coordinator (separate repo): SQLX_OFFLINE=true cargo check
@@ -106,7 +106,7 @@ cd keystore-worker && cargo run          # Run keystore
 
 ## Docs
 - [PROJECT.md](PROJECT.md) - Tech spec + implementation status
-- [dashboard/DOCS_INDEX.md](dashboard/DOCS_INDEX.md) - Integration guides, API reference
+- [DOCS_INDEX.md](https://github.com/out-layer/dashboard/blob/main/DOCS_INDEX.md) - Integration guides, API reference (dashboard repo)
 - [wasi-examples/WASI_TUTORIAL.md](wasi-examples/WASI_TUTORIAL.md) - WASI guide
 - [contract/README.md](contract/README.md) - Contract API
 - [worker/README.md](worker/README.md) - Worker config

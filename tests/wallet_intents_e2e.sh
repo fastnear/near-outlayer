@@ -17,7 +17,7 @@
 #   near send YOUR_ACCOUNT <implicit_address> 0.1 --networkId testnet
 #
 #   # Step 3 (optional): Set policy via dashboard
-#   #   https://outlayer.fastnear.com/dashboard/wallet/manage
+#   #   https://outlayer.fastnear.com/wallet/manage
 #
 #   # Step 4: Test /call endpoint — wrap NEAR on implicit account
 #   WALLET_API_KEY=wk_... ./tests/wallet_intents_e2e.sh call
