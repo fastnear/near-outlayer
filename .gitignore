@@ -65,3 +65,5 @@ package-lock.json
 # `git pull`). The examples under wasi-examples/ stay ignored — they are samples, not deployments.
 !dashboard/package-lock.json
 .research
+multi-keystore-research.md
+cloudflare-account-migration.md
