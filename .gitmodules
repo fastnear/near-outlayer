@@ -46,3 +46,6 @@
 [submodule "wasi-examples/eth-proof-example"]
 	path = wasi-examples/eth-proof-example
 	url = git@github.com:out-layer/eth-proof-example.git
+[submodule "wasi-examples/eas-attestor"]
+	path = wasi-examples/eas-attestor
+	url = https://github.com/out-layer/eas-attestor.git
