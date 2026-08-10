@@ -8,7 +8,7 @@ Command (both runs):
 
 ## BASELINE — OLD code (pre-deploy) · 2026-06-07
 
-Coordinator: `https://testnet-api.outlayer.fastnear.com` (OLD code, before the unified-op deploy).
+Coordinator: `https://testnet-api.outlayer.ai` (OLD code, before the unified-op deploy).
 
 **Setup: all green** — customer-recovery built; `Default-vault mode` log line present; 6 sub-wallets created under the default vault (old coordinator accepted the no-vault bearer); 6/6 `store_wallet_policy` succeeded on-chain; no hangs, no setup errors.
 
@@ -33,7 +33,7 @@ Raw log of the baseline run: `/tmp/uop_run.log`.
 
 ## AFTER DEPLOY — NEW code · 2026-06-07
 
-Coordinator: `https://testnet-api.outlayer.fastnear.com` (testnet updated by the user). Setup: all green (same default-vault mode; 6/6 policies stored). Raw log: `/tmp/uop_after.log`.
+Coordinator: `https://testnet-api.outlayer.ai` (testnet updated by the user). Setup: all green (same default-vault mode; 6/6 policies stored). Raw log: `/tmp/uop_after.log`.
 
 **Result: PASS = 5, FAILED = 3** (was 4/4).
 

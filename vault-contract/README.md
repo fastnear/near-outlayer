@@ -23,7 +23,7 @@ see [`docs/LEAVING_OUTLAYER.md`](../docs/LEAVING_OUTLAYER.md).
 
 For the **architectural overview** of why the vault exists and how
 it interacts with the keystore / coordinator / MPC, see the rendered
-dashboard docs at https://outlayer.fastnear.com/docs/vaults (source:
+dashboard docs at https://app.outlayer.ai/docs/vaults (source:
 [`dashboard/app/docs/vaults/page.tsx`](../dashboard/app/docs/vaults/page.tsx)).
 
 For **deploying the WASM as a NEP-591 global contract** so customers
@@ -286,7 +286,7 @@ Mint one wallet API key bound to the vault. Returns:
   "api_key": "wk_<64 hex>",
   "wallet_id": "<UUID v4>",
   "near_account_id": "<hex of HMAC-SHA256(per_vault_master, 'wallet:<wallet_id>:near')[..32].verifying_key>",
-  "handoff_url": "https://outlayer.fastnear.com/wallet?key=wk_...",
+  "handoff_url": "https://app.outlayer.ai/wallet?key=wk_...",
   "trial": { ... }
 }
 ```
@@ -396,4 +396,4 @@ vault-contract/
 | customer-recovery tool | [`../scripts/customer-recovery/`](../scripts/customer-recovery/) |
 | dashboard vault UI | [`../dashboard/app/vault/page.tsx`](../dashboard/app/vault/page.tsx) |
 | Sovereign exit runbook | [`../docs/LEAVING_OUTLAYER.md`](../docs/LEAVING_OUTLAYER.md) |
-| Rendered architecture docs | https://outlayer.fastnear.com/docs/vaults |
+| Rendered architecture docs | https://app.outlayer.ai/docs/vaults |

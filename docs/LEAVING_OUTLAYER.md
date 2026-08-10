@@ -17,7 +17,7 @@ It targets two audiences:
 For the architectural rationale of MPC vaults (why they exist, what
 guarantees the design provides), see
 [`dashboard/app/docs/vaults/page.tsx`](../dashboard/app/docs/vaults/page.tsx)
-(rendered at https://outlayer.fastnear.com/docs/vaults).
+(rendered at https://app.outlayer.ai/docs/vaults).
 
 ---
 

@@ -48,7 +48,7 @@
 # Put the coordinator credentials in a `.env` NEXT TO THIS SCRIPT (gitignored):
 #   COORDINATOR_URL_MAINNET=https://api.outlayer.ai
 #   ADMIN_BEARER_TOKEN_MAINNET=...
-#   COORDINATOR_URL_TESTNET=https://api-testnet.outlayer.fastnear.com
+#   COORDINATOR_URL_TESTNET=https://api-testnet.outlayer.ai
 #   ADMIN_BEARER_TOKEN_TESTNET=...
 # Missing values just skip the notification with a warning.
 set -euo pipefail

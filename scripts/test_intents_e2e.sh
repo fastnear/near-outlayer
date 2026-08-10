@@ -140,7 +140,7 @@ if [ "$START_STEP" -le 2 ]; then
         warn "Need at least 0.1 NEAR. Send to: $WALLET_ADDRESS"
         echo ""
         echo "  Fund link:"
-        echo "    https://outlayer.fastnear.com/wallet/fund?to=${WALLET_ADDRESS}&amount=0.1&token=near"
+        echo "    https://app.outlayer.ai/wallet/fund?to=${WALLET_ADDRESS}&amount=0.1&token=near"
         echo ""
         echo "  Or near-cli:"
         echo "    near send <your-account>.near $WALLET_ADDRESS 0.1"

@@ -896,7 +896,7 @@ Adding support for new assets requires **zero code changes** - just specify diff
 | **Support committee-requested assets** | ✅ Ready | Custom API source type allows arbitrary data sources |
 | **Minimum 5 price APIs per asset** | ✅ Enforced | `min_sources_num` parameter validated on-chain |
 | **Mainnet + testnet deployment** | ✅ Ready | `outlayer.near` (mainnet), `outlayer.testnet` (testnet) |
-| **Real-time health monitoring** | ⏳ Phase 1 | Dashboard at https://outlayer.fastnear.com (to be enhanced) |
+| **Real-time health monitoring** | ⏳ Phase 1 | Dashboard at https://app.outlayer.ai (to be enhanced) |
 | **Public website with prices + node status** | ⏳ Phase 1 | Extend existing dashboard with oracle-specific UI |
 
 ### Smart Contract Requirements
@@ -997,7 +997,7 @@ This reduces complexity while maintaining security (TEE attestation is the trust
 | **TEE Hosting (Phala Cloud)** | | | | |
 | 5 worker nodes @ $150/month | $750 | $9,000 | **$4,500 (50%)** | **Shared infrastructure** - nodes serve oracle + AI + computation. Grant covers 50% as we commit to **oracle priority queue** |
 | **Monitoring & Alerts** | $0 | $0 | $0 | **Included in OutLayer platform** (Phala logs, existing monitoring) |
-| **Website & API** | $0 | $0 | $0 | **Included in OutLayer platform** (outlayer.fastnear.com already running) |
+| **Website & API** | $0 | $0 | $0 | **Included in OutLayer platform** (app.outlayer.ai already running) |
 | **Database & Storage** | $0 | $0 | $0 | **Included in OutLayer platform** (PostgreSQL, Redis already provisioned for coordinator) |
 | **Total Infrastructure** | **$750/month** | **$9,000/year** | **$4,500/year** | Grant covers 50% of shared TEE hosting - other 50% funded by AI/computation workloads |
 
@@ -1305,7 +1305,7 @@ Total: 8 weeks (2 months)
 - Prediction market (settlement oracle)
 
 ✅ **Website:**
-- Live price dashboard (https://outlayer.fastnear.com/oracle)
+- Live price dashboard (https://app.outlayer.ai/oracle)
 - Worker node status monitoring
 - Historical price charts (optional)
 - API playground (test requests)
@@ -1325,7 +1325,7 @@ Total: 8 weeks (2 months)
 - Fallback mechanisms (if worker offline, route to another)
 
 ✅ **Monitoring Infrastructure:**
-- Real-time dashboard: https://outlayer.fastnear.com/oracle
+- Real-time dashboard: https://app.outlayer.ai/oracle
   - Worker uptime & latency (via neardata events)
   - Price feed freshness
   - API source health
@@ -1571,7 +1571,7 @@ OutLayer integrates with Shade Agent Framework and Dstack, supporting NEAR's AI 
 **Team:** FastNEAR
 **Developer:** Vadim (vadimfastnear.com)
 **Website:** https://fastnear.com
-**Ourlayer Dashboard:** https://outlayer.fastnear.com
+**Ourlayer Dashboard:** https://app.outlayer.ai
 **GitHub:**
 - OutLayer Platform: https://github.com/fastnear/near-outlayer
 - Oracle WASM Module: https://github.com/out-layer/oracle-example

@@ -58,8 +58,8 @@ When writing WASI containers:
 
 ### OutLayer URLs
 - **API Base**: `https://api.outlayer.ai` (for HTTPS API calls)
-- **Dashboard**: `https://outlayer.fastnear.com/workspace` (for user-facing links; moving to `app.outlayer.ai`)
-- NEVER use `https://outlayer.fastnear.com` for API calls - always use `api.` subdomain
+- **Dashboard**: `https://app.outlayer.ai` (user-facing site; `/workspace` redirects to `/`)
+- NEVER use `https://app.outlayer.ai` for API calls - always use `api.outlayer.ai`
 
 ### Error Propagation
 ```rust

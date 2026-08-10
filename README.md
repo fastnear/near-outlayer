@@ -6,12 +6,12 @@ OutLayer lets smart contracts execute arbitrary code off-chain and receive verif
 
 ## Quick Links
 
-- **Dashboard & Docs**: [outlayer.fastnear.com](https://outlayer.fastnear.com/dashboard)
+- **Dashboard & Docs**: [app.outlayer.ai](https://app.outlayer.ai)
 - **HTTPS API (mainnet)**: `https://api.outlayer.ai` → `/call/{owner}/{project}`
 - **HTTPS API (testnet)**: `https://testnet-api.outlayer.ai` → `/call/{owner}/{project}`
 - **Contract**: `outlayer.near` (mainnet) / `outlayer.testnet` (testnet)
 - **API reference**: [API.md](API.md) — endpoints, base URLs, and source-availability notes
-- **For AI coding assistants**: [llms.txt](https://outlayer.fastnear.com/llms.txt) — link index, or [llms-full.txt](https://outlayer.fastnear.com/llms-full.txt) for every doc in a single fetch
+- **For AI coding assistants**: [llms.txt](https://app.outlayer.ai/llms.txt) — link index, or [llms-full.txt](https://app.outlayer.ai/llms-full.txt) for every doc in a single fetch
 - **Production App**: [near.email](https://near.email) — blockchain-native email built on OutLayer
 
 ## How It Works
@@ -129,8 +129,8 @@ Point the assistant at one of these instead of pasting files by hand:
 
 | File | Contents |
 |------|----------|
-| [`/llms.txt`](https://outlayer.fastnear.com/llms.txt) | Index of every documentation page, with a one-line summary each, in the [llms.txt](https://llmstxt.org) format |
-| [`/llms-full.txt`](https://outlayer.fastnear.com/llms-full.txt) | Full text of all developer docs inlined, ~310 KB, one fetch |
+| [`/llms.txt`](https://app.outlayer.ai/llms.txt) | Index of every documentation page, with a one-line summary each, in the [llms.txt](https://llmstxt.org) format |
+| [`/llms-full.txt`](https://app.outlayer.ai/llms-full.txt) | Full text of all developer docs inlined, ~310 KB, one fetch |
 | [OpenAPI spec](https://api.outlayer.ai/openapi.json) | Machine-readable HTTPS API schema |
 | [Agent Custody skill](https://skills.outlayer.ai/agent-custody/SKILL.md) | Drop-in skill file for agent frameworks |
 

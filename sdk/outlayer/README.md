@@ -1,6 +1,6 @@
 # OutLayer SDK
 
-Rust SDK for building WASM applications on [OutLayer](https://outlayer.fastnear.com) - verifiable off-chain computation for NEAR.
+Rust SDK for building WASM applications on [OutLayer](https://app.outlayer.ai) - verifiable off-chain computation for NEAR.
 
 [![Crates.io](https://img.shields.io/crates/v/outlayer.svg)](https://crates.io/crates/outlayer)
 [![Documentation](https://docs.rs/outlayer/badge.svg)](https://docs.rs/outlayer)
@@ -231,8 +231,8 @@ include = ["src/**/*", "wit/**/*", "Cargo.toml", "README.md", "LICENSE*"]
 
 ## Documentation
 
-- [OutLayer Docs](https://outlayer.fastnear.com/docs) - Full documentation
-- [Storage Guide](https://outlayer.fastnear.com/docs/storage) - Persistent storage
+- [OutLayer Docs](https://app.outlayer.ai/docs) - Full documentation
+- [Storage Guide](https://app.outlayer.ai/docs/storage) - Persistent storage
 - [WASI Tutorial](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/WASI_TUTORIAL.md) - Building WASM apps
 - [Examples](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples) - Working examples
 

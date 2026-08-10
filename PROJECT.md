@@ -11,7 +11,7 @@ Two integration modes:
 - **HTTPS API (Payment Keys)**: `POST /call/{owner}/{project}` with prepaid stablecoin balance → worker executes in TEE → JSON response
 
 **Contract**: `outlayer.near` (mainnet) / `outlayer.testnet` (testnet)
-**Dashboard**: https://outlayer.fastnear.com/dashboard
+**Dashboard**: https://app.outlayer.ai
 **API**: https://api.outlayer.ai
 
 ---
@@ -401,7 +401,7 @@ Minimum top-up: $0.01 (`MIN_TOP_UP_AMOUNT = 10_000` micro-units).
   "output": "...",
   "compute_cost": "45000",
   "job_id": 12345,
-  "attestation_url": "https://outlayer.fastnear.com/attestations/12345"
+  "attestation_url": "https://app.outlayer.ai/attestations/12345"
 }
 ```
 

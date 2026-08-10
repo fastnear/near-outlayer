@@ -392,7 +392,7 @@ Standalone web dashboard showing live oracle prices. Deployed as a separate app 
 | Requirement | Status | Implementation |
 |-------------|--------|----------------|
 | **Public website with prices** | DONE | `oracle-prices-ui/` — standalone live price dashboard with auto-refresh |
-| **Worker node status** | DONE | Available in OutLayer dashboard: https://outlayer.fastnear.com/workers |
+| **Worker node status** | DONE | Available in OutLayer dashboard: https://app.outlayer.ai/workers |
 | **Historical price charts** | By design | Not storing historical data — would require disproportionate storage costs for minimal benefit. Current prices are always fresh via TEE |
 
 ---
@@ -564,7 +564,7 @@ The resulting access key is cryptographically bound to that specific TEE instanc
 
 ### Worker Node Status & Reputation — Done (OutLayer Dashboard)
 
-Worker status monitoring, execution history, and reputation tracking are provided by the OutLayer platform: https://outlayer.fastnear.com/workers
+Worker status monitoring, execution history, and reputation tracking are provided by the OutLayer platform: https://app.outlayer.ai/workers
 
 ### Worker Whitelisting — Done (OutLayer)
 

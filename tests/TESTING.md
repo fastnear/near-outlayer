@@ -59,7 +59,7 @@ ONECLICK_CONFIDENTIAL_JWT=1 COORDINATOR_URL=https://api.outlayer.ai \
 ```
 
 Subset: `ONLY=T1,T11 …` runs just those. The mainnet file targets mainnet by default (its env
-defaults are `outlayer.near` / `api.outlayer.fastnear.com` / `wrap.near`).
+defaults are `outlayer.near` / `api.outlayer.ai` / `wrap.near`).
 
 ## Fund-safety model (why a money test never leaks)
 

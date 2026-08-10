@@ -289,8 +289,8 @@ This is foundational infrastructure for the next generation of blockchain applic
 ## Contact
 
 **Contact:** outlayer.near / outlayer.testnet
-**Website:** outlayer.fastnear.com
-**Docs:** docs.outlayer.fastnear.com
+**Website:** app.outlayer.ai
+**Docs:** app.outlayer.ai/docs
 **GitHub:** github.com/fastnear/near-outlayer
 **Twitter:** @out_layer
 
