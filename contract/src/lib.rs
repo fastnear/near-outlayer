@@ -63,6 +63,8 @@ enum StorageKey {
     WalletOwnerList { account_id: AccountId },
     // Per-secret vault binding (side-table for sovereign-vault opt-in)
     SecretVaultBindings,
+    // What curated projects charge (project_id -> ProjectPricing)
+    ProjectPricing,
 }
 
 /// Execution source - GitHub repo, pre-compiled WASM URL, or project reference
@@ -328,6 +330,13 @@ pub enum SecretAccessor {
         project_id: String,     // "alice.near/my-app"
     },
     /// System secrets (Payment Keys for HTTPS API)
+    ///
+    /// Anything added to this enum goes at the END. It is borsh-encoded as part
+    /// of `SecretKey`, which is a storage KEY: borsh writes the variant's
+    /// ORDINAL, so inserting one before `System` moves `System` from 3 to 4 and
+    /// every payment key ever stored is looked up under a key that holds
+    /// nothing — every HTTPS call failing with "payment key not found", and the
+    /// secrets unreachable rather than lost.
     System(SystemSecretType),
 }
 
@@ -363,6 +372,12 @@ pub struct VersionInfo {
     pub source: CodeSource,
     pub added_at: u64,
     pub storage_deposit: Balance,  // Storage staking for this version entry
+    //
+    // NOTE: this struct is borsh-encoded as the VALUE of `project_versions`,
+    // and borsh has no schema evolution: appending a field — even an `Option`
+    // — leaves every entry written by an earlier contract one byte short, and
+    // reading one then fails outright rather than defaulting. Anything new
+    // about a version belongs in a side map, never here.
 }
 
 /// Pending version request (for yield/resume flow)
@@ -490,6 +505,29 @@ pub struct Contract {
     // entries deserialise unchanged after a contract upgrade that
     // adds this map.
     secret_vault_bindings: LookupMap<SecretKey, AccountId>,
+
+    // What a subscription costs: the price list, and the only copy of it.
+    // The coordinator syncs from here the way it syncs execution pricing.
+    //
+    // A plain Vec rather than a collection: it is a handful of rows, every
+    // purchase needs all of them to resolve an index, and a view has to return
+    // the whole list anyway.
+    subscription_plans: Vec<payment::SubscriptionPlan>,
+
+    // What curated projects charge per operation, and whom to credit for them.
+    //
+    // An UnorderedMap, not a LookupMap, and the difference is the point: a
+    // LookupMap cannot be ENUMERATED. The coordinator mirrors these prices, and
+    // with a LookupMap it could only ask about project ids it already knew — it
+    // took its list from its own connector registry, so a project priced here
+    // but absent there would be charged on chain and free over HTTPS, for ever
+    // and with nothing to notice it.
+    //
+    // Not a Vec in root state either: unlike the subscription plans, an entry
+    // is read only when the project it belongs to is called, so a caller of any
+    // other project never pays to deserialise it. `UnorderedMap` keeps that
+    // property and adds the key list.
+    project_pricing: UnorderedMap<String, payment::ProjectPricing>,
 }
 
 #[near_bindgen]
@@ -535,6 +573,11 @@ impl Contract {
             wallet_owner_index: LookupMap::new(StorageKey::WalletOwnerIndex),
             // Per-vault master phase 2
             secret_vault_bindings: LookupMap::new(StorageKey::SecretVaultBindings),
+            // Empty sells nothing: a deployment that has not set its price list
+            // refuses purchases and returns the money, rather than giving a
+            // subscription away at a price nobody set.
+            subscription_plans: Vec::new(),
+            project_pricing: UnorderedMap::new(StorageKey::ProjectPricing),
         }
     }
 

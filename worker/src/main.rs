@@ -9,6 +9,7 @@ mod fastfs;
 mod keystore_client;
 mod near_client;
 mod registration;
+mod connector_manifest;
 mod outlayer_rpc;
 mod outlayer_storage;
 mod outlayer_payment;
@@ -745,6 +746,15 @@ async fn worker_iteration(
     // Resolve code_source: either from request directly, or from project_id via contract
     // Also resolve project_uuid if resolving from project
     // Always normalize to ensure repo URL has https:// prefix
+    // Code is resolved from the CHAIN. An HTTPS job may not name its own (§C3).
+    if refuses_own_code_source(is_https_call, execution_request.code_source.is_some()) {
+        anyhow::bail!(
+            "Refusing an HTTPS job that names its own code_source. Code is resolved \
+from the contract on this path, so a job carrying one did not come from the \
+coordinator's own flow."
+        );
+    }
+
     let (code_source, resolved_project_uuid): (api_client::CodeSource, Option<String>) = match execution_request.code_source.clone() {
         Some(cs) => (cs.normalize(), None), // code_source provided directly, no uuid from resolution
         None => {
@@ -1434,6 +1444,7 @@ async fn handle_compile_job(
                             commit_hash: Some(commit.to_string()),
                             build_target: Some(build_target.to_string()),
                             wasm_hash: None,
+                            executed_wasm_sha256: None,
                             input_hash: None,
                             output_hash: checksum.clone(),
                             // V1 fields
@@ -1904,6 +1915,20 @@ async fn handle_execute_job(
     }
 
     // Decrypt secrets from contract if provided (new repo-based system)
+    // SHA256 of the bytes that will actually run.
+    //
+    // Computed from the buffer handed to the runtime, so it is what ran rather
+    // than what was asked for. `wasm_checksum` is a cache key: for a GitHub
+    // source it hashes the source coordinates, and two different binaries built
+    // from one commit share it.
+    //
+    // Computed before execution rather than after, so the attestation and the
+    // egress report describe the same bytes even if the run itself fails.
+    let executed_wasm_sha256 = {
+        use sha2::{Digest, Sha256};
+        hex::encode(Sha256::digest(&wasm_bytes))
+    };
+
     info!("🔍 DEBUG secrets_ref: {:?}", secrets_ref);
     info!("🔍 DEBUG keystore_client: {}", if keystore_client.is_some() { "Some" } else { "None" });
 
@@ -1915,7 +1940,15 @@ async fn handle_execute_job(
 
         // Decrypt secrets based on project_id (if present) or code_source type
         let secrets_result = if let Some(ref proj_id) = job.project_id {
-            // Project-based execution: use project-scoped secrets
+            // Project-scoped secrets: the same set for every version.
+            //
+            // Carrying secrets across versions is much of the point of having
+            // projects — publish v2 and it keeps working. A secret that must
+            // NOT carry over is expressed with the `WasmHash` accessor, which
+            // binds it to exact bytes; there is no project-plus-version
+            // accessor, deliberately, because it would complicate the one
+            // structure whose job is continuity to say something `WasmHash`
+            // already says.
             info!("📦 Decrypting project-based secrets for project: {}", proj_id);
             keystore.decrypt_secrets_by_project(proj_id, &secrets_ref.profile, &secrets_ref.account_id, caller, Some(data_id)).await
         } else {
@@ -1961,9 +1994,11 @@ async fn handle_execute_job(
                 // Error message already user-friendly from keystore_client
                 let error_msg = e.to_string();
 
-                // "Secrets not found" is not a fatal error - WASM may not need secrets
-                // Continue with empty secrets map
-                if error_msg.contains("not found") {
+                // "There is no such secret" is not fatal — the module may not
+                // need one. Asked of the typed error rather than of the prose:
+                // a REFUSAL whose wording happened to contain "not found" would
+                // otherwise start the job with no credential at all.
+                if keystore_client::SecretsNotFound::is_missing(&e) {
                     info!("ℹ️  No secrets configured for this project/source, continuing without secrets");
                     Some(std::collections::HashMap::new())
                 } else {
@@ -2130,6 +2165,90 @@ async fn handle_execute_job(
         }
     });
 
+    // The manifest of what actually ran, kept for the report below.
+    let declared_manifest: Option<connector_manifest::ProjectManifest>;
+
+    // Outbound-domain allowlist (§C3).
+    //
+    // The manifest comes from the ARTEFACT, never from the coordinator — an
+    // allowlist the coordinator supplies is one an operator can widen without
+    // anyone seeing it, and the product's claim is precisely that they cannot.
+    //
+    // ONE source: a custom section inside the wasm. The wasm's hash is recorded
+    // on chain and checked before execution, so the section is covered by it —
+    // which is the whole claim. It also works for a project published as a
+    // `WasmUrl`, which has no repository at all.
+    //
+    // Nothing else may become a second source — a `manifest.json` read from
+    // the repository would make the claim above untrue: `validate_git_ref`
+    // accepts `main` and `release/2024-01`, so the ref moves when somebody
+    // pushes and the network policy would move with it while nothing on chain
+    // changed.
+    //
+    // A connector whose manifest cannot be read gets an EMPTY allowlist: no
+    // network at all.
+    let in_namespace = job
+        .project_id
+        .as_deref()
+        .map(|pid| connector_manifest::is_connector_project(pid, connectors_namespace(&config.near_rpc_url)))
+        .unwrap_or(false);
+
+    // A connector call must name its operation, or it does not run.
+    //
+    // Last of the three checks on the same field, and the only one inside the
+    // TEE. The contract priced this call by reading `operation` out of these
+    // very bytes; the coordinator billed it the same way. This one asserts the
+    // invariant where the code actually runs: if a connector is about to
+    // execute a body that names no operation, then something upstream priced
+    // nothing, and the safe answer is to run nothing.
+    //
+    // Refused BEFORE execution, deliberately. Running and then charging would
+    // mean the side effect — the email — has already happened, and no amount of
+    // money kept afterwards undoes it. The timing is the protection; the money
+    // is not.
+    if let Err(e) = connector_manifest::may_run(in_namespace, &input_data) {
+        anyhow::bail!(
+            "This is a connector call and {} Nothing was executed.",
+            e.message()
+        );
+    }
+
+    let network_config = {
+        let manifest = connector_manifest::manifest_from_wasm(&wasm_bytes);
+        if manifest.is_some() {
+            debug!("📄 Manifest read from the wasm's own custom section");
+        }
+
+        // What the artefact CLAIMS about its own rate limits. Enforcement is the
+        // coordinator's, since a limit has to be counted across calls and a
+        // guest sees only its own — but the claim travels inside the wasm, so
+        // it is covered by the on-chain hash and can be compared against what
+        // is actually enforced. Logged because that comparison is a human one
+        // today; nothing checks it automatically.
+        if let Some(declared) = manifest.as_ref().and_then(|m| m.declared_limits_summary()) {
+            info!(
+                "📋 Limits declared by {}: {}",
+                job.project_id.as_deref().unwrap_or("<no project>"),
+                declared
+            );
+        }
+
+        declared_manifest = manifest.clone();
+        let policy = connector_manifest::resolve_network_policy(in_namespace, manifest.as_ref());
+        if policy.is_enforced() {
+            info!(
+                "🔒 Outbound allowlist for {}: {:?}",
+                job.project_id.as_deref().unwrap_or("<no project>"),
+                policy
+            );
+        }
+        executor::NetworkConfig {
+            policy,
+            egress_log: Arc::new(Mutex::new(Vec::new())),
+        }
+    };
+    let egress_log = network_config.egress_log.clone();
+
     // Execute WASM
     info!("🚀 Executing WASM...");
     let exec_result = executor
@@ -2144,8 +2263,43 @@ async fn handle_execute_job(
             storage_config,
             vrf_config,
             wallet_config,
+            Some(network_config),
         )
         .await;
+
+    // Submit the egress audit (§C3). Read AFTER execution and unconditionally,
+    // including for a run that trapped or timed out — a connector that was
+    // killed mid-flight is exactly the run whose outbound attempts one wants to
+    // see. Failure to record is logged and never fails the execution: the audit
+    // is a report, and losing it must not also lose the user's result.
+    {
+        let records = egress_log
+            .lock()
+            .map(|log| log.clone())
+            .unwrap_or_default();
+        // Sent when there is anything to say: outbound attempts, or a
+        // manifest whose declarations the coordinator has to know about in
+        // order to enforce them.
+        let has_declarations = declared_manifest
+            .as_ref()
+            .and_then(|m| m.limits.as_ref())
+            .is_some_and(|l| !l.is_empty());
+        if !records.is_empty() || has_declarations {
+            if let Err(e) = api_client
+                .submit_egress_audit(
+                    job.job_id,
+                    job.project_id.as_deref(),
+                    wasm_checksum,
+                    Some(&executed_wasm_sha256),
+                    declared_manifest.as_ref(),
+                    &records,
+                )
+                .await
+            {
+                warn!("Failed to submit egress audit (non-critical): {}", e);
+            }
+        }
+    }
 
     // Cache raw WASM after execution - only for P1 (P2 uses CompiledCache for native code)
     // This is a security measure: WASI P2 has access to /tmp, so we cache only after WASI exits
@@ -2364,6 +2518,7 @@ async fn handle_execute_job(
                                         commit_hash: code_source.commit().map(|s| s.to_string()),
                                         build_target: code_source.build_target().map(|s| s.to_string()),
                                         wasm_hash: Some(wasm_checksum.clone()),
+                                        executed_wasm_sha256: Some(executed_wasm_sha256.clone()),
                                         input_hash: Some(input_hash),
                                         output_hash,
                                         // V1 fields
@@ -2541,6 +2696,7 @@ async fn handle_execute_job(
                                         commit_hash: code_source.commit().map(|s| s.to_string()),
                                         build_target: code_source.build_target().map(|s| s.to_string()),
                                         wasm_hash: Some(wasm_checksum.clone()),
+                                        executed_wasm_sha256: Some(executed_wasm_sha256.clone()),
                                         input_hash: Some(input_hash),
                                         output_hash,
                                         // V1 fields
@@ -2733,6 +2889,7 @@ async fn send_startup_attestation_with_quote(
         commit_hash: Some("startup".to_string()),
         build_target: Some(config.tee_mode.clone()),
         wasm_hash: None,
+        executed_wasm_sha256: None,
         input_hash: None, // Not required for startup attestation (task_id = -1)
         output_hash: "worker_startup".to_string(),
         // V1 fields - None for startup
@@ -2966,6 +3123,51 @@ async fn run_contract_system_callbacks_handler(
     }
 }
 
+
+/// May this job name its own code? (§C3)
+///
+/// A supplied `code_source` names a repository and a ref that nothing on chain
+/// has committed to. For a connector that would hollow out the domain allowlist
+/// — the manifest is read from exactly that repo at exactly that ref, so a
+/// payload-chosen source is a payload-chosen allowlist, the one thing §C3 says
+/// the allowlist must never be.
+///
+/// The test is the PATH, not the project. On the blockchain path this field is
+/// filled by the contract itself: `request_execution` with a `Project` source
+/// resolves the project's active version and puts the result in the event, so
+/// `code_source` and `project_id` arrive together and both come from the chain.
+/// A check that refused that pairing would refuse every legitimate on-chain
+/// execution of a project — and the earlier version of this one did exactly that
+/// for any connector published under the curated namespace, which is the shape
+/// we would move to.
+///
+/// On the HTTPS path the coordinator builds the job and never sets the field, so
+/// a job that arrives with one did not come from the flow we built. Nothing
+/// legitimate is refused today; the property now holds by construction rather
+/// than by the coordinator continuing to choose not to.
+///
+/// A function rather than an inline condition so the test can exercise the rule
+/// that actually runs. Written inline, the rule could be deleted from the job
+/// path and a test asserting the same expression would keep passing.
+fn refuses_own_code_source(is_https_call: bool, has_code_source: bool) -> bool {
+    is_https_call && has_code_source
+}
+
+/// The curated connector namespace for the network this worker serves (§14.1).
+///
+/// Membership is decided by comparing the owner account of a `project_id`
+/// against this, so it is a structural fact rather than something a project can
+/// claim about itself. The network is read off the configured RPC URL, the same
+/// way `merge_env_vars` derives `NEAR_NETWORK_ID`, so the two can never
+/// disagree about which chain this worker is on.
+fn connectors_namespace(near_rpc_url: &str) -> &'static str {
+    if near_rpc_url.contains("mainnet") {
+        "connectors.outlayer.near"
+    } else {
+        "connectors.outlayer.testnet"
+    }
+}
+
 /// TopUp result containing tx_hash, new balance, and key metadata for coordinator
 struct TopUpResult {
     tx_hash: String,
@@ -2973,6 +3175,37 @@ struct TopUpResult {
     key_hash: String,
     project_ids: Vec<String>,
     max_per_call: Option<String>,
+}
+
+/// The public name of a payment key, as `payment_keys.key_hash` holds it.
+///
+/// **This one line decides what kind of key it is**, everywhere. The
+/// coordinator's `payment_keys.is_agent` is a generated column reading
+/// `key_hash = owner`, so what this returns is what every later rule sees: which
+/// key a `wk_` may spend, which key refuses deletion, whether one agent key
+/// already exists, and which account a connector's secret is looked up under.
+///
+/// The rule itself:
+///
+/// * an ORDINARY key has a `key` in its blob, and its public name is the hash of
+///   that key — as it has always been. Publishing the key itself would hand out
+///   an oracle for guessing it;
+/// * an AGENT key has no `key` at all. That key is derived inside the keystore
+///   from the agent's identity and is deliberately written nowhere, so there is
+///   nothing to hash — and the agent's public name is its wallet's account,
+///   which is `owner`. The ABSENCE is the definition, not a fallback.
+///
+/// A blob may not claim the answer: it is written by the key's owner, and the
+/// only thing it can do here is omit a field, which costs it the key it would
+/// have needed to spend an ordinary key. There used to be a `target` field
+/// saying "this is an agent's key" in so many words; it was a second encoding of
+/// this same fact, and a caller-supplied one.
+fn public_key_name(blob: &serde_json::Value, owner: &str) -> String {
+    use sha2::{Digest, Sha256};
+    blob.get("key")
+        .and_then(|v| v.as_str())
+        .map(|key| hex::encode(Sha256::digest(key.as_bytes())))
+        .unwrap_or_else(|| owner.to_string())
 }
 
 /// Process a single TopUp task
@@ -2997,8 +3230,24 @@ async fn process_topup_task(
     // Seed format: "system:payment_key:{owner}:{nonce}"
     let seed = format!("system:payment_key:{}:{}", task.owner, task.nonce);
 
+    // Which master this blob was written under, read from the CHAIN.
+    //
+    // A key created by a wallet with a per-customer vault lives under that
+    // vault's master; every other key lives under the default. Taking the
+    // answer from the task instead would let whoever queued it choose the
+    // key-space — and the whole point of a vault is that we cannot.
+    //
+    // A failure here is NOT treated as "no vault": guessing the default for a
+    // vault-bound key would fail to decrypt anyway, but reporting it as a
+    // missing RPC rather than as corrupt data is the difference between an
+    // operator retrying and an operator debugging the wrong thing.
+    let vault_id = near_client
+        .fetch_payment_key_vault(&task.owner, task.nonce)
+        .await
+        .context("Failed to read the payment key's vault binding from the contract")?;
+
     let decrypted_bytes = keystore_client
-        .decrypt_raw(&seed, &task.encrypted_data)
+        .decrypt_raw(&seed, &task.encrypted_data, vault_id.as_deref())
         .await
         .context("Failed to decrypt Payment Key data")?;
 
@@ -3007,19 +3256,12 @@ async fn process_topup_task(
 
     // 2. Parse JSON and extract fields
     // Payment Key format: {"key":"base64_key","initial_balance":"123","project_ids":[],"max_per_call":"1000"}
+    // An AGENT key's blob has no `key` at all, and that is the whole of what
+    // makes it one — see the `key_hash` step below.
     let mut payment_key_data: serde_json::Value = serde_json::from_str(&decrypted_str)
         .context("Failed to parse Payment Key JSON")?;
 
-    // Extract key for hash computation
-    let key = payment_key_data
-        .get("key")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing key field"))?
-        .to_string();
-
-    // Compute key_hash = SHA256(key)
-    use sha2::{Sha256, Digest};
-    let key_hash = hex::encode(Sha256::digest(key.as_bytes()));
+    let key_hash = public_key_name(&payment_key_data, &task.owner);
 
     // Extract project_ids
     let project_ids: Vec<String> = payment_key_data
@@ -3071,13 +3313,27 @@ async fn process_topup_task(
         return Ok(TopUpResult {
             tx_hash: "init_only".to_string(),
             new_balance: "0".to_string(),
-            key_hash,
+            key_hash: key_hash.clone(),
             project_ids,
             max_per_call,
         });
     }
 
-    // Normal TopUp flow
+    // Normal TopUp flow.
+    //
+    // A top-up is a top-up: the whole payment becomes spendable balance, on an
+    // agent's key exactly as on any other. The payment key's job is to pay for
+    // execution, and a transfer to it must not quietly turn the customer's
+    // money into subscription allowance — an allowance burns at `expires_at`
+    // and money does not.
+    //
+    // An allowance is GRANTED (the trial, a purchase, an admin gift) and is
+    // accounted for by the coordinator; nothing here converts one into the
+    // other. That is also why this function asks for no price at all: buying an
+    // allowance is a separate, explicit act, and a payment path that could
+    // convert would eventually convert by accident — a whole payment turned
+    // into something that expires, from a customer who only meant to fund their
+    // key.
     let new_balance = current_balance_u128 + topup_amount;
 
     info!(
@@ -3092,7 +3348,7 @@ async fn process_topup_task(
         .context("Failed to serialize updated Payment Key")?;
 
     let new_encrypted_data = keystore_client
-        .encrypt(&seed, updated_json.as_bytes())
+        .encrypt(&seed, updated_json.as_bytes(), vault_id.as_deref())
         .await
         .context("Failed to encrypt updated Payment Key data")?;
 
@@ -3110,4 +3366,230 @@ async fn process_topup_task(
         max_per_call,
     })
 }
+
+
+#[cfg(test)]
+mod payment_key_name_tests {
+    use super::public_key_name;
+    use serde_json::json;
+
+    const OWNER: &str = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
+
+    /// The whole definition of an agent key, asserted at the one place that
+    /// decides it. `payment_keys.is_agent` is generated from `key_hash = owner`,
+    /// so this function's answer IS the kind of key, everywhere downstream.
+    #[test]
+    fn a_blob_with_no_key_names_the_account_and_one_with_a_key_names_a_hash() {
+        let agent = public_key_name(&json!({"initial_balance": "0"}), OWNER);
+        assert_eq!(
+            agent, OWNER,
+            "no key to hash means the public name is the wallet's account — which \
+             is what makes it an agent key"
+        );
+
+        let ordinary = public_key_name(&json!({"key": "aa", "initial_balance": "0"}), OWNER);
+        assert_ne!(
+            ordinary, OWNER,
+            "a key that HAS a key string must never be read as an agent's: a `wk_` \
+             would then reach a key whose string the wallet may have handed away"
+        );
+        assert_eq!(
+            ordinary,
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"aa")),
+            "and an ordinary key's name is the hash of its key, unchanged"
+        );
+    }
+
+    /// An old blob predates agent keys, has a `key`, and must keep reading as
+    /// the ordinary key it is. Migration is silent by construction — there is no
+    /// field to add and nothing rewrites anything.
+    #[test]
+    fn an_old_blob_still_reads_as_an_ordinary_key() {
+        let old = json!({
+            "key": "deadbeef",
+            "initial_balance": "1000",
+            "project_ids": [],
+            "max_per_call": "0"
+        });
+        assert_ne!(public_key_name(&old, OWNER), OWNER);
+    }
+
+    /// A blob cannot CLAIM to be an agent's, only fail to carry a key — and
+    /// that costs it the key it would have needed to spend an ordinary one.
+    ///
+    /// It used to be able to claim it, in a `target` field the owner wrote.
+    #[test]
+    fn a_blob_cannot_declare_itself_an_agents() {
+        let forged = json!({
+            "key": "aa",
+            "target": OWNER,
+            "is_agent": true,
+            "allowance_usd": 999_999_999u64,
+        });
+        assert_ne!(
+            public_key_name(&forged, OWNER),
+            OWNER,
+            "nothing a blob says makes it an agent key — only the absence of `key` does"
+        );
+    }
+
+    /// A non-string `key` is not a key. Reading it as one would name the row
+    /// after the account and quietly promote a forged blob to an agent key.
+    #[test]
+    fn a_key_that_is_not_a_string_does_not_name_the_account() {
+        // The safe direction is debatable either way, so it is pinned: a blob
+        // this malformed did not come from us, and the value it gets is the
+        // account — the same as any keyless blob. It buys nothing, because an
+        // agent key has no string to present and the wallet's `wk_` still has
+        // to resolve to this exact row.
+        assert_eq!(public_key_name(&json!({"key": 42}), OWNER), OWNER);
+    }
+}
+
+#[cfg(test)]
+mod verified_sender_tests {
+    use super::*;
+    use crate::api_client::{ExecutionContext, ResourceLimits};
+
+    fn empty_context() -> ExecutionContext {
+        serde_json::from_str("{}").expect("ExecutionContext must deserialize from an empty object")
+    }
+
+    fn limits() -> ResourceLimits {
+        ResourceLimits {
+            max_instructions: 1_000_000,
+            max_memory_mb: 64,
+            max_execution_seconds: 30,
+        }
+    }
+
+    /// §C2: on the HTTPS path the guest's idea of "who is calling" comes from
+    /// the payment key's `owner`, and from nothing else.
+    ///
+    /// This is the whole of verified sender. near-email reads
+    /// `env::signer_account_id()`, which is `NEAR_SENDER_ID`; if this mapping
+    /// ever moved to some other field, every connector would start acting on
+    /// behalf of the wrong account with no error anywhere.
+    #[test]
+    fn https_calls_take_the_sender_from_the_payment_key_owner() {
+        let owner = "alice.near".to_string();
+        let env = merge_env_vars(
+            None,
+            &empty_context(),
+            &limits(),
+            1,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            true, // is_https_call
+            Some(&"call-id".to_string()),
+            Some(&owner),
+            None,
+            "https://rpc.mainnet.fastnear.com",
+        );
+
+        assert_eq!(env.get("NEAR_SENDER_ID"), Some(&owner));
+        assert_eq!(env.get("NEAR_USER_ACCOUNT_ID"), Some(&owner));
+        assert_eq!(
+            env.get("OUTLAYER_EXECUTION_TYPE").map(String::as_str),
+            Some("HTTPS")
+        );
+    }
+
+    /// A caller's own secrets must never be able to name the sender.
+    ///
+    /// Secrets are merged in FIRST and the system variables are written over
+    /// them. If that order inverted, a project owner could set
+    /// `NEAR_SENDER_ID` in their project secrets and have every connector call
+    /// act as whoever they named. (The keystore also rejects reserved keys on
+    /// the way in; this is the second of the two locks.)
+    #[test]
+    fn a_secret_cannot_impersonate_the_sender() {
+        let mut secrets = std::collections::HashMap::new();
+        secrets.insert("NEAR_SENDER_ID".to_string(), "victim.near".to_string());
+        secrets.insert("NEAR_USER_ACCOUNT_ID".to_string(), "victim.near".to_string());
+
+        let owner = "alice.near".to_string();
+        let env = merge_env_vars(
+            Some(secrets),
+            &empty_context(),
+            &limits(),
+            1,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            true,
+            Some(&"call-id".to_string()),
+            Some(&owner),
+            None,
+            "https://rpc.mainnet.fastnear.com",
+        );
+
+        assert_eq!(
+            env.get("NEAR_SENDER_ID"),
+            Some(&owner),
+            "a project secret must not be able to name the verified sender"
+        );
+        assert_eq!(env.get("NEAR_USER_ACCOUNT_ID"), Some(&owner));
+    }
+
+    /// Which jobs may name their own code, and which may not.
+    ///
+    /// The distinction is the PATH. On the blockchain path the contract fills
+    /// `code_source` itself — `request_execution` with a `Project` source
+    /// resolves the active version into the event — so a job arriving with both
+    /// a code source and a project id is the ordinary, signed case. An earlier
+    /// version of this rule refused exactly that pairing for connectors in the
+    /// curated namespace, which would have broken every on-chain call to one
+    /// the day we published a connector there.
+    ///
+    /// On the HTTPS path the coordinator builds the job and never sets the
+    /// field, so anything that arrives with one came from somewhere else.
+    #[test]
+    fn only_an_https_job_is_refused_its_own_code_source() {
+        let refuses = refuses_own_code_source;
+
+        assert!(
+            refuses(true, true),
+            "an HTTPS job may not name its own code: the coordinator never sets one"
+        );
+        assert!(!refuses(true, false), "the ordinary HTTPS job is untouched");
+        assert!(
+            !refuses(false, true),
+            "on chain the contract fills this field — refusing it would refuse every \
+             legitimate project execution, connectors included"
+        );
+        assert!(!refuses(false, false));
+    }
+
+    /// §14.1: the connector namespace is per-network, and picking the wrong one
+    /// would mean either treating real connectors as ordinary projects (losing
+    /// the fail-closed allowlist) or treating ordinary projects as connectors.
+    #[test]
+    fn the_connector_namespace_follows_the_network() {
+        assert_eq!(
+            connectors_namespace("https://rpc.mainnet.fastnear.com"),
+            "connectors.outlayer.near"
+        );
+        assert_eq!(
+            connectors_namespace("https://rpc.testnet.fastnear.com"),
+            "connectors.outlayer.testnet"
+        );
+        // Anything unrecognised is testnet, matching how NEAR_NETWORK_ID is
+        // derived a few lines above. Defaulting the other way would put a
+        // misconfigured worker on the mainnet namespace.
+        assert_eq!(
+            connectors_namespace("http://localhost:3030"),
+            "connectors.outlayer.testnet"
+        );
+    }
+}
+
+
 

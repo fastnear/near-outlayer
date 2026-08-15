@@ -1,0 +1,89 @@
+#!/bin/bash
+set -e
+
+cd "$(dirname "$0")"
+
+WASM_FILE="target/wasm32-wasip2/release/connector-probe.wasm"
+MAX_SIZE=$((2 * 1024 * 1024))  # 2MB in bytes
+
+echo "Building WASI module (wasm32-wasip2)..."
+
+# Add target if needed
+rustup target add wasm32-wasip2 2>/dev/null || true
+
+# Build
+cargo build --target wasm32-wasip2 --release
+
+echo ""
+
+# Note: wasm-opt doesn't support WASI P2 components yet
+# https://github.com/WebAssembly/binaryen/issues/6728
+
+# Show file size
+SIZE=$(stat -f%z "$WASM_FILE" 2>/dev/null || stat -c%s "$WASM_FILE" 2>/dev/null)
+SIZE_MB=$(echo "scale=2; $SIZE / 1024 / 1024" | bc)
+SIZE_KB=$(echo "scale=0; $SIZE / 1024" | bc)
+
+echo "WASM module: $WASM_FILE"
+echo "Size: ${SIZE_KB} KB (${SIZE_MB} MB)"
+
+# The connector manifest must be present in the artefact.
+#
+# It declares the outbound allowlist the TEE worker enforces, and it is covered
+# by the SHA256 below — which is the whole reason it lives inside the wasm
+# rather than in a file next to it. If the linker dropped the static (a missing
+# `#[used]`, say), this module would publish with NO allowlist and, being a
+# connector, would be refused all outbound network at runtime. Loud here beats
+# discovering it in production.
+if ! grep -qa 'outlayer.manifest' "$WASM_FILE"; then
+    echo ""
+    echo "ERROR: outlayer.manifest custom section is missing from $WASM_FILE"
+    echo "See wasi-examples/CONNECTOR_MANIFEST.md"
+    exit 1
+fi
+echo "Manifest section: present"
+
+# Validate the words the manifest uses, HERE rather than at runtime.
+#
+# A `window` or `applies` the coordinator does not recognise is not an error
+# there — it is read at its strictest, which binds more callers than the author
+# meant and is noticed only when somebody is refused. A typo belongs where it
+# can be seen: at the build that produces the artefact.
+python3 - "$(dirname "$0")/manifest.json" <<'PY'
+import json, sys
+WINDOWS = {"day", "week", "month"}
+APPLIES = {"everyone", "unpaid", "covered"}
+m = json.load(open(sys.argv[1]))
+bad = []
+for limit in m.get("limits", []):
+    if limit.get("window") not in WINDOWS:
+        bad.append(f"window {limit.get('window')!r} (allowed: {sorted(WINDOWS)})")
+    if limit.get("applies", "everyone") not in APPLIES:
+        bad.append(f"applies {limit.get('applies')!r} (allowed: {sorted(APPLIES)})")
+if bad:
+    print("ERROR: manifest declares words the coordinator does not know:")
+    for b in bad:
+        print("  -", b)
+    print("Unknown values are read at their STRICTEST, which silently binds more")
+    print("callers than you meant. See wasi-examples/CONNECTOR_MANIFEST.md")
+    sys.exit(1)
+print("Manifest vocabulary: ok")
+PY
+
+# Show SHA256 hash (for FastFS/contract)
+HASH=$(shasum -a 256 "$WASM_FILE" | cut -d' ' -f1)
+echo "SHA256: $HASH"
+
+# Warning if over 2MB
+if [ "$SIZE" -gt "$MAX_SIZE" ]; then
+    echo ""
+    echo "WARNING: File size exceeds 2MB limit for FastFS upload!"
+    echo "Current: ${SIZE_MB} MB, Limit: 2.00 MB"
+    echo ""
+    echo "Tips to reduce size:"
+    echo "  - Install wasm-opt: brew install binaryen"
+    echo "  - Check for unused dependencies in Cargo.toml"
+    echo "  - Use 'cargo bloat' to find largest functions"
+else
+    echo "OK: Size is within 2MB limit for FastFS"
+fi

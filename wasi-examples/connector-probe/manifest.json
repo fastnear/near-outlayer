@@ -1,0 +1,28 @@
+{
+  "connector_id": "connector-probe",
+  "display": {
+    "name": "Connector probe",
+    "author": "zavodil.testnet"
+  },
+  "operations": [
+    "ping",
+    "whoami",
+    "secret",
+    "burn",
+    "fetch",
+    "forbidden_fetch"
+  ],
+  "capabilities": {
+    "network": [
+      "rpc.testnet.fastnear.com"
+    ]
+  },
+  "limits": [
+    {
+      "operation": "burn",
+      "window": "day",
+      "max_count": 5,
+      "applies": "covered"
+    }
+  ]
+}

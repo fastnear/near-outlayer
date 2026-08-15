@@ -381,6 +381,34 @@ pub struct ClaimJobResponse {
     pub pricing: PricingConfig,
 }
 
+
+/// The coordinator has answered, and its answer will not change.
+///
+/// Marks a relay the worker must stop retrying: a 4xx is a decision, not an
+/// outage. Retrying one forever would wedge the event monitor on a single
+/// unacceptable event and stop every other block from being scanned.
+///
+/// Everything else is transient by default, which is the safe direction — a
+/// relay retried once too often costs a request, a relay dropped once too early
+/// costs a customer the subscription they paid for on chain.
+#[derive(Debug)]
+pub struct TerminalRelay;
+
+impl std::fmt::Display for TerminalRelay {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the coordinator refused this relay outright")
+    }
+}
+
+impl std::error::Error for TerminalRelay {}
+
+impl TerminalRelay {
+    /// Is this failure one that retrying cannot fix?
+    pub fn is_terminal(error: &anyhow::Error) -> bool {
+        error.downcast_ref::<TerminalRelay>().is_some()
+    }
+}
+
 /// API client for communicating with Coordinator API
 #[derive(Clone)]
 pub struct ApiClient {
@@ -1301,6 +1329,9 @@ impl ApiClient {
     /// * `key_hash` - SHA256 hash of the key (hex encoded) for validation
     /// * `project_ids` - List of allowed project IDs (empty = all projects)
     /// * `max_per_call` - Max amount per API call (optional)
+    /// * `agent` - the agent binding read out of the decrypted blob (§A1).
+    ///   All-default for an ordinary key, which is what every older blob
+    ///   produces.
     pub async fn init_payment_key(
         &self,
         owner: &str,
@@ -1311,6 +1342,15 @@ impl ApiClient {
     ) -> Result<()> {
         let url = format!("{}/payment-keys/init", self.base_url);
 
+        /// Nothing here says whether the key is an agent's: `key_hash` already
+        /// does. A blob with no `key` in it has nothing to hash, so the hash is
+        /// the owner's own account, and the coordinator generates
+        /// `payment_keys.is_agent` from precisely that.
+        ///
+        /// A `target` field used to travel here for the same purpose. The
+        /// allowance and its expiry never did and never may: a blob is written
+        /// by the key's owner, so an allowance read out of one would be an
+        /// allowance anyone could mint for themselves.
         #[derive(Serialize)]
         struct InitPaymentKeyRequest {
             owner: String,
@@ -1348,6 +1388,92 @@ impl ApiClient {
             key_hash_prefix = &key_hash[..8.min(key_hash.len())],
             "Payment key initialized in coordinator"
         );
+
+        Ok(())
+    }
+
+    /// Submit the outbound-request audit for one execution (§C3).
+    ///
+    /// Records what the guest attempted to reach and whether the project's
+    /// manifest allowlist permitted it. Produced inside the TEE and submitted
+    /// under this worker's authenticated session, so the trail is a report by
+    /// an attested component rather than a coordinator-side claim.
+    ///
+    /// Only the HOST is recorded, never the path or query — those routinely
+    /// carry tokens and recipient addresses, and an audit trail must not become
+    /// a store of other people's secrets.
+    /// Report what a run reached for, and what its artefact declares about
+    /// itself.
+    ///
+    /// The declared limits ride along here rather than on their own endpoint
+    /// because this is already the "what did that execution look like from the
+    /// inside" report, and it is already sent from the one component that has
+    /// the bytes to read them from.
+    pub async fn submit_egress_audit(
+        &self,
+        job_id: i64,
+        project_id: Option<&str>,
+        wasm_checksum: &str,
+        executed_wasm_sha256: Option<&str>,
+        manifest: Option<&crate::connector_manifest::ProjectManifest>,
+        records: &[crate::connector_manifest::EgressRecord],
+    ) -> Result<()> {
+        let url = format!("{}/egress-audit", self.base_url);
+
+        #[derive(Serialize)]
+        struct DeclaredLimit<'a> {
+            operation: &'a str,
+            period: &'a str,
+            max_count: u32,
+            applies: &'a str,
+        }
+
+        #[derive(Serialize)]
+        struct EgressAuditRequest<'a> {
+            job_id: i64,
+            project_id: Option<&'a str>,
+            wasm_checksum: &'a str,
+            executed_wasm_sha256: Option<&'a str>,
+            connector_id: Option<&'a str>,
+            declared_limits: Vec<DeclaredLimit<'a>>,
+            records: &'a [crate::connector_manifest::EgressRecord],
+        }
+
+        let declared_limits: Vec<DeclaredLimit> = manifest
+            .and_then(|m| m.limits.as_ref())
+            .map(|limits| {
+                limits
+                    .iter()
+                    .map(|l| DeclaredLimit {
+                        operation: &l.operation,
+                        period: &l.window,
+                        max_count: l.max_count,
+                        applies: &l.applies,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let response = self
+            .add_auth_headers(self.client.post(&url))
+            .json(&EgressAuditRequest {
+                job_id,
+                project_id,
+                wasm_checksum,
+                executed_wasm_sha256,
+                connector_id: manifest.and_then(|m| m.connector_id.as_deref()),
+                declared_limits,
+                records,
+            })
+            .send()
+            .await
+            .context("Failed to submit egress audit")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("Egress audit rejected: HTTP {} {}", status, body);
+        }
 
         Ok(())
     }
@@ -1459,6 +1585,7 @@ impl ApiClient {
     /// * `key_hash` - SHA256 hash of the key (hex encoded) for validation
     /// * `project_ids` - List of allowed project IDs (empty = all projects)
     /// * `max_per_call` - Max amount per API call (optional)
+    /// * `agent` - the agent binding as read from the blob (§A1)
     pub async fn complete_topup(
         &self,
         owner: &str,
@@ -1471,6 +1598,8 @@ impl ApiClient {
     ) -> Result<()> {
         let url = format!("{}/topup/complete", self.base_url);
 
+        /// As for `init`: `key_hash` carries whether this is an agent's key,
+        /// because it IS the answer — see [`ApiClient::init_payment_key`].
         #[derive(Serialize)]
         struct CompleteTopUpRequest {
             owner: String,
@@ -1625,6 +1754,58 @@ impl ApiClient {
 
     /// Notify coordinator that a wallet policy was created/updated on-chain.
     /// Coordinator will decrypt via keystore and sync authorized key hashes.
+    /// Tell the coordinator a subscription was bought and paid for on chain.
+    ///
+    /// Sends what was PAID and nothing about what it is worth: the plan's
+    /// allowance and validity are the coordinator's own table. A worker that
+    /// could state them would be a worker that could grant itself a
+    /// subscription.
+    pub async fn notify_subscription_purchased(
+        &self,
+        receipt_id: &str,
+        owner: &str,
+        nonce: u32,
+        plan: u8,
+        paid_usd: &str,
+        payer: &str,
+    ) -> Result<()> {
+        let url = format!("{}/internal/subscription-purchased", self.base_url);
+
+        let response = self
+            .add_auth_headers(self.client.post(&url))
+            .json(&serde_json::json!({
+                "receipt_id": receipt_id,
+                "owner": owner,
+                "nonce": nonce,
+                "plan": plan,
+                "paid_usd": paid_usd,
+                "payer": payer,
+            }))
+            .send()
+            .await
+            .context("Failed to notify subscription purchase")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            // A 4xx is the coordinator's considered answer: an unknown plan, a
+            // key that is not there, a body it will not accept. It will say the
+            // same thing tomorrow, so it is TERMINAL and the block moves on.
+            // Anything else — a connection refused while the coordinator
+            // restarts, a 5xx during its migrations — is the failure that goes
+            // away on its own, and the one worth holding the block for.
+            if status.is_client_error() {
+                return Err(anyhow::Error::new(TerminalRelay).context(format!(
+                    "Subscription purchase notify refused ({}): {}",
+                    status, body
+                )));
+            }
+            anyhow::bail!("Subscription purchase notify failed ({}): {}", status, body);
+        }
+
+        Ok(())
+    }
+
     pub async fn notify_wallet_policy_updated(
         &self,
         wallet_pubkey: &str,
@@ -2206,7 +2387,20 @@ pub struct StoreAttestationRequest {
     pub build_target: Option<String>,
 
     // Task data hashes
+    /// Cache key for the artefact. For a `WasmUrl` source this IS the SHA256 of
+    /// the binary; for a GitHub source it is a hash of the source COORDINATES
+    /// (repo:commit:target), which identifies what was asked for rather than
+    /// what was produced.
     pub wasm_hash: Option<String>,
+    /// SHA256 of the bytes this worker actually executed (§D3).
+    ///
+    /// The post-hoc half of version pinning: the client compares it against the
+    /// version it expected. Separate from `wasm_hash` on purpose — that field
+    /// answers "which artefact was requested", and for a non-reproducible
+    /// GitHub build two different binaries can share it. This one answers
+    /// "which bytes ran", which is the question a verifier actually has.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub executed_wasm_sha256: Option<String>,
     pub input_hash: Option<String>,
     pub output_hash: String,
 
@@ -2243,5 +2437,75 @@ mod tests {
         )
         .unwrap();
         assert_eq!(client.base_url, "http://localhost:8080");
+    }
+
+    /// A coordinator that answers once with a chosen status.
+    fn coordinator_answering(code: u16, body: &'static str) -> String {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        std::thread::spawn(move || {
+            if let Some(Ok(mut stream)) = listener.incoming().next() {
+                let mut buf = [0u8; 8192];
+                let _ = stream.read(&mut buf);
+                let response = format!(
+                    "HTTP/1.1 {code} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        format!("http://{}", addr)
+    }
+
+    async fn relay_to(base_url: String) -> anyhow::Error {
+        ApiClient::new(base_url, "t".to_string())
+            .unwrap()
+            .notify_subscription_purchased("rcpt-1", "a.near", 1, 0, "10000000", "p.near")
+            .await
+            .expect_err("a failed relay must be an error")
+    }
+
+    /// Which relay failures the event monitor may walk away from.
+    ///
+    /// The customer's transaction has already succeeded and the contract has
+    /// already kept the payment, so a dropped relay means an allowance that is
+    /// never granted and nobody finding out but them. The monitor therefore
+    /// HOLDS the block for anything that might pass, and only gives up on an
+    /// answer that will not change.
+    ///
+    /// Getting this backwards is bad in both directions: treat a 4xx as
+    /// transient and one unacceptable event stops the monitor scanning forever;
+    /// treat a restart as terminal and the purchase is lost.
+    #[tokio::test]
+    async fn only_a_refusal_lets_a_purchase_be_dropped() {
+        assert!(
+            TerminalRelay::is_terminal(
+                &relay_to(coordinator_answering(400, r#"{"error":"unknown plan"}"#)).await
+            ),
+            "a 4xx is the coordinator's decision and will not change"
+        );
+        assert!(
+            TerminalRelay::is_terminal(
+                &relay_to(coordinator_answering(404, r#"{"error":"no such key"}"#)).await
+            ),
+            "so is a 404"
+        );
+
+        assert!(
+            !TerminalRelay::is_terminal(
+                &relay_to(coordinator_answering(503, r#"{"error":"migrating"}"#)).await
+            ),
+            "a 503 during startup migrations passes on its own — hold the block"
+        );
+
+        // Nothing listening at all: the coordinator is restarting. This is the
+        // common case and the whole reason the hold exists.
+        let refused = relay_to("http://127.0.0.1:1".to_string()).await;
+        assert!(
+            !TerminalRelay::is_terminal(&refused),
+            "a coordinator that is not up yet is the most transient failure there is: {refused:#}"
+        );
     }
 }

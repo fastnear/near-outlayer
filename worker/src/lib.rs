@@ -7,6 +7,7 @@ pub mod config;
 pub mod keystore_client;
 pub mod collateral_fetcher;
 pub mod fastfs;
+pub mod connector_manifest;
 pub mod outlayer_rpc;
 pub mod outlayer_storage;
 pub mod outlayer_payment;

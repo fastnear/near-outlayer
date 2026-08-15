@@ -954,6 +954,42 @@ pub struct WalletSignPolicyRequest {
     pub encrypted_data: String,
 }
 
+/// Request for POST /wallet/sign-secret-store.
+#[derive(Debug, Deserialize)]
+pub struct SignSecretStoreRequest {
+    pub wallet_id: String,
+    /// The connector's project. Used to REBUILD the seed here rather than take
+    /// one from the caller — that is what makes a mis-sealed secret impossible
+    /// rather than merely unlikely.
+    pub project_id: String,
+    /// The sealed secret (base64 ciphertext), NOT a hash. Decrypt-validated
+    /// before anything is signed — see the handler.
+    pub encrypted_secrets_base64: String,
+    /// The account that will send the transaction and stake the storage. Part of
+    /// the signed message, so the signature cannot be replayed by anyone else.
+    pub payer: String,
+    /// Who may obtain a decryption of this secret. **Signed**, because consent
+    /// to a ciphertext is not consent to an audience: with this outside the
+    /// signature, the payer chose the readers after the owner had signed and
+    /// the signature still verified.
+    pub access: crate::types::AccessCondition,
+    /// Which per-customer master the secret is sealed to, if any. Signed for
+    /// the same reason as the accessor: it decides which key decrypts, so it is
+    /// part of what is being authorised.
+    #[serde(default)]
+    pub vault_id: Option<String>,
+}
+
+/// Response with the signature the contract's `store_secrets_for` verifies.
+#[derive(Debug, Serialize)]
+pub struct SignSecretStoreResponse {
+    pub signature_hex: String,
+    /// `ed25519:<hex>` — the form the contract takes.
+    pub wallet_pubkey: String,
+    /// The agent's implicit account: both the owner of the secret and its name.
+    pub agent_account: String,
+}
+
 /// Response with ed25519 signature + public key for contract verification
 #[derive(Debug, Serialize)]
 pub struct WalletSignPolicyResponse {
@@ -1202,6 +1238,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/wallet/solana/sign-message", post(wallet_solana_sign_message_handler))
         .route("/wallet/solana/sign-transaction", post(wallet_solana_sign_transaction_handler))
         .route("/wallet/sign-policy", post(wallet_sign_policy_handler))
+        .route("/wallet/sign-secret-store", post(wallet_sign_secret_store_handler))
         .route("/wallet/check-policy", post(wallet_check_policy_handler))
         .route("/wallet/encrypt-policy", post(wallet_encrypt_policy_handler))
         .route("/wallet/decrypt-policy", post(wallet_decrypt_policy_handler))
@@ -1526,6 +1563,69 @@ fn accessor_to_contract_json(a: &SecretAccessor) -> serde_json::Value {
     }
 }
 
+/// A secret named after an agent may be read only by that agent, and may only
+/// have been left there by that agent.
+///
+/// A connector credential belongs to a person, not to us, so both halves matter:
+///
+/// * **who reads it.** The author leaves it under the ACCOUNT of the agent it is
+///   meant for, and comparing that name with the account actually asking is what
+///   makes the name binding rather than decorative. No access condition has to be
+///   written and none can be forgotten — naming the secret IS the grant;
+/// * **who left it.** The owner must be the agent too. Anyone may call
+///   `store_secrets`, and an agent's account is public, so without this half a
+///   stranger could plant a credential of their own under that name and the
+///   connector would run on THEIR mailbox, THEIR token. Only the agent's own
+///   wallet can produce a secret it owns, and only `wk_` can make that wallet
+///   sign.
+///
+/// It fires on the SHAPE of the name, because that is the one thing a thief
+/// cannot avoid: the secret they are after is named after an agent, so asking
+/// for it means asking under an account-shaped profile. A flag on the request
+/// would instead be left off by whoever builds the request.
+///
+/// **An earlier version compared the owner against the wallet policy** read from
+/// chain. That was weaker and dearer: weaker because the policy's owner is
+/// whoever set it FIRST, and any holder of `wk_` can, so the credential's safety
+/// rested on a race; dearer because it meant a view call on every read, one that
+/// could not be cached. Making the agent own the secret settles both — the three
+/// values become one, and the encryption seed (`project:{id}:{owner}`) lines up
+/// with the name instead of quietly diverging from it.
+///
+/// **What this check is, and is not.** It separates one agent from another: a
+/// secret named after agent A is not handed to agent B. That is a narrower and
+/// much cheaper claim than authenticating either of them, and it is the claim
+/// this function makes.
+///
+/// `caller` arrives from the coordinator. What that means for the trust model
+/// is a question about the platform rather than about this function, and it is
+/// answered where the platform is described, not in a comment here.
+fn enforce_agent_secret(caller: &str, owner: &str, profile: &str) -> Result<(), ApiError> {
+    if !shared_tee_helpers::is_implicit_account(profile) {
+        return Ok(());
+    }
+
+    if profile != caller {
+        return Err(ApiError::Unauthorized(
+            "This secret is addressed to a different agent. A secret named after \
+             an agent can only be read by that agent."
+                .to_string(),
+        ));
+    }
+
+    if profile != owner {
+        return Err(ApiError::Unauthorized(
+            "This secret was not left by the agent itself. A secret an agent may \
+             read has to be stored by its own wallet — anyone else naming the \
+             agent is a stranger planting a credential."
+                .to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+
 /// Decrypt secrets from contract for authorized TEE worker
 async fn decrypt_handler(
     State(state): State<AppState>,
@@ -1672,7 +1772,18 @@ async fn decrypt_handler(
         "Successfully read secrets from contract"
     );
 
-    // 2. Validate access conditions
+    // 2. A secret named by an agent belongs to that agent alone.
+    enforce_agent_secret(&req.user_account_id, &req.owner, &req.profile).inspect_err(|_| {
+        tracing::warn!(
+            task_id = %task_id_str,
+            caller = %req.user_account_id,
+            owner = %req.owner,
+            profile = %req.profile,
+            "Access denied - secret is not this agent's"
+        );
+    })?;
+
+    // 3. Validate access conditions
     let access_condition: crate::types::AccessCondition = serde_json::from_value(secret_profile["access"].clone())
         .map_err(|e| {
             tracing::error!(task_id = %task_id_str, error = %e, "Failed to parse access condition");
@@ -1699,7 +1810,7 @@ async fn decrypt_handler(
 
     tracing::info!(task_id = %task_id_str, caller = %caller, "Access granted");
 
-    // 3. Build seed based on accessor type
+    // 4. Build seed based on accessor type
     // SECURITY NOTE:
     // - For Repo: use branch from SECRET PROFILE (not request) to construct seed
     // - This is correct because seed must match the one used during encryption
@@ -1816,7 +1927,7 @@ async fn decrypt_handler(
         }
     };
 
-    // 4. Decrypt using derived keypair
+    // 5. Decrypt using derived keypair
     let encrypted_secrets_base64 = secret_profile["encrypted_secrets"]
         .as_str()
         .ok_or_else(|| ApiError::InternalError("Missing encrypted_secrets field".to_string()))?;
@@ -1830,7 +1941,7 @@ async fn decrypt_handler(
         ApiError::InternalError(format!("Decryption failed: {}", e))
     })?;
 
-    // 5. Encode plaintext as base64 for safe JSON transport
+    // 6. Encode plaintext as base64 for safe JSON transport
     let plaintext_b64 = base64::encode(&plaintext_bytes);
 
     tracing::info!(
@@ -2317,6 +2428,7 @@ fn map_verify_error(
 /// 4. Worker calls promise_yield_resume with new encrypted data
 async fn encrypt_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<EncryptRequest>,
 ) -> Result<Json<EncryptResponse>, ApiError> {
     // Check if keystore is ready
@@ -2336,10 +2448,15 @@ async fn encrypt_handler(
     let plaintext_bytes = base64::decode(&req.plaintext_base64)
         .map_err(|e| ApiError::BadRequest(format!("Invalid base64 in plaintext: {}", e)))?;
 
+    // Which master. A blob re-encrypted under the wrong one cannot be read
+    // back by the party that stored it, so the scope has to travel with every
+    // step of a re-encryption, not just the first.
+    let customer = extract_customer_from_header(&headers)?;
+
     // Encrypt with derived key
     let keystore = state.keystore.read().await;
     let encrypted_bytes = keystore
-        .encrypt(None, &req.seed, &plaintext_bytes)
+        .encrypt(customer.as_ref(), &req.seed, &plaintext_bytes)
         .map_err(|e| ApiError::InternalError(format!("Failed to encrypt data: {}", e)))?;
 
     let encrypted_base64 = base64::encode(&encrypted_bytes);
@@ -2379,6 +2496,7 @@ pub struct DecryptRawResponse {
 /// 4. Worker updates balance and calls /encrypt
 async fn decrypt_raw_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<DecryptRawRequest>,
 ) -> Result<Json<DecryptRawResponse>, ApiError> {
     // Check if keystore is ready
@@ -2398,10 +2516,15 @@ async fn decrypt_raw_handler(
     let encrypted_bytes = base64::decode(&req.encrypted_base64)
         .map_err(|e| ApiError::BadRequest(format!("Invalid base64 in encrypted_data: {}", e)))?;
 
+    // Which master the blob was written under. Asking the default for a blob
+    // stored under a vault fails to decrypt — loudly, which is the right
+    // direction, but it means the scope has to be supplied.
+    let customer = extract_customer_from_header(&headers)?;
+
     // Decrypt with derived key
     let keystore = state.keystore.read().await;
     let plaintext_bytes = keystore
-        .decrypt(None, &req.seed, &encrypted_bytes)
+        .decrypt(customer.as_ref(), &req.seed, &encrypted_bytes)
         .map_err(|e| ApiError::InternalError(format!("Failed to decrypt data: {}", e)))?;
 
     let plaintext_base64 = base64::encode(&plaintext_bytes);
@@ -2860,6 +2983,9 @@ async fn update_user_secrets_handler(
             SecretAccessor::Project { project_id } => {
                 format!("project:{}:{}", project_id, req.owner)
             }
+            // Both halves in the seed, so a secret pinned to one version of one
+            // project is cryptographically a DIFFERENT secret from the same
+            // project's other versions and from a clone running the same bytes.
             SecretAccessor::System { secret_type } => {
                 format!("system:{}:{}:{}", secret_type.as_seed_str(), req.owner, req.profile)
             }
@@ -3762,6 +3888,10 @@ mod base64 {
 /// derived EVM address — see the domain-separation note on
 /// `Keystore::derive_secp256k1_keypair`.
 pub(crate) fn wallet_seed(wallet_id: &str, chain: &str) -> String {
+    wallet_seed_impl(wallet_id, chain)
+}
+
+fn wallet_seed_impl(wallet_id: &str, chain: &str) -> String {
     if is_evm_chain(chain) {
         format!("wallet:{}:evm", wallet_id)
     } else if is_solana_chain(chain) {
@@ -3800,7 +3930,7 @@ async fn wallet_derive_address_handler(
         .map_err(ApiError::from_customer_load)?;
 
     let chain = req.chain.to_lowercase();
-    let seed = wallet_seed(&req.wallet_id, &chain);
+    let seed = wallet_seed_impl(&req.wallet_id, &chain);
 
     let keystore = state.keystore.read().await;
 
@@ -3895,7 +4025,7 @@ async fn evm_sign_digest(
         }
     }
 
-    let seed = wallet_seed(wallet_id, chain);
+    let seed = wallet_seed_impl(wallet_id, chain);
     let keystore = state.keystore.read().await;
     let sig = keystore
         .sign_secp256k1_prehash(customer, &seed, digest)
@@ -4211,6 +4341,167 @@ async fn wallet_solana_sign_transaction_handler(
     )
     .await?;
     Ok(Json(WalletSolanaSignResponse { signature }))
+}
+
+/// The exact string the contract rebuilds and verifies in `store_secrets_for`.
+///
+/// **The leading domain is what makes this unforgeable as a transaction.** The
+/// wallet's NEAR key signs `sha256(borsh(tx))`, and borsh starts a transaction
+/// with the u32 length of `signer_id` — so a preimage beginning with these ASCII
+/// bytes reads as a length of about 1.9 billion against a 64-byte maximum. No
+/// transaction can look like this, which is why assembling the message HERE,
+/// from typed fields, is a structural guarantee and not a probabilistic one.
+///
+/// Byte-for-byte identical to the contract's `format!` — the signature is
+/// verified against a string rebuilt there, so a change on one side alone
+/// produces signatures nothing will accept.
+fn secret_store_message(
+    wallet_pubkey: &str,
+    project_id: &str,
+    profile: &str,
+    encrypted_secrets_base64: &str,
+    payer: &str,
+    vault_id: &str,
+    access_json: &str,
+) -> String {
+    format!(
+        "store_secrets_for:v1:{}:{}:{}:{}:{}:{}:{}",
+        wallet_pubkey, project_id, profile, encrypted_secrets_base64, payer, vault_id, access_json
+    )
+}
+
+/// The access condition as the CONTRACT will render it when it rebuilds this
+/// message.
+///
+/// Serialised from the typed value, not echoed from whatever text arrived, so
+/// the two sides agree by doing the same thing rather than by the caller
+/// sending the same bytes twice. If the two type definitions ever drift, the
+/// pinned tests here and in the contract print different strings — which is the
+/// point of pinning both.
+fn access_binding(access: &crate::types::AccessCondition) -> Result<String, ApiError> {
+    serde_json::to_string(access).map_err(|e| {
+        ApiError::BadRequest(format!("access condition could not be serialised: {}", e))
+    })
+}
+
+/// Sign a secret store so the contract can record it as the WALLET's, while
+/// somebody else pays for the storage.
+///
+/// This is what lets an agent hold a credential without ever holding NEAR:
+/// `store_secrets` makes the caller the owner, so without a signature the wallet
+/// itself would have to send the transaction and stake the deposit.
+///
+/// SECURITY: the signing key here (`wallet:{id}:near`) is ALSO the wallet's NEAR
+/// tx key, and a NEAR tx signature is `sign(sha256(borsh(tx)))`. So no
+/// caller-supplied hash is ever signed. Two things keep this safe, and neither
+/// may be weakened:
+///
+///   1. the signed preimage is BUILT HERE and begins with a fixed domain
+///      string, so a caller cannot steer it towards a serialised transaction;
+///   2. the ciphertext is DECRYPT-VALIDATED first. The AEAD tag can only verify
+///      for something genuinely sealed to this exact seed, so arbitrary attacker
+///      bytes are refused before any signing happens — the same gate
+///      `/wallet/sign-policy` relies on.
+///
+/// Rebuilding the seed here has a second effect worth keeping: it proves the
+/// secret was sealed to the seed the keystore will later rebuild when it
+/// decrypts. Sealing to the wrong one used to fail silently, at read time, long
+/// after the author had gone.
+async fn wallet_sign_secret_store_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<SignSecretStoreRequest>,
+) -> Result<Json<SignSecretStoreResponse>, ApiError> {
+    if !state.is_ready() {
+        return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
+    }
+
+    let customer = extract_customer_from_header(&headers)?;
+    state
+        .ensure_customer_loaded(customer.as_ref())
+        .await
+        .map_err(ApiError::from_customer_load)?;
+
+    if req.encrypted_secrets_base64.is_empty() {
+        return Err(ApiError::BadRequest(
+            "encrypted_secrets_base64 is required".to_string(),
+        ));
+    }
+    if req.project_id.trim().is_empty() {
+        return Err(ApiError::BadRequest("project_id is required".to_string()));
+    }
+    if req.payer.trim().is_empty() {
+        return Err(ApiError::BadRequest("payer is required".to_string()));
+    }
+
+    let keystore = state.keystore.read().await;
+    let wallet_seed = format!("wallet:{}:near", req.wallet_id);
+    let verifying_key = keystore
+        .get_public_key_for_seed(customer.as_ref(), &wallet_seed)
+        .map_err(|e| ApiError::InternalError(format!("Failed to derive public key: {}", e)))?;
+    let agent_account = hex::encode(verifying_key.as_bytes());
+    let wallet_pubkey = format!("ed25519:{}", agent_account);
+
+    // 1. Decrypt-validate against the seed WE rebuild. Fails for attacker bytes
+    //    and equally for a secret sealed to the wrong seed.
+    let secret_seed = format!("project:{}:{}", req.project_id.trim(), agent_account);
+    let encrypted_bytes = base64::decode(&req.encrypted_secrets_base64).map_err(|e| {
+        ApiError::BadRequest(format!(
+            "encrypted_secrets_base64 is not valid base64: {}",
+            e
+        ))
+    })?;
+    keystore
+        .decrypt(customer.as_ref(), &secret_seed, &encrypted_bytes)
+        .map_err(|_| {
+            ApiError::Forbidden(
+                "The secret did not decrypt under this agent's seed — refusing to sign. \
+                 Encrypt it with the key from the agent-secret pubkey endpoint for this \
+                 exact project."
+                    .to_string(),
+            )
+        })?;
+
+    // 2. Only now build the message the contract will rebuild, and sign it.
+    // The message covers the PROJECT as well. The signature authorises one
+    // stored secret, and which project it belongs to is part of what was
+    // authorised: without it the payer could send the same signed blob under a
+    // different accessor. Nothing leaks either way — the ciphertext is sealed
+    // to this project's seed and would not decrypt elsewhere — but an
+    // authorisation that does not cover what it authorises is a hole waiting
+    // for the day one of those facts changes.
+    let message = secret_store_message(
+        &wallet_pubkey,
+        req.project_id.trim(),
+        &agent_account,
+        &req.encrypted_secrets_base64,
+        req.payer.trim(),
+        req.vault_id.as_deref().unwrap_or(""),
+        &access_binding(&req.access)?,
+    );
+    let message_hash = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(message.as_bytes());
+        hasher.finalize()
+    };
+
+    let signature = keystore
+        .sign(customer.as_ref(), &wallet_seed, &message_hash)
+        .map_err(|e| ApiError::InternalError(format!("Signing failed: {}", e)))?;
+
+    tracing::info!(
+        wallet_id = %req.wallet_id,
+        project_id = %req.project_id,
+        payer = %req.payer,
+        "Signed a secret store for an agent"
+    );
+
+    Ok(Json(SignSecretStoreResponse {
+        signature_hex: hex::encode(signature.to_bytes()),
+        wallet_pubkey,
+        agent_account,
+    }))
 }
 
 /// Sign encrypted policy data so the NEAR contract can verify wallet ownership.
@@ -4694,6 +4985,10 @@ async fn sign_nep413(
     state: &AppState,
     customer: Option<&near_primitives::types::AccountId>,
     wallet_id: &str,
+    // Connector scope from the signed canonical op, when there is one (§D1).
+    // A connector-scoped signature comes from the connector's OWN key, so the
+    // returned public key is the connector sub-key's, not the wallet's — which
+    // is what keeps one connector's identity from standing in for another's.
     message: &str,
     nonce: [u8; 32],
     recipient: &str,
@@ -4701,7 +4996,7 @@ async fn sign_nep413(
     use ed25519_dalek::Signer;
     use sha2::{Digest, Sha256};
 
-    let seed = format!("wallet:{}:near", wallet_id);
+    let seed = wallet_seed_impl(wallet_id, "near");
     let keystore = state.keystore.read().await;
     let (signing_key, verifying_key) = keystore
         .derive_keypair(customer, &seed)
@@ -4757,7 +5052,7 @@ where
         ApiError::InternalError("NEAR client not configured".to_string())
     })?;
 
-    let seed = format!("wallet:{}:near", wallet_id);
+    let seed = wallet_seed_impl(wallet_id, "near");
     let (signing_key, verifying_key) = {
         let keystore = state.keystore.read().await;
         keystore
@@ -4880,7 +5175,7 @@ async fn wallet_sign_handler(
         }
     }
 
-    // 2. Produce the artifact per bind mode.
+    // 3. Produce the artifact per bind mode.
     match wallet_policy::bind_mode(&req.op) {
         BindMode::Built => sign_built(&state, customer.as_ref(), &req, request_hash).await,
         BindMode::HashPinned => {
@@ -4889,6 +5184,7 @@ async fn wallet_sign_handler(
         BindMode::Trusted => sign_trusted(&state, customer.as_ref(), &req, request_hash).await,
     }
 }
+
 
 /// Built kinds: the keystore CONSTRUCTS the artifact from the op fields, so what it
 /// signs always equals what was approved.
@@ -4920,7 +5216,7 @@ async fn sign_built(
                 state,
                 customer,
                 &req.wallet_id,
-                request_hash,
+                        request_hash,
                 move |_signer| {
                     let receiver = AccountId::from_str(&to)
                         .map_err(|e| ApiError::BadRequest(format!("Invalid 'to': {}", e)))?;
@@ -4936,7 +5232,7 @@ async fn sign_built(
             args_base64,
             gas,
             deposit,
-        } => {
+            } => {
             let to = to.clone();
             let method = method.clone();
             let args = base64::decode(args_base64)
@@ -4951,7 +5247,7 @@ async fn sign_built(
                 state,
                 customer,
                 &req.wallet_id,
-                request_hash,
+                        request_hash,
                 move |_signer| {
                     let receiver = AccountId::from_str(&to)
                         .map_err(|e| ApiError::BadRequest(format!("Invalid 'to': {}", e)))?;
@@ -4989,7 +5285,7 @@ async fn sign_built(
             .await?;
             Ok(Json(resp))
         }
-        Op::Withdraw { to, amount, token } => {
+        Op::Withdraw { to, amount, token, .. } => {
             // Construct the NEP-413 intent message FROM the op (fresh deadline + nonce).
             let signer_id = wallet_implicit_account(state, customer, &req.wallet_id).await?;
             let now = std::time::SystemTime::now()
@@ -5014,7 +5310,7 @@ async fn sign_built(
             resp.recipient = Some(recipient);
             Ok(Json(resp))
         }
-        Op::IntentsTransfer { to, amount, token } => {
+        Op::IntentsTransfer { to, amount, token, .. } => {
             // Construct the NEP-413 `transfer` intent message FROM the op (fresh deadline +
             // nonce). Internal move INSIDE intents.near (defuse `transfer`): funds stay in the
             // intents pool, credited to `to`'s mt balance — NOT a withdrawal out. Built → the
@@ -5170,7 +5466,7 @@ async fn sign_hash_pinned(
         Op::Raw {
             chain,
             payload_hash,
-            ..
+                ..
         } => {
             let bytes_b64 = artifact
                 .and_then(|a| a.bytes_base64.as_ref())
@@ -5200,8 +5496,10 @@ async fn sign_hash_pinned(
                     chain_l
                 )));
             }
-            // NEAR / Solana / other ed25519 chains.
-            let seed = format!("wallet:{}:{}", req.wallet_id, chain_l);
+            // NEAR / Solana / other ed25519 chains, scoped to the connector
+            // when the op names one (§D1). The seed is composed from the NAME
+            // in the signed op — never accepted as a path from the caller.
+            let seed = wallet_seed_impl(&req.wallet_id, &chain_l);
             let keystore = state.keystore.read().await;
             let sig = keystore
                 .sign(customer, &seed, &bytes)
@@ -5213,7 +5511,7 @@ async fn sign_hash_pinned(
         Op::SignMessage {
             message_hash,
             recipient,
-            ..
+                ..
         } => {
             // Hard exclusion of the intents verifiers, ABOVE the owner allowlist: an owner
             // mis-listing `intents.near`/`intents.far` in allowed_recipients
@@ -5263,8 +5561,18 @@ async fn sign_hash_pinned(
             }
             let nonce: [u8; 32] = nonce_bytes.try_into().unwrap();
             // recipient is taken from the canonical op, so it is bound into the payload.
-            let (signature_base58, public_key) =
-                sign_nep413(state, customer, &req.wallet_id, message, nonce, recipient).await?;
+            // So is `connector_id`: a sign_message made on behalf of a connector is
+            // signed by that connector's own key, and a third party verifying it sees
+            // the connector's public key rather than the wallet's.
+            let (signature_base58, public_key) = sign_nep413(
+                state,
+                customer,
+                &req.wallet_id,
+                        message,
+                nonce,
+                recipient,
+            )
+            .await?;
             let mut resp = WalletSignResponse::new(request_hash);
             resp.signature_base58 = Some(signature_base58);
             resp.public_key = Some(public_key);
@@ -5727,8 +6035,7 @@ mod wallet_sign_tests {
         // Approver approves a 1-NEAR transfer to a vendor.
         let approved_op = Op::Transfer {
             to: "vendor.near".into(),
-            amount: "1000000000000000000000000".into(),
-        };
+            amount: "1000000000000000000000000".into() };
         let approved_hash = wallet_policy::request_hash(&approved_op);
         let (sig, sig_pubkey, nonce) = sign_vote("approve", &signing_key, approval_id, &approved_hash, recipient);
         assert_eq!(sig_pubkey, pubkey);
@@ -5741,8 +6048,7 @@ mod wallet_sign_tests {
         // the genuine signature fails to verify against it.
         let substituted_op = Op::Transfer {
             to: "attacker.near".into(),
-            amount: "100000000000000000000000000".into(),
-        };
+            amount: "100000000000000000000000000".into() };
         let substituted_hash = wallet_policy::request_hash(&substituted_op);
         assert_ne!(approved_hash, substituted_hash);
         let bad_msg = format!("approve:{}:{}", approval_id, substituted_hash);
@@ -5797,6 +6103,8 @@ mod wallet_sign_tests {
         assert_ne!(message.as_bytes().len(), 32);
         assert!(message.starts_with("auth:"));
     }
+
+    // --- Connector scope ----------------------------------------------------------
 
     // --- Bind-mode mapping for every kind -----------------------------------------
 
@@ -6991,7 +7299,7 @@ mod tests {
         // Drive the handler with an empty HeaderMap — proves the
         // legacy "no header → default master" path.
         let request = WalletDeriveAddressRequest {
-            wallet_id: "test-wallet-id".to_string(),
+                        wallet_id: "test-wallet-id".to_string(),
             chain: "near".to_string(),
         };
         let response = wallet_derive_address_handler(
@@ -7025,7 +7333,7 @@ mod tests {
         headers.insert("X-Customer-Vault", "".parse().unwrap());
 
         let request = WalletDeriveAddressRequest {
-            wallet_id: "abc".to_string(),
+                        wallet_id: "abc".to_string(),
             chain: "near".to_string(),
         };
         let response = wallet_derive_address_handler(
@@ -7037,5 +7345,287 @@ mod tests {
         .expect("empty header must be treated as no header");
 
         assert_eq!(response.0.address, expected_pubkey);
+    }
+}
+
+/// A secret named after an agent belongs to that agent — both to read and to
+/// have written.
+///
+/// These pin the rule itself rather than the handler around it: the handler
+/// needs a NEAR client and a live contract, while the rule needs nothing at all,
+/// and it is the rule that decides who reads a connector credential.
+#[cfg(test)]
+mod agent_secret_tests {
+    use super::*;
+
+    const AGENT: &str = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
+    const OTHER_AGENT: &str = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+
+    fn refused(e: ApiError) -> String {
+        match e {
+            ApiError::Unauthorized(m) => m,
+            other => panic!("expected a refusal, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn an_agent_reads_the_secret_its_own_wallet_stored() {
+        enforce_agent_secret(AGENT, AGENT, AGENT)
+            .expect("the agent's own secret must be readable by it");
+    }
+
+    /// An agent's account is public — it is in every top-up and every policy —
+    /// so knowing one must buy nothing.
+    #[test]
+    fn another_agents_name_is_refused_however_it_was_learned() {
+        let message = refused(
+            enforce_agent_secret(AGENT, OTHER_AGENT, OTHER_AGENT)
+                .expect_err("one agent must not read a secret addressed to another"),
+        );
+        assert!(
+            message.contains("different agent"),
+            "the refusal must say why: {message}"
+        );
+    }
+
+    /// THE test of this section. `store_secrets` is open to anyone and the name
+    /// is public, so a stranger can absolutely put a secret on chain under an
+    /// agent's name — with themselves as owner, which is the one thing they
+    /// cannot fake. Reading it would mean the connector running on THEIR
+    /// mailbox, THEIR token.
+    #[test]
+    fn a_secret_planted_under_the_agents_name_by_someone_else_is_refused() {
+        let message = refused(
+            enforce_agent_secret(AGENT, "mallory.near", AGENT)
+                .expect_err("a secret owned by anyone but the agent must be refused"),
+        );
+        assert!(
+            message.contains("not left by the agent"),
+            "the refusal must say why: {message}"
+        );
+
+        // Including when the planter is another agent, whose owner field is
+        // just as implicit-account-shaped as the real one.
+        refused(
+            enforce_agent_secret(AGENT, OTHER_AGENT, AGENT)
+                .expect_err("another agent is a stranger too"),
+        );
+    }
+
+    /// Ordinary secrets keep working exactly as before. This is the check's
+    /// blast radius, and it has to stay at zero for every name a human types.
+    #[test]
+    fn an_ordinary_profile_is_not_subject_to_the_rule() {
+        for profile in ["production", "default", "staging", "7", "balance", ""] {
+            enforce_agent_secret("alice.near", "bob.near", profile)
+                .unwrap_or_else(|e| panic!("profile {profile:?} must pass untouched: {e:?}"));
+        }
+    }
+
+    /// A named account is not shaped like an implicit one, so a human storing a
+    /// secret under their own name — and letting others read it through an
+    /// access condition — is untouched.
+    #[test]
+    fn a_named_account_never_triggers_the_rule() {
+        enforce_agent_secret("alice.near", "alice.near", "alice.near").unwrap();
+        enforce_agent_secret("mallory.near", "alice.near", "alice.near").unwrap();
+    }
+
+    /// The shape decides whether the rule fires at all, and it now comes from
+    /// `shared_tee_helpers` — the same function the coordinator asks before it
+    /// addresses a secret.
+    ///
+    /// The shape itself is tested there. What this pins is that the RULE is
+    /// driven by it: a profile of that shape must be policed, and one of any
+    /// other shape must pass untouched. Both halves have a silent failure —
+    /// too wide and a human's secret falls under a rule written for agents, too
+    /// narrow and an agent's connector credential is guarded by nothing.
+    #[test]
+    fn the_rule_fires_on_exactly_the_shared_account_shape() {
+        for agentish in [AGENT, &"0".repeat(64), &"f".repeat(64)] {
+            assert!(shared_tee_helpers::is_implicit_account(agentish));
+            enforce_agent_secret("someone.near", agentish, agentish)
+                .expect_err("a profile of this shape must be policed");
+        }
+
+        for ordinary in ["alice.near", &AGENT[..63], &AGENT.to_uppercase(), "production"] {
+            assert!(!shared_tee_helpers::is_implicit_account(ordinary));
+            enforce_agent_secret("someone.near", "other.near", ordinary)
+                .expect("a profile of any other shape must pass untouched");
+        }
+    }
+}
+
+/// What stops either signing endpoint from becoming a transaction-forging
+/// oracle.
+///
+/// Both sign with `wallet:{id}:near` — the wallet's own NEAR transaction key —
+/// so a signature over an attacker-chosen 32-byte hash would BE a valid
+/// transaction signature. Neither endpoint accepts a hash, and each blocks the
+/// preimage by a different structural argument. Those arguments are load-bearing
+/// and invisible in the code, which is what these tests are for.
+#[cfg(test)]
+mod signing_oracle_tests {
+    use super::*;
+
+    /// The first four bytes of a borsh-serialised NEAR transaction are the u32
+    /// little-endian length of `signer_id`, and an account id is at most 64
+    /// bytes. So ANY preimage whose first four bytes read as a larger number
+    /// cannot be a transaction — which is the whole reason the domain string
+    /// goes first.
+    const MAX_ACCOUNT_ID_LEN: u32 = 64;
+
+    fn first_u32_le(bytes: &[u8]) -> u32 {
+        u32::from_le_bytes(bytes[..4].try_into().unwrap())
+    }
+
+    /// `/wallet/sign-secret-store` builds its own message, and the domain prefix
+    /// is what makes it unusable as a transaction. Drop the prefix and this
+    /// fails — which is the point, because nothing else would notice.
+    #[test]
+    fn the_secret_store_message_cannot_be_a_transaction() {
+        let message = secret_store_message(
+            "ed25519:aa",
+            "connectors.outlayer.near/near-email",
+            "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "Y2lwaGVy",
+            "payer.near",
+            "",
+            "\"AllowAll\"",
+        );
+
+        assert!(
+            message.starts_with("store_secrets_for:"),
+            "the domain must come FIRST — a prefix in the middle protects nothing"
+        );
+        assert!(
+            first_u32_le(message.as_bytes()) > MAX_ACCOUNT_ID_LEN,
+            "read as borsh, this preimage claims a signer_id longer than any \
+             account can be, so no transaction has this shape"
+        );
+    }
+
+    /// Byte-for-byte the string the contract rebuilds. Pinned, because the two
+    /// sides never compare notes: a drifted format shows up as signatures the
+    /// contract silently rejects, on a path nobody exercises until launch.
+    #[test]
+    fn the_secret_store_message_format_is_pinned() {
+        // The contract pins the SAME string, from its own types, in
+        // `contract/src/secrets.rs`. The two sides never compare notes at run
+        // time — a drifted format shows up as signatures the contract silently
+        // rejects — so the agreement is held by these two tests reading alike.
+        assert_eq!(
+            secret_store_message(
+                "ed25519:ab",
+                "a.near/p",
+                "agent",
+                "cipher",
+                "payer.near",
+                "",
+                "\"AllowAll\"",
+            ),
+            "store_secrets_for:v1:ed25519:ab:a.near/p:agent:cipher:payer.near::\"AllowAll\""
+        );
+
+        // A vault-bound secret names its vault, and an absent vault leaves an
+        // empty field rather than dropping one — a dropped field would shift
+        // every field after it.
+        assert_eq!(
+            secret_store_message(
+                "ed25519:ab",
+                "a.near/p",
+                "agent",
+                "cipher",
+                "payer.near",
+                "vault.alice.near",
+                "\"AllowAll\"",
+            ),
+            "store_secrets_for:v1:ed25519:ab:a.near/p:agent:cipher:payer.near:vault.alice.near:\"AllowAll\""
+        );
+
+        // `access` is LAST because it is JSON and may contain colons. Anything
+        // earlier would make the boundaries ambiguous.
+        let nested = secret_store_message(
+            "ed25519:ab",
+            "a.near/p",
+            "agent",
+            "cipher",
+            "payer.near",
+            "",
+            "{\"Whitelist\":{\"accounts\":[\"a.near\"]}}",
+        );
+        assert!(nested.ends_with("{\"Whitelist\":{\"accounts\":[\"a.near\"]}}"));
+    }
+
+    /// There is no `store_secrets_for:v2`, and there never was one on chain.
+    ///
+    /// A draft carried that label while this mechanism was still unreleased,
+    /// which would have left a version number starting at two with no one —
+    /// a permanent puzzle implying compatibility with signatures that do not
+    /// exist. Renamed while nothing had been signed; after a deploy it could
+    /// not have been.
+    #[test]
+    fn the_domain_is_version_one() {
+        let m = secret_store_message("ed25519:ab", "a.near/p", "agent", "c", "p.near", "", "\"AllowAll\"");
+        assert!(m.starts_with("store_secrets_for:v1:"));
+        assert!(!m.contains(":v2:"));
+    }
+
+    /// Every argument that decides what gets stored is inside the signature.
+    ///
+    /// Leave one out and a payer holding a signed call can resend the same
+    /// bytes with that argument changed. For the PROJECT, nothing would leak —
+    /// the ciphertext is sealed to one project's seed and decrypts under no
+    /// other — but an authorisation that does not cover what it authorises
+    /// holds only while a second, unrelated fact stays true. That is the shape
+    /// this test exists to keep.
+    #[test]
+    fn changing_any_signed_field_changes_the_message() {
+        let m = |pk, proj, prof, ct, payer, vault, access| {
+            secret_store_message(pk, proj, prof, ct, payer, vault, access)
+        };
+        let base = m("ed25519:ab", "a.near/p", "agent", "cipher", "payer.near", "", "\"AllowAll\"");
+
+        for other in [
+            m("ed25519:cd", "a.near/p", "agent", "cipher", "payer.near", "", "\"AllowAll\""),
+            m("ed25519:ab", "b.near/q", "agent", "cipher", "payer.near", "", "\"AllowAll\""),
+            m("ed25519:ab", "a.near/p", "other", "cipher", "payer.near", "", "\"AllowAll\""),
+            m("ed25519:ab", "a.near/p", "agent", "other", "payer.near", "", "\"AllowAll\""),
+            m("ed25519:ab", "a.near/p", "agent", "cipher", "thief.near", "", "\"AllowAll\""),
+            // The two that were added: who may READ it, and which master seals
+            // it. Both were outside the signature at first.
+            m("ed25519:ab", "a.near/p", "agent", "cipher", "payer.near", "vault.x.near", "\"AllowAll\""),
+            m("ed25519:ab", "a.near/p", "agent", "cipher", "payer.near", "", "{\"Whitelist\":{\"accounts\":[\"thief.near\"]}}"),
+        ] {
+            assert_ne!(base, other, "a changed argument must change the message");
+        }
+    }
+
+    /// `/wallet/sign-policy` cannot use a domain: it signs the bare
+    /// `sha256(encrypted_data)` an already-deployed contract verifies. What
+    /// protects it is the ORDER — the base64 decode and the AEAD decrypt both
+    /// run BEFORE the signature — and the first of those is what this pins.
+    ///
+    /// A transaction's borsh has NUL bytes in the length prefix, and NUL is not
+    /// in the base64 alphabet, so a preimage that survives decoding cannot be
+    /// one. Move the signing above the decode and this argument evaporates.
+    #[test]
+    fn a_transaction_preimage_is_not_valid_base64() {
+        // A plausible transaction: signer_id of 10 bytes, then the account.
+        let mut tx = Vec::new();
+        tx.extend_from_slice(&10u32.to_le_bytes());
+        tx.extend_from_slice(b"alice.near");
+        tx.extend_from_slice(&[0u8; 32]); // public key
+        assert!(
+            first_u32_le(&tx) <= MAX_ACCOUNT_ID_LEN,
+            "a real transaction starts with a plausible account length"
+        );
+
+        let as_text = String::from_utf8_lossy(&tx).to_string();
+        assert!(
+            base64::decode(&as_text).is_err(),
+            "a transaction preimage must not survive the base64 decode that \
+             happens before /wallet/sign-policy signs anything"
+        );
     }
 }

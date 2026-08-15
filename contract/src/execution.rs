@@ -105,6 +105,63 @@ impl Contract {
         // Parse attached_usd for project owner (developer payment in stablecoin)
         let attached_usd = request_params.attached_usd.map(|d| d.0).unwrap_or(0);
 
+        // Extract project_id from ExecutionSource if it's a Project source
+        let project_id = match &source {
+            ExecutionSource::Project { project_id, .. } => Some(project_id.clone()),
+            _ => None,
+        };
+
+        // A priced project is charged for the operation it was asked to
+        // perform, exactly.
+        //
+        // The operation is read out of `input_data` — the SAME bytes the guest
+        // will dispatch on, under the one universal field name. That is the
+        // whole reason the format is fixed rather than per-connector: there is
+        // one value, so there is nothing to bind to anything and nothing that
+        // can diverge. The contract does not need to know what a connector is
+        // or how it reads its requests.
+        //
+        // EXACTLY, not "at least". An exact amount removes the question of who
+        // returns the difference — a question with no good answer on chain,
+        // since the only refund path is a host function the guest itself calls,
+        // which would put a second copy of the price inside the guest. A caller
+        // reads the price in advance from `get_project_pricing`.
+        //
+        // Not applied to compile-only requests: they compile and stop, so there
+        // is no operation to charge for and no output to obtain.
+        //
+        // This is the ONLY gate. Connectors are reachable exclusively as
+        // ordinary projects under `connectors.outlayer.near`, so there is no
+        // second route to guard — the check follows the project, not the entry
+        // point it was called through.
+        if !compile_only {
+            if let Some(pricing) = project_id.as_ref().and_then(|id| self.project_pricing.get(id)) {
+                let id = project_id.as_deref().unwrap_or_default();
+
+                let operation = crate::payment::operation_from_input(input_data.as_deref())
+                    .unwrap_or_else(|e| {
+                        env::panic_str(&format!("Project '{}' is priced per operation. {}", id, e.message()))
+                    });
+
+                // An operation with no row is refused, never run for free:
+                // otherwise naming an operation we never priced is how a caller
+                // runs our workers for nothing.
+                let price = crate::payment::price_for_operation(&pricing, &operation)
+                    .unwrap_or_else(|| {
+                        env::panic_str(&format!(
+                            "Project '{}' does not sell operation '{}'. See get_project_pricing.",
+                            id, operation
+                        ))
+                    });
+
+                assert_eq!(
+                    attached_usd, price,
+                    "Operation '{}' of '{}' costs exactly {}; attach that as attached_usd (got {})",
+                    operation, id, price, attached_usd
+                );
+            }
+        }
+
         // Validate: attached_usd only valid for Project source
         if attached_usd > 0 {
             assert!(
@@ -153,12 +210,6 @@ impl Contract {
         // Payer: explicitly provided account or fallback to predecessor
         let payer_account_id = payer_account_id.unwrap_or_else(|| predecessor_id.clone());
         let format = response_format.unwrap_or_default();
-
-        // Extract project_id from ExecutionSource if it's a Project source
-        let project_id = match &source {
-            ExecutionSource::Project { project_id, .. } => Some(project_id.clone()),
-            _ => None,
-        };
 
         // Check if input_data is too large for event log (NEAR has 16KB limit per log)
         // Large payloads are stored in state only, worker fetches via get_request()
@@ -368,12 +419,71 @@ impl Contract {
                             if developer_amount > 0 {
                                 if let ExecutionSource::Project { project_id, .. } = &request.execution_source {
                                     if let Some(project) = self.projects.get(project_id) {
-                                        let current = self.developer_earnings.get(&project.owner).unwrap_or(0);
-                                        self.developer_earnings.insert(&project.owner, &(current + developer_amount));
-                                        log!(
-                                            "Credited {} stablecoin to developer {} for project {} (attached={}, refund={})",
-                                            developer_amount, project.owner, project_id, request.attached_usd, refund_usd
-                                        );
+                                        // For a PRICED project the money is split: the
+                                        // connector's author takes the share their
+                                        // operation carries, and what is left belongs to
+                                        // the project's owner — us, since every connector
+                                        // lives under our namespace.
+                                        //
+                                        // Everything needed is already on the request:
+                                        // `input_data` was stored with it, so the operation
+                                        // is re-read from the same bytes admission priced,
+                                        // and the share comes from the same table.
+                                        //
+                                        // The table is read again HERE rather than snapshot
+                                        // at admission. The window is one execution and the
+                                        // table is owner-only, so a change mid-flight is
+                                        // both rare and ours; the alternative is a side map
+                                        // holding a copy of the share for every pending
+                                        // request, forever, to close a gap nobody but us
+                                        // can open. The AMOUNT being split is fixed either
+                                        // way — it was taken at admission.
+                                        let split = self
+                                            .project_pricing
+                                            .get(project_id)
+                                            .and_then(|pricing| {
+                                                let operation = crate::payment::operation_from_input(
+                                                    request.input_data.as_deref(),
+                                                )
+                                                .ok()?;
+                                                let share = pricing
+                                                    .operations
+                                                    .iter()
+                                                    .find(|o| o.operation == operation)?
+                                                    .developer_share_bp;
+                                                Some((
+                                                    pricing.author_account_id.clone(),
+                                                    crate::payment::split_payment(developer_amount, share),
+                                                ))
+                                            });
+
+                                        match split {
+                                            Some((author, split)) if split.author_usd > 0 => {
+                                                let current = self.developer_earnings.get(&author).unwrap_or(0);
+                                                self.developer_earnings.insert(&author, &(current + split.author_usd));
+                                                let current = self.developer_earnings.get(&project.owner).unwrap_or(0);
+                                                self.developer_earnings.insert(&project.owner, &(current + split.owner_usd));
+                                                log!(
+                                                    "Split {} stablecoin for project {}: {} to author {}, {} to owner {} (attached={}, refund={})",
+                                                    developer_amount, project_id,
+                                                    split.author_usd, author,
+                                                    split.owner_usd, project.owner,
+                                                    request.attached_usd, refund_usd
+                                                );
+                                            }
+                                            // No price, no operation, or a zero share:
+                                            // everything to the project's owner, exactly as
+                                            // before. This is the path every ordinary
+                                            // project takes and must keep taking.
+                                            _ => {
+                                                let current = self.developer_earnings.get(&project.owner).unwrap_or(0);
+                                                self.developer_earnings.insert(&project.owner, &(current + developer_amount));
+                                                log!(
+                                                    "Credited {} stablecoin to developer {} for project {} (attached={}, refund={})",
+                                                    developer_amount, project.owner, project_id, request.attached_usd, refund_usd
+                                                );
+                                            }
+                                        }
                                     }
                                 }
                             }

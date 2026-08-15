@@ -228,16 +228,6 @@ impl Contract {
     // Helper Functions
     // =========================================================================
 
-    /// Get version key from code source
-    /// - For WasmUrl: returns the hash
-    /// - For GitHub: returns "{repo}@{commit}"
-    fn get_version_key(source: &CodeSource) -> String {
-        match source {
-            CodeSource::WasmUrl { hash, .. } => hash.clone(),
-            CodeSource::GitHub { repo, commit, .. } => format!("{}@{}", repo, commit),
-        }
-    }
-
     // =========================================================================
     // Version Management
     // =========================================================================
@@ -449,30 +439,6 @@ impl Contract {
     // Storage Calculation
     // =========================================================================
 
-    fn calculate_project_storage_size(&self, project_id: &str, uuid: &str) -> u64 {
-        PROJECT_BASE_STORAGE
-            + project_id.len() as u64  // Map key
-            + uuid.len() as u64        // uuid field
-            + 8                        // created_at
-            + 16                       // storage_deposit
-    }
-
-    fn calculate_version_storage_size(&self, source: &CodeSource) -> u64 {
-        let source_size = match source {
-            CodeSource::GitHub { repo, commit, build_target } => {
-                repo.len() + commit.len() + build_target.as_ref().map(|t| t.len()).unwrap_or(0)
-            }
-            CodeSource::WasmUrl { url, hash, build_target } => {
-                url.len() + hash.len() + build_target.as_ref().map(|t| t.len()).unwrap_or(0)
-            }
-        };
-
-        VERSION_BASE_STORAGE
-            + source_size as u64
-            + 64  // version_key
-            + 8   // added_at
-            + 16  // storage_deposit
-    }
 }
 
 // View methods
@@ -573,5 +539,47 @@ impl Contract {
             .get(&project.uuid)
             .map(|v| v.len())
             .unwrap_or(0)
+    }
+}
+
+
+// Internals. Deliberately OUTSIDE `#[near_bindgen]`: the macro exports a
+// contract method for every `pub fn` in a block it annotates, so a helper that
+// lives there is one visibility keyword away from becoming a public entry
+// point. Out here that cannot happen by accident.
+impl Contract {
+    /// Get version key from code source
+    /// - For WasmUrl: returns the hash
+    /// - For GitHub: returns "{repo}@{commit}"
+    fn get_version_key(source: &CodeSource) -> String {
+        match source {
+            CodeSource::WasmUrl { hash, .. } => hash.clone(),
+            CodeSource::GitHub { repo, commit, .. } => format!("{}@{}", repo, commit),
+        }
+    }
+
+    fn calculate_project_storage_size(&self, project_id: &str, uuid: &str) -> u64 {
+        PROJECT_BASE_STORAGE
+            + project_id.len() as u64  // Map key
+            + uuid.len() as u64        // uuid field
+            + 8                        // created_at
+            + 16                       // storage_deposit
+    }
+
+    fn calculate_version_storage_size(&self, source: &CodeSource) -> u64 {
+        let source_size = match source {
+            CodeSource::GitHub { repo, commit, build_target } => {
+                repo.len() + commit.len() + build_target.as_ref().map(|t| t.len()).unwrap_or(0)
+            }
+            CodeSource::WasmUrl { url, hash, build_target } => {
+                url.len() + hash.len() + build_target.as_ref().map(|t| t.len()).unwrap_or(0)
+            }
+        };
+
+        VERSION_BASE_STORAGE
+            + source_size as u64
+            + 64  // version_key
+            + 8   // added_at
+            + 16  // storage_deposit
     }
 }

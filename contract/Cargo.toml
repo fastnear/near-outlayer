@@ -18,6 +18,11 @@ bs58 = "0.5"
 [dev-dependencies]
 near-workspaces = "0.14.1"
 tokio = { version = "1.40", features = ["full"] }
+# Unit tests sign with a real wallet key: `store_secrets_for` accepts a secret
+# only against an ed25519 signature, and a test that fabricated one would be
+# testing nothing.
+ed25519-dalek = "2.1"
+rand = "0.8"
 
 [profile.release]
 codegen-units = 1

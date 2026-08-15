@@ -825,6 +825,55 @@ impl NearClient {
         }
     }
 
+    /// Which per-customer vault a payment key's secret is bound to, if any.
+    ///
+    /// Read from the CHAIN rather than taken from the task, because it decides
+    /// which master decrypts the blob: a value supplied by whoever is asking
+    /// would let the asker choose the key-space, and choosing wrong is the
+    /// difference between reading a customer's balance and not.
+    ///
+    /// `None` means the default master — every key created by a wallet without
+    /// a vault, which is most of them.
+    pub async fn fetch_payment_key_vault(
+        &self,
+        owner: &str,
+        nonce: u32,
+    ) -> Result<Option<String>> {
+        let request = methods::query::RpcQueryRequest {
+            block_reference: BlockReference::Finality(Finality::Final),
+            request: near_primitives::views::QueryRequest::CallFunction {
+                account_id: self.contract_id.clone(),
+                method_name: "get_secret_vault".to_string(),
+                args: json!({
+                    "accessor": { "System": "PaymentKey" },
+                    "profile": nonce.to_string(),
+                    "owner": owner,
+                })
+                .to_string()
+                .into_bytes()
+                .into(),
+            },
+        };
+
+        let response = tokio::time::timeout(Self::RPC_TIMEOUT, self.client.call(request))
+            .await
+            .context("NEAR RPC get_secret_vault timed out")?
+            .context("Failed to call get_secret_vault")?;
+
+        if let near_jsonrpc_primitives::types::query::QueryResponseKind::CallResult(result) =
+            response.kind
+        {
+            if result.result.is_empty() {
+                return Ok(None);
+            }
+            let vault: Option<String> = serde_json::from_slice(&result.result)
+                .context("Failed to parse get_secret_vault response")?;
+            Ok(vault)
+        } else {
+            anyhow::bail!("Unexpected response kind from get_secret_vault");
+        }
+    }
+
     /// Fetch project version (code source) from contract
     pub async fn fetch_project_version(&self, project_id: &str, version_key: &str) -> Result<Option<VersionView>> {
         info!("📦 Fetching project version: {} @ {}", project_id, version_key);

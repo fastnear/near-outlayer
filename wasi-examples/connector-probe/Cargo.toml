@@ -1,0 +1,25 @@
+[package]
+name = "connector-probe"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "A connector that does nothing useful, so everything around a connector can be tested"
+
+[[bin]]
+name = "connector-probe"
+path = "src/main.rs"
+
+[dependencies]
+outlayer = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+hex = "0.4"
+# The same client near.email uses, so the egress path under test is the real one.
+wasi-http-client = "0.2"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1

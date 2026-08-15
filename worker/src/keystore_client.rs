@@ -37,6 +37,39 @@ pub enum SecretAccessor {
     },
 }
 
+/// No secret exists for the accessor that was asked for.
+///
+/// Distinct from every other failure on purpose: it is the only one a caller
+/// may respond to by asking a different question.
+#[derive(Debug)]
+pub struct SecretsNotFound;
+
+impl std::fmt::Display for SecretsNotFound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "no secret for that accessor")
+    }
+}
+
+impl std::error::Error for SecretsNotFound {}
+
+impl SecretsNotFound {
+    /// Does this failure mean "there is no such secret"?
+    ///
+    /// The one question a caller may answer by running anyway, with no secrets.
+    /// Every other failure — a refusal, an unreadable blob, a keystore that is
+    /// down — must stop the job, because running without a credential that was
+    /// supposed to be there is worse than not running.
+    ///
+    /// Asked of the typed marker rather than of the message. The message is
+    /// user-facing prose assembled from the keystore's own words, and a refusal
+    /// whose text happened to contain "not found" would otherwise be read as
+    /// "no secrets" — a job silently running with none, on an ACCESS-CONTROL
+    /// refusal of all things.
+    pub fn is_missing(error: &anyhow::Error) -> bool {
+        error.downcast_ref::<SecretsNotFound>().is_some()
+    }
+}
+
 /// Client for keystore worker API
 #[derive(Clone)]
 pub struct KeystoreClient {
@@ -198,14 +231,14 @@ impl KeystoreClient {
     ///
     /// `build_body` is a closure so the retry re-serializes from scratch rather than reusing a
     /// half-consumed request.
-    async fn post_with_session_retry<T: Serialize>(
+    async fn post_with_session_retry_scoped<T: Serialize>(
         &self,
         url: &str,
         build_body: impl Fn() -> Result<T>,
         what: &str,
+        vault_id: Option<&str>,
     ) -> Result<reqwest::Response> {
-        let response = self
-            .add_auth_headers(self.http_client.post(url))
+        let response = Self::add_vault_header(self.add_auth_headers(self.http_client.post(url)), vault_id)
             .json(&build_body()?)
             .send()
             .await
@@ -228,12 +261,18 @@ impl KeystoreClient {
             .await
             .with_context(|| format!("{} got {} and the TEE session reconnect failed", what, status))?;
 
-        let retry = self
-            .add_auth_headers(self.http_client.post(url))
-            .json(&build_body()?)
-            .send()
-            .await
-            .with_context(|| format!("Failed to send {} retry request", what))?;
+        // The retry carries the SAME scope. Dropping it here would silently
+        // reach for the default master on the second attempt, which reads a
+        // vault customer's blob with the wrong key and fails in a way that
+        // looks like corruption rather than a missing header.
+        let retry = Self::add_vault_header(
+            self.add_auth_headers(self.http_client.post(url)),
+            vault_id,
+        )
+        .json(&build_body()?)
+        .send()
+        .await
+        .with_context(|| format!("Failed to send {} retry request", what))?;
 
         if !retry.status().is_success() {
             let retry_status = retry.status();
@@ -258,6 +297,22 @@ impl KeystoreClient {
             .context("Invalid secrets format: not valid UTF-8 text")?;
         serde_json::from_str(&plaintext_str)
             .context("Invalid secrets format: must be a JSON object with string key-value pairs")
+    }
+
+    /// Add the vault scope, when the material belongs to one.
+    ///
+    /// Absent header means the default master, which is where every key of a
+    /// wallet without a vault lives. The header must match how the blob was
+    /// written: a mismatch does not corrupt anything, it simply fails to
+    /// decrypt — loud, but a lockout.
+    fn add_vault_header(
+        builder: reqwest::RequestBuilder,
+        vault_id: Option<&str>,
+    ) -> reqwest::RequestBuilder {
+        match vault_id.map(str::trim).filter(|v| !v.is_empty()) {
+            Some(vault) => builder.header("X-Customer-Vault", vault),
+            None => builder,
+        }
     }
 
     /// Add auth headers: Bearer token + optional X-TEE-Session
@@ -464,6 +519,15 @@ impl KeystoreClient {
                 "Failed to decrypt secrets. Please check your secrets configuration.".to_string()
             };
 
+            // A typed marker for "there is no such secret", so a caller can
+            // tell it apart from "the keystore refused" or "the keystore is
+            // down". String-matching the message from outside would break the
+            // moment the wording changed, and the caller deciding to fall back
+            // must never do so because a keystore was merely unreachable.
+            let not_found = status == 404 || (status == 400 && error_text.contains("not found"));
+            if not_found {
+                return Err(anyhow::Error::new(SecretsNotFound).context(user_message));
+            }
             anyhow::bail!("{}", user_message);
         }
 
@@ -545,7 +609,12 @@ impl KeystoreClient {
     ///
     /// # Returns
     /// * `Ok(encrypted_base64)` - Base64 encoded encrypted data
-    pub async fn encrypt(&self, seed: &str, plaintext: &[u8]) -> Result<String> {
+    pub async fn encrypt(
+        &self,
+        seed: &str,
+        plaintext: &[u8],
+        vault_id: Option<&str>,
+    ) -> Result<String> {
         tracing::info!(
             seed = %seed,
             plaintext_len = plaintext.len(),
@@ -570,7 +639,7 @@ impl KeystoreClient {
         let url = format!("{}/encrypt", self.base_url);
 
         let response = self
-            .post_with_session_retry(
+            .post_with_session_retry_scoped(
                 &url,
                 || {
                     Ok(EncryptRequest {
@@ -579,6 +648,7 @@ impl KeystoreClient {
                     })
                 },
                 "Encrypt",
+                vault_id,
             )
             .await?;
 
@@ -606,7 +676,12 @@ impl KeystoreClient {
     ///
     /// # Returns
     /// * `Ok(plaintext)` - Decrypted bytes
-    pub async fn decrypt_raw(&self, seed: &str, encrypted_base64: &str) -> Result<Vec<u8>> {
+    pub async fn decrypt_raw(
+        &self,
+        seed: &str,
+        encrypted_base64: &str,
+        vault_id: Option<&str>,
+    ) -> Result<Vec<u8>> {
         tracing::info!(
             seed = %seed,
             encrypted_len = encrypted_base64.len(),
@@ -634,7 +709,7 @@ impl KeystoreClient {
         let url = format!("{}/decrypt-raw", self.base_url);
 
         let response = self
-            .post_with_session_retry(
+            .post_with_session_retry_scoped(
                 &url,
                 || {
                     Ok(DecryptRawRequest {
@@ -643,6 +718,7 @@ impl KeystoreClient {
                     })
                 },
                 "Decrypt-raw",
+                vault_id,
             )
             .await?;
 
@@ -755,7 +831,7 @@ mod tests {
         let (url, server) = fake_keystore(true);
         let client = client_with_signing_key(url);
 
-        let out = client.encrypt("seed", b"plaintext").await;
+        let out = client.encrypt("seed", b"plaintext", None).await;
 
         let seen = server.join().expect("server thread");
         assert!(out.is_ok(), "expected recovery, got {out:?}");
@@ -781,7 +857,7 @@ mod tests {
         let client = KeystoreClient::new(url, "test-token".to_string());
 
         let err = client
-            .encrypt("seed", b"plaintext")
+            .encrypt("seed", b"plaintext", None)
             .await
             .expect_err("must fail without a way to re-handshake");
         let chain = format!("{err:#}");
@@ -795,6 +871,71 @@ mod tests {
             "the original keystore status should still be visible, got: {chain}"
         );
         drop(server);
+    }
+
+    /// A keystore that answers one business call with a chosen status and body.
+    fn fake_keystore_answering(code: u16, body: &'static str) -> String {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        std::thread::spawn(move || {
+            if let Some(Ok(mut stream)) = listener.incoming().next() {
+                let mut buf = [0u8; 8192];
+                let _ = stream.read(&mut buf);
+                let response = format!(
+                    "HTTP/1.1 {code} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        format!("http://{}", addr)
+    }
+
+    async fn decrypt_against(code: u16, body: &'static str) -> anyhow::Error {
+        let client = KeystoreClient::new(fake_keystore_answering(code, body), "t".to_string());
+        client
+            .decrypt_secrets_by_project("a.near/p", "prod", "a.near", "a.near", None)
+            .await
+            .expect_err("a non-2xx must be an error")
+    }
+
+    /// "There is no such secret" is the ONLY failure a job may shrug off and run
+    /// without one. It is recognised by TYPE, and the type is what the worker
+    /// asks about.
+    ///
+    /// The trap this guards is narrow and nasty: the user-facing message is
+    /// assembled from the keystore's own words, so a REFUSAL whose text happens
+    /// to contain "not found" would, under a string test, start the job with no
+    /// credential — silently, on an access-control refusal. The 401 case below
+    /// says exactly that phrase for exactly that reason.
+    #[tokio::test]
+    async fn only_a_missing_secret_lets_a_job_continue_without_one() {
+        assert!(
+            SecretsNotFound::is_missing(&decrypt_against(404, r#"{"error":"nope"}"#).await),
+            "a 404 means there is no such secret"
+        );
+        assert!(
+            SecretsNotFound::is_missing(
+                &decrypt_against(400, r#"{"error":"secret not found"}"#).await
+            ),
+            "the keystore also reports it as a 400 saying so"
+        );
+
+        let refusal =
+            decrypt_against(401, r#"{"error":"agent profile not found on this wallet"}"#).await;
+        assert!(
+            !SecretsNotFound::is_missing(&refusal),
+            "a REFUSAL must stop the job even when its wording contains the words \
+             the old string test looked for: {refusal:#}"
+        );
+
+        let broken = decrypt_against(500, r#"{"error":"boom"}"#).await;
+        assert!(
+            !SecretsNotFound::is_missing(&broken),
+            "a keystore that is down is not a keystore saying the secret is absent"
+        );
     }
 
     /// Test SecretAccessor::Repo serialization (with branch)

@@ -989,7 +989,7 @@ mod tests {
         legacy_encrypted.extend_from_slice(&nonce);
         legacy_encrypted.extend_from_slice(&ciphertext_with_tag);
 
-        // decrypt() should handle legacy format via fallback
+        // decrypt() should handle the legacy format via fallback
         let decrypted = keystore.decrypt(None, seed, &legacy_encrypted).unwrap();
         assert_eq!(decrypted, plaintext);
     }

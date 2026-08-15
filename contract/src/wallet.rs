@@ -44,7 +44,7 @@ pub struct WalletPolicyListItem {
 
 /// Parse wallet pubkey string into (key_type, raw_bytes)
 /// Formats: "ed25519:<hex32>" or "secp256k1:<hex33>"
-fn parse_wallet_pubkey(wallet_pubkey: &str) -> (String, Vec<u8>) {
+pub(crate) fn parse_wallet_pubkey(wallet_pubkey: &str) -> (String, Vec<u8>) {
     let parts: Vec<&str> = wallet_pubkey.splitn(2, ':').collect();
     assert!(
         parts.len() == 2,
@@ -89,9 +89,73 @@ fn parse_wallet_pubkey(wallet_pubkey: &str) -> (String, Vec<u8>) {
     (key_type.to_string(), raw_bytes)
 }
 
+/// The one spelling of a wallet key that anything may be stored under.
+///
+/// `hex::decode` accepts either case, so `ed25519:ABCD…` and `ed25519:abcd…`
+/// are the same cryptographic key written two ways. Stored raw, they became two
+/// entries for one wallet — a wallet with two policies, and a view returning
+/// whichever one the caller happened to spell. `implicit_account_of` already
+/// answered in lower case, so the account a key names and the key it is stored
+/// under disagreed.
+///
+/// Not a way in for a stranger: registering a policy needs a signature by the
+/// key itself, so only the wallet's own owner could ever have made the
+/// duplicate. This removes the possibility of doing it by accident, which is
+/// the way it would actually have happened.
+///
+/// Rebuilt from the parsed bytes rather than lower-cased, so the key type is
+/// validated on the same pass and a malformed value cannot reach storage at
+/// all.
+pub(crate) fn canonical_wallet_pubkey(wallet_pubkey: &str) -> String {
+    let (key_type, raw_bytes) = parse_wallet_pubkey(wallet_pubkey);
+    format!("{}:{}", key_type, hex::encode(raw_bytes))
+}
+
+/// The same canonical form, for READS.
+///
+/// A view answers a question; it does not accept a value. `has_wallet_policy`
+/// has always answered `false` for a string that is not a wallet key at all,
+/// and callers rely on that — the coordinator uses it as a negative cache. Made
+/// strict, it would start returning an RPC error where it used to return an
+/// answer, which is a breaking change dressed up as a fix.
+///
+/// So: canonicalise what parses, pass through what does not. An unparseable key
+/// matches nothing either way, and the caller gets the same `false` as before.
+fn lookup_wallet_pubkey(wallet_pubkey: &str) -> String {
+    let parts: Vec<&str> = wallet_pubkey.splitn(2, ':').collect();
+    match parts.as_slice() {
+        [key_type, hex_str] if *key_type == "ed25519" || *key_type == "secp256k1" => {
+            match hex::decode(hex_str) {
+                Ok(raw) => format!("{}:{}", key_type, hex::encode(raw)),
+                Err(_) => wallet_pubkey.to_string(),
+            }
+        }
+        _ => wallet_pubkey.to_string(),
+    }
+}
+
+/// The NEAR implicit account a wallet's public key corresponds to.
+///
+/// An implicit account IS the hex of an ed25519 public key, which is why a
+/// custody wallet can own things on chain without anyone creating an account for
+/// it. Only ed25519 has this form: a secp256k1 wallet key addresses EVM or
+/// Bitcoin and has no NEAR account of its own, so asking for one is a caller
+/// error rather than something to invent an answer for.
+pub(crate) fn implicit_account_of(wallet_pubkey: &str) -> AccountId {
+    let (key_type, raw_bytes) = parse_wallet_pubkey(wallet_pubkey);
+    assert!(
+        key_type == "ed25519",
+        "Only an ed25519 wallet key has a NEAR account. Got '{}'.",
+        key_type
+    );
+    hex::encode(raw_bytes)
+        .parse()
+        .unwrap_or_else(|_| env::panic_str("Wallet key does not form a valid implicit account"))
+}
+
 /// Verify wallet signature on-chain using native host functions
 /// message_hash: SHA256 hash of the data being signed (32 bytes)
-fn verify_wallet_signature(
+pub(crate) fn verify_wallet_signature(
     wallet_pubkey: &str,
     message_hash: &[u8; 32],
     wallet_signature: &str,
@@ -181,8 +245,12 @@ impl Contract {
         );
         assert!(!wallet_signature.is_empty(), "wallet_signature is required");
 
-        // Parse and validate wallet pubkey
-        parse_wallet_pubkey(&wallet_pubkey);
+        // Parse, validate, and shadow the parameter with the ONE spelling
+        // anything may be stored under. Shadowed rather than assigned to a new
+        // name so the caller's raw string is unreachable from here on — the
+        // storage key, the owner index and the signature check all see the same
+        // value by construction.
+        let wallet_pubkey = canonical_wallet_pubkey(&wallet_pubkey);
 
         // Verify wallet signature on-chain
         let mut hasher = Sha256::new();
@@ -342,6 +410,7 @@ impl Contract {
     ///
     /// Only the controller can delete.
     pub fn delete_wallet_policy(&mut self, wallet_pubkey: String) {
+        let wallet_pubkey = canonical_wallet_pubkey(&wallet_pubkey);
         let caller = env::predecessor_account_id();
         let entry = self
             .wallet_policies
@@ -385,14 +454,16 @@ impl Contract {
     /// Check if a wallet policy exists (view, no decryption needed)
     /// Used by coordinator for negative cache check (free RPC call)
     pub fn has_wallet_policy(&self, wallet_pubkey: String) -> bool {
-        self.wallet_policies.get(&wallet_pubkey).is_some()
+        self.wallet_policies
+            .get(&lookup_wallet_pubkey(&wallet_pubkey))
+            .is_some()
     }
 
     /// Get wallet policy entry (view)
     /// Returns owner, encrypted_data, frozen flag, updated_at
     /// Keystore decrypts encrypted_data for policy rules
     pub fn get_wallet_policy(&self, wallet_pubkey: String) -> Option<WalletPolicyView> {
-        self.wallet_policies.get(&wallet_pubkey).map(|entry| {
+        self.wallet_policies.get(&lookup_wallet_pubkey(&wallet_pubkey)).map(|entry| {
             WalletPolicyView {
                 owner: entry.owner,
                 encrypted_data: entry.encrypted_data,
@@ -469,6 +540,62 @@ mod tests {
     use super::*;
     use near_sdk::test_utils::{accounts, VMContextBuilder};
     use near_sdk::testing_env;
+
+    /// One key, one spelling — whatever case it arrives in.
+    ///
+    /// `hex::decode` takes either case, so the same wallet key can be written
+    /// two ways. Stored raw, that was two entries for one wallet: two policies,
+    /// and a view answering with whichever spelling it was handed. The account
+    /// the key names was already lower case, so the two disagreed about which
+    /// wallet they described.
+    #[test]
+    fn a_wallet_key_has_exactly_one_storage_form() {
+        // 64 hex characters = 32 bytes, the only length an ed25519 key has.
+        let hex_lower = "abcdef01".repeat(8);
+        let lower = format!("ed25519:{}", hex_lower);
+        let upper = format!("ed25519:{}", hex_lower.to_uppercase());
+        let mixed = format!("ed25519:AbCdEf01{}", "abcdef01".repeat(7));
+
+        assert_eq!(canonical_wallet_pubkey(&lower), lower);
+        assert_eq!(canonical_wallet_pubkey(&upper), lower);
+        assert_eq!(
+            canonical_wallet_pubkey(&mixed),
+            lower,
+            "mixed case is the same key and must land on the same entry"
+        );
+
+        // And it agrees with the account the key names, which was lower case
+        // all along — that disagreement was the actual defect.
+        assert_eq!(implicit_account_of(&upper).to_string(), hex_lower);
+
+        // secp256k1 keys canonicalise too, and keep their own type: 33 bytes,
+        // leading 0x02 or 0x03.
+        let k_upper = format!("secp256k1:02{}", "ABCDEF01".repeat(8));
+        assert_eq!(
+            canonical_wallet_pubkey(&k_upper),
+            format!("secp256k1:02{}", "abcdef01".repeat(8))
+        );
+    }
+
+    /// A view must keep answering rather than start failing.
+    ///
+    /// `has_wallet_policy` answers `false` for anything that is not a wallet
+    /// key, and the coordinator uses it as a negative cache. Canonicalising
+    /// strictly there would have turned that answer into an RPC error — a
+    /// breaking change dressed up as a fix.
+    #[test]
+    fn a_lookup_canonicalises_what_it_can_and_passes_through_what_it_cannot() {
+        let upper = "ed25519:AAAA111111111111111111111111111111111111111111111111111111111111";
+        assert_eq!(lookup_wallet_pubkey(upper), upper.to_lowercase());
+
+        for junk in ["", "garbage", "ed25519:", "ed25519:zz", "rsa:abcd", "no-colon"] {
+            assert_eq!(
+                lookup_wallet_pubkey(junk),
+                junk,
+                "an unparseable key must pass through, not panic: {junk:?}"
+            );
+        }
+    }
 
     fn get_context(predecessor: AccountId, attached_deposit: NearToken) -> VMContextBuilder {
         let mut builder = VMContextBuilder::new();

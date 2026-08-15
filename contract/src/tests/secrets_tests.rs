@@ -450,3 +450,161 @@ fn test_access_condition_size_affects_cost() {
     println!("Simple access cost: {}, Complex access cost: {}", cost_simple.0, cost_complex.0);
     assert!(cost_complex.0 > cost_simple.0, "Complex access condition should cost more");
 }
+
+/// A payment key is written once. Its blob is a money record maintained by the
+/// worker on real transfers, and `store_secrets` takes opaque bytes it cannot
+/// inspect — so "the owner may rewrite it" would mean "the owner may put
+/// anything in it".
+#[test]
+#[should_panic(expected = "cannot be rewritten")]
+fn a_payment_key_cannot_be_overwritten() {
+    let mut context = get_context(accounts(1));
+    testing_env!(context.build());
+    let mut contract = Contract::new(accounts(0), Some(accounts(0)), None, None);
+
+    let blob = "encrypted".to_string();
+    let cost = contract.estimate_storage_cost(
+        SecretAccessor::System(SystemSecretType::PaymentKey),
+        "7".to_string(),
+        accounts(1),
+        blob.clone(),
+        types::AccessCondition::AllowAll,
+        None,
+    );
+
+    testing_env!(context.attached_deposit(NearToken::from_yoctonear(cost.0)).build());
+    contract.store_secrets(
+        SecretAccessor::System(SystemSecretType::PaymentKey),
+        "7".to_string(),
+        blob,
+        types::AccessCondition::AllowAll,
+        None,
+    );
+
+    // Same owner, same nonce, different bytes — refused.
+    testing_env!(context.attached_deposit(NearToken::from_yoctonear(cost.0)).build());
+    contract.store_secrets(
+        SecretAccessor::System(SystemSecretType::PaymentKey),
+        "7".to_string(),
+        "forged".to_string(),
+        types::AccessCondition::AllowAll,
+        None,
+    );
+}
+
+/// The refusal is for payment keys ONLY. Rotating an ordinary secret in place
+/// is what secrets are for, and that must keep working untouched.
+#[test]
+fn an_ordinary_secret_is_still_overwritable() {
+    let mut context = get_context(accounts(1));
+    testing_env!(context.build());
+    let mut contract = Contract::new(accounts(0), Some(accounts(0)), None, None);
+
+    let accessor = SecretAccessor::Repo {
+        repo: "github.com/test/repo".to_string(),
+        branch: None,
+    };
+    let cost = contract.estimate_storage_cost(
+        accessor.clone(),
+        "test".to_string(),
+        accounts(1),
+        "v1".to_string(),
+        types::AccessCondition::AllowAll,
+        None,
+    );
+
+    testing_env!(context.attached_deposit(NearToken::from_yoctonear(cost.0)).build());
+    contract.store_secrets(
+        accessor.clone(),
+        "test".to_string(),
+        "v1".to_string(),
+        types::AccessCondition::AllowAll,
+        None,
+    );
+
+    testing_env!(context.attached_deposit(NearToken::from_yoctonear(cost.0)).build());
+    contract.store_secrets(
+        accessor.clone(),
+        "test".to_string(),
+        "v2".to_string(),
+        types::AccessCondition::AllowAll,
+        None,
+    );
+
+    let stored = contract
+        .secrets_storage
+        .get(&SecretKey {
+            accessor,
+            profile: "test".to_string(),
+            owner: accounts(1),
+        })
+        .expect("the secret must still be there");
+    assert_eq!(
+        stored.encrypted_secrets, "v2",
+        "an ordinary secret must keep taking a new value"
+    );
+}
+
+/// Store a payment key at `nonce`, so the nonce rules below exercise the real
+/// entry point rather than a copy of the check.
+fn store_payment_key_at(nonce: &str) {
+    let mut context = get_context(accounts(1));
+    testing_env!(context.build());
+    let mut contract = Contract::new(accounts(0), Some(accounts(0)), None, None);
+
+    let blob = "encrypted".to_string();
+    let cost = contract.estimate_storage_cost(
+        SecretAccessor::System(SystemSecretType::PaymentKey),
+        nonce.to_string(),
+        accounts(1),
+        blob.clone(),
+        types::AccessCondition::AllowAll,
+        None,
+    );
+
+    testing_env!(context.attached_deposit(NearToken::from_yoctonear(cost.0)).build());
+    contract.store_secrets(
+        SecretAccessor::System(SystemSecretType::PaymentKey),
+        nonce.to_string(),
+        blob,
+        types::AccessCondition::AllowAll,
+        None,
+    );
+}
+
+/// Nonce 0 is reserved for the keys the coordinator issues in its own database
+/// — the free trial — which have no on-chain record and cost no gas.
+///
+/// `payment_keys` is keyed by `(owner, nonce)`, so an on-chain key at 0 would
+/// land in the SAME row as its owner's trial key. One order silently drops the
+/// real key's hash (`init` inserts with `ON CONFLICT DO NOTHING`, so the key is
+/// paid for and dead); the other marks a funded key as a grant, and its owner
+/// can no longer withdraw their own money.
+///
+/// `get_next_payment_key_nonce` has always answered 1 for a fresh account, but
+/// it only SUGGESTS — nothing stopped a hand-built transaction from claiming 0.
+/// Checked on mainnet and testnet before this was added: no key at nonce 0
+/// exists, so nothing that works today stops working.
+#[test]
+#[should_panic(expected = "nonce 0 is reserved")]
+fn a_payment_key_cannot_take_the_reserved_nonce() {
+    store_payment_key_at("0");
+}
+
+/// The coordinator holds a nonce as a 32-bit SIGNED integer, so 2^31 and above
+/// arrive there as negative numbers. Refused on the way in rather than left to
+/// mean one thing on chain and another in the database.
+#[test]
+#[should_panic(expected = "too large")]
+fn a_payment_key_nonce_must_fit_where_it_is_stored() {
+    store_payment_key_at("2147483648");
+}
+
+/// The first nonce the contract itself hands out must keep working, as must the
+/// largest one that still fits. The rules above bound the range; they must not
+/// move its edges.
+#[test]
+fn the_first_and_last_usable_nonces_are_accepted() {
+    store_payment_key_at("1");
+    store_payment_key_at("2147483647");
+}

@@ -38,6 +38,7 @@ pub enum ContractEvent {
     WalletPolicyUpdated(WalletPolicyUpdatedEvent),
     WalletPolicyDeleted(WalletPolicyDeletedEvent),
     WalletFrozenChanged(WalletFrozenChangedEvent),
+    SubscriptionPurchased(SubscriptionPurchasedEvent),
 }
 
 /// TopUpPaymentKey event data from SystemEvent
@@ -80,6 +81,25 @@ pub struct WalletFrozenChangedEvent {
     pub wallet_pubkey: String,
     pub owner: String,
     pub frozen: bool,
+}
+
+/// SubscriptionPurchased event data from SystemEvent.
+///
+/// Carries what was PAID — the plan and the money — and nothing about what it
+/// is worth: the contract does not know, and the worker must not assert it.
+/// The coordinator reads the terms from its own table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubscriptionPurchasedEvent {
+    pub owner: String,
+    pub nonce: u32,
+    pub plan: u8,
+    pub paid_usd: String,
+    pub payer: String,
+    /// The receipt that carried the payment, filled in from the block rather
+    /// than the log. It is what stops a redelivery granting a second
+    /// allowance, so an event without one is not relayed at all.
+    #[serde(default)]
+    pub receipt_id: Option<String>,
 }
 
 /// ExecutionRequested event data from contract (matches contract's event structure)
@@ -505,8 +525,17 @@ impl EventMonitor {
         let mut retry_count = 0;
         let mut wait_for_block_count = 0u32; // Counter for "waiting for block" logging
         const MAX_RETRIES: u32 = 3;
+        // How many times a block has been held because a MONEY event could not
+        // be relayed. Bounded so one event the coordinator will never accept
+        // cannot stop the monitor from ever scanning again.
+        let mut relay_retry_count = 0u32;
+        const MAX_RELAY_RETRIES: u32 = 12;
 
         loop {
+            // Set when an event that MOVES MONEY could not be relayed for a
+            // reason that may pass. See the hold below.
+            let mut hold_for_relay = false;
+
             match self.scan_single_block(self.current_block).await {
                 Ok(events) => {
                     self.blocks_scanned += 1;
@@ -568,8 +597,65 @@ impl EventMonitor {
                                     error!("Failed to handle wallet_frozen_changed event: {}", e);
                                 }
                             }
+                            ContractEvent::SubscriptionPurchased(event) => {
+                                // The one event where dropping the relay costs a
+                                // customer money. Their transaction has already
+                                // succeeded and the contract has already kept the
+                                // payment: there is no yield left to time out, so
+                                // if this does not reach the coordinator the
+                                // allowance is simply never granted, and nobody
+                                // finds out but the customer.
+                                if let Err(e) = self.handle_subscription_purchased(event).await {
+                                    if crate::api_client::TerminalRelay::is_terminal(&e) {
+                                        error!(
+                                            "Subscription purchase REFUSED by the coordinator, \
+                                             giving up on it: {:#}",
+                                            e
+                                        );
+                                    } else {
+                                        error!(
+                                            "Subscription purchase could not be relayed, \
+                                             holding block {}: {:#}",
+                                            self.current_block, e
+                                        );
+                                        hold_for_relay = true;
+                                    }
+                                }
+                            }
                         }
                     }
+
+                    // Hold the block when a money event could not be relayed.
+                    //
+                    // Re-processing a block is safe: a task is keyed by
+                    // `request_id`, a top-up by `data_id`, a purchase by its
+                    // receipt — every relay in here is idempotent, which is why
+                    // the runbook already prescribes a re-scan as the recovery.
+                    // So the cheap move is to stay put until the coordinator is
+                    // back, rather than walk past a payment that has already
+                    // been taken.
+                    //
+                    // Bounded, because a transient failure that is not transient
+                    // must not stop the monitor forever: after enough attempts
+                    // the block moves on and the loss is at least a loud line
+                    // with the receipt in it.
+                    if hold_for_relay {
+                        relay_retry_count += 1;
+                        if relay_retry_count < MAX_RELAY_RETRIES {
+                            // The same pause the loop already takes for a block
+                            // it could not scan — this is the same situation:
+                            // something downstream is briefly unavailable.
+                            sleep(Duration::from_secs(5)).await;
+                            continue;
+                        }
+                        error!(
+                            "Giving up on block {} after {} failed relay attempts. A \
+                             subscription purchase in it has NOT been granted — replay its \
+                             receipt to /internal/subscription-purchased.",
+                            self.current_block, relay_retry_count
+                        );
+                    }
+                    relay_retry_count = 0;
 
                     // Move to next block
                     self.current_block += 1;
@@ -787,6 +873,12 @@ impl EventMonitor {
                                             exec_event.signer_public_key = signer_public_key.clone();
                                             exec_event.gas_burnt = gas_burnt;
                                         }
+                                        // A purchase is granted at most once, and the receipt is
+                                        // what decides. It is not in the log — it belongs to the
+                                        // receipt that produced it — so it is attached here.
+                                        if let ContractEvent::SubscriptionPurchased(ref mut buy) = event {
+                                            buy.receipt_id = receipt_id.clone();
+                                        }
                                         events.push(event);
                                     }
                                 }
@@ -916,6 +1008,27 @@ impl EventMonitor {
                     );
 
                     Some(ContractEvent::ProjectStorageCleanup(event_data))
+                } else if let Some(data) = system_event.get("SubscriptionPurchased") {
+                    match serde_json::from_value::<SubscriptionPurchasedEvent>(data.clone()) {
+                        Ok(event_data) => {
+                            info!(
+                                "✅ Found system_event SubscriptionPurchased at block {}: owner={} nonce={} plan={} paid={}",
+                                block_height,
+                                event_data.owner,
+                                event_data.nonce,
+                                event_data.plan,
+                                event_data.paid_usd
+                            );
+                            Some(ContractEvent::SubscriptionPurchased(event_data))
+                        }
+                        Err(e) => {
+                            error!(
+                                "❌ Failed to parse SubscriptionPurchased at block {}: {}. Raw: {:?}",
+                                block_height, e, data
+                            );
+                            None
+                        }
+                    }
                 } else if let Some(data) = system_event.get("WalletPolicyUpdated") {
                     match serde_json::from_value::<WalletPolicyUpdatedEvent>(data.clone()) {
                         Ok(event_data) => {
@@ -1220,6 +1333,42 @@ impl EventMonitor {
         Ok(())
     }
 
+    /// Handle SubscriptionPurchased — tell the coordinator to grant the allowance.
+    ///
+    /// The worker carries the fact and none of the meaning: what the plan is
+    /// worth is the coordinator's, read from its own table. Relayed rather than
+    /// applied here because the allowance lives in its database, not on chain.
+    ///
+    /// An event with no receipt id is NOT relayed. The receipt is what makes
+    /// the grant idempotent, and a relay without one would grant again on every
+    /// redelivery.
+    async fn handle_subscription_purchased(&self, event: SubscriptionPurchasedEvent) -> Result<()> {
+        let Some(receipt_id) = event.receipt_id.clone() else {
+            anyhow::bail!(
+                "SubscriptionPurchased without a receipt id (owner={} nonce={}): not relaying, \
+                 because the receipt is what stops the allowance being granted twice",
+                event.owner,
+                event.nonce
+            );
+        };
+
+        info!(
+            "💳 Processing SubscriptionPurchased: owner={} nonce={} plan={} paid={} receipt={}",
+            event.owner, event.nonce, event.plan, event.paid_usd, receipt_id
+        );
+
+        self.api_client
+            .notify_subscription_purchased(
+                &receipt_id,
+                &event.owner,
+                event.nonce,
+                event.plan,
+                &event.paid_usd,
+                &event.payer,
+            )
+            .await
+    }
+
     /// Handle WalletPolicyUpdated event — notify coordinator to sync authorized key hashes
     async fn handle_wallet_policy_updated(&self, event: WalletPolicyUpdatedEvent) -> Result<()> {
         info!(
@@ -1350,7 +1499,7 @@ mod tests {
 
         let result = EventMonitor::fetch_latest_block(
             &http_client,
-            "https://rpc.mainnet.near.org",
+            "https://rpc.mainnet.fastnear.com",
         )
         .await;
 
@@ -1369,7 +1518,7 @@ mod tests {
 
         let result = EventMonitor::fetch_latest_block(
             &http_client,
-            "https://rpc.testnet.near.org",
+            "https://rpc.testnet.fastnear.com",
         )
         .await;
 

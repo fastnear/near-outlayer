@@ -55,6 +55,23 @@ pub struct VrfConfig {
     pub sender_id: String,
 }
 
+/// Outbound-network configuration for one execution (§C3).
+///
+/// Only WASI P2 can make outbound HTTP at all — P1 has no `wasi-http` and no
+/// host function that reaches the network — so this is consumed by the P2
+/// executor alone. A P1 module needs no allowlist because it has nothing to
+/// allow.
+#[derive(Clone)]
+pub struct NetworkConfig {
+    /// Domains the guest may reach, derived from the project's manifest at the
+    /// pinned ref. Layered on top of the SSRF filter, never instead of it.
+    pub policy: crate::connector_manifest::NetworkPolicy,
+    /// Where the runtime records what the guest actually attempted. The caller
+    /// owns the handle so it can read the log back after the guest exits and
+    /// submit it to the audit — including for a run that trapped.
+    pub egress_log: Arc<Mutex<Vec<crate::connector_manifest::EgressRecord>>>,
+}
+
 /// Wallet configuration for host functions
 #[derive(Clone)]
 pub struct WalletConfig {
@@ -88,6 +105,8 @@ pub struct ExecutionContext {
     pub vrf_config: Option<VrfConfig>,
     /// Wallet configuration (only used in WASI P2, requires wallet_id in execution request)
     pub wallet_config: Option<WalletConfig>,
+    /// Outbound-domain allowlist and egress audit sink (only used in WASI P2)
+    pub network_config: Option<NetworkConfig>,
 }
 
 impl ExecutionContext {
@@ -101,6 +120,7 @@ impl ExecutionContext {
             compiled_cache: None,
             vrf_config: None,
             wallet_config: None,
+            network_config: None,
         }
     }
 
@@ -180,6 +200,7 @@ impl Executor {
     /// * `storage_config` - Optional per-execution storage config (overrides context)
     /// * `vrf_config` - Optional per-execution VRF config (overrides context)
     /// * `wallet_config` - Optional per-execution wallet config (overrides context)
+    /// * `network_config` - Per-execution outbound allowlist + egress audit sink
     pub async fn execute(
         &self,
         wasm_bytes: &[u8],
@@ -192,6 +213,7 @@ impl Executor {
         storage_config: Option<StorageConfig>,
         vrf_config: Option<VrfConfig>,
         wallet_config: Option<WalletConfig>,
+        network_config: Option<NetworkConfig>,
     ) -> Result<ExecutionResult> {
         info!(
             "Starting WASM execution: {} instructions, {} MB memory, {} seconds, target: {:?}, format: {:?}",
@@ -201,7 +223,7 @@ impl Executor {
         let start = Instant::now();
 
         // Try to execute with different WASI versions
-        let result = self.execute_async(wasm_bytes, wasm_checksum, input_data, limits, env_vars, build_target, storage_config, vrf_config, wallet_config).await;
+        let result = self.execute_async(wasm_bytes, wasm_checksum, input_data, limits, env_vars, build_target, storage_config, vrf_config, wallet_config, network_config).await;
 
         let execution_time_ms = start.elapsed().as_millis() as u64;
 
@@ -323,9 +345,13 @@ impl Executor {
         storage_config: Option<StorageConfig>,
         vrf_config: Option<VrfConfig>,
         wallet_config: Option<WalletConfig>,
+        network_config: Option<NetworkConfig>,
     ) -> Result<(Vec<u8>, u64, Option<u64>)> {
         // Create effective execution context with per-execution overrides
-        let has_overrides = storage_config.is_some() || vrf_config.is_some() || wallet_config.is_some();
+        let has_overrides = storage_config.is_some()
+            || vrf_config.is_some()
+            || wallet_config.is_some()
+            || network_config.is_some();
         let effective_ctx: Option<ExecutionContext> = if has_overrides {
             if let Some(ref base_ctx) = self.context {
                 Some(ExecutionContext {
@@ -335,6 +361,7 @@ impl Executor {
                     compiled_cache: base_ctx.compiled_cache.clone(),
                     vrf_config: vrf_config.or_else(|| base_ctx.vrf_config.clone()),
                     wallet_config: wallet_config.or_else(|| base_ctx.wallet_config.clone()),
+                    network_config: network_config.or_else(|| base_ctx.network_config.clone()),
                 })
             } else {
                 // No base context, create minimal one with overrides
@@ -345,6 +372,7 @@ impl Executor {
                     compiled_cache: None,
                     vrf_config,
                     wallet_config,
+                    network_config,
                 })
             }
         } else {

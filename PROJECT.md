@@ -353,13 +353,30 @@ Payment keys are created via the dashboard or by calling `store_secrets()` with 
 **With stablecoin (ft_transfer_call)**:
 ```json
 {
-  "action": "TopUpPaymentKey",
+  "action": "top_up_payment_key",
   "nonce": 1,
   "owner": "alice.near"
 }
 ```
 
 Minimum top-up: $0.01 (`MIN_TOP_UP_AMOUNT = 10_000` micro-units).
+
+**Buying a subscription (ft_transfer_call)** — a different action with different
+consequences: the money does NOT become the key's balance, so it is never
+withdrawable, and no encrypted blob is touched.
+
+```json
+{
+  "action": "buy_subscription",
+  "nonce": 1,
+  "owner": "alice.near",
+  "plan": 0
+}
+```
+
+The plan index and its price come from the contract (`get_subscription_plans`).
+A payment that names a plan not on sale, or does not cover it, or names a key
+that does not exist, fails the transfer — which returns the money.
 
 **With NEAR**:
 `top_up_payment_key_with_near(nonce)` — wraps NEAR → wNEAR → swaps via Intents to stablecoin (mainnet only). Minimum: 0.01 NEAR deposit + execution fees.
@@ -415,7 +432,7 @@ Project developers earn stablecoins when users pay for execution.
 
 ### Blockchain Flow
 
-1. User deposits stablecoins: `ft_transfer_call` with `msg: {"action": "DepositBalance"}`
+1. User deposits stablecoins: `ft_transfer_call` with `msg: {"action": "deposit_balance"}`
 2. User calls `request_execution` with `params: { attached_usd: U128(amount) }`
 3. Amount deducted from user's stablecoin balance
 4. On successful execution: credited to project owner's `developer_earnings`

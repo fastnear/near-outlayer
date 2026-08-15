@@ -31,6 +31,245 @@ pub const FT_TRANSFER_GAS: Gas = Gas::from_tgas(30);
 /// Gas for on_top_up_response callback
 pub const TOP_UP_CALLBACK_GAS: Gas = Gas::from_tgas(30);
 
+/// What one operation of a priced project costs.
+///
+/// The pair is `(project, operation)` rather than the project alone because a
+/// connector charges per action: near-email sells `send` and gives `list` and
+/// `read` away, and a single per-project price would either make the free ones
+/// cost money or make the paid one free.
+///
+/// `operation` is the same string the caller puts in the request's `operation`
+/// field and the guest dispatches on. One value, read from the same bytes by
+/// the contract, the coordinator, the worker and the guest — see
+/// [`OPERATION_FIELD`].
+#[derive(Clone, Debug, PartialEq)]
+#[near(serializers = [borsh, json])]
+pub struct OperationPrice {
+    /// The guest's `op` value, verbatim.
+    pub operation: String,
+    /// Stablecoin minimal units, the unit of `attached_usd` and of every
+    /// balance here: `10_000` = $0.01. Zero is a real price — it is how an
+    /// operation is published as free, which is not the same as unlisted.
+    pub price_usd: U128,
+    /// The author's cut of THIS operation's price, in basis points of 10_000.
+    ///
+    /// Per operation, not per project, and that is not an accident of shape:
+    /// the economics of sending an email and of moving money are not the same
+    /// number, so a single share for a whole connector would have to be wrong
+    /// for at least one of its operations.
+    ///
+    /// Quoted with the price it splits. Read from one row and split by another
+    /// is how a call gets charged one operation's fee and divided by another's
+    /// percentage.
+    pub developer_share_bp: u16,
+}
+
+/// What a curated project charges, and who gets paid for it.
+///
+/// **The contract is the only home of a connector's prices.** A guest that also
+/// knew its price would be a second copy that wins on money whenever the two
+/// disagree; the earlier `Connector::price()` hook was removed for exactly that
+/// reason, and nothing here restores it.
+///
+/// Set by us when we curate a project into the subscription, never by the
+/// project's owner: the price is what a subscription's allowance may be spent
+/// against, so a party who could set it could invoice against credit we sold
+/// wholesale.
+#[derive(Clone, Debug, PartialEq)]
+#[near(serializers = [borsh, json])]
+pub struct ProjectPricing {
+    /// Who is credited when a call succeeds.
+    ///
+    /// Held explicitly instead of being derived from the project's owner,
+    /// because for connectors the owner is US: they all live under
+    /// `connectors.outlayer.near`, the money arrives as ours, and crediting the
+    /// author is our obligation rather than a transfer the caller made.
+    ///
+    /// Per project, not per operation: two operations paid to two different
+    /// people are two projects.
+    pub author_account_id: AccountId,
+    /// Every operation this project sells. An operation absent from this list
+    /// has no price, which is not the same as being free — see
+    /// [`price_for_operation`].
+    pub operations: Vec<OperationPrice>,
+}
+
+/// The most this project can charge for one call.
+///
+/// NOT what admission uses — admission prices the exact operation, read from
+/// the request under [`OPERATION_FIELD`]. This is published so a caller can
+/// budget: it is the most one call to this project can cost.
+///
+/// It WAS the admission rule, back when the contract did not read the request.
+/// The universal operation field is what made the exact price reachable on
+/// chain, and with it the question of who returns the difference disappeared
+/// rather than being answered.
+///
+/// Derived on read rather than stored next to the list. The list is already in
+/// hand by then — it arrives in the same deserialisation — so caching the
+/// maximum would save no storage read and add a second number to keep in step
+/// with the first.
+pub(crate) fn max_price(pricing: &ProjectPricing) -> u128 {
+    pricing.operations.iter().map(|o| o.price_usd.0).max().unwrap_or(0)
+}
+
+/// The field a priced project's request MUST carry, at the top level, as a
+/// non-empty string.
+///
+/// **One universal format, not a per-connector convention.** This is what makes
+/// the operation knowable to everyone who needs it — the contract that prices
+/// it, the coordinator that bills it, the worker that runs it and the guest
+/// that dispatches on it — from the same bytes, with no translation step.
+///
+/// The alternative was a per-connector rule for reading the operation, which
+/// meant the contract would have had to learn every connector's request shape.
+/// The one after that was a separate `operation` argument alongside the body,
+/// which is the §4.3 trap: two values in two roles, one named by the caller and
+/// one executed by the guest, to be bound together forever. A single field is
+/// neither.
+pub const OPERATION_FIELD: &str = "operation";
+
+/// The largest request a priced project may be called with, on chain.
+///
+/// Parsing is linear in the body, and the caller's gas pays for it, so an
+/// unbounded body is an unbounded and unpredictable cost. Bounded at the size
+/// at which this contract already treats a payload as large — the threshold
+/// that pushes `input_data` out of the event and into state — rather than at a
+/// new number nobody would be able to relate to anything.
+///
+/// A connector that needs to move more than this takes a reference to it, not
+/// the bytes: an on-chain transaction is a poor place for a payload either way.
+pub const MAX_PRICED_INPUT_BYTES: usize = crate::INPUT_DATA_EVENT_THRESHOLD;
+
+/// Why a priced project's request could not be priced.
+#[derive(Debug, PartialEq, Eq)]
+pub enum OperationError {
+    /// Too big to parse for the gas it would cost.
+    TooLarge { len: usize },
+    /// Not JSON at all. A priced project takes a JSON object; that is part of
+    /// the format, and guessing at anything else is how a body gets priced as
+    /// one operation and executed as another.
+    NotJson,
+    /// No `operation`, or one that is not a non-empty string.
+    Missing,
+}
+
+impl OperationError {
+    pub fn message(&self) -> String {
+        match self {
+            OperationError::TooLarge { len } => format!(
+                "input_data is {} bytes; a priced project accepts at most {}. \
+                 Pass a reference rather than the payload.",
+                len, MAX_PRICED_INPUT_BYTES
+            ),
+            OperationError::NotJson => format!(
+                "input_data must be a JSON object naming \"{}\".",
+                OPERATION_FIELD
+            ),
+            OperationError::Missing => format!(
+                "input_data must name \"{}\" as a non-empty string at the top level.",
+                OPERATION_FIELD
+            ),
+        }
+    }
+}
+
+/// Read the operation out of a request body.
+///
+/// Fail-closed at every step: absent, blank, the wrong type, unparseable or
+/// oversized all refuse. None of them defaults to an operation, because a
+/// defaulted operation is a defaulted PRICE, and the cheapest one is the one an
+/// attacker would pick.
+///
+/// Pure, so the format can be pinned by tests rather than by reading the caller
+/// — and so the same vectors can be run against the coordinator's and the
+/// worker's copies of this rule.
+pub(crate) fn operation_from_input(input_data: Option<&str>) -> Result<String, OperationError> {
+    let body = input_data.unwrap_or_default();
+    if body.len() > MAX_PRICED_INPUT_BYTES {
+        return Err(OperationError::TooLarge { len: body.len() });
+    }
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(body).map_err(|_| OperationError::NotJson)?;
+
+    parsed
+        .get(OPERATION_FIELD)
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .ok_or(OperationError::Missing)
+}
+
+/// How a paid call's money is divided.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Split {
+    /// The connector author's cut.
+    pub author_usd: u128,
+    /// What is left for the project's owner — us, for a connector.
+    pub owner_usd: u128,
+}
+
+/// Divide what the caller paid between the connector's author and the project's
+/// owner.
+///
+/// Pure, and returns BOTH halves, so the two cannot be computed from different
+/// numbers and cannot silently fail to add up: `author_usd + owner_usd` is
+/// always exactly `paid_usd`.
+///
+/// Rounding goes to the OWNER — us. The author's cut is floored, so a split can
+/// never pay out more than came in, and the fraction of a minimal unit that
+/// nobody can transfer stays where it can be accounted for.
+pub(crate) fn split_payment(paid_usd: u128, developer_share_bp: u16) -> Split {
+    let bp = developer_share_bp.min(10_000) as u128;
+    let author_usd = paid_usd * bp / 10_000;
+    Split {
+        author_usd,
+        owner_usd: paid_usd - author_usd,
+    }
+}
+
+/// What this operation costs, or `None` if the project does not sell it.
+///
+/// `None` and `Some(0)` are different answers on purpose: a published free
+/// operation costs nothing, while an unlisted one is not part of the offer at
+/// all, and an unlisted one must be REFUSED rather than run for free.
+pub(crate) fn price_for_operation(pricing: &ProjectPricing, operation: &str) -> Option<u128> {
+    pricing
+        .operations
+        .iter()
+        .find(|o| o.operation == operation)
+        .map(|o| o.price_usd.0)
+}
+
+/// One subscription offer, as the contract knows it.
+///
+/// **The contract is the source of truth for what a subscription COSTS.** The
+/// coordinator syncs this list the same way it syncs the execution prices, and
+/// a purchase is refused on chain when the money does not cover the plan — so
+/// nobody pays for something they will not get, and the refusal does not depend
+/// on an off-chain component being honest or even reachable.
+///
+/// What a plan GIVES — how much allowance, for how many days — is deliberately
+/// NOT here. It is metering, it changes with our costs rather than with a
+/// price, and putting it on chain would mean a transaction to adjust it. Each
+/// field therefore has exactly one home, and there is nothing to keep in step.
+#[derive(Clone, Debug, PartialEq)]
+#[near(serializers = [borsh, json])]
+pub struct SubscriptionPlan {
+    /// Stable identifier, and what a payment names. Never reused: a withdrawn
+    /// plan keeps its index so an old payment cannot silently buy a new offer.
+    pub index: u8,
+    /// Human label, for the purchase page and for support.
+    pub name: String,
+    /// What it costs, in stablecoin minimal units.
+    pub price_usd: U128,
+    /// Withdrawn plans stay in the list and stop being purchasable. Removing
+    /// the row instead would free the index for reuse.
+    pub active: bool,
+}
+
 /// Action for ft_on_transfer msg field
 #[derive(Clone, Debug)]
 #[near(serializers = [json])]
@@ -45,6 +284,22 @@ pub enum FtTransferAction {
     },
     /// Deposit stablecoin to user's balance (for attached_usd payments)
     DepositBalance,
+    /// Buy a subscription for a payment key.
+    ///
+    /// NOT a top-up, and the difference is the point: the money does not become
+    /// the key's balance. It is revenue the moment it arrives, so it can never
+    /// be withdrawn back out, and no blob is rewritten — which is why this path
+    /// needs no yield, no worker task and no keystore round trip. The allowance
+    /// it buys is granted by the coordinator against the event below.
+    ///
+    /// `owner` defaults to the sender, so one transaction from anybody's wallet
+    /// can put a subscription on somebody else's agent.
+    BuySubscription {
+        nonce: u32,
+        owner: Option<AccountId>,
+        /// Which plan, by [`SubscriptionPlan::index`].
+        plan: u8,
+    },
 }
 
 /// Result of top-up operation (sent via yield/resume)
@@ -88,6 +343,19 @@ pub enum SystemEvent {
         owner: AccountId,
         nonce: u32,
     },
+    /// A subscription was bought and paid for on chain.
+    ///
+    /// Carries what was PAID, not what it buys: the coordinator holds the
+    /// allowance and the validity, and reads them from its own row for this
+    /// plan index. `paid_usd` is what the contract kept, so the two ledgers can
+    /// be reconciled against each other later.
+    SubscriptionPurchased {
+        owner: AccountId,
+        nonce: u32,
+        plan: u8,
+        paid_usd: U128,
+        payer: AccountId,
+    },
     /// Wallet policy created/updated — worker should sync authorized key hashes
     WalletPolicyUpdated {
         wallet_pubkey: String,
@@ -106,6 +374,51 @@ pub enum SystemEvent {
         owner: AccountId,
         frozen: bool,
     },
+}
+
+/// Which plan a payment buys, or `None` if it buys nothing.
+///
+/// Pure, and separate from the handler, because it is the whole commercial
+/// decision: which offer, at what price, and whether the money covers it.
+///
+/// A payment SHORT of the named plan buys nothing here — unlike the
+/// coordinator's own purchase endpoint, which sells the best plan the money
+/// covers. The difference is deliberate: an API caller can be told what is
+/// available and try again for nothing, while a transfer that has already
+/// landed can only be answered with a product or with the money back, and
+/// giving them a cheaper plan than the one they named would be choosing for
+/// them.
+pub(crate) fn plan_for_sale(
+    plans: &[SubscriptionPlan],
+    plan_index: u8,
+    amount_usd: u128,
+) -> Option<&SubscriptionPlan> {
+    plans
+        .iter()
+        .find(|p| p.index == plan_index && p.active)
+        .filter(|p| amount_usd >= p.price_usd.0)
+}
+
+/// Keep the whole payment.
+///
+/// NEP-141 reads the return value of `ft_on_transfer` as "how much to give
+/// back", so zero is "nothing goes back". Said explicitly rather than left to
+/// the default: a branch that credits something and answers with nothing at all
+/// leaves the most important number in the transfer to be inferred, and the
+/// next person to add a branch here has no example to copy.
+fn keep_everything() {
+    value_return_u128(0)
+}
+
+/// Set the `ft_on_transfer` return value by hand.
+///
+/// `ft_on_transfer` is declared as returning `()` because the top-up branch
+/// answers through a yield promise instead. This branch has no promise to
+/// return, so it writes the value directly.
+fn value_return_u128(amount: u128) {
+    env::value_return(
+        &serde_json::to_vec(&U128(amount)).expect("U128 always serialises"),
+    );
 }
 
 #[near_bindgen]
@@ -148,89 +461,11 @@ impl Contract {
             FtTransferAction::DepositBalance => {
                 self.handle_deposit_balance(sender_id, amount)
             }
+            FtTransferAction::BuySubscription { nonce, owner, plan } => {
+                let effective_owner = owner.unwrap_or(sender_id.clone());
+                self.handle_buy_subscription(effective_owner, sender_id, amount, nonce, plan)
+            }
         }
-    }
-
-    /// Handle stablecoin deposit to user's balance
-    /// Used for attached_usd payments to project developers
-    fn handle_deposit_balance(&mut self, sender_id: AccountId, amount: U128) {
-        // Add to user's stablecoin balance
-        let current = self.user_stablecoin_balances.get(&sender_id).unwrap_or(0);
-        self.user_stablecoin_balances.insert(&sender_id, &(current + amount.0));
-
-        log!(
-            "Deposited {} stablecoin to {} (new balance: {})",
-            amount.0,
-            sender_id,
-            current + amount.0
-        );
-    }
-
-    /// Handle Payment Key top-up with yield/resume
-    fn handle_top_up(
-        &mut self,
-        sender_id: AccountId,
-        amount: U128,
-        nonce: u32,
-    ) {
-        // Check minimum amount
-        assert!(
-            amount.0 >= MIN_TOP_UP_AMOUNT,
-            "Minimum top-up is $0.01 ({} minimal units)",
-            MIN_TOP_UP_AMOUNT
-        );
-
-        // Build secret key for Payment Key
-        let secret_key = SecretKey {
-            accessor: SecretAccessor::System(SystemSecretType::PaymentKey),
-            profile: nonce.to_string(),
-            owner: sender_id.clone(),
-        };
-
-        // Get existing secret
-        let secret_profile = self.secrets_storage.get(&secret_key)
-            .expect("Payment key not found. Create it first with store_secrets()");
-
-        // Create callback data
-        let callback_data = json!({
-            "owner": sender_id,
-            "nonce": nonce,
-            "amount": amount,
-        });
-
-        // Create yield - wait for worker to re-encrypt secret with new balance
-        let promise_idx = env::promise_yield_create(
-            "on_top_up_response",
-            &callback_data.to_string().into_bytes(),
-            TOP_UP_CALLBACK_GAS,
-            GasWeight(1),
-            DATA_ID_REGISTER,
-        );
-
-        // Get data_id for resume
-        let data_id: CryptoHash = env::read_register(DATA_ID_REGISTER)
-            .expect("Failed to read data_id")
-            .try_into()
-            .expect("Invalid data_id");
-
-        // Emit event for worker to process
-        self.emit_system_event(SystemEvent::TopUpPaymentKey {
-            data_id,
-            owner: sender_id.clone(),
-            nonce,
-            amount,
-            encrypted_data: secret_profile.encrypted_secrets,
-        });
-
-        log!(
-            "TopUp requested: owner={}, nonce={}, amount={}",
-            sender_id,
-            nonce,
-            amount.0
-        );
-
-        // Return the yield promise (will be resumed by worker)
-        env::promise_return(promise_idx);
     }
 
     /// Callback after worker processes top-up via yield/resume
@@ -509,19 +744,6 @@ impl Contract {
         }
     }
 
-    /// Emit system event for workers
-    /// pub(crate) to allow calling from secrets.rs for PaymentKey creation
-    pub(crate) fn emit_system_event(&self, event: SystemEvent) {
-        let event_json = json!({
-            "standard": self.event_standard,
-            "version": self.event_version,
-            "event": "system_event",
-            "data": [event]
-        });
-
-        log!("EVENT_JSON:{}", event_json.to_string());
-    }
-
     // =========================================================================
     // Top-up Payment Key with NEAR (swapped to USDC via Intents)
     // =========================================================================
@@ -720,6 +942,206 @@ impl Contract {
         //     amount.0.to_string(),
         //     swap_contract_id.to_string(),
         // )
+    }
+
+}
+
+
+// Internals. Deliberately OUTSIDE `#[near_bindgen]`: the macro exports a
+// contract method for every `pub fn` in a block it annotates, so a helper that
+// lives there is one visibility keyword away from becoming a public entry
+// point. These take an already-authenticated caller as an argument — exposed,
+// they would let anyone name whoever they liked.
+impl Contract {
+    /// Sell a subscription, or hand the money straight back.
+    ///
+    /// Everything is decided here, on chain, before anything is kept:
+    ///
+    ///   * an unknown or withdrawn plan returns the WHOLE payment;
+    ///   * a payment short of the price returns the whole payment — the payer
+    ///     asked for a specific plan and getting a lesser one is not what they
+    ///     paid for;
+    ///   * a payment for a key that does not exist returns the whole payment,
+    ///     because the allowance would have nowhere to land;
+    ///   * anything ABOVE the price is kept, and buys proportionally more. The
+    ///     event carries what was actually paid, and the coordinator scales the
+    ///     plan's terms by it — $60 on a $10 plan is six times the allowance and
+    ///     six times the days, not a $50 gift to us.
+    ///
+    /// Nothing is ever returned as change, and that is deliberate. A partial
+    /// refund would be a second money path through a worker, and a bug there
+    /// sends the wrong sum to a real account. Refusing outright returns
+    /// everything through NEP-141, which needs no arithmetic of ours at all.
+    ///
+    /// Nothing is written to a key here. What was sold is an EVENT, and the
+    /// allowance behind it is granted by the coordinator, which is where the
+    /// metering lives. That is also why this needs no yield: the encrypted blob
+    /// is not touched, so there is nothing for a worker to re-encrypt.
+    fn handle_buy_subscription(
+        &mut self,
+        owner: AccountId,
+        payer: AccountId,
+        amount: U128,
+        nonce: u32,
+        plan_index: u8,
+    ) {
+        // Refusals PANIC, and that is the whole refund mechanism: NEP-141
+        // refunds the full amount when `ft_on_transfer` fails, and the payer
+        // reads the reason in their own transaction outcome. Returning the
+        // money by arithmetic instead would be more code doing the same thing,
+        // less visibly — and the branch that got it wrong would keep somebody's
+        // money.
+        let plan = plan_for_sale(&self.subscription_plans, plan_index, amount.0)
+            .unwrap_or_else(|| {
+                env::panic_str(&format!(
+                    "No plan {} on sale that {} covers. Check get_subscription_plans().",
+                    plan_index, amount.0
+                ))
+            })
+            .clone();
+
+        // The key has to exist, exactly as a top-up requires: a subscription on
+        // a key that was never created would be an allowance with nowhere to
+        // land.
+        let secret_key = SecretKey {
+            accessor: SecretAccessor::System(SystemSecretType::PaymentKey),
+            profile: nonce.to_string(),
+            owner: owner.clone(),
+        };
+        assert!(
+            self.secrets_storage.get(&secret_key).is_some(),
+            "No payment key {}:{}. Create it before buying a subscription for it.",
+            owner,
+            nonce
+        );
+
+        self.emit_system_event(SystemEvent::SubscriptionPurchased {
+            owner: owner.clone(),
+            nonce,
+            plan: plan.index,
+            // What was actually TRANSFERRED, not the plan's price. The two
+            // differ whenever somebody overpays, and the coordinator scales the
+            // terms by this number — so a figure of `plan.price_usd` here would
+            // silently keep the difference.
+            paid_usd: amount,
+            payer: payer.clone(),
+        });
+
+        log!(
+            "Subscription sold: owner={}, nonce={}, plan={} ({}), paid={}, payer={}",
+            owner,
+            nonce,
+            plan.index,
+            plan.name,
+            plan.price_usd.0,
+            payer
+        );
+
+        // Sold: keep everything. An overpayment is not kept FROM the payer — the
+        // event carries the full amount and the coordinator grants in
+        // proportion — it is simply not handed back here, because handing money
+        // back by arithmetic is the one thing this path must not do.
+        keep_everything();
+    }
+
+    /// Handle stablecoin deposit to user's balance
+    /// Used for attached_usd payments to project developers
+    fn handle_deposit_balance(&mut self, sender_id: AccountId, amount: U128) {
+        // Add to user's stablecoin balance
+        let current = self.user_stablecoin_balances.get(&sender_id).unwrap_or(0);
+        self.user_stablecoin_balances.insert(&sender_id, &(current + amount.0));
+
+        log!(
+            "Deposited {} stablecoin to {} (new balance: {})",
+            amount.0,
+            sender_id,
+            current + amount.0
+        );
+
+        // The credit is real spendable value — `request_execution` pays
+        // developers out of it — so the transfer answer is stated rather than
+        // left implicit.
+        keep_everything();
+    }
+
+    /// Handle Payment Key top-up with yield/resume
+    fn handle_top_up(
+        &mut self,
+        sender_id: AccountId,
+        amount: U128,
+        nonce: u32,
+    ) {
+        // Check minimum amount
+        assert!(
+            amount.0 >= MIN_TOP_UP_AMOUNT,
+            "Minimum top-up is $0.01 ({} minimal units)",
+            MIN_TOP_UP_AMOUNT
+        );
+
+        // Build secret key for Payment Key
+        let secret_key = SecretKey {
+            accessor: SecretAccessor::System(SystemSecretType::PaymentKey),
+            profile: nonce.to_string(),
+            owner: sender_id.clone(),
+        };
+
+        // Get existing secret
+        let secret_profile = self.secrets_storage.get(&secret_key)
+            .expect("Payment key not found. Create it first with store_secrets()");
+
+        // Create callback data
+        let callback_data = json!({
+            "owner": sender_id,
+            "nonce": nonce,
+            "amount": amount,
+        });
+
+        // Create yield - wait for worker to re-encrypt secret with new balance
+        let promise_idx = env::promise_yield_create(
+            "on_top_up_response",
+            &callback_data.to_string().into_bytes(),
+            TOP_UP_CALLBACK_GAS,
+            GasWeight(1),
+            DATA_ID_REGISTER,
+        );
+
+        // Get data_id for resume
+        let data_id: CryptoHash = env::read_register(DATA_ID_REGISTER)
+            .expect("Failed to read data_id")
+            .try_into()
+            .expect("Invalid data_id");
+
+        // Emit event for worker to process
+        self.emit_system_event(SystemEvent::TopUpPaymentKey {
+            data_id,
+            owner: sender_id.clone(),
+            nonce,
+            amount,
+            encrypted_data: secret_profile.encrypted_secrets,
+        });
+
+        log!(
+            "TopUp requested: owner={}, nonce={}, amount={}",
+            sender_id,
+            nonce,
+            amount.0
+        );
+
+        // Return the yield promise (will be resumed by worker)
+        env::promise_return(promise_idx);
+    }
+
+    /// Emit system event for workers
+    /// pub(crate) to allow calling from secrets.rs for PaymentKey creation
+    pub(crate) fn emit_system_event(&self, event: SystemEvent) {
+        let event_json = json!({
+            "standard": self.event_standard,
+            "version": self.event_version,
+            "event": "system_event",
+            "data": [event]
+        });
+
+        log!("EVENT_JSON:{}", event_json.to_string());
     }
 
     /// Internal: Request execution of payment-keys-with-intents WASI

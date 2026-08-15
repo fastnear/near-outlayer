@@ -23,6 +23,68 @@ impl Contract {
         )
     }
 
+    /// The subscription price list, for the coordinator to sync.
+    ///
+    /// Returned whole, withdrawn plans included: a key bought under a plan that
+    /// is no longer on sale is still a key somebody paid for, and whoever
+    /// answers their question has to be able to look the plan up.
+    pub fn get_subscription_plans(&self) -> Vec<crate::payment::SubscriptionPlan> {
+        self.subscription_plans.clone()
+    }
+
+    /// What a project charges, or `None` if it charges nothing.
+    ///
+    /// The coordinator reads this to bill the exact operation and to know whom
+    /// to credit; it is the only copy of those numbers, so there is nothing to
+    /// reconcile it against.
+    pub fn get_project_pricing(&self, project_id: String) -> Option<crate::payment::ProjectPricing> {
+        self.project_pricing.get(&project_id)
+    }
+
+    /// The most a single call to this project can cost — what
+    /// `request_execution` requires to be attached. Zero when the project is
+    /// not priced.
+    ///
+    /// Published so a caller can work out what to attach without having to
+    /// reimplement the maximum over the price list themselves.
+    pub fn get_project_max_price(&self, project_id: String) -> U128 {
+        U128(
+            self.project_pricing
+                .get(&project_id)
+                .map(|p| crate::payment::max_price(&p))
+                .unwrap_or(0),
+        )
+    }
+
+    /// Every project that has a price, paginated.
+    ///
+    /// This is why `project_pricing` is an `UnorderedMap` and not a
+    /// `LookupMap`: without it the coordinator could only mirror prices for
+    /// project ids it already knew, and it took that list from its own
+    /// connector registry. A project priced here but missing from that registry
+    /// would then be charged on chain and free over HTTPS — one project, two
+    /// prices, with nothing to notice the difference.
+    ///
+    /// Paginated because a view has a gas ceiling like anything else, and a list
+    /// that grows past it stops answering at all rather than answering slowly.
+    pub fn get_priced_projects(&self, from_index: Option<u64>, limit: Option<u64>) -> Vec<String> {
+        let from = from_index.unwrap_or(0);
+        // A caller that names no limit gets a page, not the whole table: the
+        // default has to be safe for the biggest table this could become, not
+        // for the empty one it starts as.
+        let limit = limit.unwrap_or(100).min(500);
+        self.project_pricing
+            .keys()
+            .skip(from as usize)
+            .take(limit as usize)
+            .collect()
+    }
+
+    /// How many projects have a price. Lets a caller size the pages above.
+    pub fn get_priced_project_count(&self) -> u64 {
+        self.project_pricing.len()
+    }
+
     /// Get full pricing (NEAR and USD)
     /// USD pricing is for HTTPS API, values are in minimal token units (e.g., 1 = 0.000001 USDT)
     pub fn get_pricing_full(&self) -> PricingView {

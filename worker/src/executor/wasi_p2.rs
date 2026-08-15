@@ -61,6 +61,7 @@ use wasmtime_wasi_http::types::{
 
 use crate::api_client::ResourceLimits;
 use crate::compiled_cache::CompiledCache;
+use crate::connector_manifest::{EgressRecord, NetworkPolicy};
 use crate::outlayer_rpc::RpcHostState;
 use crate::outlayer_storage::{StorageClient, StorageHostState, add_storage_to_linker};
 use crate::outlayer_payment::{PaymentHostState, add_payment_to_linker};
@@ -95,6 +96,13 @@ struct HostState {
     http_timeout_count: Arc<std::sync::atomic::AtomicU32>,
     /// Engine handle to force epoch interrupt when aborting due to HTTP abuse (Engine::clone is Arc)
     engine_handle: &'static Engine,
+    /// Outbound-domain allowlist for this execution (§C3). Layered ON TOP of
+    /// the SSRF filter, never instead of it.
+    network_policy: NetworkPolicy,
+    /// Every outbound request this run attempted, allowed or refused. Shared
+    /// with the spawned per-request tasks; read back by the caller after the
+    /// guest finishes and submitted to the audit.
+    egress_log: Arc<Mutex<Vec<EgressRecord>>>,
 }
 
 impl WasiView for HostState {
@@ -195,6 +203,37 @@ impl WasiHttpView for HostState {
             .port_u16()
             .unwrap_or(if request.uri().scheme_str() == Some("http") { 80 } else { 443 });
         let timeout_duration = std::time::Duration::from_secs(HTTP_REQUEST_TIMEOUT_SECS);
+
+        // Body size as the guest declared it. Only used for the audit line, so
+        // an absent Content-Length is recorded as unknown rather than guessed.
+        let declared_bytes = request
+            .headers()
+            .get(hyper::header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok());
+
+        // Domain allowlist (§C3), enforced BEFORE the request leaves and
+        // before DNS resolution — a refused host must not even be looked up,
+        // since a DNS query is itself an exfiltration channel.
+        //
+        // This layer is additional to the SSRF filter below, not a replacement
+        // for it: the allowlist answers "may this project talk to that party",
+        // the SSRF filter answers "is that party inside our infrastructure".
+        // Both must pass.
+        if let Some(reason) = crate::connector_manifest::decide_egress(
+            &self.network_policy,
+            host.as_deref(),
+            declared_bytes,
+            &self.egress_log,
+        ) {
+            tracing::warn!(
+                host = %host.as_deref().unwrap_or(""),
+                "WASI HTTP blocked (not in manifest allowlist)"
+            );
+            return Ok(HostFutureIncomingResponse::ready(Ok(Err(
+                wasmtime_wasi_http::bindings::http::types::ErrorCode::InternalError(Some(reason)),
+            ))));
+        }
 
         let handle = wasmtime_wasi::runtime::spawn(async move {
             // SSRF guard: a guest component must not reach internal / private /
@@ -555,6 +594,18 @@ pub async fn execute(
         debug!("Added env var: NEAR_RPC_PROXY_AVAILABLE=1");
     }
 
+    // Outbound-domain allowlist (§C3). An execution that arrives without a
+    // network config is unrestricted at THIS layer — the SSRF filter below
+    // still applies. Callers that must enforce a list always supply one; a
+    // connector's is resolved fail-closed before we get here.
+    let (network_policy, egress_log) = match exec_ctx.and_then(|c| c.network_config.as_ref()) {
+        Some(cfg) => (cfg.policy.clone(), cfg.egress_log.clone()),
+        None => (NetworkPolicy::Unrestricted, Arc::new(Mutex::new(Vec::new()))),
+    };
+    if network_policy.is_enforced() {
+        debug!("🔒 Outbound allowlist active: {:?}", network_policy);
+    }
+
     let host_state = HostState {
         wasi_ctx: wasi_builder.build(),
         wasi_http_ctx: WasiHttpCtx::new(),
@@ -566,6 +617,8 @@ pub async fn execute(
         wallet_state,
         http_timeout_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         engine_handle: engine,
+        network_policy,
+        egress_log,
     };
 
     // Create store with fuel limit + epoch deadline
