@@ -48,7 +48,7 @@ pub(crate) fn parse_wallet_pubkey(wallet_pubkey: &str) -> (String, Vec<u8>) {
     let parts: Vec<&str> = wallet_pubkey.splitn(2, ':').collect();
     assert!(
         parts.len() == 2,
-        "Invalid wallet_pubkey format. Expected 'ed25519:<hex>' or 'secp256k1:<hex>'"
+        "Invalid public key format. Expected 'ed25519:<hex>' or 'secp256k1:<hex>'"
     );
 
     let key_type = parts[0];
@@ -61,7 +61,7 @@ pub(crate) fn parse_wallet_pubkey(wallet_pubkey: &str) -> (String, Vec<u8>) {
     );
 
     let raw_bytes = hex::decode(hex_str).unwrap_or_else(|_| {
-        env::panic_str("Invalid hex encoding in wallet_pubkey");
+        env::panic_str("Invalid hex encoding in the public key");
     });
 
     match key_type {

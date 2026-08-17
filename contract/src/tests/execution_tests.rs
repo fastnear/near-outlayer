@@ -76,6 +76,65 @@ mod tests {
         );
     }
 
+    /// Cancelling gives back BOTH sides of what the request took.
+    ///
+    /// Admission debits the caller's stablecoin the moment the request is
+    /// created, and a cancelled request earns nobody anything — so a cancel
+    /// that returns only the NEAR takes a caller's money for work that never
+    /// happened. The tokens do not go anywhere visible when that happens: they
+    /// stay on the contract with no balance and no earnings row pointing at
+    /// them, which is why this needs a test rather than a reading.
+    #[test]
+    fn test_cancel_stale_execution_returns_the_stablecoin_too() {
+        let mut contract = setup_contract();
+        let sender = accounts(3);
+        let initial_timestamp = env::block_timestamp();
+
+        let mut execution_request = test_execution_request(0, sender.clone(), initial_timestamp);
+        execution_request.attached_usd = 12_000;
+        contract.pending_requests.insert(&0, &execution_request);
+
+        // What admission left the caller with, after taking the 12_000.
+        contract.user_stablecoin_balances.insert(&sender, &988_000);
+
+        let mut context = get_context(sender.clone(), NearToken::from_near(0));
+        context.block_timestamp(initial_timestamp + EXECUTION_TIMEOUT + 1);
+        testing_env!(context.build());
+
+        contract.cancel_stale_execution(0);
+
+        assert_eq!(
+            contract.user_stablecoin_balances.get(&sender).unwrap(),
+            1_000_000,
+            "a cancelled execution returns the developer payment as well as the NEAR"
+        );
+        assert!(contract.get_request(0).is_none());
+    }
+
+    /// The same for the operator's cancel: doing it on somebody's behalf must
+    /// not cost them the payment for an execution we threw away.
+    #[test]
+    fn test_emergency_cancel_returns_the_stablecoin_too() {
+        let mut contract = setup_contract();
+        let owner = accounts(0);
+        let sender = accounts(3);
+
+        let mut execution_request = test_execution_request(0, sender.clone(), env::block_timestamp());
+        execution_request.attached_usd = 12_000;
+        contract.pending_requests.insert(&0, &execution_request);
+        contract.user_stablecoin_balances.insert(&sender, &988_000);
+
+        testing_env!(get_context(owner, NearToken::from_near(0)).build());
+        contract.emergency_cancel_execution(0);
+
+        assert_eq!(
+            contract.user_stablecoin_balances.get(&sender).unwrap(),
+            1_000_000,
+            "the money goes back to whoever attached it, not to whoever cancelled"
+        );
+        assert!(contract.get_request(0).is_none());
+    }
+
     #[test]
     #[should_panic(expected = "Only the sender can cancel this execution")]
     fn test_cancel_stale_execution_unauthorized() {

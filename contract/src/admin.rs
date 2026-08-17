@@ -273,6 +273,15 @@ impl Contract {
             near_sdk::Promise::new(request.payer_account_id.clone())
                 .transfer(NearToken::from_yoctonear(request.payment));
 
+            // And the stablecoin, to whoever attached it. Cancelling on
+            // somebody's behalf must not cost them the developer payment for an
+            // execution we just threw away.
+            self.return_attached_usd(
+                &request.sender_id,
+                request.attached_usd,
+                "the execution was cancelled by the operator",
+            );
+
             log!(
                 "Emergency cancelled execution {} and refunded {} yoctoNEAR to {}",
                 request_id,
@@ -354,6 +363,14 @@ impl Contract {
                 // Refund payment to payer
                 near_sdk::Promise::new(request.payer_account_id.clone())
                     .transfer(NearToken::from_yoctonear(request.payment));
+
+                // And the stablecoin, for the same reason as every other path
+                // that ends a request without earning anything.
+                self.return_attached_usd(
+                    &request.sender_id,
+                    request.attached_usd,
+                    "the request was cleared by the operator",
+                );
 
                 log!(
                     "Cleared request {} and refunded {} yoctoNEAR to {}",

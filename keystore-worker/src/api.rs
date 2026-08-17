@@ -980,7 +980,7 @@ pub struct SignSecretStoreRequest {
     pub vault_id: Option<String>,
 }
 
-/// Response with the signature the contract's `store_secrets_for` verifies.
+/// Response with the signature the contract's `store_agent_secret` verifies.
 #[derive(Debug, Serialize)]
 pub struct SignSecretStoreResponse {
     pub signature_hex: String,
@@ -4343,7 +4343,7 @@ async fn wallet_solana_sign_transaction_handler(
     Ok(Json(WalletSolanaSignResponse { signature }))
 }
 
-/// The exact string the contract rebuilds and verifies in `store_secrets_for`.
+/// The exact string the contract rebuilds and verifies in `store_agent_secret`.
 ///
 /// **The leading domain is what makes this unforgeable as a transaction.** The
 /// wallet's NEAR key signs `sha256(borsh(tx))`, and borsh starts a transaction
@@ -4364,9 +4364,28 @@ fn secret_store_message(
     vault_id: &str,
     access_json: &str,
 ) -> String {
+    // The accessor is LENGTH-PREFIXED, and `project_id` is what this endpoint
+    // renders one from — the contract writes the same, from
+    // `accessor_binding(Project{project_id})`, which is the project id verbatim.
+    //
+    // The length is what lets the field hold colons: its end is pinned by
+    // arithmetic rather than by the next delimiter, so two different accessors
+    // can no longer produce one string. The domain stays `v1`: the prefix
+    // arrived before anyone was signing with this endpoint, so there is no
+    // older format to tell apart. What it does mean is that this signer and the
+    // contract must ship TOGETHER — the signature is checked against a string
+    // the CONTRACT rebuilds, so a version of one that predates the prefix
+    // produces signatures the other rejects outright.
     format!(
-        "store_secrets_for:v1:{}:{}:{}:{}:{}:{}:{}",
-        wallet_pubkey, project_id, profile, encrypted_secrets_base64, payer, vault_id, access_json
+        "store_secrets_for:v1:{}:{}:{}:{}:{}:{}:{}:{}",
+        wallet_pubkey,
+        project_id.len(),
+        project_id,
+        profile,
+        encrypted_secrets_base64,
+        payer,
+        vault_id,
+        access_json
     )
 }
 
@@ -4433,6 +4452,13 @@ async fn wallet_sign_secret_store_handler(
     if req.payer.trim().is_empty() {
         return Err(ApiError::BadRequest("payer is required".to_string()));
     }
+
+    // No colon check on `project_id`, deliberately. The accessor is
+    // length-prefixed in the message below, so its content cannot move a
+    // boundary however it is spelled — a ban here would refuse what the
+    // contract now accepts. The only field still required to be colon-free is
+    // `profile`, and this endpoint does not take one: it derives it from the
+    // wallet's own key, as 64 hex characters.
 
     let keystore = state.keystore.read().await;
     let wallet_seed = format!("wallet:{}:near", req.wallet_id);
@@ -7494,6 +7520,12 @@ mod signing_oracle_tests {
             "\"AllowAll\"",
         );
 
+        // The DOMAIN is `store_secrets_for:`, and it deliberately did NOT move
+        // when the contract method was renamed to
+        // `store_agent_secret`. A domain's job is to be a unique,
+        // non-transaction-shaped prefix that both sides agree on; renaming it
+        // to follow a method name would invalidate every signature in flight
+        // and buy nothing. It is a protocol constant, not a label.
         assert!(
             message.starts_with("store_secrets_for:"),
             "the domain must come FIRST — a prefix in the middle protects nothing"
@@ -7524,7 +7556,7 @@ mod signing_oracle_tests {
                 "",
                 "\"AllowAll\"",
             ),
-            "store_secrets_for:v1:ed25519:ab:a.near/p:agent:cipher:payer.near::\"AllowAll\""
+            "store_secrets_for:v1:ed25519:ab:8:a.near/p:agent:cipher:payer.near::\"AllowAll\""
         );
 
         // A vault-bound secret names its vault, and an absent vault leaves an
@@ -7540,11 +7572,13 @@ mod signing_oracle_tests {
                 "vault.alice.near",
                 "\"AllowAll\"",
             ),
-            "store_secrets_for:v1:ed25519:ab:a.near/p:agent:cipher:payer.near:vault.alice.near:\"AllowAll\""
+            "store_secrets_for:v1:ed25519:ab:8:a.near/p:agent:cipher:payer.near:vault.alice.near:\"AllowAll\""
         );
 
         // `access` is LAST because it is JSON and may contain colons. Anything
-        // earlier would make the boundaries ambiguous.
+        // earlier would make the boundaries ambiguous — except the accessor,
+        // which is allowed to because the `8:` in front of it says how long it
+        // is.
         let nested = secret_store_message(
             "ed25519:ab",
             "a.near/p",
@@ -7557,18 +7591,25 @@ mod signing_oracle_tests {
         assert!(nested.ends_with("{\"Whitelist\":{\"accounts\":[\"a.near\"]}}"));
     }
 
-    /// There is no `store_secrets_for:v2`, and there never was one on chain.
+    /// The domain is `store_secrets_for:v1:`, and both sides must write it.
     ///
-    /// A draft carried that label while this mechanism was still unreleased,
-    /// which would have left a version number starting at two with no one —
-    /// a permanent puzzle implying compatibility with signatures that do not
-    /// exist. Renamed while nothing had been signed; after a deploy it could
-    /// not have been.
+    /// It stayed at v1 through the length-prefix change deliberately. A version
+    /// exists to keep two formats apart in the wild, and there is no v1 in the
+    /// wild: the mechanism has never been on mainnet, and the only testnet
+    /// secrets under the earlier format are ours. Bumping would have marked a
+    /// boundary nobody is on either side of.
+    ///
+    /// The string is load-bearing regardless: the CONTRACT rebuilds it to
+    /// verify, so a side writing anything else produces signatures the other
+    /// silently rejects. Pinned here and there.
     #[test]
-    fn the_domain_is_version_one() {
+    fn the_domain_is_pinned() {
         let m = secret_store_message("ed25519:ab", "a.near/p", "agent", "c", "p.near", "", "\"AllowAll\"");
         assert!(m.starts_with("store_secrets_for:v1:"));
-        assert!(!m.contains(":v2:"));
+        assert!(
+            !m.contains(":v2:"),
+            "there is no v2 — the length prefix arrived inside v1, before anyone was using it"
+        );
     }
 
     /// Every argument that decides what gets stored is inside the signature.

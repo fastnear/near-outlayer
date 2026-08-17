@@ -121,11 +121,11 @@ impl Contract {
         // can diverge. The contract does not need to know what a connector is
         // or how it reads its requests.
         //
-        // EXACTLY, not "at least". An exact amount removes the question of who
-        // returns the difference — a question with no good answer on chain,
-        // since the only refund path is a host function the guest itself calls,
-        // which would put a second copy of the price inside the guest. A caller
-        // reads the price in advance from `get_project_pricing`.
+        // At LEAST the price, not exactly it. It WAS exact, to avoid the
+        // question of who returns the difference; the answer turned out to be
+        // the settlement itself, which already re-reads the price to find the
+        // author's share and can hand the excess back with no second copy of
+        // the price anywhere. See `payment::settle_attached`.
         //
         // Not applied to compile-only requests: they compile and stop, so there
         // is no operation to charge for and no output to obtain.
@@ -154,9 +154,20 @@ impl Contract {
                         ))
                     });
 
-                assert_eq!(
-                    attached_usd, price,
-                    "Operation '{}' of '{}' costs exactly {}; attach that as attached_usd (got {})",
+                // At LEAST the price. Attaching more is allowed and the excess
+                // comes back — see the callback, which credits the difference
+                // to the caller's balance and splits only the price.
+                //
+                // The alternative was to require the exact figure, which meant
+                // every caller reading the price list before every call and
+                // getting it wrong when a price moved between the two. Change
+                // is cheaper: the contract already knows the price at
+                // settlement, because it re-reads the same `operation` to find
+                // the author's share, so nothing new has to be looked up and
+                // no second copy of the price exists anywhere.
+                assert!(
+                    attached_usd >= price,
+                    "Operation '{}' of '{}' costs {}; attach at least that as attached_usd (got {}). Anything over comes back.",
                     operation, id, price, attached_usd
                 );
             }
@@ -398,27 +409,81 @@ impl Contract {
 
                         // Handle stablecoin payment with refund support
                         if request.attached_usd > 0 {
-                            // Get refund amount from WASM (if called refund_usd())
-                            let refund_usd = exec_response.refund_usd.map(|r| r as u128).unwrap_or(0);
-                            // Clamp refund to attached amount (safety check)
-                            let refund_usd = refund_usd.min(request.attached_usd);
-                            let developer_amount = request.attached_usd.saturating_sub(refund_usd);
+                            // What the operation cost, and what was merely
+                            // attached. For a priced project those differ
+                            // whenever the caller rounded up — admission takes
+                            // at least the price and the excess is theirs.
+                            //
+                            // Read from the same table and the same
+                            // `input_data` the price came from, so there is one
+                            // copy of the price and it is the chain's.
+                            let priced: Option<(AccountId, u128, u16)> =
+                                if let ExecutionSource::Project { project_id, .. } =
+                                    &request.execution_source
+                                {
+                                    self.project_pricing.get(project_id).and_then(|pricing| {
+                                        let operation = crate::payment::operation_from_input(
+                                            request.input_data.as_deref(),
+                                        )
+                                        .ok()?;
+                                        let op = pricing
+                                            .operations
+                                            .iter()
+                                            .find(|o| o.operation == operation)?;
+                                        Some((
+                                            pricing.author_account_id.clone(),
+                                            op.price_usd.0,
+                                            op.developer_share_bp,
+                                        ))
+                                    })
+                                } else {
+                                    None
+                                };
 
-                            // Refund stablecoin to user's balance
-                            if refund_usd > 0 {
-                                let current_balance = self.user_stablecoin_balances.get(&request.sender_id).unwrap_or(0);
-                                self.user_stablecoin_balances.insert(&request.sender_id, &(current_balance + refund_usd));
-                                log!(
-                                    "Refunded {} stablecoin to {} (WASM requested partial refund)",
-                                    refund_usd,
-                                    request.sender_id
-                                );
-                            }
+                            // An unpriced project keeps the old meaning: what
+                            // was attached is what was meant for the developer.
+                            let price = priced
+                                .as_ref()
+                                .map(|(_, p, _)| *p)
+                                .unwrap_or(request.attached_usd);
+
+                            // The guest may still hand part of the PRICE back —
+                            // its own decision about the work it did — and it
+                            // cannot reach past the price into the change,
+                            // which is not its money to give.
+                            let (refund_usd, developer_amount) = crate::payment::settle_attached(
+                                request.attached_usd,
+                                price,
+                                exec_response.refund_usd.map(|r| r as u128).unwrap_or(0),
+                            );
+
+                            // Both refunds belong to the caller: the change is
+                            // theirs because they attached it, and the guest's
+                            // own refund was taken out of the price on their
+                            // behalf.
+                            self.return_attached_usd(
+                                &request.sender_id,
+                                refund_usd,
+                                "change and guest refund",
+                            );
 
                             // Credit developer earnings if developer_amount > 0
                             if developer_amount > 0 {
-                                if let ExecutionSource::Project { project_id, .. } = &request.execution_source {
-                                    if let Some(project) = self.projects.get(project_id) {
+                                // Who is left to pay. Resolved first, and as an
+                                // option, because a project can be deleted
+                                // between admission and settlement — and money
+                                // with no payee has to go somewhere it can be
+                                // accounted for.
+                                let payee = match &request.execution_source {
+                                    ExecutionSource::Project { project_id, .. } => self
+                                        .projects
+                                        .get(project_id)
+                                        .map(|project| (project_id.clone(), project)),
+                                    _ => None,
+                                };
+
+                                match payee {
+                                    Some((project_id, project)) => {
                                         // For a PRICED project the money is split: the
                                         // connector's author takes the share their
                                         // operation carries, and what is left belongs to
@@ -436,26 +501,25 @@ impl Contract {
                                         // both rare and ours; the alternative is a side map
                                         // holding a copy of the share for every pending
                                         // request, forever, to close a gap nobody but us
-                                        // can open. The AMOUNT being split is fixed either
-                                        // way — it was taken at admission.
-                                        let split = self
-                                            .project_pricing
-                                            .get(project_id)
-                                            .and_then(|pricing| {
-                                                let operation = crate::payment::operation_from_input(
-                                                    request.input_data.as_deref(),
-                                                )
-                                                .ok()?;
-                                                let share = pricing
-                                                    .operations
-                                                    .iter()
-                                                    .find(|o| o.operation == operation)?
-                                                    .developer_share_bp;
-                                                Some((
-                                                    pricing.author_account_id.clone(),
-                                                    crate::payment::split_payment(developer_amount, share),
-                                                ))
-                                            });
+                                        // can open.
+                                        //
+                                        // The amount being split is NOT fixed at admission
+                                        // any more, and saying so was wrong once the gate
+                                        // became `>=`: the split base is the price as read
+                                        // HERE, so raising a price — or unpricing the
+                                        // project, which makes the whole attachment the
+                                        // price — mid-flight turns a caller's change into
+                                        // developer earnings. Bounded by what was attached,
+                                        // owner-only, and accepted as such.
+                                        let split = priced.as_ref().map(|(author, _, share)| {
+                                            (
+                                                author.clone(),
+                                                crate::payment::split_payment(
+                                                    developer_amount,
+                                                    *share,
+                                                ),
+                                            )
+                                        });
 
                                         match split {
                                             Some((author, split)) if split.author_usd > 0 => {
@@ -485,6 +549,17 @@ impl Contract {
                                             }
                                         }
                                     }
+                                    // The project was deleted while this
+                                    // execution was in flight, so there is
+                                    // nobody left to credit. The caller gets
+                                    // their money back: keeping it would leave
+                                    // tokens on the contract that no balance
+                                    // and no earnings row accounts for.
+                                    None => self.return_attached_usd(
+                                        &request.sender_id,
+                                        developer_amount,
+                                        "the project no longer exists",
+                                    ),
                                 }
                             }
                         }
@@ -602,16 +677,11 @@ impl Contract {
                                 .transfer(NearToken::from_yoctonear(refund));
                         }
 
-                        // Refund stablecoin to user's balance
-                        if request.attached_usd > 0 {
-                            let current = self.user_stablecoin_balances.get(&request.sender_id).unwrap_or(0);
-                            self.user_stablecoin_balances.insert(&request.sender_id, &(current + request.attached_usd));
-                            log!(
-                                "Refunded {} stablecoin to {} (execution failed)",
-                                request.attached_usd,
-                                request.sender_id
-                            );
-                        }
+                        self.return_attached_usd(
+                            &request.sender_id,
+                            request.attached_usd,
+                            "execution failed",
+                        );
 
                         self.total_fees_collected += self.base_fee;
 
@@ -659,16 +729,11 @@ impl Contract {
                             .transfer(NearToken::from_yoctonear(refund));
                     }
 
-                    // Refund stablecoin to user's balance
-                    if request.attached_usd > 0 {
-                        let current = self.user_stablecoin_balances.get(&request.sender_id).unwrap_or(0);
-                        self.user_stablecoin_balances.insert(&request.sender_id, &(current + request.attached_usd));
-                        log!(
-                            "Refunded {} stablecoin to {} (promise failed)",
-                            request.attached_usd,
-                            request.sender_id
-                        );
-                    }
+                    self.return_attached_usd(
+                        &request.sender_id,
+                        request.attached_usd,
+                        "the execution promise failed",
+                    );
 
                     self.total_fees_collected += self.base_fee;
 
@@ -713,10 +778,25 @@ impl Contract {
         let is_stale = env::block_timestamp() > request.timestamp + EXECUTION_TIMEOUT;
         assert!(is_stale, "Execution is not yet stale, please wait");
 
-        // Remove the request and refund the payer
+        // Remove the request and return BOTH sides of what it took: the NEAR
+        // held for compute, and the stablecoin admission debited for the
+        // developers. A cancelled request earns nobody anything, so leaving the
+        // stablecoin behind would take a caller's money for work that never
+        // happened.
+        //
+        // Removal is what makes this safe to pay out. It is the same single
+        // token `on_execution_response` claims, so a request is settled here or
+        // there, never in both.
         if let Some(stale_request) = self.pending_requests.remove(&request_id) {
             near_sdk::Promise::new(stale_request.payer_account_id.clone())
                 .transfer(NearToken::from_yoctonear(stale_request.payment));
+
+            self.return_attached_usd(
+                &stale_request.sender_id,
+                stale_request.attached_usd,
+                "the execution was cancelled as stale",
+            );
+
 
             log!(
                 "Cancelled stale execution {} and refunded payer {}",
@@ -732,6 +812,41 @@ impl Contract {
 // ============================================================================
 
 impl Contract {
+    /// Give an execution's stablecoin back to the account that attached it.
+    ///
+    /// One function, because the money can fail to be earned in SEVEN different
+    /// ways — the guest hands part of it back, the guest fails, the promise
+    /// dies, the project is gone by settlement, the caller cancels a stuck
+    /// request, we cancel one for them, we clear a batch — and every one of them
+    /// has to end in the same place.
+    ///
+    /// That count said five when this was written, and it was wrong: the two
+    /// BULK admin paths were missed, and each destroyed a caller's stablecoin
+    /// while dutifully returning their NEAR. An enumeration in a comment is not
+    /// a guard. What to check when adding a caller is `pending_requests.remove`
+    /// — the operation that ends a request is the one that owes the money back. A path that forgets is
+    /// invisible from the outside: the tokens stay on the contract with no
+    /// ledger row pointing at them, so no balance anyone can read ever says
+    /// they are missing.
+    ///
+    /// Always `sender_id`, never `payer_account_id`. Admission debits the
+    /// predecessor and stores exactly that account as `sender_id`, so it is the
+    /// one the money came out of; `payer_account_id` is the NEAR side and may
+    /// be somebody else entirely.
+    pub(crate) fn return_attached_usd(&mut self, account: &AccountId, amount: u128, reason: &str) {
+        if amount == 0 {
+            return;
+        }
+        let current = self.user_stablecoin_balances.get(account).unwrap_or(0);
+        self.user_stablecoin_balances.insert(account, &(current + amount));
+        log!(
+            "Returned {} stablecoin to {} ({})",
+            amount,
+            account,
+            reason
+        );
+    }
+
     /// Resolve ExecutionSource to CodeSource for worker
     /// Returns (resolved_source, project_uuid)
     /// Secrets are passed as-is through secrets_ref parameter, no auto-lookup

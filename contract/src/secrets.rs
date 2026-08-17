@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 /// One line per kind, each carrying the whole of what identifies it. The
 /// signing side only ever produces the `Project` form — that is what an agent's
 /// secret is — and the others exist so that binding the accessor does not
-/// narrow what `store_secrets_for` accepts.
+/// narrow what `store_agent_secret` accepts.
 fn accessor_binding(accessor: &SecretAccessor) -> String {
     match accessor {
         SecretAccessor::Project { project_id } => project_id.clone(),
@@ -21,7 +21,7 @@ fn accessor_binding(accessor: &SecretAccessor) -> String {
     }
 }
 
-/// The exact string `store_secrets_for` requires a signature over.
+/// The exact string `store_agent_secret` requires a signature over.
 ///
 /// A function rather than a `format!` at the call site, so a test can exercise
 /// the REAL construction. Pinned against an inline `format!` it would only
@@ -32,15 +32,116 @@ fn accessor_binding(accessor: &SecretAccessor) -> String {
 /// ORDER MATTERS. The fields are colon-joined with no escaping, so all but the
 /// last must be colon-free for the string to name exactly one tuple. `access`
 /// is JSON and may contain anything, so it goes LAST, with nothing after it to
-/// confuse its boundary. Everything before — the key, the accessor, the
-/// ciphertext (base64), the payer and the vault (account ids) — is colon-free,
-/// so the fields are readable from both ends.
+/// confuse its boundary.
+///
+/// That requirement was once stated here and enforced by nothing, and it was
+/// not true: `accessor_binding` renders a `Repo` as `repo:{repo}:{branch}` with
+/// nothing stopping either half from carrying a colon, so one signature covered
+/// two different tuples — `(branch "main", profile "x:y")` and
+/// `(branch "main:x", profile "y")` produced the same bytes.
+///
+/// **The accessor is now LENGTH-PREFIXED**, which is what lets it hold colons
+/// again. `git@github.com:owner/repo` is an ordinary way to write a repository
+/// and refusing it was a real cost; with the length in front, the field's end is
+/// pinned by arithmetic instead of by a delimiter, so its content stops
+/// mattering. Refusing colons everywhere was the cheap answer and this is the
+/// one that scales — the next field to need a colon needs no new rule.
+///
+/// Still `v1`, deliberately. A version exists to tell two formats apart IN THE
+/// WILD, and there is no v1 in the wild: the mechanism has never been on
+/// mainnet and the only testnet secrets under the earlier format are ours. A
+/// bump would have marked a boundary nobody is on either side of. The keystore
+/// pins the same string.
+///
+/// What is left holding colons is deliberate and safe: `agent_pubkey` is
+/// `ed25519:` plus exactly 64 hex characters, a fixed shape that consumes a
+/// known number of segments; the accessor is pinned by its length; and `access`
+/// is last, with nothing after it to confuse. `profile` is the one field still
+/// required to be colon-free — see [`assert_unambiguous_fields`].
 ///
 /// An absent vault leaves an EMPTY field rather than dropping one: dropping
 /// would shift every field after it, and two different tuples would share a
 /// message.
+/// Refuse any signed field that could move a boundary in the message above.
+///
+/// A colon in a variable field is not a formatting nuisance, it is a second
+/// meaning for one signature: the verifier compares STRINGS, so a tuple that
+/// renders to the same bytes is authorised by the same signature. The payer —
+/// who submits the signed call and did not sign it — is the party who would
+/// choose the second meaning, and what it buys them is landing the store under
+/// a different accessor or profile of the same owner, overwriting whatever was
+/// there.
+///
+/// Only the caller-supplied halves are checked. The prefixes `accessor_binding`
+/// writes (`repo:`, `wasm:`, `system:`) are fixed per variant, so once the
+/// halves are colon-free the number of segments each variant occupies is known
+/// and the string reads back to exactly one tuple.
+///
+/// A ban rather than escaping or length prefixes, which is the cheaper half of
+/// a real answer: it has to be re-applied by hand to every field and every
+/// accessor variant added later. Signing a concatenation of per-field hashes
+/// would end the question instead of answering it once — worth doing when this
+/// format next changes for another reason.
+///
+/// Nothing legitimate is lost. A profile is an agent's account (hex) or a name
+/// somebody types; git forbids a colon in a refname; a normalised repo path is
+/// `github.com/owner/repo` with no scheme; a project id is `owner/name` and NEAR
+/// account ids cannot hold a colon; a wasm hash is hex.
+pub(crate) fn assert_profile_is_unambiguous(profile: &str) {
+    // Only `profile`. The accessor is length-prefixed in the message, so its
+    // content cannot move a boundary however it is spelled — which is what lets
+    // a repository be written `git@github.com:owner/repo`.
+    //
+    // `profile` is a plain argument here, not something derived — that happens
+    // in the keystore — so it is worth being exact about what already guards
+    // it. On the STORE path a colon could never have reached the message:
+    // `store_secrets_internal` accepts only alphanumerics, dashes and
+    // underscores, which was true long before any of this. The DELETE path
+    // never reaches that validation, and this is what makes it hold the same
+    // line.
+    assert!(
+        !profile.contains(':'),
+        "profile must not contain ':' — it is a field separator in the signed \
+         `store_agent_secret` message, and a colon there would let one signature \
+         authorise a different secret. Got '{}'. A profile is an agent's \
+         64-character account or a plain name like 'production'.",
+        profile
+    );
+}
+
+/// The exact string `delete_agent_secret` requires a signature over.
+///
+/// A DIFFERENT domain from the store, and that is the point: a signature made
+/// to store a secret must never also destroy one.
+///
+/// Same shape otherwise, for the same reasons — a leading ASCII domain, so read
+/// as borsh it claims a `signer_id` of about 1.9 billion against a 64-byte
+/// maximum and no transaction can wear it; the accessor length-prefixed, so it
+/// may hold anything; the payer last, binding the submitter.
+///
+/// The payer is in here for the same reason as in the store, and a sharper one:
+/// without it the pair `(args, signature)` sits on chain forever and anyone
+/// could replay it — and a replayed DELETE is not a rollback, it is a deletion
+/// that happens whenever an attacker chooses.
+pub(crate) fn secret_delete_message(
+    agent_pubkey: &str,
+    accessor: &SecretAccessor,
+    profile: &str,
+    payer: &AccountId,
+) -> String {
+    let binding = accessor_binding(accessor);
+    format!(
+        "delete_agent_secret:v1:{}:{}:{}:{}:{}",
+        agent_pubkey,
+        binding.len(),
+        binding,
+        profile,
+        payer
+    )
+}
+
 pub(crate) fn secret_store_message(
-    wallet_pubkey: &str,
+    agent_pubkey: &str,
     accessor: &SecretAccessor,
     profile: &str,
     encrypted_secrets_base64: &str,
@@ -48,10 +149,12 @@ pub(crate) fn secret_store_message(
     vault_id: Option<&AccountId>,
     access: &types::AccessCondition,
 ) -> String {
+    let binding = accessor_binding(accessor);
     format!(
-        "store_secrets_for:v1:{}:{}:{}:{}:{}:{}:{}",
-        wallet_pubkey,
-        accessor_binding(accessor),
+        "store_secrets_for:v1:{}:{}:{}:{}:{}:{}:{}:{}",
+        agent_pubkey,
+        binding.len(),
+        binding,
         profile,
         encrypted_secrets_base64,
         payer,
@@ -135,7 +238,23 @@ impl Contract {
         );
     }
 
-    /// Store a secret OWNED BY A WALLET, paid for by whoever calls.
+    /// Store a secret for YOUR AGENT — not for yourself — paid for by whoever
+    /// calls.
+    ///
+    /// The name says all three things it needs to, because each one is a
+    /// question somebody would otherwise ask of the code:
+    ///
+    ///   * **agent secret** — the owner is the AGENT, derived from the key that
+    ///     signed. It is not the caller's own secret, and there is no argument
+    ///     through which another NEAR account could be named as the owner. Use
+    ///     `store_secrets` for your own.
+    ///   * **a project or a wasm hash, nothing else.** Not a limit of the
+    ///     signature — the accessor is length-prefixed and would carry anything
+    ///     — but of what an agent secret IS. A repository names a source that
+    ///     can be rewritten under it; a payment key is not a secret of this kind
+    ///     at all and has its own door. `delete_agent_secret` accepts exactly
+    ///     the same two, because a door that takes more than its counterpart is
+    ///     a door somebody finds.
     ///
     /// Exists so an agent needs no NEAR of its own. On the ordinary path the
     /// owner is the caller, which means a custody wallet has to hold a NEAR
@@ -164,9 +283,9 @@ impl Contract {
     /// deposit arithmetic, refunds to the payer, the vault side-table — is the
     /// same code the ordinary path runs.
     #[payable]
-    pub fn store_secrets_for(
+    pub fn store_agent_secret(
         &mut self,
-        wallet_pubkey: String,
+        agent_pubkey: String,
         accessor: SecretAccessor,
         profile: String,
         encrypted_secrets_base64: String,
@@ -175,7 +294,53 @@ impl Contract {
         wallet_signature: String,
     ) {
         let payer = env::predecessor_account_id();
-        let owner = crate::wallet::implicit_account_of(&wallet_pubkey);
+        let owner = crate::wallet::implicit_account_of(&agent_pubkey);
+
+        // Before anything is hashed: a field that can move a boundary makes the
+        // signature cover more than one tuple. Checked here rather than inside
+        // `secret_store_message`, which is a pure function used for verification
+        // too — the refusal belongs on the way IN.
+        assert_profile_is_unambiguous(&profile);
+
+        // This door is for PROJECTS, and says so rather than leaving it to be
+        // discovered.
+        //
+        // Not a limit of the signature — the accessor is length-prefixed and
+        // would carry a repo or a hash perfectly well. It is the ENCRYPTION
+        // that is project-shaped: the ciphertext is sealed to
+        // `project:{project_id}:{agent}`, derived by the keystore from the
+        // project alone, and there is no agreed seed for a repository or a wasm
+        // hash. Accepting one would store a secret under a key nothing can
+        // derive a decryption for — working on the way in, silent on the way
+        // out, which is the worst of the three possible behaviours.
+        //
+        // If a repo or hash accessor is ever wanted here, the seed is what has
+        // to be designed first, and with the same care: `repo:{repo}:{branch}:
+        // {agent}` colon-joined would let two different repositories derive ONE
+        // key, and that costs confidentiality rather than the integrity the
+        // message ambiguity cost.
+        //
+        // GitHub is simply not supported here. A wasm hash is, and nothing
+        // checks it was ever deployed: there is nothing to check a commitment
+        // against, and a secret sealed to bytes that have not run yet is a
+        // secret waiting for them.
+        assert!(
+            !matches!(accessor, SecretAccessor::Repo { .. }),
+            "GitHub repositories are not supported for agent secrets. Use a wasm hash \
+             or a project."
+        );
+
+        // A payment key is not an agent secret, and the write-once rule further
+        // in does NOT cover this — it refuses a REWRITE, so a first store would
+        // have gone through. Payment keys are created by their owner through
+        // `store_secrets`, never here, so refusing costs nothing and the two
+        // doors now accept exactly the same set.
+        assert!(
+            !matches!(accessor, SecretAccessor::System(_)),
+            "A payment key is not an agent secret. Create it with store_secrets from \
+             the account that owns it."
+        );
+
 
         // EVERY argument that decides what is stored, who may read it, and who
         // pays is inside the signature. Not most of them.
@@ -199,7 +364,7 @@ impl Contract {
         // vault (account ids) — is colon-free, so the boundaries are readable
         // from both ends.
         let message = secret_store_message(
-            &wallet_pubkey,
+            &agent_pubkey,
             &accessor,
             &profile,
             &encrypted_secrets_base64,
@@ -211,7 +376,7 @@ impl Contract {
         hasher.update(message.as_bytes());
         let message_hash: [u8; 32] = hasher.finalize().into();
 
-        crate::wallet::verify_wallet_signature(&wallet_pubkey, &message_hash, &wallet_signature);
+        crate::wallet::verify_wallet_signature(&agent_pubkey, &message_hash, &wallet_signature);
 
         self.store_secrets_internal(
             owner,
@@ -221,6 +386,99 @@ impl Contract {
             encrypted_secrets_base64,
             access,
             vault_id,
+        );
+    }
+
+    /// Remove an agent secret, on the authority of the key that owns it.
+    ///
+    /// The mirror of [`Contract::store_agent_secret`], and it exists because
+    /// without it a secret written there could never be removed by anybody: the
+    /// owner is an implicit account whose key lives only inside the keystore, so
+    /// the ordinary `delete_secrets` — which deletes under `owner = caller` —
+    /// has no caller that could ever match. The secret and its storage deposit
+    /// were permanent.
+    ///
+    /// **The agent's key authorises it, and that is the whole rule.** The
+    /// signature is produced by the keystore for a holder of the wallet's
+    /// `wk_`, so the human who set the secret up can remove it — and so can the
+    /// agent itself, deliberately. An agent that has finished with a credential
+    /// should be able to take it out of the world rather than leaving it on
+    /// chain because only somebody else could.
+    ///
+    /// **The submitter is bound but not restricted.** They are in the signed
+    /// message, so a signature cannot be lifted and replayed by a third party;
+    /// they are not required to be any particular account, because an agent has
+    /// no NEAR and needs whoever is paying gas to be able to send this.
+    ///
+    /// The storage deposit comes BACK to the submitter — the same refund the
+    /// ordinary delete makes, to the party the signature names and, on the path
+    /// this is built for, the one who paid it in.
+    ///
+    /// NOT `#[payable]`, matching `delete_secrets`. A delete needs no deposit,
+    /// and accepting one would mean NEAR attached by mistake settles into the
+    /// contract with nothing to return it; refusing the attachment is the
+    /// runtime's job and it does it for free.
+    pub fn delete_agent_secret(
+        &mut self,
+        agent_pubkey: String,
+        accessor: SecretAccessor,
+        profile: String,
+        wallet_signature: String,
+    ) {
+        let payer = env::predecessor_account_id();
+        let owner = crate::wallet::implicit_account_of(&agent_pubkey);
+
+        // The same rule the store applies, from the same place. Two copies
+        // would be two messages for one constraint, and the second is the one
+        // nobody updates.
+        assert_profile_is_unambiguous(&profile);
+
+        // A payment key is NOT an agent secret and must not leave by this door.
+        //
+        // An agent's payment key lives at exactly this shape — accessor
+        // `System(PaymentKey)`, owner the agent's own implicit account — so
+        // without this line a valid agent signature could erase it from the
+        // chain. That bypasses `delete_payment_key`, which the write-once rule
+        // names as the honest way out precisely because the coordinator SEES
+        // it, and it bypasses the coordinator's own refusal to delete an agent
+        // key at all, which exists because the balance behind it would be
+        // stranded.
+        //
+        // Accepts exactly what the store accepts, and for the same reason: a
+        // door that takes more than its counterpart is a door somebody finds.
+        assert!(
+            matches!(
+                accessor,
+                SecretAccessor::Project { .. } | SecretAccessor::WasmHash { .. }
+            ),
+            "delete_agent_secret removes an agent SECRET, stored against a project or \
+             a wasm hash. A payment key is not one: delete it with delete_payment_key, \
+             which the coordinator is told about."
+        );
+
+        let message = secret_delete_message(&agent_pubkey, &accessor, &profile, &payer);
+        let mut hasher = Sha256::new();
+        hasher.update(message.as_bytes());
+        let message_hash: [u8; 32] = hasher.finalize().into();
+
+        crate::wallet::verify_wallet_signature(&agent_pubkey, &message_hash, &wallet_signature);
+
+        let key = SecretKey {
+            accessor: accessor.clone(),
+            profile: profile.clone(),
+            owner: owner.clone(),
+        };
+
+        // The index belongs to the owner; the deposit goes back to whoever is
+        // standing here paying gas, which on this path is who put it in.
+        self.delete_secrets_internal(key, &owner, &payer);
+
+        log!(
+            "Agent secret deleted: accessor={:?}, profile={}, owner={}, submitted by {}",
+            accessor,
+            profile,
+            owner,
+            payer
         );
     }
 
@@ -242,7 +500,8 @@ impl Contract {
             owner: caller.clone(),
         };
 
-        self.delete_secrets_internal(key, &caller);
+        // The ordinary door: the caller IS the owner, so both roles are theirs.
+        self.delete_secrets_internal(key, &caller, &caller);
 
         log!(
             "Secrets deleted: accessor={:?}, profile={}, owner={}",
@@ -593,7 +852,7 @@ mod tests {
     use near_sdk::test_utils::{accounts, VMContextBuilder};
     use near_sdk::testing_env;
 
-    /// The `store_secrets_for` message, byte for byte.
+    /// The `store_agent_secret` message, byte for byte.
     ///
     /// The keystore builds the SAME string from its own types
     /// (`the_secret_store_message_format_is_pinned` in
@@ -617,15 +876,17 @@ mod tests {
 
         assert_eq!(
             message(None, &types::AccessCondition::AllowAll),
-            "store_secrets_for:v1:ed25519:ab:a.near/p:agent:cipher:payer.near::\"AllowAll\""
+            "store_secrets_for:v1:ed25519:ab:8:a.near/p:agent:cipher:payer.near::\"AllowAll\""
         );
         assert_eq!(
             message(Some("vault.alice.near".parse().unwrap()), &types::AccessCondition::AllowAll),
-            "store_secrets_for:v1:ed25519:ab:a.near/p:agent:cipher:payer.near:vault.alice.near:\"AllowAll\""
+            "store_secrets_for:v1:ed25519:ab:8:a.near/p:agent:cipher:payer.near:vault.alice.near:\"AllowAll\""
         );
 
         // `access` is LAST because it is JSON and may contain colons; anything
-        // after it would have ambiguous boundaries.
+        // after it would have ambiguous boundaries. The accessor is the one
+        // exception, and the `8:` before it is why: its end is arithmetic, not
+        // a delimiter, so it may hold colons of its own.
         let whitelist = types::AccessCondition::Whitelist {
             accounts: vec!["a.near".parse().unwrap()],
         };
@@ -650,7 +911,7 @@ mod tests {
 
     /// What an accessor looks like inside a SIGNATURE, pinned.
     ///
-    /// These strings are covered by `store_secrets_for`'s signature, so
+    /// These strings are covered by `store_agent_secret`'s signature, so
     /// changing one silently invalidates every signature a client is about to
     /// send and, worse, makes a signature for one accessor verify against
     /// another. Nothing else fails when that happens: the code compiles, the
@@ -1397,7 +1658,7 @@ impl Contract {
     /// The body of `store_secrets`, with the OWNER and the PAYER separated.
     ///
     /// They are the same account on the ordinary path and different on
-    /// [`Contract::store_secrets_for`], where a wallet's signature says who owns
+    /// [`Contract::store_agent_secret`], where a wallet's signature says who owns
     /// the secret while somebody else stakes the storage. Everything else — the
     /// accessor validation, the payment-key write-once rule, the deposit
     /// arithmetic, the vault side-table, the owner's index — is identical, and
@@ -1659,7 +1920,21 @@ impl Contract {
 
     /// Internal method to delete secrets by key
     /// pub(crate) to allow access from payment.rs for delete_payment_key
-    pub(crate) fn delete_secrets_internal(&mut self, key: SecretKey, caller: &AccountId) {
+    /// Remove a secret, clean the OWNER's index, and refund the deposit to
+    /// whoever is owed it.
+    ///
+    /// Two accounts, because they are two questions and only coincide on the
+    /// ordinary path. The index is keyed by owner, so cleaning it under anyone
+    /// else leaves a dangling entry pointing at a secret that is gone. The
+    /// refund follows the money instead: on an agent secret the deposit was
+    /// paid by a human who is not the owner, and returning it to the agent —
+    /// an account with no keys outside the TEE — would strand it forever.
+    pub(crate) fn delete_secrets_internal(
+        &mut self,
+        key: SecretKey,
+        owner: &AccountId,
+        refund_to: &AccountId,
+    ) {
         let profile_data = self.secrets_storage.get(&key)
             .expect("Secrets not found");
 
@@ -1671,19 +1946,19 @@ impl Contract {
         self.secret_vault_bindings.remove(&key);
 
         // Remove from user index
-        if let Some(mut user_secrets) = self.user_secrets_index.get(caller) {
+        if let Some(mut user_secrets) = self.user_secrets_index.get(owner) {
             user_secrets.remove(&key);
             if user_secrets.is_empty() {
                 // Remove empty set
-                self.user_secrets_index.remove(caller);
+                self.user_secrets_index.remove(owner);
             } else {
-                self.user_secrets_index.insert(caller, &user_secrets);
+                self.user_secrets_index.insert(owner, &user_secrets);
             }
         }
 
         // Refund storage deposit
         if profile_data.storage_deposit > 0 {
-            near_sdk::Promise::new(caller.clone())
+            near_sdk::Promise::new(refund_to.clone())
                 .transfer(NearToken::from_yoctonear(profile_data.storage_deposit));
             log!("Refunded {} yoctoNEAR", profile_data.storage_deposit);
         }

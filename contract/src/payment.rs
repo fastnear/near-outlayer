@@ -230,6 +230,29 @@ pub(crate) fn split_payment(paid_usd: u128, developer_share_bp: u16) -> Split {
     }
 }
 
+/// How a settled call divides what was attached: what goes back, and what is
+/// left to split between the developers.
+///
+/// Two refunds meet here and they are not the same thing. The CHANGE is
+/// whatever the caller attached over the price — theirs, always, and not the
+/// guest's to give away or keep. The guest's own `refund_usd` is a decision
+/// about the work it did, so it can only reach into the PRICE.
+///
+/// Clamping the guest to the price is the whole reason this is one function:
+/// clamped to `attached` instead, a guest could hand back money it was never
+/// paid — the caller's change — and the developer's side would come out short
+/// by exactly that much.
+pub(crate) fn settle_attached(
+    attached_usd: u128,
+    price_usd: u128,
+    guest_refund_usd: u128,
+) -> (u128, u128) {
+    let overpaid = attached_usd.saturating_sub(price_usd);
+    let chargeable = attached_usd - overpaid;
+    let guest_refund = guest_refund_usd.min(chargeable);
+    (overpaid + guest_refund, chargeable - guest_refund)
+}
+
 /// What this operation costs, or `None` if the project does not sell it.
 ///
 /// `None` and `Some(0)` are different answers on purpose: a published free
@@ -678,7 +701,9 @@ impl Contract {
                 );
 
                 // Delete secret from contract storage (refunds storage deposit)
-                self.delete_secrets_internal(secret_key, &owner);
+                // A payment key is owned by the account that created it, and the
+                // storage deposit goes back to that same account.
+                self.delete_secrets_internal(secret_key, &owner, &owner);
 
                 log!(
                     "Payment key deleted: owner={}, nonce={}",

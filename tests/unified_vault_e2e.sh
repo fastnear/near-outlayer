@@ -33,13 +33,19 @@
 #                                          keystore refuses → MPC-CKD master recover → derive-wallet-key
 #                                          re-derive → a REAL signed tx lands from the recovered key
 #                                          [ported from sovereignty_e2e.sh]
+#   V6  a secret CREATED for an agent    — the other end of V4: putting a credential there rather than
+#                                          reading one. Both money paths (the agent's own wallet, and a
+#                                          BLOCKCHAIN ACCOUNT paying via `store_agent_secret`), the key
+#                                          being scope-specific, and what the wallet's signature covers
+#                                          — vault, audience, ciphertext, name and payer each altered in
+#                                          turn and refused by the contract
 #
 # ── VAULT-MODE GATE (MPC_PUBLIC_KEY) ─────────────────────────────────────────────
-#   V1–V5 are ALL vault-mode / recovery tests. Without MPC_PUBLIC_KEY the suite runs in DEFAULT-VAULT
+#   V1–V6 are ALL vault-mode tests. Without MPC_PUBLIC_KEY the suite runs in DEFAULT-VAULT
 #   mode — it CANNOT `outlayer vault init` a dedicated per-vault, so there is no vault to isolate,
-#   recover, or retire. In that mode V1–V5 are cleanly SKIP-noted (exactly like unified_op_e2e.sh's
-#   default-vault handling of its vault-only dimensions) rather than failing. Set MPC_PUBLIC_KEY
-#   (bls12381g2:base58 — the same value keystore-worker uses) to deploy real vaults and run V1–V5.
+#   recover, retire, or bind a secret to. In that mode V1–V6 are cleanly SKIP-noted (exactly like
+#   unified_op_e2e.sh's default-vault handling of its vault-only dimensions) rather than failing. Set
+#   MPC_PUBLIC_KEY (bls12381g2:base58 — the same value keystore-worker uses) to deploy real vaults.
 #
 # ── IRREVERSIBILITY / FUND-LIFECYCLE WARNINGS (read before --apply) ──────────────
 #   * `outlayer vault init` LOCKS NEAR (the vault account's storage stake) that the throwaway sub-wallet
@@ -52,6 +58,8 @@
 #     a vault you still rely on.
 #   * Net: after a full --apply run you will have N retired throwaway vaults on chain, each still holding
 #     ~0.1 NEAR of locked storage stake. The final summary re-states this.
+#   * V6 stakes three 0.1 NEAR storage deposits for the secrets it stores. Only the OWNER — the agent's
+#     own wallet — can `delete_secrets` to reclaim one, and it has no gas to, so the suite leaves them.
 #
 # ── What each test needs ─────────────────────────────────────────────────────────
 #   [VAULT]   MPC_PUBLIC_KEY set (so a dedicated vault can be deployed). Everything here is gated on it.
@@ -78,6 +86,9 @@
 #   ONLY            optional comma list to run a subset, e.g. ONLY=V1,V3
 #   (V4 only)       SECRET_PROJECT=<owner>/<name>  SECRET_OWNER=<acct>  SECRET_PROFILE=<profile>
 #                   EXPECTED_SECRET_VALUE=<literal>  SECRET_PAYMENT_KEY=<X-Payment-Key>
+#   (V6 only)       CONNECTOR_PROJECT_ID=<owner>/<name> — a project that EXISTS on chain (testnet
+#                   defaults to connectors.outlayer.testnet/connector-probe; no mainnet default)
+#                   OUTLAYER_BIN=<path> — a CLI with `secrets set-for-agent`, if not on PATH
 #
 # Run (dry-run prints the plan; --apply executes):
 #   MPC_PUBLIC_KEY=bls12381g2:... PARENT=zavodil2.testnet ./tests/unified_vault_e2e.sh --apply
@@ -99,6 +110,18 @@ RPC_URL="${RPC_URL:-https://rpc.${NETWORK}.fastnear.com}"
 CONTRACT_ID="${CONTRACT_ID:-outlayer.testnet}"
 COORDINATOR_URL="${COORDINATOR_URL:-https://testnet-api.outlayer.ai}"
 WNEAR="${WNEAR:-wrap.testnet}"
+# V6 stores a secret against a connector's project, and the contract refuses one
+# for a project that does not exist — so this must name a REAL deployed project.
+# No mainnet default: naming the wrong one there would store a stranger's secret.
+CONNECTOR_PROJECT_ID="${CONNECTOR_PROJECT_ID:-$([ "$NETWORK" = testnet ] && echo connectors.outlayer.testnet/connector-probe || echo "")}"
+# V6 drives the real user path (`outlayer secrets set-for-agent`). Override to
+# run a build that is not on PATH.
+OUTLAYER_BIN="${OUTLAYER_BIN:-outlayer}"
+# Every `outlayer` call in this suite targets the network the suite is running
+# against. Left unset, the CLI reads ~/.outlayer/default-network — whatever the
+# operator last logged into, which on the paying paths decides which chain a
+# full access key signs against.
+export OUTLAYER_NETWORK="$NETWORK"
 # MPC-CKD signer config for vault mode (V1–V5). NOT secret (public key + contract id + domain — per
 # user "это не секрет, можно хранить"). TESTNET defaults (this suite is testnet — override all three for
 # mainnet). EXPORTED so the `outlayer` CLI (vault init/recovery) AND customer-recovery (--mpc-contract /
@@ -157,13 +180,15 @@ for tool in jq curl outlayer near python3; do command -v "$tool" >/dev/null || {
 
 if [[ "$APPLY" != true ]]; then
   warn "Dry-run deploys NOTHING (no vault init → no NEAR locked). Pass --apply to deploy/reuse vaults + exercise the vault isolation + FULL single-run sovereign-exit (finalize + offline re-derive) surface on $NETWORK."
-  warn "VAULT suite (V1,V2,V3,V4,V5) — ALL gated on MPC_PUBLIC_KEY (vault mode):"
+  warn "VAULT suite (V1,V2,V3,V4,V5,V6) — ALL gated on MPC_PUBLIC_KEY (vault mode):"
   warn "       V1 multi-customer vault isolation: two scopes (vault.\$PARENT + vaultb.\$PARENT) → distinct addrs; X-Customer-Vault ignored[VAULT/POLICY]"
   warn "       V2 N wallets per one vault (vault.\$PARENT): distinct wallet_id+addr each; sub-agent inherits binding[VAULT/POLICY]"
   warn "       V3 Bearer-near sovereign exit: derive 3 users → set 60s window → initiate → wait window → finalize_recovery → keystore REFUSES → MPC-CKD master recover → offline re-derive all 3 addrs MATCH[VAULT/POLICY]"
   warn "       V4 detach secret-decrypt: pre-recovery decrypt → set 60s window → initiate → wait → finalize → post-recovery /call REFUSED → on-chain ciphertext re-derive + local decrypt == EXPECTED (gated on SECRET_* env)[VAULT/POLICY]"
   warn "       V5 wk_-path sovereign exit: register wk_ → set 60s window → initiate → wait → finalize → keystore REFUSES → MPC-CKD re-derive same addr → REAL on-chain send-near by recovered key LANDS[VAULT/FUNDS]"
-  warn "Without MPC_PUBLIC_KEY (default-vault mode) V1–V5 are SKIP-noted (no per-vault to deploy)."
+  warn "       V6 a secret CREATED for an agent under the shared vault: key fetched under the agent's own auth + scope-specific → agent-pays store → an unfunded agent refused actionably → \$PARENT pays via store_agent_secret → vault/audience/ciphertext/name/payer each altered and REFUSED, untouched call lands[VAULT/FUNDS]"
+  warn "Without MPC_PUBLIC_KEY (default-vault mode) V1–V6 are SKIP-noted (no per-vault to deploy)."
+  warn "V6 COST: 0.3 NEAR funding one agent wallet + three 0.1 NEAR storage deposits that only the agent itself could reclaim — the suite does not."
   warn "EXIT WINDOW: the SHARED/V1 vaults deploy with --exit-window 24h (CLI rejects <24h) and are NEVER finalized — they stay reusable. V3/V4/V5"
   warn "       each set a 60s window via a DIRECT set_exit_window contract call (CLI init/set-exit-window reject <24h; the testnet test-timing build allows 60s),"
   warn "       then finalize_recovery in the SAME run after the ~70s window elapses. finalize_recovery is IRREVERSIBLE — V3/V4/V5 use THROWAWAY vaults"
@@ -487,6 +512,113 @@ assert_funded() {
 }
 
 fund_near() { near_tty "near tokens $PARENT send-near $1 '$2' network-config $NETWORK sign-with-keychain send"; }
+
+# ─── a secret left for an agent (V6) ──────────────────────────────────────────
+
+# fund_fresh <account_id> <amount> — fund_near for a receiver that does not
+# exist yet. near-cli-rs asks a human to confirm before sending to an account it
+# cannot find: headless that aborts with "the input device is not a TTY", and in
+# a terminal it stops the run waiting for an answer. `--quiet` gives the answer
+# up front, which for an implicit account this run has just registered is the
+# only answer there is.
+fund_fresh() { near_tty "near --quiet tokens $PARENT send-near $1 '$2' network-config $NETWORK sign-with-keychain send"; }
+
+# store_agent_secret_cli <wallet_key> <secrets_json> [extra flags…] — the real
+# user path, attempted twice.
+#
+# A store for the same (project, agent) UPDATES one entry rather than adding a
+# second, so retrying after an answer that never came back cannot double
+# anything: at worst the same bytes are written again and the contract refunds
+# the difference. Without the retry a single dropped response — testnet RPC lost
+# one mid-run — reads as "the paying path does not work".
+store_agent_secret_cli() {
+  local wk=$1 secrets=$2 i; shift 2
+  for i in 1 2; do
+    OUTLAYER_WALLET_KEY="$wk" "$OUTLAYER_BIN" secrets set-for-agent "$secrets" \
+      --project "$CONNECTOR_PROJECT_ID" "$@" >&2 && return 0
+    [[ $i -eq 1 ]] && warn "set-for-agent did not go through — retrying once"
+  done
+  return 1
+}
+
+# agent_secret_pubkey <wk_> <project_id> → the endpoint's JSON ("{}" on any error).
+agent_secret_pubkey() {
+  curl -sS -G "$COORDINATOR_URL/wallet/v1/agent-secret/pubkey" \
+    --data-urlencode "project_id=$2" -H "Authorization: Bearer $1" 2>/dev/null || echo '{}'
+}
+
+# view_contract <method> <args_json> → the view's JSON text ("null" on any error).
+view_contract() {
+  local method=$1 b64
+  b64=$(printf '%s' "$2" | base64 | tr -d '\n')
+  curl -s "$RPC_URL" -X POST -H 'Content-Type: application/json' \
+    -d "$(jq -nc --arg c "$CONTRACT_ID" --arg m "$method" --arg a "$b64" \
+          '{jsonrpc:"2.0",id:1,method:"query",params:{request_type:"call_function",finality:"final",account_id:$c,method_name:$m,args_base64:$a}}')" \
+    | jq -r '.result.result | implode' 2>/dev/null || echo 'null'
+}
+
+# agent_secret_view <agent_account> → the chain's `get_secret_with_vault`, polled.
+#
+# A store returns once the transaction has EXECUTED, while a view at `final`
+# finality reads a block or two behind it. Read straight after a store, the chain
+# will truthfully say there is nothing there — so wait for it rather than call
+# the store a failure.
+agent_secret_view() {
+  local agent=$1 args res i
+  args=$(jq -nc --arg p "$CONNECTOR_PROJECT_ID" --arg a "$agent" \
+    '{accessor:{Project:{project_id:$p}}, profile:$a, owner:$a}')
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    res=$(view_contract get_secret_with_vault "$args")
+    [[ -n "$(echo "$res" | jq -r '.profile.encrypted_secrets // empty' 2>/dev/null)" ]] && break
+    sleep 2
+  done
+  echo "$res"
+}
+
+# assert_agent_secret <label> <agent_account> — what the CHAIN says landed, which
+# is the only account of it that does not come from the party being tested: the
+# secret exists under the agent's own name, carries the vault binding, and holds
+# an ECIES v1 blob rather than whatever bytes happened to be sent.
+assert_agent_secret() {
+  local label=$1 agent=$2 res bound ct raw first len
+  res=$(agent_secret_view "$agent")
+  ct=$(echo "$res" | jq -r '.profile.encrypted_secrets // empty' 2>/dev/null)
+  bound=$(echo "$res" | jq -r '.vault_id // "null"' 2>/dev/null)
+
+  if [[ -z "$ct" ]]; then
+    fail "$label no secret on chain for $agent under $CONNECTOR_PROJECT_ID: $(echo "$res" | head -c200)"
+    return 1
+  fi
+  pass "$label the secret is on chain, named after the agent ($agent)"
+
+  if [[ "$bound" == "$VAULT_ID" ]]; then
+    pass "$label the chain binds it to $VAULT_ID — the vault's master is what decrypts it"
+  else
+    fail "$label vault binding is '$bound', not '$VAULT_ID' — the ciphertext would be handed to the wrong master"
+  fi
+
+  # ECIES v1: [0x01 | ephemeral x25519 pub(32) | nonce(12) | ciphertext | tag(16)]
+  raw=$(printf '%s' "$ct" | base64 -d 2>/dev/null | xxd -p | tr -d '\n')
+  first=${raw:0:2}
+  len=$(( ${#raw} / 2 ))
+  if [[ "$first" == "01" && $len -ge 61 ]]; then
+    pass "$label the stored bytes are an ECIES v1 blob ($len bytes)"
+  else
+    fail "$label the stored bytes are not ECIES v1 (first byte 0x$first, $len bytes) — nothing will decrypt them"
+  fi
+}
+
+# store_agent_secret_as_parent <args_json> → rc 0 iff the call LANDED AND SUCCEEDED.
+# near-cli-rs's exit code is checked first, and its output second: a contract
+# panic that it still exits 0 on would otherwise read as an acceptance, which for
+# the negative half of V6f is the answer that must never be faked.
+store_agent_secret_as_parent() {
+  local out rc=0
+  out=$(near_tty "near contract call-function as-transaction $CONTRACT_ID store_agent_secret json-args '$1' prepaid-gas '100.0 Tgas' attached-deposit '0.1 NEAR' sign-as $PARENT network-config $NETWORK sign-with-keychain send" 2>&1) || rc=$?
+  if [[ $rc -ne 0 ]]; then return 1; fi
+  if echo "$out" | grep -qiE "error|panicked|failure"; then return 1; fi
+  return 0
+}
 
 # ─── register BENEFICIARY on wNEAR (mainnet) ───────────────────────────────────
 # The intents-balance sweeps (sweep_one step 4 / T6) withdraw wNEAR to BENEFICIARY, which requires
@@ -1118,6 +1250,248 @@ if want V5; then
     fi
   else
     note "V5 SKIPPED (vault mode off): wk_-path sovereign exit requires a DEPLOYED vault to finalize_recovery on — set MPC_PUBLIC_KEY"
+  fi
+fi
+
+# ════════════════════════════════════════════════════════════════════════════════
+# V6 — a secret CREATED for an agent under a vault  [VAULT] (~0.32 NEAR, storage stake stays)
+#       Where V4 reads a secret and proves the vault master stops decrypting after a sovereign
+#       exit, V6 covers the other end: putting one there. Both money paths are exercised, because
+#       both put a different account's NEAR at stake and only one of them is the ordinary case.
+#
+#       Asserts (over the shared VAULT_ID, project $CONNECTOR_PROJECT_ID):
+#         6a  the encryption key is fetched under the agent's OWN auth and comes back naming that
+#             agent and that project (seed == project:<project_id>:<agent>) — a key that named
+#             anything else would seal the credential to somebody else's master;
+#         6b  the same project under a vault-bound agent and under a default-master agent yields
+#             DIFFERENT keys (both the wallet and the master differ — one scope cannot read the
+#             other's secret);
+#         6c  the agent's own wallet pays: `secrets set-for-agent --agent-pays` lands, the chain
+#             reports the vault binding + an ECIES v1 blob under the agent's name, and what landed
+#             is READABLE by that vault's master — nothing on the paying path checks, since the
+#             keystore signs a transaction there rather than opening the bytes, so `/prepare` is
+#             asked afterwards as an oracle (it refuses to sign what does not decrypt);
+#         6d  an agent holding no NEAR is refused ACTIONABLY (a 4xx naming the amount and the
+#             endpoint that pays for it) rather than failing somewhere downstream;
+#         6e  a BLOCKCHAIN ACCOUNT pays for that same agent instead: `set-for-agent` prepares the
+#             call, $PARENT sends `store_agent_secret`, and the secret lands under the AGENT's name
+#             with the same vault binding while the agent's wallet still holds nothing;
+#         6f  the signature covers what it claims: a third agent's secret is stored and its
+#             ciphertext read back off the chain (`/prepare` will not sign bytes that do not
+#             decrypt, so there is no made-up ciphertext to sign), then the vault, the audience,
+#             the ciphertext, the name and the payer are each altered in turn on that otherwise
+#             valid prepared call and the contract refuses all five — and the untouched call
+#             lands, so the refusals are the tampering and not the setup.
+#
+#       COSTS: three storage deposits of 0.1 NEAR (6c, 6e, 6f) plus 0.3 NEAR funding one agent
+#       wallet. The deposits are refundable only by `delete_secrets` from the OWNER — the agent's
+#       wallet — so this suite does not reclaim them.
+#
+#       Needs the `set-for-agent` subcommand ($OUTLAYER_BIN, default `outlayer`). An older binary
+#       SKIP-notes rather than failing: it is a missing tool, not a broken guarantee.
+# ════════════════════════════════════════════════════════════════════════════════
+if want V6; then
+  if [[ "$VAULT_MODE" != true ]]; then
+    note "V6 SKIPPED (vault mode off): a secret can only be BOUND to a vault that exists — set MPC_PUBLIC_KEY"
+  elif ! "$OUTLAYER_BIN" secrets set-for-agent --help >/dev/null 2>&1; then
+    note "V6 SKIPPED: '$OUTLAYER_BIN secrets set-for-agent' is not available. Build and install outlayer-cli, or point OUTLAYER_BIN at the built binary."
+  elif [[ -z "$CONNECTOR_PROJECT_ID" ]]; then
+    note "V6 SKIPPED: CONNECTOR_PROJECT_ID is empty. It must name a project that EXISTS on chain — the contract refuses a secret for one that does not."
+  else
+    log "V6 [VAULT] a secret created for an agent under $VAULT_ID (project $CONNECTOR_PROJECT_ID)"
+
+    # ── 6a: the key, fetched under the agent's own authentication ──────────────
+    V6_REG=$(curl -sS -X POST "$COORDINATOR_URL/register" -H 'Content-Type: application/json' \
+      -d "$(jq -nc --arg v "$VAULT_ID" '{vault_id:$v}')")
+    V6_WK=$(echo "$V6_REG" | jq -r '.api_key // empty')
+    V6_AGENT=$(echo "$V6_REG" | jq -r '.near_account_id // empty')
+    if [[ "$V6_WK" != wk_* || -z "$V6_AGENT" ]]; then
+      fail "V6a /register under $VAULT_ID returned no wk_ + account: $(echo "$V6_REG" | head -c200)"
+    else
+      note "V6 agent A: $V6_AGENT"
+      V6_PUB=$(agent_secret_pubkey "$V6_WK" "$CONNECTOR_PROJECT_ID")
+      V6_KEY=$(echo "$V6_PUB" | jq -r '.pubkey // empty')
+      V6_SEED=$(echo "$V6_PUB" | jq -r '.seed // empty')
+      V6_NAMED=$(echo "$V6_PUB" | jq -r '.agent_account // empty')
+      V6_WANT_SEED="project:$CONNECTOR_PROJECT_ID:$V6_AGENT"
+      if [[ "$V6_SEED" == "$V6_WANT_SEED" && "$V6_NAMED" == "$V6_AGENT" && ${#V6_KEY} -eq 64 ]]; then
+        pass "V6a the key names this agent and this project (seed=$V6_SEED)"
+      else
+        fail "V6a the key came back for something else: seed='$V6_SEED' (wanted '$V6_WANT_SEED'), agent='$V6_NAMED', key length ${#V6_KEY}"
+      fi
+
+      # ── 6b: a different scope is a different key ────────────────────────────
+      V6_DREG=$(curl -sS -X POST "$COORDINATOR_URL/register" -H 'Content-Type: application/json' -d '{}')
+      V6_DWK=$(echo "$V6_DREG" | jq -r '.api_key // empty')
+      V6_DKEY=$(agent_secret_pubkey "$V6_DWK" "$CONNECTOR_PROJECT_ID" | jq -r '.pubkey // empty')
+      if [[ -z "$V6_DKEY" ]]; then
+        fail "V6b the default-master agent returned no key: $(echo "$V6_DREG" | head -c160)"
+      elif [[ "$V6_DKEY" != "$V6_KEY" ]]; then
+        pass "V6b the vault-bound agent and the default-master agent get different keys"
+      else
+        fail "V6b BOTH scopes returned the SAME key $V6_KEY — a secret sealed under one would be readable under the other"
+      fi
+
+      # ── 6c: the agent's own wallet pays ────────────────────────────────────
+      # MONEY stays false throughout V6: it marks funds in flight that the EXIT
+      # trap can still sweep, and nothing V6 spends is sweepable — the deposits
+      # belong to the agents and the header says so. A halt here would abandon
+      # the remaining assertions without saving anything.
+      # 0.3 NEAR, not the 0.11 the coordinator's pre-flight asks for. That floor
+      # covers the 0.1 deposit plus a gas allowance, and testnet then refuses the
+      # broadcast anyway — the chain quoted 0.2 NEAR for the same call. Funding
+      # to the pre-flight minimum tests the edge rather than the path.
+      log "V6c fund agent A with 0.3 NEAR and let it pay for its own secret"
+      fund_fresh "$V6_AGENT" "0.3 NEAR" || fail "V6c funding agent A failed"
+      if store_agent_secret_cli "$V6_WK" \
+           "$(jq -nc --arg v "v6c-$RUN_TAG" '{V6_AGENT_PAYS:$v}')" \
+           --vault-id "$VAULT_ID" --agent-pays; then
+        assert_agent_secret "V6c" "$V6_AGENT"
+
+        # Is what landed actually READABLE by the vault's master? Nothing on
+        # this path checks: the keystore signs a transaction rather than a
+        # message, so it never opens the bytes, and a secret sealed to the
+        # wrong master would land looking perfectly correct and fail months
+        # later at the only moment it is needed.
+        #
+        # `/prepare` is the oracle. It refuses to sign anything that does not
+        # decrypt under the agent's seed, so feeding it what is already on
+        # chain asks exactly the question — and asking costs nothing, because
+        # the prepared call is never sent.
+        V6_STORED_CT=$(agent_secret_view "$V6_AGENT" | jq -r '.profile.encrypted_secrets // empty')
+        V6_READABLE=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+          "$COORDINATOR_URL/wallet/v1/agent-secret/prepare" \
+          -H "Authorization: Bearer $V6_WK" -H 'Content-Type: application/json' \
+          -d "$(jq -nc --arg p "$CONNECTOR_PROJECT_ID" --arg c "$V6_STORED_CT" --arg payer "$PARENT" \
+                '{project_id:$p, encrypted_secrets_base64:$c, payer:$payer}')")
+        if [[ "$V6_READABLE" == 2?? ]]; then
+          pass "V6c what landed decrypts under $VAULT_ID's master — the keystore signed for it"
+        else
+          fail "V6c the stored secret does NOT decrypt under $VAULT_ID's master (prepare answered $V6_READABLE) — it was sealed to the wrong key and nothing on the paying path would have noticed"
+        fi
+      else
+        fail "V6c set-for-agent --agent-pays did not store the secret"
+      fi
+
+      # ── 6d / 6e: an agent with nothing, paid for by a blockchain account ────
+      V6_REG_B=$(curl -sS -X POST "$COORDINATOR_URL/register" -H 'Content-Type: application/json' \
+        -d "$(jq -nc --arg v "$VAULT_ID" '{vault_id:$v}')")
+      V6_WK_B=$(echo "$V6_REG_B" | jq -r '.api_key // empty')
+      V6_AGENT_B=$(echo "$V6_REG_B" | jq -r '.near_account_id // empty')
+      if [[ "$V6_WK_B" != wk_* || -z "$V6_AGENT_B" ]]; then
+        fail "V6d /register (agent B) returned no wk_ + account: $(echo "$V6_REG_B" | head -c200)"
+      else
+        note "V6 agent B (unfunded): $V6_AGENT_B"
+        V6_DENIED=$(OUTLAYER_WALLET_KEY="$V6_WK_B" "$OUTLAYER_BIN" secrets set-for-agent \
+          "$(jq -nc '{V6_NEVER_STORED:"x"}')" \
+          --project "$CONNECTOR_PROJECT_ID" --agent-pays 2>&1) && V6_DENIED_RC=0 || V6_DENIED_RC=$?
+        if [[ ${V6_DENIED_RC:-0} -eq 0 ]]; then
+          fail "V6d an agent holding no NEAR stored a secret it cannot have paid for"
+        elif echo "$V6_DENIED" | grep -q "prepare"; then
+          pass "V6d an unfunded agent is refused, and told which endpoint pays instead"
+        else
+          fail "V6d the refusal does not say how to proceed: $(echo "$V6_DENIED" | tail -c300)"
+        fi
+
+        log "V6e $PARENT pays for agent B's secret (store_agent_secret)"
+        if store_agent_secret_cli "$V6_WK_B" \
+             "$(jq -nc --arg v "v6e-$RUN_TAG" '{V6_PAYER_PAYS:$v}')" \
+             --vault-id "$VAULT_ID"; then
+          assert_agent_secret "V6e" "$V6_AGENT_B"
+          # The point of the payer path: the agent still needs no NEAR of its own.
+          V6_BAL=$(curl -s "$RPC_URL" -X POST -H 'Content-Type: application/json' \
+            -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"query\",\"params\":{\"request_type\":\"view_account\",\"finality\":\"final\",\"account_id\":\"$V6_AGENT_B\"}}" \
+            | jq -r '.result.amount // "0"')
+          [[ "$V6_BAL" == "0" ]] && pass "V6e agent B still holds no NEAR — the payer carried the whole cost" \
+            || note "V6e agent B holds $V6_BAL yoctoNEAR (it was funded outside this run)"
+        else
+          fail "V6e set-for-agent (payer path) did not store the secret"
+        fi
+      fi
+
+      # ── 6f: what the signature covers ──────────────────────────────────────
+      # Driven through the endpoint rather than the CLI: the CLI refuses an
+      # altered call before it is ever sent (that is its job, and its own tests
+      # cover it), and what is under test here is the CONTRACT's refusal.
+      #
+      # Agent C's secret is stored FIRST, through the CLI, and the ciphertext is
+      # then read back off the chain. `/prepare` will not sign bytes that do not
+      # decrypt under the agent's seed, so made-up ciphertext never gets as far
+      # as a signature — and a signature is precisely what has to exist before
+      # it can be shown not to cover something. Re-sending the untouched call at
+      # the end updates that same secret, so the storage is staked once.
+      V6_REG_C=$(curl -sS -X POST "$COORDINATOR_URL/register" -H 'Content-Type: application/json' \
+        -d "$(jq -nc --arg v "$VAULT_ID" '{vault_id:$v}')")
+      V6_WK_C=$(echo "$V6_REG_C" | jq -r '.api_key // empty')
+      V6_AGENT_C=$(echo "$V6_REG_C" | jq -r '.near_account_id // empty')
+      if [[ "$V6_WK_C" != wk_* ]]; then
+        fail "V6f /register (agent C) returned no wk_: $(echo "$V6_REG_C" | head -c200)"
+      elif ! store_agent_secret_cli "$V6_WK_C" \
+             "$(jq -nc --arg v "v6f-$RUN_TAG" '{V6_SIGNED_OVER:$v}')" \
+             --vault-id "$VAULT_ID"; then
+        fail "V6f could not store agent C's secret to tamper with"
+      else
+        note "V6 agent C: $V6_AGENT_C"
+        V6_CT=$(agent_secret_view "$V6_AGENT_C" | jq -r '.profile.encrypted_secrets // empty')
+        V6_PREP=$(curl -sS -X POST "$COORDINATOR_URL/wallet/v1/agent-secret/prepare" \
+          -H "Authorization: Bearer $V6_WK_C" -H 'Content-Type: application/json' \
+          -d "$(jq -nc --arg p "$CONNECTOR_PROJECT_ID" --arg c "$V6_CT" --arg payer "$PARENT" \
+                '{project_id:$p, encrypted_secrets_base64:$c, payer:$payer}')")
+        V6_ARGS=$(echo "$V6_PREP" | jq -c '.args // empty')
+        if [[ -z "$V6_CT" ]]; then
+          fail "V6f agent C's ciphertext is not on chain — nothing to re-sign"
+        elif [[ -z "$V6_ARGS" ]]; then
+          fail "V6f /agent-secret/prepare returned no call: $(echo "$V6_PREP" | head -c200)"
+        else
+          # Each entry alters ONE field the signed message covers. All must be refused.
+          V6_TAMPERED=()
+          V6_TAMPERED+=("the vault|$(echo "$V6_ARGS" | jq -c '.vault_id = null')")
+          V6_TAMPERED+=("the audience|$(echo "$V6_ARGS" | jq -c --arg p "$PARENT" '.access = {Whitelist:[$p]}')")
+          V6_TAMPERED+=("the ciphertext|$(echo "$V6_ARGS" | jq -c '.encrypted_secrets_base64 = "dGFtcGVyZWQ="')")
+          V6_TAMPERED+=("the name|$(echo "$V6_ARGS" | jq -c --arg a "$V6_AGENT" '.profile = $a')")
+
+          for entry in "${V6_TAMPERED[@]}"; do
+            what=${entry%%|*}; args=${entry#*|}
+            if store_agent_secret_as_parent "$args"; then
+              fail "V6f the contract ACCEPTED a call with $what altered — the signature does not cover it"
+            else
+              pass "V6f altering $what is refused by the contract"
+            fi
+          done
+
+          # A call prepared for a DIFFERENT payer, sent by $PARENT. Nothing is
+          # altered afterwards: the signature simply names someone else.
+          #
+          # The name is derived from $PARENT so it CANNOT be $PARENT — $BENEFICIARY
+          # and $APPROVER1 both default to the same account on testnet, and a test
+          # that prepares a call for the very account that sends it proves nothing
+          # while looking like it does. It need not exist: `/prepare` only puts the
+          # name in the signature, and the contract compares against whoever sent
+          # the transaction.
+          V6_OTHER_PAYER="not-the-payer.$PARENT"
+          V6_OTHER=$(curl -sS -X POST "$COORDINATOR_URL/wallet/v1/agent-secret/prepare" \
+            -H "Authorization: Bearer $V6_WK_C" -H 'Content-Type: application/json' \
+            -d "$(jq -nc --arg p "$CONNECTOR_PROJECT_ID" --arg c "$V6_CT" --arg payer "$V6_OTHER_PAYER" \
+                  '{project_id:$p, encrypted_secrets_base64:$c, payer:$payer}')" | jq -c '.args // empty')
+          if [[ -z "$V6_OTHER" ]]; then
+            fail "V6f the prepare-for-another-payer call returned nothing"
+          elif store_agent_secret_as_parent "$V6_OTHER"; then
+            fail "V6f $PARENT sent a call prepared for $V6_OTHER_PAYER and the contract took it — the payer is not bound"
+          else
+            pass "V6f a call prepared for another payer is refused when $PARENT sends it"
+          fi
+
+          # Positive control, last: the untouched call must land, or every
+          # refusal above proves only that the setup was broken.
+          if store_agent_secret_as_parent "$V6_ARGS"; then
+            pass "V6f the untouched prepared call lands — the refusals above were the tampering"
+            assert_agent_secret "V6f" "$V6_AGENT_C"
+          else
+            fail "V6f the UNTOUCHED prepared call was refused — the five refusals above prove nothing"
+          fi
+        fi
+      fi
+    fi
   fi
 fi
 

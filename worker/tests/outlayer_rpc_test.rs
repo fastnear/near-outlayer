@@ -13,7 +13,16 @@ use offchainvm_worker::outlayer_rpc::RpcProxy;
 use serde_json::Value;
 
 /// Test RPC URL for NEAR testnet
-const TESTNET_RPC_URL: &str = "https://rpc.testnet.near.org";
+/// The RPC these tests compare our proxy against.
+///
+/// Overridable, because a comparison against an endpoint that is down reads as
+/// a proxy that is wrong. The default is the host the rest of the project uses;
+/// `rpc.testnet.near.org` was here and is not the one anything else talks to,
+/// so a difference could as easily have been the two providers disagreeing.
+fn testnet_rpc_url() -> String {
+    std::env::var("TESTNET_NEAR_RPC_URL")
+        .unwrap_or_else(|_| "https://rpc.testnet.fastnear.com".to_string())
+}
 
 /// Well-known testnet accounts for testing
 const TEST_ACCOUNT: &str = "outlayer.testnet";
@@ -22,11 +31,11 @@ const TEST_CONTRACT: &str = "wrap.testnet";
 fn create_test_proxy() -> RpcProxy {
     let config = RpcProxyConfig {
         enabled: true,
-        rpc_url: Some(TESTNET_RPC_URL.to_string()),
+        rpc_url: Some(testnet_rpc_url()),
         max_calls_per_execution: 100,
         allow_transactions: true,
     };
-    RpcProxy::new(config, TESTNET_RPC_URL).unwrap()
+    RpcProxy::new(config, &testnet_rpc_url()).unwrap()
 }
 
 fn create_direct_client() -> reqwest::Client {
@@ -46,7 +55,7 @@ async fn direct_rpc_call(client: &reqwest::Client, method: &str, params: Value) 
     });
 
     let response = client
-        .post(TESTNET_RPC_URL)
+        .post(testnet_rpc_url())
         .header("Content-Type", "application/json")
         .json(&request)
         .send()
@@ -374,11 +383,11 @@ async fn test_status_matches_direct_rpc() {
 async fn test_rate_limiting() {
     let config = RpcProxyConfig {
         enabled: true,
-        rpc_url: Some(TESTNET_RPC_URL.to_string()),
+        rpc_url: Some(testnet_rpc_url()),
         max_calls_per_execution: 3,
         allow_transactions: false,
     };
-    let proxy = RpcProxy::new(config, TESTNET_RPC_URL).unwrap();
+    let proxy = RpcProxy::new(config, &testnet_rpc_url()).unwrap();
 
     // First 3 calls should increment counter
     assert_eq!(proxy.get_call_count(), 0);
@@ -404,11 +413,11 @@ async fn test_rate_limiting() {
 async fn test_rate_limit_reset() {
     let config = RpcProxyConfig {
         enabled: true,
-        rpc_url: Some(TESTNET_RPC_URL.to_string()),
+        rpc_url: Some(testnet_rpc_url()),
         max_calls_per_execution: 2,
         allow_transactions: false,
     };
-    let proxy = RpcProxy::new(config, TESTNET_RPC_URL).unwrap();
+    let proxy = RpcProxy::new(config, &testnet_rpc_url()).unwrap();
 
     // Make 2 calls
     let _ = proxy.gas_price(None).await;
@@ -432,11 +441,11 @@ async fn test_rate_limit_reset() {
 async fn test_transaction_methods_blocked() {
     let config = RpcProxyConfig {
         enabled: true,
-        rpc_url: Some(TESTNET_RPC_URL.to_string()),
+        rpc_url: Some(testnet_rpc_url()),
         max_calls_per_execution: 100,
         allow_transactions: false, // Transactions disabled
     };
-    let proxy = RpcProxy::new(config, TESTNET_RPC_URL).unwrap();
+    let proxy = RpcProxy::new(config, &testnet_rpc_url()).unwrap();
 
     // send_tx should be blocked
     let result = proxy.send_tx("fake_base64_tx", Some("EXECUTED")).await;
@@ -456,11 +465,11 @@ async fn test_transaction_methods_blocked() {
 async fn test_transaction_methods_allowed() {
     let config = RpcProxyConfig {
         enabled: true,
-        rpc_url: Some(TESTNET_RPC_URL.to_string()),
+        rpc_url: Some(testnet_rpc_url()),
         max_calls_per_execution: 100,
         allow_transactions: true, // Transactions enabled
     };
-    let proxy = RpcProxy::new(config, TESTNET_RPC_URL).unwrap();
+    let proxy = RpcProxy::new(config, &testnet_rpc_url()).unwrap();
 
     // send_tx should NOT be blocked (will fail for other reasons - invalid tx)
     let result = proxy.send_tx("ZmFrZV90eA==", Some("NONE")).await;
