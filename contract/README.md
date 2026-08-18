@@ -249,13 +249,20 @@ near call outlayer.testnet delete_secrets '{
 ```
 
 #### `list_user_secrets`
-List all secrets stored by an account.
+One PAGE of the secrets stored by an account. It reads storage per entry, so an
+unbounded answer would eventually exceed the view's gas and fail for everyone —
+omitting the paging arguments gives the first 100, not the whole set. Ask for the
+next page until one comes back short.
 
 ```bash
 near view outlayer.testnet list_user_secrets '{
-  "account_id": "alice.testnet"
+  "account_id": "alice.testnet",
+  "from_index": 0,
+  "limit": 100
 }'
 ```
+
+`limit` is capped at 500. Both arguments may be omitted.
 
 ## Events
 

@@ -248,7 +248,9 @@ pub struct WalletPolicyEntry {
 }
 ```
 
-**Ownership**: First `store_wallet_policy()` call sets `owner = caller`. Subsequent updates only from same owner. Wallet signature required (anti-spam + proof of key ownership).
+**Ownership**: First `store_wallet_policy()` call sets `owner = caller`. Subsequent updates only from same owner. Wallet signature required — over `store_wallet_policy:v1:{wallet_pubkey}:{len}:{encrypted_data}:{caller}`, so it proves key ownership AND is usable only by the account named in it.
+
+**Freezing survives an edit**: a policy update keeps whatever `frozen` the entry held; a new entry starts unfrozen. Thawing is `unfreeze_wallet()`, controller-only — the same authority, said out loud. A freeze is an answer to a compromised agent key, and the controller's next act is usually to tighten the policy; resetting the flag there would reopen the wallet while the key is still in someone else's hands.
 
 **On-chain signature verification**: Ed25519 → `env::ed25519_verify()` (~26 Tgas), secp256k1 → `env::ecrecover()` (~35 Tgas).
 
@@ -393,9 +395,13 @@ Dashboard → POST /wallet/v1/encrypt-policy { rules, approval, ... }
     Coordinator → Keystore: encrypt policy JSON
     Keystore → Return encrypted_base64
 
-Dashboard → POST /wallet/v1/sign-policy { encrypted_data }
-    Coordinator → Keystore: sign SHA256(encrypted_data) with wallet key
+Dashboard → POST /wallet/v1/sign-policy { encrypted_data, caller }
+    Coordinator → Keystore: sign the message the contract rebuilds,
+        store_wallet_policy:v1:{wallet_pubkey}:{len}:{encrypted_data}:{caller}
     Keystore → Return { signature, wallet_pubkey }
+
+    `caller` is the account that will send the transaction below, and it is
+    SIGNED — the signature is good for that account and no other.
 
 Dashboard → NEAR tx: store_wallet_policy(wallet_pubkey, encrypted_base64, signature)
     Contract: verify signature on-chain → store WalletPolicyEntry
@@ -619,7 +625,7 @@ Base: `https://api.outlayer.ai` (mainnet) · `https://testnet-api.outlayer.ai` (
 | POST | `/wallet/v1/auth-sign` | OutLayer NEAR-key auth signature (`{purpose: bearer\|register\|api-key, seed, vault_id?}` → `{auth_message, auth_timestamp, signature, public_key}`). Replaces the old `sign-message format:"raw"` |
 | GET | `/wallet/v1/policy` | View current policy (decrypted via keystore) |
 | POST | `/wallet/v1/encrypt-policy` | Encrypt policy for on-chain storage |
-| POST | `/wallet/v1/sign-policy` | Keystore signs encrypted policy SHA256 |
+| POST | `/wallet/v1/sign-policy` | Keystore signs the policy message (domain + blob + `caller`) for `store_wallet_policy` |
 | POST | `/wallet/v1/invalidate-cache` | Clear negative policy cache |
 | GET | `/wallet/v1/pending_approvals` | List pending multisig approvals |
 | POST | `/wallet/v1/approve/{id}` | Submit multisig approval signature |

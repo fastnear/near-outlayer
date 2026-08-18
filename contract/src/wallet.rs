@@ -211,12 +211,50 @@ pub(crate) fn verify_wallet_signature(
     }
 }
 
+/// The exact string `store_wallet_policy` requires a signature over.
+///
+/// **The signature used to cover the bare `sha256(encrypted_data)`, and that
+/// was a hole.** Every wallet signature in this system is `sign(sha256(<some
+/// string>))` with the same key, and the strings are public: a
+/// `store_agent_secret` transaction carries its message's parts and its
+/// signature in the clear. So anyone reading the chain could lift that pair and
+/// present it here with `encrypted_data` set to the rebuilt message — becoming
+/// the policy's controller for somebody else's wallet, and locking its owner
+/// out of the slot for good.
+///
+/// Two things close it, and both are needed:
+///
+/// * the leading DOMAIN, which makes a signature from another verb useless
+///   here — and, as everywhere else, makes the preimage unusable as a
+///   transaction: read as borsh it claims a `signer_id` of about 1.9 billion
+///   against a 64-byte maximum;
+/// * the CALLER, last, so a signature authorises one account to store this
+///   policy and nobody else. Lifting it from the chain now buys nothing,
+///   because the account that sends it is part of what was signed.
+///
+/// `encrypted_data` is length-prefixed, so it may hold anything at all without
+/// moving a boundary.
+pub(crate) fn policy_store_message(
+    wallet_pubkey: &str,
+    encrypted_data: &str,
+    caller: &AccountId,
+) -> String {
+    format!(
+        "store_wallet_policy:v1:{}:{}:{}:{}",
+        wallet_pubkey,
+        encrypted_data.len(),
+        encrypted_data,
+        caller
+    )
+}
+
 #[near_bindgen]
 impl Contract {
     /// Store or update wallet policy
     ///
-    /// Requires wallet_signature = sign(sha256(encrypted_data)) from the wallet's key.
-    /// This proves the caller has API key access to the wallet (keystore signs on behalf).
+    /// Requires `wallet_signature` over [`policy_store_message`] from the
+    /// wallet's key — the keystore signs it, which proves the requester holds
+    /// the wallet's `wk_`, and the message names the account sending this call.
     /// If entry already exists, caller must be the same controller (owner).
     /// Requires attached storage deposit.
     ///
@@ -239,6 +277,19 @@ impl Contract {
         // Validate inputs
         assert!(!wallet_pubkey.is_empty(), "wallet_pubkey cannot be empty");
         assert!(!encrypted_data.is_empty(), "encrypted_data cannot be empty");
+        // DO NOT RAISE THIS. It is already above the ceiling that actually
+        // binds: this method emits `WalletPolicyUpdated` carrying the whole
+        // blob, and NEAR caps a call's total log output at
+        // `max_total_log_length: 16_384` — 16 KB, the same figure in the
+        // mainnet and testnet parameter files. So a policy somewhere between
+        // 16 KB and this number is accepted here and then fails at the log,
+        // after the signature check, the storage accounting and the refund have
+        // all been done.
+        //
+        // Nobody has hit it: a real policy is small, and it takes a long
+        // allowlist or a large approver set to get near. Left as it is
+        // deliberately — the note is here so the next person raising the limit
+        // knows the log is what will stop them, not this assert.
         assert!(
             encrypted_data.len() <= 100_000,
             "encrypted_data too large (max 100KB)"
@@ -252,9 +303,10 @@ impl Contract {
         // value by construction.
         let wallet_pubkey = canonical_wallet_pubkey(&wallet_pubkey);
 
-        // Verify wallet signature on-chain
+        // Verify wallet signature on-chain, over a message that names this
+        // caller — see `policy_store_message` for why the bare hash was unsafe.
         let mut hasher = Sha256::new();
-        hasher.update(encrypted_data.as_bytes());
+        hasher.update(policy_store_message(&wallet_pubkey, &encrypted_data, &caller).as_bytes());
         let message_hash: [u8; 32] = hasher.finalize().into();
 
         verify_wallet_signature(&wallet_pubkey, &message_hash, &wallet_signature);
@@ -263,7 +315,9 @@ impl Contract {
         let storage_size = self.calculate_wallet_policy_storage_size(&wallet_pubkey, &encrypted_data);
         let required_deposit = storage_size as u128 * STORAGE_PRICE_PER_BYTE;
 
-        // Check ownership and handle deposit
+        // Check ownership and handle deposit. `was_frozen` travels with the
+        // entry: a freeze must survive a policy edit — see below.
+        let mut was_frozen = false;
         let is_new = if let Some(existing) = self.wallet_policies.get(&wallet_pubkey) {
             // Update: caller must be the same controller
             assert!(
@@ -271,6 +325,7 @@ impl Contract {
                 "Only the original controller ({}) can update this wallet policy",
                 existing.owner
             );
+            was_frozen = existing.frozen;
 
             let total_available = attached_deposit + existing.storage_deposit;
             assert!(
@@ -311,7 +366,21 @@ impl Contract {
         let entry = WalletPolicyEntry {
             owner: caller.clone(),
             encrypted_data,
-            frozen: false, // Never frozen on store/update
+            // A FREEZE SURVIVES AN EDIT. A new entry starts unfrozen because
+            // there is nothing to carry; an update keeps whatever the entry
+            // held.
+            //
+            // This used to reset to `false`, and the direction was wrong.
+            // Freezing exists for the case where the agent's key is
+            // COMPROMISED — it takes no wallet signature precisely so the
+            // controller can act while the key is in someone else's hands. The
+            // controller's next move is usually to tighten the policy, and that
+            // edit silently reopened the wallet at the moment the attacker was
+            // still holding the key, with nothing in the answer to say so.
+            //
+            // Nothing is lost: `unfreeze_wallet` is the way out, it is
+            // controller-only exactly as this call is, and it says what it does.
+            frozen: was_frozen,
             updated_at: env::block_timestamp(),
             storage_deposit: required_deposit,
         };
@@ -349,6 +418,13 @@ impl Contract {
         self.assert_not_paused();
 
         let caller = env::predecessor_account_id();
+        // The SAME spelling anything is stored under. `store_wallet_policy`
+        // canonicalises before inserting, so a key written in upper case names
+        // an entry that is not there — and this method would have answered
+        // "Wallet policy not found" for a wallet its controller was looking
+        // straight at. On an emergency freeze that is the worst possible
+        // moment to lose to a spelling.
+        let wallet_pubkey = canonical_wallet_pubkey(&wallet_pubkey);
         let mut entry = self
             .wallet_policies
             .get(&wallet_pubkey)
@@ -382,6 +458,10 @@ impl Contract {
         self.assert_not_paused();
 
         let caller = env::predecessor_account_id();
+        // Canonical, for the same reason as `freeze_wallet` — and this is the
+        // half that matters most: the way OUT of a freeze must not depend on
+        // how the caller happened to spell the key.
+        let wallet_pubkey = canonical_wallet_pubkey(&wallet_pubkey);
         let mut entry = self
             .wallet_policies
             .get(&wallet_pubkey)

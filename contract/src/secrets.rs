@@ -21,6 +21,67 @@ fn accessor_binding(accessor: &SecretAccessor) -> String {
     }
 }
 
+/// The one spelling of an accessor that anything is stored under.
+///
+/// A WASM hash is hex, and hex has two spellings for every byte. The contract
+/// checked only that the characters WERE hex, so `AB…` and `ab…` were two
+/// different storage keys for one binary — and the worker computes the hash
+/// with `hex::encode`, which is lower case. A secret filed under the upper-case
+/// spelling was therefore a secret nothing would ever ask for: it stored
+/// cleanly, read back under its own spelling, and was invisible to the code it
+/// was left for. Confirmed against the deployed contract by
+/// `tests/contract_probe_e2e.sh`, probe P1.
+///
+/// The other accessors have one spelling each as far as this contract is
+/// concerned. A repository is stored as given — normalising a URL is the
+/// caller's job and this method has no opinion about `https://` — and a project
+/// id must already exist in `projects`, which settles it.
+pub(crate) fn canonical_accessor(accessor: SecretAccessor) -> SecretAccessor {
+    match accessor {
+        SecretAccessor::WasmHash { hash } => SecretAccessor::WasmHash {
+            hash: hash.to_lowercase(),
+        },
+        other => other,
+    }
+}
+
+/// Does this name have the shape of a NEAR implicit account — 64 lowercase hex?
+///
+/// The same test `shared_tee_helpers::is_implicit_account` applies in the
+/// keystore, written out here because the contract does not depend on that
+/// crate. Both sides must agree: the keystore treats a profile of this shape as
+/// an agent's, and this contract refuses to let anyone else take such a name.
+pub(crate) fn is_implicit_account_name(name: &str) -> bool {
+    name.len() == 64
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// The one spelling of a profile, for the accessors where the profile is not
+/// free text.
+///
+/// A payment key's profile IS its nonce, and `"01"` is the same nonce as `"1"`
+/// written differently. Both passed validation and landed in DIFFERENT slots —
+/// so a key at `"01"` was a second on-chain key for nonce 1 that
+/// `delete_payment_key`, which looks up `nonce.to_string()`, could not see or
+/// remove, and that the coordinator's one row per `(owner, nonce)` could not
+/// represent. Confirmed live as probe P2.
+///
+/// Rendered from the parsed number, so the canonical form is exactly what
+/// `delete_payment_key` builds. A profile that is not a number is left alone:
+/// the write path rejects it with a message about nonces, and a READ asking for
+/// nonsense should answer "nothing", not panic.
+pub(crate) fn canonical_profile(accessor: &SecretAccessor, profile: String) -> String {
+    match accessor {
+        SecretAccessor::System(SystemSecretType::PaymentKey) => match profile.parse::<u32>() {
+            Ok(nonce) => nonce.to_string(),
+            Err(_) => profile,
+        },
+        _ => profile,
+    }
+}
+
 /// The exact string `store_agent_secret` requires a signature over.
 ///
 /// A function rather than a `format!` at the call site, so a test can exercise
@@ -296,6 +357,12 @@ impl Contract {
         let payer = env::predecessor_account_id();
         let owner = crate::wallet::implicit_account_of(&agent_pubkey);
 
+        // Canonical BEFORE the message is built, so the string the signature
+        // covers is the one that names the slot this writes to. Canonicalising
+        // afterwards would sign one accessor and store under another.
+        let accessor = canonical_accessor(accessor);
+        let profile = canonical_profile(&accessor, profile);
+
         // Before anything is hashed: a field that can move a boundary makes the
         // signature cover more than one tuple. Checked here rather than inside
         // `secret_store_message`, which is a pure function used for verification
@@ -428,6 +495,11 @@ impl Contract {
         let payer = env::predecessor_account_id();
         let owner = crate::wallet::implicit_account_of(&agent_pubkey);
 
+        // Canonical first, for the same reason as the store: the signature must
+        // cover the slot this actually removes.
+        let accessor = canonical_accessor(accessor);
+        let profile = canonical_profile(&accessor, profile);
+
         // The same rule the store applies, from the same place. Two copies
         // would be two messages for one constraint, and the second is the one
         // nobody updates.
@@ -493,6 +565,8 @@ impl Contract {
         profile: String,
     ) {
         let caller = env::predecessor_account_id();
+        let accessor = canonical_accessor(accessor);
+        let profile = canonical_profile(&accessor, profile);
 
         let key = SecretKey {
             accessor: accessor.clone(),
@@ -523,6 +597,8 @@ impl Contract {
     /// Idempotent: succeeds silently if no binding exists.
     pub fn unbind_secret_vault(&mut self, accessor: SecretAccessor, profile: String) {
         let caller = env::predecessor_account_id();
+        let accessor = canonical_accessor(accessor);
+        let profile = canonical_profile(&accessor, profile);
         let key = SecretKey {
             accessor,
             profile,
@@ -548,6 +624,8 @@ impl Contract {
         new_access: types::AccessCondition,
     ) {
         let caller = env::predecessor_account_id();
+        let accessor = canonical_accessor(accessor);
+        let profile = canonical_profile(&accessor, profile);
 
         let key = SecretKey {
             accessor: accessor.clone(),
@@ -600,6 +678,9 @@ impl Contract {
         access: types::AccessCondition,
         vault_id: Option<AccountId>,
     ) -> U128 {
+        // The estimate must price the slot the store will actually use.
+        let accessor = canonical_accessor(accessor);
+        let profile = canonical_profile(&accessor, profile);
         let key = SecretKey {
             accessor,
             profile,
@@ -635,6 +716,10 @@ impl Contract {
         profile: String,
         owner: AccountId,
     ) -> Option<SecretProfileView> {
+        // A READ must ask for the same slot a write produced, whatever case the
+        // caller typed the hash in.
+        let accessor = canonical_accessor(accessor);
+        let profile = canonical_profile(&accessor, profile);
         let key = SecretKey {
             accessor: accessor.clone(),
             profile: profile.clone(),
@@ -712,6 +797,8 @@ impl Contract {
         profile: String,
         owner: AccountId,
     ) -> Option<AccountId> {
+        let accessor = canonical_accessor(accessor);
+        let profile = canonical_profile(&accessor, profile);
         let key = SecretKey {
             accessor,
             profile,
@@ -733,6 +820,8 @@ impl Contract {
         profile: String,
         owner: AccountId,
     ) -> SecretWithVault {
+        let accessor = canonical_accessor(accessor);
+        let profile = canonical_profile(&accessor, profile);
         let key = SecretKey {
             accessor: accessor.clone(),
             profile: profile.clone(),
@@ -777,6 +866,8 @@ impl Contract {
         profile: String,
         owner: AccountId,
     ) -> bool {
+        let accessor = canonical_accessor(accessor);
+        let profile = canonical_profile(&accessor, profile);
         let key = SecretKey {
             accessor,
             profile,
@@ -786,28 +877,50 @@ impl Contract {
         self.secrets_storage.get(&key).is_some()
     }
 
-    /// List all secrets for a user
+    /// One PAGE of a user's secrets, as metadata.
     ///
-    /// Returns array of secret metadata with accessor, profile info
-    pub fn list_user_secrets(&self, account_id: AccountId) -> Vec<UserSecretInfo> {
-        let user_secrets = self.user_secrets_index.get(&account_id);
+    /// Paged for the same reason `get_priced_projects` is: this walks an
+    /// `UnorderedSet` and does a storage READ per entry, so the work grows with
+    /// the account and a big enough account cannot be read at all — the view
+    /// exceeds its gas and every caller sees a failure rather than a long
+    /// answer. An account gets that many secrets by using the product, and this
+    /// project already has the incident to prove it: a worker enumerating a
+    /// key set of that size stalled for hours.
+    ///
+    /// A caller that names no limit gets a PAGE, not everything, so the
+    /// unbounded read is not reachable by omission. Callers that want the whole
+    /// list ask for the next page until one comes back short — the CLI's
+    /// `secrets list` and `keys list` do exactly that, because a silently
+    /// truncated list of your own secrets is worse than a slow one.
+    ///
+    /// `from_index` and `limit` may be omitted entirely; near-sdk reads an
+    /// absent `Option` argument as `None`, which is what makes this a
+    /// compatible change for callers that only pass `account_id`.
+    pub fn list_user_secrets(
+        &self,
+        account_id: AccountId,
+        from_index: Option<u64>,
+        limit: Option<u64>,
+    ) -> Vec<UserSecretInfo> {
+        let from_index = from_index.unwrap_or(0) as usize;
+        let limit = limit.unwrap_or(100).min(500) as usize;
 
-        match user_secrets {
-            Some(secrets_set) => {
-                secrets_set
-                    .iter()
-                    .filter_map(|key| {
-                        self.secrets_storage.get(&key).map(|profile| UserSecretInfo {
-                            accessor: key.accessor.clone(),
-                            profile: key.profile.clone(),
-                            created_at: profile.created_at,
-                            updated_at: profile.updated_at,
-                            storage_deposit: U128(profile.storage_deposit),
-                            access: profile.access,
-                        })
+        match self.user_secrets_index.get(&account_id) {
+            Some(secrets_set) => secrets_set
+                .iter()
+                .skip(from_index)
+                .take(limit)
+                .filter_map(|key| {
+                    self.secrets_storage.get(&key).map(|profile| UserSecretInfo {
+                        accessor: key.accessor.clone(),
+                        profile: key.profile.clone(),
+                        created_at: profile.created_at,
+                        updated_at: profile.updated_at,
+                        storage_deposit: U128(profile.storage_deposit),
+                        access: profile.access,
                     })
-                    .collect()
-            }
+                })
+                .collect(),
             None => vec![],
         }
     }
@@ -1636,8 +1749,8 @@ mod tests {
             None,
         );
 
-        // List user secrets
-        let secrets = contract.list_user_secrets(user.clone());
+        // List user secrets — no page named, so the default page.
+        let secrets = contract.list_user_secrets(user.clone(), None, None);
         assert_eq!(secrets.len(), 2);
 
         // Verify we have both types
@@ -1674,6 +1787,12 @@ impl Contract {
         access: types::AccessCondition,
         vault_id: Option<AccountId>,
     ) {
+        // ONE spelling, decided before anything is validated or stored. Both
+        // entry points reach this function, so a secret cannot be written under
+        // a spelling the readers will not ask for.
+        let accessor = canonical_accessor(accessor);
+        let profile = canonical_profile(&accessor, profile);
+
         // Validate accessor
         match &accessor {
             SecretAccessor::Repo { repo, branch } => {
@@ -1754,6 +1873,31 @@ impl Contract {
         assert!(
             !encrypted_secrets_base64.is_empty(),
             "Encrypted secrets cannot be empty"
+        );
+
+        // A profile shaped like an implicit account belongs to the AGENT of
+        // that name, and to nobody else.
+        //
+        // The keystore decides whether a secret is an agent's by the SHAPE of
+        // its profile — 64 lowercase hex — and then serves it only when the
+        // reader, the owner and the name are all the same account. That rule is
+        // what stops a stranger planting a credential under an agent's name.
+        //
+        // The cost of it, until now, was on the honest side: an ordinary secret
+        // whose profile happened to look like that — a content hash, a session
+        // id — stored cleanly and could then never be read, with an error about
+        // agents that had nothing to do with what its owner did. Refusing the
+        // name on the way IN turns a secret that silently never works into a
+        // message at the moment the name is chosen.
+        //
+        // An agent's own secret passes: its owner IS that implicit account, so
+        // the name and the owner agree.
+        assert!(
+            !is_implicit_account_name(&profile) || profile == owner.as_str(),
+            "A profile of 64 hex characters names an AGENT, and only that agent's own \
+             secrets may use it. This secret is owned by '{}' — give it a different \
+             profile name.",
+            owner
         );
 
         // Create secret key

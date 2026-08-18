@@ -949,9 +949,14 @@ pub struct WalletSolanaSignResponse {
 pub struct WalletSignPolicyRequest {
     pub wallet_id: String,
     /// The encrypted policy blob (base64 ciphertext), NOT a pre-computed hash. The keystore
-    /// DECRYPT-VALIDATES it (AEAD) before signing `sha256(encrypted_data)` — a caller-supplied
+    /// DECRYPT-VALIDATES it (AEAD) before signing — a caller-supplied
     /// raw hash, or any non-ciphertext, is rejected (it would be a tx-signing oracle).
     pub encrypted_data: String,
+    /// The NEAR account that will SEND `store_wallet_policy`. Part of the
+    /// signed message, so the signature is good for that account and no other —
+    /// which is what stops a signature lifted off the chain being filed by a
+    /// stranger.
+    pub caller: String,
 }
 
 /// Request for POST /wallet/sign-secret-store.
@@ -961,7 +966,14 @@ pub struct SignSecretStoreRequest {
     /// The connector's project. Used to REBUILD the seed here rather than take
     /// one from the caller — that is what makes a mis-sealed secret impossible
     /// rather than merely unlikely.
-    pub project_id: String,
+    ///
+    /// Exactly one of this and `wasm_hash`. See [`AgentSecretTarget`].
+    #[serde(default)]
+    pub project_id: Option<String>,
+    /// One exact WASM binary instead of a project: the secret is then readable
+    /// only by that build, and a rebuild that changes a byte cannot open it.
+    #[serde(default)]
+    pub wasm_hash: Option<String>,
     /// The sealed secret (base64 ciphertext), NOT a hash. Decrypt-validated
     /// before anything is signed — see the handler.
     pub encrypted_secrets_base64: String,
@@ -987,6 +999,36 @@ pub struct SignSecretStoreResponse {
     /// `ed25519:<hex>` — the form the contract takes.
     pub wallet_pubkey: String,
     /// The agent's implicit account: both the owner of the secret and its name.
+    pub agent_account: String,
+}
+
+/// Request for POST /wallet/sign-secret-delete.
+///
+/// No ciphertext, because a delete names a secret rather than carrying one —
+/// which also removes the decrypt-validation this endpoint's sibling relies on.
+/// What authorises it instead is the same thing that authorises every other
+/// wallet operation: the caller reached here holding the wallet's key, and the
+/// signature covers the agent, the accessor, the profile and the payer, so it
+/// destroys one named secret on behalf of one named submitter and nothing else.
+#[derive(Debug, Deserialize)]
+pub struct SignSecretDeleteRequest {
+    pub wallet_id: String,
+    /// Exactly one of this and `wasm_hash`, exactly as for the store — the
+    /// signature must name the accessor the secret is filed under.
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub wasm_hash: Option<String>,
+    /// The account that will send the transaction, and the one the storage
+    /// deposit comes back to.
+    pub payer: String,
+}
+
+/// Response with the signature the contract's `delete_agent_secret` verifies.
+#[derive(Debug, Serialize)]
+pub struct SignSecretDeleteResponse {
+    pub signature_hex: String,
+    pub wallet_pubkey: String,
     pub agent_account: String,
 }
 
@@ -1239,6 +1281,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/wallet/solana/sign-transaction", post(wallet_solana_sign_transaction_handler))
         .route("/wallet/sign-policy", post(wallet_sign_policy_handler))
         .route("/wallet/sign-secret-store", post(wallet_sign_secret_store_handler))
+        .route("/wallet/sign-secret-delete", post(wallet_sign_secret_delete_handler))
         .route("/wallet/check-policy", post(wallet_check_policy_handler))
         .route("/wallet/encrypt-policy", post(wallet_encrypt_policy_handler))
         .route("/wallet/decrypt-policy", post(wallet_decrypt_policy_handler))
@@ -4343,6 +4386,88 @@ async fn wallet_solana_sign_transaction_handler(
     Ok(Json(WalletSolanaSignResponse { signature }))
 }
 
+/// What an agent's secret is stored against: a project, or one exact WASM.
+///
+/// Two facts hang off this choice and they must agree, which is why it is one
+/// type rather than two parameters passed around separately:
+///
+/// * the SEED the secret is sealed to, which the read path rebuilds when the
+///   worker asks for a decryption. Those strings are not invented here — they
+///   are the ones `/decrypt` and `/get-or-create-secrets` already use, and
+///   `the_agent_seeds_match_the_read_path` pins them against those call sites.
+/// * the ACCESSOR BINDING inside the signed message, which the contract
+///   rebuilds from its own `SecretAccessor`. `wasm:` there is the contract's
+///   spelling and is deliberately NOT the seed's `wasm_hash:` — two different
+///   strings for two different jobs, each pinned to the side that reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentSecretTarget {
+    Project(String),
+    WasmHash(String),
+}
+
+impl AgentSecretTarget {
+    /// Exactly one of the two, or an error saying which.
+    ///
+    /// Neither is not a default: a secret sealed to the wrong scope is
+    /// unreadable by the code meant to read it, and picking one silently is how
+    /// that happens.
+    pub fn from_fields(
+        project_id: Option<&str>,
+        wasm_hash: Option<&str>,
+    ) -> Result<Self, ApiError> {
+        let project = project_id.map(str::trim).filter(|s| !s.is_empty());
+        let hash = wasm_hash.map(str::trim).filter(|s| !s.is_empty());
+
+        match (project, hash) {
+            (Some(_), Some(_)) => Err(ApiError::BadRequest(
+                "Give either project_id or wasm_hash, not both — a secret is sealed to \
+                 one scope and the two seal it differently."
+                    .to_string(),
+            )),
+            (Some(p), None) => Ok(Self::Project(p.to_string())),
+            // LOWER CASE, because hex has two spellings and the contract stores
+            // exactly one: `canonical_accessor` lowercases it before the
+            // accessor becomes a storage key. Sealing to the shouted spelling
+            // would produce a secret whose seed nothing rebuilds — the worker
+            // reads the accessor back FROM THE CHAIN, so it asks in lower case.
+            (None, Some(h)) => Ok(Self::WasmHash(h.to_lowercase())),
+            (None, None) => Err(ApiError::BadRequest(
+                "project_id or wasm_hash is required: a secret is stored against the \
+                 connector's project or against one exact WASM hash."
+                    .to_string(),
+            )),
+        }
+    }
+
+    /// The seed the secret is sealed to, for this agent.
+    ///
+    /// The agent's account plays all three roles — owner, name and seed
+    /// material — so there is no second value here to get wrong.
+    pub fn seed(&self, agent_account: &str) -> String {
+        match self {
+            Self::Project(project_id) => format!("project:{}:{}", project_id, agent_account),
+            Self::WasmHash(hash) => format!("wasm_hash:{}:{}", hash, agent_account),
+        }
+    }
+
+    /// The accessor as it appears INSIDE the signed message, matching the
+    /// contract's `accessor_binding`.
+    pub fn binding(&self) -> String {
+        match self {
+            Self::Project(project_id) => project_id.clone(),
+            Self::WasmHash(hash) => format!("wasm:{}", hash),
+        }
+    }
+
+    /// For a log line: what this secret is stored against.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Project(project_id) => format!("project {}", project_id),
+            Self::WasmHash(hash) => format!("wasm {}", hash),
+        }
+    }
+}
+
 /// The exact string the contract rebuilds and verifies in `store_agent_secret`.
 ///
 /// **The leading domain is what makes this unforgeable as a transaction.** The
@@ -4357,16 +4482,16 @@ async fn wallet_solana_sign_transaction_handler(
 /// produces signatures nothing will accept.
 fn secret_store_message(
     wallet_pubkey: &str,
-    project_id: &str,
+    accessor_binding: &str,
     profile: &str,
     encrypted_secrets_base64: &str,
     payer: &str,
     vault_id: &str,
     access_json: &str,
 ) -> String {
-    // The accessor is LENGTH-PREFIXED, and `project_id` is what this endpoint
-    // renders one from — the contract writes the same, from
-    // `accessor_binding(Project{project_id})`, which is the project id verbatim.
+    // The accessor is LENGTH-PREFIXED, and `AgentSecretTarget::binding` is what
+    // this endpoint renders one from — the contract writes the same, from
+    // `accessor_binding(…)`: a project id verbatim, a WASM hash behind `wasm:`.
     //
     // The length is what lets the field hold colons: its end is pinned by
     // arithmetic rather than by the next delimiter, so two different accessors
@@ -4379,13 +4504,67 @@ fn secret_store_message(
     format!(
         "store_secrets_for:v1:{}:{}:{}:{}:{}:{}:{}:{}",
         wallet_pubkey,
-        project_id.len(),
-        project_id,
+        accessor_binding.len(),
+        accessor_binding,
         profile,
         encrypted_secrets_base64,
         payer,
         vault_id,
         access_json
+    )
+}
+
+/// The exact string the contract rebuilds and verifies in `store_wallet_policy`.
+///
+/// Byte-for-byte the contract's `policy_store_message`. The blob is
+/// length-prefixed so it may hold anything, and the caller is last so a
+/// signature authorises one account to file this policy and nobody else.
+///
+/// Both parts are load-bearing. Without the DOMAIN, any signature this wallet
+/// has ever produced — and they are public, in the arguments of every
+/// `store_agent_secret` transaction — could be filed here as a policy blob,
+/// making a stranger the controller of somebody else's policy slot. Without the
+/// CALLER, a genuine policy signature could be lifted and replayed by whoever
+/// saw it first.
+fn policy_store_message(wallet_pubkey: &str, encrypted_data: &str, caller: &str) -> String {
+    format!(
+        "store_wallet_policy:v1:{}:{}:{}:{}",
+        wallet_pubkey,
+        encrypted_data.len(),
+        encrypted_data,
+        caller
+    )
+}
+
+/// The exact string the contract rebuilds and verifies in `delete_agent_secret`.
+///
+/// A DIFFERENT domain from the store, and that is the whole point: a signature
+/// obtained to store a secret must not also destroy one. The contract pins the
+/// same distinction, and `a_store_signature_cannot_delete` here fails if either
+/// side loses it.
+///
+/// Shorter than the store by everything that describes CONTENT — there is no
+/// ciphertext, no access condition and no vault, because a delete names a
+/// secret rather than describing one. What remains is exactly the tuple the
+/// contract looks the secret up by, plus the payer.
+///
+/// The payer is in here for a sharper reason than in the store: the pair
+/// `(args, signature)` sits on chain forever once submitted, and a replayed
+/// DELETE is not a rollback — it is a deletion that happens whenever somebody
+/// else chooses. Binding the submitter is what stops everyone but them.
+fn secret_delete_message(
+    wallet_pubkey: &str,
+    accessor_binding: &str,
+    profile: &str,
+    payer: &str,
+) -> String {
+    format!(
+        "delete_agent_secret:v1:{}:{}:{}:{}:{}",
+        wallet_pubkey,
+        accessor_binding.len(),
+        accessor_binding,
+        profile,
+        payer
     )
 }
 
@@ -4446,14 +4625,15 @@ async fn wallet_sign_secret_store_handler(
             "encrypted_secrets_base64 is required".to_string(),
         ));
     }
-    if req.project_id.trim().is_empty() {
-        return Err(ApiError::BadRequest("project_id is required".to_string()));
-    }
+    let target = AgentSecretTarget::from_fields(
+        req.project_id.as_deref(),
+        req.wasm_hash.as_deref(),
+    )?;
     if req.payer.trim().is_empty() {
         return Err(ApiError::BadRequest("payer is required".to_string()));
     }
 
-    // No colon check on `project_id`, deliberately. The accessor is
+    // No colon check on the accessor, deliberately. It is
     // length-prefixed in the message below, so its content cannot move a
     // boundary however it is spelled — a ban here would refuse what the
     // contract now accepts. The only field still required to be colon-free is
@@ -4470,7 +4650,7 @@ async fn wallet_sign_secret_store_handler(
 
     // 1. Decrypt-validate against the seed WE rebuild. Fails for attacker bytes
     //    and equally for a secret sealed to the wrong seed.
-    let secret_seed = format!("project:{}:{}", req.project_id.trim(), agent_account);
+    let secret_seed = target.seed(&agent_account);
     let encrypted_bytes = base64::decode(&req.encrypted_secrets_base64).map_err(|e| {
         ApiError::BadRequest(format!(
             "encrypted_secrets_base64 is not valid base64: {}",
@@ -4489,16 +4669,16 @@ async fn wallet_sign_secret_store_handler(
         })?;
 
     // 2. Only now build the message the contract will rebuild, and sign it.
-    // The message covers the PROJECT as well. The signature authorises one
-    // stored secret, and which project it belongs to is part of what was
-    // authorised: without it the payer could send the same signed blob under a
-    // different accessor. Nothing leaks either way — the ciphertext is sealed
-    // to this project's seed and would not decrypt elsewhere — but an
-    // authorisation that does not cover what it authorises is a hole waiting
-    // for the day one of those facts changes.
+    // The message covers the ACCESSOR as well. The signature authorises one
+    // stored secret, and what it belongs to is part of what was authorised:
+    // without it the payer could send the same signed blob under a different
+    // accessor. Nothing leaks either way — the ciphertext is sealed to that
+    // scope's seed and would not decrypt elsewhere — but an authorisation that
+    // does not cover what it authorises is a hole waiting for the day one of
+    // those facts changes.
     let message = secret_store_message(
         &wallet_pubkey,
-        req.project_id.trim(),
+        &target.binding(),
         &agent_account,
         &req.encrypted_secrets_base64,
         req.payer.trim(),
@@ -4518,7 +4698,7 @@ async fn wallet_sign_secret_store_handler(
 
     tracing::info!(
         wallet_id = %req.wallet_id,
-        project_id = %req.project_id,
+        target = %target.describe(),
         payer = %req.payer,
         "Signed a secret store for an agent"
     );
@@ -4530,10 +4710,101 @@ async fn wallet_sign_secret_store_handler(
     }))
 }
 
+/// Sign a `delete_agent_secret` call: destroy ONE named secret, on behalf of
+/// ONE named submitter.
+///
+/// The store's safety argument runs through the ciphertext — it is
+/// decrypt-validated, so a caller cannot get an arbitrary preimage signed. A
+/// delete carries no ciphertext, so that argument is unavailable and the
+/// structure has to hold on its own:
+///
+///   1. the message is BUILT here from typed fields, never taken from the
+///      caller, and it opens with an ASCII domain. Read as borsh, that domain
+///      claims a `signer_id` of about 1.9 billion against a 64-byte maximum, so
+///      no transaction can wear this preimage — the same property that makes
+///      the store endpoint safe to expose, and it does not depend on the
+///      ciphertext at all;
+///   2. the domain is `delete_agent_secret:v1:`, DIFFERENT from the store's, so
+///      neither signature can be presented as the other;
+///   3. every field the contract looks the secret up by is inside the
+///      signature, and so is the payer. What comes back destroys one tuple when
+///      sent by one account.
+///
+/// The deposit returns to the submitter, which is the payer named here. That is
+/// the contract's rule, not this endpoint's, and it is why the author who
+/// staked the storage is the sensible account to name.
+async fn wallet_sign_secret_delete_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<SignSecretDeleteRequest>,
+) -> Result<Json<SignSecretDeleteResponse>, ApiError> {
+    if !state.is_ready() {
+        return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
+    }
+
+    let customer = extract_customer_from_header(&headers)?;
+    state
+        .ensure_customer_loaded(customer.as_ref())
+        .await
+        .map_err(ApiError::from_customer_load)?;
+
+    let target = AgentSecretTarget::from_fields(
+        req.project_id.as_deref(),
+        req.wasm_hash.as_deref(),
+    )?;
+    if req.payer.trim().is_empty() {
+        return Err(ApiError::BadRequest(
+            "payer is required: the signature is bound to the account that will send the \
+             transaction, and the storage deposit comes back to it."
+                .to_string(),
+        ));
+    }
+
+    let keystore = state.keystore.read().await;
+    let wallet_seed = format!("wallet:{}:near", req.wallet_id);
+    let verifying_key = keystore
+        .get_public_key_for_seed(customer.as_ref(), &wallet_seed)
+        .map_err(|e| ApiError::InternalError(format!("Failed to derive public key: {}", e)))?;
+    let agent_account = hex::encode(verifying_key.as_bytes());
+    let wallet_pubkey = format!("ed25519:{}", agent_account);
+
+    let message = secret_delete_message(
+        &wallet_pubkey,
+        &target.binding(),
+        &agent_account,
+        req.payer.trim(),
+    );
+    let message_hash = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(message.as_bytes());
+        hasher.finalize()
+    };
+
+    let signature = keystore
+        .sign(customer.as_ref(), &wallet_seed, &message_hash)
+        .map_err(|e| ApiError::InternalError(format!("Signing failed: {}", e)))?;
+
+    tracing::info!(
+        wallet_id = %req.wallet_id,
+        target = %target.describe(),
+        payer = %req.payer,
+        "Signed a secret delete for an agent"
+    );
+
+    Ok(Json(SignSecretDeleteResponse {
+        signature_hex: hex::encode(signature.to_bytes()),
+        wallet_pubkey,
+        agent_account,
+    }))
+}
+
 /// Sign encrypted policy data so the NEAR contract can verify wallet ownership.
 ///
-/// The contract's `store_wallet_policy` requires `wallet_signature = sign(sha256(encrypted_data))`
-/// for ed25519 wallets. This endpoint produces that signature using the wallet's derived key.
+/// The contract's `store_wallet_policy` requires a signature over
+/// [`policy_store_message`] — domain, wallet key, the blob, and the account
+/// that will send the call. This endpoint produces it with the wallet's derived
+/// key.
 async fn wallet_sign_policy_handler(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -4556,11 +4827,24 @@ async fn wallet_sign_policy_handler(
     // pre-computed hash) and first DECRYPT-VALIDATE it: the ChaCha20-Poly1305 AEAD auth tag
     // can only verify for a real ciphertext produced under this wallet's policy key, so
     // arbitrary attacker bytes (e.g. `borsh(tx)`) FAIL decryption and are rejected here. ONLY
-    // after a successful decrypt (to a parseable Policy) do we sign the BARE
-    // `sha256(encrypted_data)` the (unchanged) contract verifies. The decrypt is the gate;
-    // do not weaken, reorder, or skip it.
+    // after a successful decrypt (to a parseable Policy) do we sign the message the contract
+    // rebuilds. The decrypt is the gate; do not weaken, reorder, or skip it — the domain in
+    // that message is a second, independent reason no transaction can wear this preimage, not
+    // a replacement for this one.
     if req.encrypted_data.is_empty() {
         return Err(ApiError::BadRequest("encrypted_data is required".to_string()));
+    }
+    if req.caller.trim().is_empty() {
+        // Refused rather than signed as an empty string: the contract rebuilds
+        // this message with its own predecessor, so a signature naming nobody
+        // matches nothing and would fail on chain with "Invalid Ed25519 wallet
+        // signature" — a message about cryptography for what is a missing
+        // field.
+        return Err(ApiError::BadRequest(
+            "caller is required: the signature names the NEAR account that will send \
+             store_wallet_policy, and is good for that account only."
+                .to_string(),
+        ));
     }
 
     let keystore = state.keystore.read().await;
@@ -4589,29 +4873,45 @@ async fn wallet_sign_policy_handler(
         ))
     })?;
 
-    // 2. Sign the BARE sha256(encrypted_data) — matches the unchanged contract's
-    //    `store_wallet_policy` (`sign(sha256(encrypted_data))`).
+    // 2. Sign the message the CONTRACT rebuilds — domain first, caller last.
+    //
+    //    It used to be the bare `sha256(encrypted_data)`, which the decrypt
+    //    above made safe to produce but did not make safe to HOLD: every wallet
+    //    signature in this system has that shape, and the strings are public,
+    //    so any signature from any verb could be filed here as a policy. The
+    //    domain stops that; the caller stops the resulting signature being
+    //    usable by anyone but the account it was made for.
+    let seed = format!("wallet:{}:near", req.wallet_id);
+    let policy_pubkey = {
+        let vk = keystore
+            .get_public_key_for_seed(customer.as_ref(), &seed)
+            .map_err(|e| ApiError::InternalError(format!("Failed to derive public key: {}", e)))?;
+        format!("ed25519:{}", hex::encode(vk.as_bytes()))
+    };
+    let message = policy_store_message(&policy_pubkey, &req.encrypted_data, req.caller.trim());
     let message_hash = {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
-        hasher.update(req.encrypted_data.as_bytes());
+        hasher.update(message.as_bytes());
         hasher.finalize()
     };
 
-    let seed = format!("wallet:{}:near", req.wallet_id);
     let signature = keystore.sign(customer.as_ref(), &seed, &message_hash).map_err(|e| {
         ApiError::InternalError(format!("Signing failed: {}", e))
     })?;
 
-    // Return Ed25519 pubkey (not X25519 from public_key_hex) — must match
-    // the key used for on-chain ed25519_verify in store_wallet_policy.
-    let ed25519_vk = keystore.get_public_key_for_seed(customer.as_ref(), &seed).map_err(|e| {
-        ApiError::InternalError(format!("Failed to derive public key: {}", e))
-    })?;
+    // The Ed25519 pubkey (not the X25519 one) — the key the contract's
+    // `ed25519_verify` uses, and the same value the message above names. Taken
+    // from `policy_pubkey` rather than derived a second time, so the answer and
+    // what was signed cannot describe different keys.
+    let public_key_hex = policy_pubkey
+        .strip_prefix("ed25519:")
+        .unwrap_or(&policy_pubkey)
+        .to_string();
 
     Ok(Json(WalletSignPolicyResponse {
         signature_hex: hex::encode(signature.to_bytes()),
-        public_key_hex: hex::encode(ed25519_vk.as_bytes()),
+        public_key_hex,
     }))
 }
 
@@ -7642,10 +7942,208 @@ mod signing_oracle_tests {
         }
     }
 
-    /// `/wallet/sign-policy` cannot use a domain: it signs the bare
-    /// `sha256(encrypted_data)` an already-deployed contract verifies. What
-    /// protects it is the ORDER — the base64 decode and the AEAD decrypt both
-    /// run BEFORE the signature — and the first of those is what this pins.
+    /// The delete message, byte for byte, as `contract/src/secrets.rs` rebuilds
+    /// it. Same reason as the store's pin: the two sides never compare notes at
+    /// run time, so a drift shows up only as signatures the contract rejects.
+    #[test]
+    fn the_secret_delete_message_format_is_pinned() {
+        assert_eq!(
+            secret_delete_message("ed25519:ab", "a.near/p", "agent", "payer.near"),
+            "delete_agent_secret:v1:ed25519:ab:8:a.near/p:agent:payer.near"
+        );
+
+        // A WASM-scoped secret is named by the contract's `wasm:` binding, and
+        // the length in front of it counts THAT string, prefix included.
+        assert_eq!(
+            secret_delete_message("ed25519:ab", "wasm:beef", "agent", "payer.near"),
+            "delete_agent_secret:v1:ed25519:ab:9:wasm:beef:agent:payer.near"
+        );
+    }
+
+    /// A signature obtained to STORE must not destroy anything, and a delete
+    /// signature must not store.
+    ///
+    /// Asserted on the DOMAIN rather than on the two strings differing: they
+    /// also differ by field count, so an equality check between them would pass
+    /// even if both domains read `store_secrets_for:` — which is the failure
+    /// this test exists for and the one it used to miss.
+    #[test]
+    fn a_store_signature_cannot_delete() {
+        let store = secret_store_message(
+            "ed25519:ab",
+            "a.near/p",
+            "agent",
+            "cipher",
+            "payer.near",
+            "",
+            "\"AllowAll\"",
+        );
+        let delete = secret_delete_message("ed25519:ab", "a.near/p", "agent", "payer.near");
+
+        assert!(store.starts_with("store_secrets_for:v1:"));
+        assert!(delete.starts_with("delete_agent_secret:v1:"));
+        assert!(
+            !delete.starts_with("store_secrets_for:"),
+            "one domain for both verbs would make a store signature a licence to delete"
+        );
+        assert!(
+            first_u32_le(delete.as_bytes()) > MAX_ACCOUNT_ID_LEN,
+            "the delete preimage must be unusable as a transaction too"
+        );
+    }
+
+    /// Every field of a delete is inside its signature.
+    ///
+    /// A delete is the operation where an unbound field costs the most: the
+    /// pair `(args, signature)` is public on chain forever, so anything left
+    /// outside can be varied by whoever finds it.
+    #[test]
+    fn changing_any_delete_field_changes_the_message() {
+        let base = secret_delete_message("ed25519:ab", "a.near/p", "agent", "payer.near");
+        for other in [
+            secret_delete_message("ed25519:cd", "a.near/p", "agent", "payer.near"),
+            secret_delete_message("ed25519:ab", "b.near/q", "agent", "payer.near"),
+            secret_delete_message("ed25519:ab", "a.near/p", "other", "payer.near"),
+            secret_delete_message("ed25519:ab", "a.near/p", "agent", "thief.near"),
+        ] {
+            assert_ne!(base, other, "a changed argument must change the message");
+        }
+    }
+
+    /// The policy message, byte for byte, as `contract/src/wallet.rs` rebuilds
+    /// it.
+    ///
+    /// This one is newer than the others and was added to close a hole rather
+    /// than to describe one: the contract used to verify a policy signature
+    /// over the BARE `sha256(encrypted_data)`, which any other signature of
+    /// this wallet satisfied.
+    #[test]
+    fn the_policy_store_message_format_is_pinned() {
+        assert_eq!(
+            policy_store_message("ed25519:ab", "Y2lwaGVy", "alice.near"),
+            "store_wallet_policy:v1:ed25519:ab:8:Y2lwaGVy:alice.near"
+        );
+    }
+
+    /// No signature of another verb can be a policy, and no policy signature
+    /// can be another verb.
+    ///
+    /// Asserted on the DOMAINS, because that is the property: three messages
+    /// that begin differently cannot be substituted for one another however
+    /// their remaining fields line up.
+    #[test]
+    fn the_three_domains_are_distinct() {
+        let policy = policy_store_message("ed25519:ab", "cipher", "alice.near");
+        let store = secret_store_message(
+            "ed25519:ab",
+            "a.near/p",
+            "agent",
+            "cipher",
+            "alice.near",
+            "",
+            "\"AllowAll\"",
+        );
+        let delete = secret_delete_message("ed25519:ab", "a.near/p", "agent", "alice.near");
+
+        assert!(policy.starts_with("store_wallet_policy:v1:"));
+        assert!(store.starts_with("store_secrets_for:v1:"));
+        assert!(delete.starts_with("delete_agent_secret:v1:"));
+        assert!(
+            first_u32_le(policy.as_bytes()) > MAX_ACCOUNT_ID_LEN,
+            "the policy preimage must be unusable as a transaction too"
+        );
+    }
+
+    /// Every field of a policy signature is inside it — including the account
+    /// that may send it.
+    #[test]
+    fn changing_any_policy_field_changes_the_message() {
+        let base = policy_store_message("ed25519:ab", "cipher", "alice.near");
+        for other in [
+            policy_store_message("ed25519:cd", "cipher", "alice.near"),
+            policy_store_message("ed25519:ab", "other", "alice.near"),
+            policy_store_message("ed25519:ab", "cipher", "thief.near"),
+        ] {
+            assert_ne!(base, other, "a changed argument must change the message");
+        }
+    }
+
+    /// The seeds this endpoint seals to are the ones the READ path rebuilds.
+    ///
+    /// Written out literally rather than by calling the same helper, because a
+    /// helper compared against itself agrees by construction. These strings are
+    /// copied from the `/decrypt` and `/get-or-create-secrets` match arms; if
+    /// one of those is edited, this is what says so — and the symptom it
+    /// replaces is a secret that stores fine and cannot be read months later.
+    #[test]
+    fn the_agent_seeds_match_the_read_path() {
+        let agent = "a1b2c3";
+        assert_eq!(
+            AgentSecretTarget::Project("owner.near/app".to_string()).seed(agent),
+            format!("project:{}:{}", "owner.near/app", agent)
+        );
+        assert_eq!(
+            AgentSecretTarget::WasmHash("beef".to_string()).seed(agent),
+            format!("wasm_hash:{}:{}", "beef", agent)
+        );
+    }
+
+    /// The binding is the CONTRACT's spelling, which is not the seed's.
+    ///
+    /// `wasm:` in the signed message, `wasm_hash:` in the seed. Two strings for
+    /// two jobs; swapping them produces either a signature the contract rejects
+    /// or a secret the worker cannot open, and neither failure names the cause.
+    #[test]
+    fn the_bindings_are_the_contracts_spelling() {
+        assert_eq!(
+            AgentSecretTarget::Project("owner.near/app".to_string()).binding(),
+            "owner.near/app"
+        );
+        assert_eq!(
+            AgentSecretTarget::WasmHash("beef".to_string()).binding(),
+            "wasm:beef"
+        );
+    }
+
+    /// One scope or the other, never both and never neither.
+    #[test]
+    fn an_agent_secret_names_exactly_one_scope() {
+        assert_eq!(
+            AgentSecretTarget::from_fields(Some("a.near/p"), None).unwrap(),
+            AgentSecretTarget::Project("a.near/p".to_string())
+        );
+        assert_eq!(
+            AgentSecretTarget::from_fields(None, Some("beef")).unwrap(),
+            AgentSecretTarget::WasmHash("beef".to_string())
+        );
+
+        // Blank is not a choice: an empty string would otherwise seal a secret
+        // to `project::{agent}` and look like a project scope forever after.
+        assert!(AgentSecretTarget::from_fields(Some("   "), None).is_err());
+        assert!(AgentSecretTarget::from_fields(None, None).is_err());
+        assert!(AgentSecretTarget::from_fields(Some("a.near/p"), Some("beef")).is_err());
+    }
+
+    /// A shouted hash is the same hash.
+    ///
+    /// The contract lowercases the accessor before it becomes a storage key, so
+    /// the worker reads it back in lower case and rebuilds a lower-case seed. A
+    /// secret sealed here under the shouted spelling would be one nothing can
+    /// open — and the signature would name an accessor the contract does not
+    /// store, so it would not even land.
+    #[test]
+    fn a_wasm_hash_is_lowercased_to_match_the_chain() {
+        let target = AgentSecretTarget::from_fields(None, Some("BEEF")).unwrap();
+        assert_eq!(target, AgentSecretTarget::WasmHash("beef".to_string()));
+        assert_eq!(target.binding(), "wasm:beef");
+        assert_eq!(target.seed("agent"), "wasm_hash:beef:agent");
+    }
+
+    /// `/wallet/sign-policy` has a domain NOW, but the older argument still
+    /// holds and is worth keeping: what protected it before was the ORDER — the
+    /// base64 decode and the AEAD decrypt both run BEFORE the signature — and
+    /// the first of those is what this pins. Two independent reasons a
+    /// transaction cannot come out of that endpoint are better than one.
     ///
     /// A transaction's borsh has NUL bytes in the length prefix, and NUL is not
     /// in the base64 alphabet, so a preimage that survives decoding cannot be

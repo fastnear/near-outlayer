@@ -608,3 +608,314 @@ fn the_first_and_last_usable_nonces_are_accepted() {
     store_payment_key_at("1");
     store_payment_key_at("2147483647");
 }
+
+/// A payment key's nonce has ONE spelling, and it is the one
+/// `delete_payment_key` builds.
+///
+/// `"01"` parses to 1, passed every check, and landed in a DIFFERENT slot from
+/// `"1"` — a second on-chain key for one nonce that `delete_payment_key(1)`
+/// could not see (it looks up `nonce.to_string()`) and that the coordinator's
+/// single row per `(owner, nonce)` could not represent. Its storage deposit was
+/// staked and unreachable. Confirmed against the deployed contract as probe P2
+/// of `tests/contract_probe_e2e.sh`.
+///
+/// Now `"01"` names the same slot as `"1"`, so the second store meets the
+/// write-once rule and is refused for the honest reason.
+#[test]
+#[should_panic(expected = "Payment key already exists")]
+fn a_payment_key_nonce_is_stored_under_one_spelling() {
+    let mut context = get_context(accounts(1));
+    testing_env!(context.build());
+    let mut contract = Contract::new(accounts(0), Some(accounts(0)), None, None);
+
+    let blob = "encrypted".to_string();
+    let mut store = |profile: &str| {
+        let cost = contract.estimate_storage_cost(
+            SecretAccessor::System(SystemSecretType::PaymentKey),
+            profile.to_string(),
+            accounts(1),
+            blob.clone(),
+            types::AccessCondition::AllowAll,
+            None,
+        );
+        testing_env!(context.attached_deposit(NearToken::from_yoctonear(cost.0)).build());
+        contract.store_secrets(
+            SecretAccessor::System(SystemSecretType::PaymentKey),
+            profile.to_string(),
+            blob.clone(),
+            types::AccessCondition::AllowAll,
+            None,
+        );
+    };
+
+    store("1");
+    store("01");
+}
+
+/// …and a padded nonce written FIRST is still reachable by the plain one.
+///
+/// The half that matters for the money: a key stored as `"007"` must be the key
+/// `delete_payment_key(7)` removes, because that is the only way its deposit
+/// comes back.
+#[test]
+fn a_padded_nonce_lands_where_the_plain_one_is_read() {
+    let mut context = get_context(accounts(1));
+    testing_env!(context.build());
+    let mut contract = Contract::new(accounts(0), Some(accounts(0)), None, None);
+
+    let blob = "encrypted".to_string();
+    let cost = contract.estimate_storage_cost(
+        SecretAccessor::System(SystemSecretType::PaymentKey),
+        "007".to_string(),
+        accounts(1),
+        blob.clone(),
+        types::AccessCondition::AllowAll,
+        None,
+    );
+    testing_env!(context.attached_deposit(NearToken::from_yoctonear(cost.0)).build());
+    contract.store_secrets(
+        SecretAccessor::System(SystemSecretType::PaymentKey),
+        "007".to_string(),
+        blob,
+        types::AccessCondition::AllowAll,
+        None,
+    );
+
+    assert!(
+        contract
+            .get_secrets(
+                SecretAccessor::System(SystemSecretType::PaymentKey),
+                "7".to_string(),
+                accounts(1),
+            )
+            .is_some(),
+        "the plain nonce must find the key that was written padded",
+    );
+    assert_eq!(
+        contract.get_next_payment_key_nonce(accounts(1)),
+        8,
+        "and the next nonce must count it once",
+    );
+}
+
+/// One WASM binary is one secret, however the hash is typed.
+///
+/// The contract checked that a hash was 64 hex characters and never which
+/// CASE, so `AB…` and `ab…` were two storage keys for one binary — and the
+/// worker computes the hash with `hex::encode`, which is lower. A secret filed
+/// under the shouted spelling stored cleanly, read back under its own
+/// spelling, and was invisible to the code it was left for. Probe P1 against
+/// the deployed contract.
+#[test]
+fn a_wasm_hash_is_one_secret_however_it_is_spelled() {
+    let mut context = get_context(accounts(1));
+    testing_env!(context.build());
+    let mut contract = Contract::new(accounts(0), Some(accounts(0)), None, None);
+
+    let lower = "ab".repeat(32);
+    let upper = lower.to_uppercase();
+    let blob = "encrypted".to_string();
+
+    let cost = contract.estimate_storage_cost(
+        SecretAccessor::WasmHash { hash: upper.clone() },
+        "prod".to_string(),
+        accounts(1),
+        blob.clone(),
+        types::AccessCondition::AllowAll,
+        None,
+    );
+    testing_env!(context.attached_deposit(NearToken::from_yoctonear(cost.0)).build());
+    contract.store_secrets(
+        SecretAccessor::WasmHash { hash: upper.clone() },
+        "prod".to_string(),
+        blob,
+        types::AccessCondition::AllowAll,
+        None,
+    );
+
+    assert!(
+        contract
+            .get_secrets(
+                SecretAccessor::WasmHash { hash: lower.clone() },
+                "prod".to_string(),
+                accounts(1),
+            )
+            .is_some(),
+        "the worker asks in lower case and must find it",
+    );
+
+    // And it can be taken back with either spelling — otherwise the deposit
+    // would be reachable only by whoever remembered how it was typed.
+    testing_env!(context.attached_deposit(NearToken::from_yoctonear(0)).build());
+    contract.delete_secrets(
+        SecretAccessor::WasmHash { hash: lower.clone() },
+        "prod".to_string(),
+    );
+    assert!(
+        contract
+            .get_secrets(
+                SecretAccessor::WasmHash { hash: upper },
+                "prod".to_string(),
+                accounts(1),
+            )
+            .is_none(),
+        "deleting under one spelling must remove the one secret, not a twin",
+    );
+}
+
+/// `list_user_secrets` hands out PAGES, and the pages tile the whole set.
+///
+/// It walks an `UnorderedSet` and reads storage per entry, so an unbounded
+/// answer is a view that eventually cannot be called at all — and the caller
+/// sees a gas failure rather than a long list. What this pins is the part that
+/// makes paging safe to impose: every entry appears exactly once across the
+/// pages, so a caller that keeps asking gets everything.
+#[test]
+fn listing_secrets_pages_and_the_pages_tile_the_set() {
+    let mut context = get_context(accounts(1));
+    testing_env!(context.build());
+    let mut contract = Contract::new(accounts(0), Some(accounts(0)), None, None);
+
+    let blob = "encrypted".to_string();
+    for i in 0..7 {
+        let profile = format!("p{i}");
+        let cost = contract.estimate_storage_cost(
+            SecretAccessor::WasmHash { hash: "ab".repeat(32) },
+            profile.clone(),
+            accounts(1),
+            blob.clone(),
+            types::AccessCondition::AllowAll,
+            None,
+        );
+        testing_env!(context.attached_deposit(NearToken::from_yoctonear(cost.0)).build());
+        contract.store_secrets(
+            SecretAccessor::WasmHash { hash: "ab".repeat(32) },
+            profile,
+            blob.clone(),
+            types::AccessCondition::AllowAll,
+            None,
+        );
+    }
+
+    // A page is a page, not the whole table.
+    let first = contract.list_user_secrets(accounts(1), Some(0), Some(3));
+    assert_eq!(first.len(), 3);
+
+    // Walk it the way a caller must: keep asking until a short page arrives.
+    let mut seen: Vec<String> = Vec::new();
+    let mut from = 0u64;
+    loop {
+        let page = contract.list_user_secrets(accounts(1), Some(from), Some(3));
+        let n = page.len() as u64;
+        seen.extend(page.into_iter().map(|s| s.profile));
+        if n < 3 {
+            break;
+        }
+        from += n;
+    }
+    seen.sort();
+    assert_eq!(
+        seen,
+        vec!["p0", "p1", "p2", "p3", "p4", "p5", "p6"],
+        "the pages must tile the set — every secret once, none lost between them",
+    );
+
+    // Omitting both arguments is the compatible call, and it answers a page:
+    // near-sdk reads an absent `Option` as `None`, so old callers keep working
+    // and get the first page rather than an unbounded read.
+    assert_eq!(contract.list_user_secrets(accounts(1), None, None).len(), 7);
+
+    // Past the end is empty, not an error — a caller paging to the end must not
+    // have to know the length in advance.
+    assert!(contract.list_user_secrets(accounts(1), Some(99), None).is_empty());
+
+    // And the ceiling holds however much is asked for.
+    assert_eq!(
+        contract.list_user_secrets(accounts(1), Some(0), Some(100_000)).len(),
+        7,
+        "a huge limit is clamped, not honoured",
+    );
+}
+
+/// A profile shaped like an implicit account is reserved for that agent.
+///
+/// The keystore decides an agent secret by the SHAPE of the profile and then
+/// serves it only when reader, owner and name agree — which is what stops a
+/// stranger planting a credential under an agent's name. The honest cost of
+/// that rule used to fall on ordinary users: a profile that merely looked like
+/// an account (a content hash, a session id) stored cleanly and could then
+/// never be read, with an error about agents. Refused on the way in instead.
+#[test]
+#[should_panic(expected = "names an AGENT")]
+fn a_profile_shaped_like_an_agent_is_refused_to_everyone_else() {
+    let mut context = get_context(accounts(1));
+    testing_env!(context.build());
+    let mut contract = Contract::new(accounts(0), Some(accounts(0)), None, None);
+
+    testing_env!(context.attached_deposit(NearToken::from_near(1)).build());
+    contract.store_secrets(
+        SecretAccessor::WasmHash { hash: "ab".repeat(32) },
+        "cd".repeat(32), // 64 hex characters: the shape of an implicit account
+        "encrypted".to_string(),
+        types::AccessCondition::AllowAll,
+        None,
+    );
+}
+
+/// …and the agent itself may still use its own name, which is the whole point
+/// of the shape. Owner and profile are the same implicit account here.
+#[test]
+fn an_agent_may_store_under_its_own_name() {
+    let agent_hex = "cd".repeat(32);
+    let agent: AccountId = agent_hex.parse().unwrap();
+
+    let mut context = get_context(agent.clone());
+    testing_env!(context.build());
+    let mut contract = Contract::new(accounts(0), Some(accounts(0)), None, None);
+
+    testing_env!(context.attached_deposit(NearToken::from_near(1)).build());
+    contract.store_secrets(
+        SecretAccessor::WasmHash { hash: "ab".repeat(32) },
+        agent_hex.clone(),
+        "encrypted".to_string(),
+        types::AccessCondition::AllowAll,
+        None,
+    );
+
+    assert!(
+        contract
+            .get_secrets(
+                SecretAccessor::WasmHash { hash: "ab".repeat(32) },
+                agent_hex,
+                agent,
+            )
+            .is_some(),
+        "an agent's own secret must still be storable under its own name",
+    );
+}
+
+/// A name that is 64 characters but NOT hex is ordinary text and stays allowed.
+/// The rule is about the shape an account has, not about length.
+#[test]
+fn a_long_profile_that_is_not_hex_is_still_ordinary() {
+    let mut context = get_context(accounts(1));
+    testing_env!(context.build());
+    let mut contract = Contract::new(accounts(0), Some(accounts(0)), None, None);
+
+    testing_env!(context.attached_deposit(NearToken::from_near(1)).build());
+    contract.store_secrets(
+        SecretAccessor::WasmHash { hash: "ab".repeat(32) },
+        "z".repeat(64),
+        "encrypted".to_string(),
+        types::AccessCondition::AllowAll,
+        None,
+    );
+
+    assert!(contract
+        .get_secrets(
+            SecretAccessor::WasmHash { hash: "ab".repeat(32) },
+            "z".repeat(64),
+            accounts(1),
+        )
+        .is_some());
+}

@@ -156,7 +156,7 @@ ENCRYPTED_B64=$(echo "$ENC_RESP" | jq -r '.encrypted_base64 // empty')
 SIGN_RESP=$(curl -sS -X POST "$COORDINATOR_URL/wallet/v1/sign-policy" \
   -H "Authorization: Bearer $WK_API_KEY" \
   -H 'Content-Type: application/json' \
-  -d "$(jq -nc --arg ed "$ENCRYPTED_B64" '{encrypted_data: $ed}')")
+  -d "$(jq -nc --arg ed "$ENCRYPTED_B64" --arg c "$PARENT" '{encrypted_data: $ed, caller: $c}')")
 SIG_HEX=$(echo "$SIGN_RESP" | jq -r '.signature_hex // empty')
 [[ -n "$SIG_HEX" && "$SIG_HEX" != "null" ]] || fail "/sign-policy: $SIGN_RESP"
 pass "policy encrypted+signed under wk_ wallet"

@@ -1442,14 +1442,13 @@ mod store_agent_secret_tests {
         (signing, format!("ed25519:{}", pubkey_hex), account)
     }
 
-    /// The `Repo` accessor these tests use, as the contract renders it into the
-    /// signed message.
-    /// What this door takes: a PROJECT.
+    /// What this door takes: a PROJECT, or a WASM hash. This is the project
+    /// one, which most of the tests below use.
     ///
-    /// These fixtures were `Repo` accessors, which `store_agent_secret` now
-    /// refuses — a secret for an agent is sealed to `project:{id}:{agent}`, and
-    /// a repository has no seed to be sealed to. A fixture using a shape the
-    /// method rejects is a fixture nobody can copy.
+    /// It does NOT take a `Repo`. A secret for an agent is sealed to
+    /// `project:{id}:{agent}` or `wasm_hash:{hash}:{agent}`, and a repository
+    /// has no such seed to be sealed to — so a fixture using that shape would
+    /// be a fixture nobody can copy.
     fn repo_accessor() -> SecretAccessor {
         SecretAccessor::Project {
             project_id: "author.near/connector".to_string(),
@@ -1736,6 +1735,73 @@ mod store_agent_secret_tests {
         );
     }
 
+    /// A PROJECT-scoped secret is removable too, and by its own signature.
+    ///
+    /// Every other delete test here runs on the WASM-hash fixture, which shares
+    /// one code path — but the accessor is INSIDE the signed message, so the
+    /// two are different signatures over different strings. The common case
+    /// deserves its own arrangement rather than an argument by analogy, and
+    /// what it proves is that the length-prefixed binding round-trips for a
+    /// value holding a `/` and a `.`.
+    #[test]
+    fn a_project_scoped_agent_secret_is_removable() {
+        let mut contract = setup_contract();
+        let payer = accounts(2);
+        let (signing, agent_pubkey, agent) = wallet();
+        let accessor = repo_accessor();
+        register_project(&mut contract);
+
+        let sig = sign(&signing, &agent_pubkey, &accessor, "prod", "cipher", &payer);
+        testing_env!(get_context(payer.clone(), NearToken::from_near(1)).build());
+        contract.store_agent_secret(
+            agent_pubkey.clone(),
+            accessor.clone(),
+            "prod".to_string(),
+            "cipher".to_string(),
+            types::AccessCondition::AllowAll,
+            None,
+            sig,
+        );
+        assert!(
+            contract
+                .get_secrets(accessor.clone(), "prod".to_string(), agent.clone())
+                .is_some(),
+            "the store must land for the delete to mean anything"
+        );
+
+        // The WASM fixture's signature must NOT open this one: same key, same
+        // profile, same payer, different accessor.
+        let wrong = sign_delete(
+            &signing,
+            &agent_pubkey,
+            &SecretAccessor::WasmHash { hash: "cd".repeat(32) },
+            "prod",
+            &payer,
+        );
+        testing_env!(get_context(payer.clone(), NearToken::from_near(0)).build());
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                contract.delete_agent_secret(
+                    agent_pubkey.clone(),
+                    accessor.clone(),
+                    "prod".to_string(),
+                    wrong,
+                );
+            }))
+            .is_err(),
+            "a signature naming another accessor must not delete this secret"
+        );
+
+        let del = sign_delete(&signing, &agent_pubkey, &accessor, "prod", &payer);
+        testing_env!(get_context(payer, NearToken::from_near(0)).build());
+        contract.delete_agent_secret(agent_pubkey, accessor.clone(), "prod".to_string(), del);
+
+        assert!(
+            contract.get_secrets(accessor, "prod".to_string(), agent).is_none(),
+            "the project-scoped secret must be gone"
+        );
+    }
+
     /// The storage deposit comes back, and to the account that sent the delete.
     ///
     /// The same refund the ordinary delete makes. Asserted on the RECEIPT
@@ -1896,9 +1962,9 @@ mod store_agent_secret_tests {
         let signature = sign(&signing, &wallet_pubkey, &repo_accessor(), "profile", &data, &accounts(1));
 
         testing_env!(ctx.attached_deposit(NearToken::from_near(1)).build());
-        // …and sent with a different one. Another PROJECT, since that is the
-        // only kind this door takes — which is the realistic attempt anyway:
-        // moving a signed secret to a project the signer does not own.
+        // …and sent with a different one. Another PROJECT, which is the
+        // realistic attempt: moving a signed secret to a project the signer
+        // does not own.
         contract.store_agent_secret(
             wallet_pubkey,
             SecretAccessor::Project {
@@ -1912,8 +1978,6 @@ mod store_agent_secret_tests {
         );
     }
 
-    // A Repo accessor, because a Project one has to exist on chain first and
-    // this section is about ownership and signatures, not about accessors.
     /// The same accessor `store` writes under — see [`repo_accessor`].
     fn project() -> SecretAccessor {
         SecretAccessor::Project {
@@ -2064,8 +2128,9 @@ mod store_agent_secret_tests {
 
     /// The signed message binds the PAYER, so the pair (data, signature) that
     /// stays on chain forever cannot be replayed by anyone else. Without this a
-    /// stranger could re-file an OLD ciphertext over a rotated credential —
-    /// `store_wallet_policy` has exactly that hole and this must not repeat it.
+    /// stranger could re-file an OLD ciphertext over a rotated credential.
+    /// `store_wallet_policy` binds its caller for the same reason — see
+    /// `store_wallet_policy_tests`.
     #[test]
     #[should_panic(expected = "Invalid Ed25519 wallet signature")]
     fn a_signature_made_for_one_payer_cannot_be_replayed_by_another() {
@@ -2127,3 +2192,283 @@ mod store_agent_secret_tests {
     }
 }
 
+
+/// What a policy signature may and may not do.
+///
+/// `store_wallet_policy` verified a signature over the BARE
+/// `sha256(encrypted_data)` — no domain, no caller. Every wallet signature in
+/// this system has that shape, and the strings are public: a
+/// `store_agent_secret` transaction carries the parts of its message and the
+/// signature itself in its arguments. So a stranger could rebuild that message,
+/// lift the signature, and file it here as a policy — becoming the controller
+/// of somebody else's wallet policy and locking its owner out of the slot,
+/// permanently, for the price of a storage deposit.
+///
+/// Demonstrated against the live testnet contract before it was closed, which
+/// is why these tests exist in this shape: they are the two halves of that
+/// attack, refused.
+mod store_wallet_policy_tests {
+    use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
+    use sha2::{Digest, Sha256};
+
+    fn wallet() -> (SigningKey, String) {
+        let signing = SigningKey::from_bytes(&[7u8; 32]);
+        let pubkey_hex = hex::encode(signing.verifying_key().to_bytes());
+        (signing, format!("ed25519:{}", pubkey_hex))
+    }
+
+    fn sign_policy(signing: &SigningKey, pubkey: &str, data: &str, caller: &AccountId) -> String {
+        let message = crate::wallet::policy_store_message(pubkey, data, caller);
+        let mut hasher = Sha256::new();
+        hasher.update(message.as_bytes());
+        let hash: [u8; 32] = hasher.finalize().into();
+        hex::encode(signing.sign(&hash).to_bytes())
+    }
+
+    fn store(
+        contract: &mut Contract,
+        caller: AccountId,
+        pubkey: &str,
+        data: &str,
+        signature: String,
+    ) {
+        testing_env!(get_context(caller, NearToken::from_near(1)).build());
+        contract.store_wallet_policy(pubkey.to_string(), data.to_string(), signature);
+    }
+
+    /// Byte for byte, so the keystore's copy has something to be compared
+    /// against. The two sides never compare notes at run time — a drift shows
+    /// up only as signatures the contract rejects.
+    #[test]
+    fn the_policy_store_message_format_is_pinned() {
+        let caller: AccountId = "alice.near".parse().unwrap();
+        assert_eq!(
+            crate::wallet::policy_store_message("ed25519:ab", "Y2lwaGVy", &caller),
+            "store_wallet_policy:v1:ed25519:ab:8:Y2lwaGVy:alice.near"
+        );
+    }
+
+    /// The domain comes first, and no transaction can wear that preimage.
+    ///
+    /// The first four bytes of a borsh transaction are the u32 length of
+    /// `signer_id`, and an account id is at most 64 bytes. `stor` reads as
+    /// about 1.9 billion.
+    #[test]
+    fn the_policy_preimage_cannot_be_a_transaction() {
+        let caller: AccountId = "alice.near".parse().unwrap();
+        let message = crate::wallet::policy_store_message("ed25519:ab", "data", &caller);
+        assert!(message.starts_with("store_wallet_policy:v1:"));
+        let first = u32::from_le_bytes(message.as_bytes()[..4].try_into().unwrap());
+        assert!(first > 64, "no account id is that long, so this is not a tx");
+    }
+
+    /// The whole finding, as a test: an agent-secret signature is not a policy.
+    ///
+    /// The message is rebuilt exactly as `store_agent_secret` would — the same
+    /// production function — and signed by the wallet's own key, which is what
+    /// makes this the real attack rather than a mangled one. It must be
+    /// refused because the DOMAIN differs, not because the bytes happen to.
+    #[test]
+    #[should_panic(expected = "Invalid Ed25519 wallet signature")]
+    fn an_agent_secret_signature_cannot_store_a_policy() {
+        let mut contract = setup_contract();
+        let (signing, pubkey) = wallet();
+        let victim_payer: AccountId = "author.near".parse().unwrap();
+
+        let lifted = crate::secrets::secret_store_message(
+            &pubkey,
+            &SecretAccessor::Project { project_id: "author.near/connector".to_string() },
+            "profile",
+            "cipher",
+            &victim_payer,
+            None,
+            &types::AccessCondition::AllowAll,
+        );
+        let mut hasher = Sha256::new();
+        hasher.update(lifted.as_bytes());
+        let hash: [u8; 32] = hasher.finalize().into();
+        let signature = hex::encode(signing.sign(&hash).to_bytes());
+
+        // A stranger files the lifted pair as a policy.
+        store(&mut contract, accounts(3), &pubkey, &lifted, signature);
+    }
+
+    /// A policy signature is good for ONE sender.
+    ///
+    /// Even a genuine policy signature, lifted from the chain, does nothing in
+    /// anyone else's hands — which is what stops the squat that the domain
+    /// alone would still allow between two policy stores.
+    #[test]
+    #[should_panic(expected = "Invalid Ed25519 wallet signature")]
+    fn a_policy_signature_cannot_be_sent_by_another_account() {
+        let mut contract = setup_contract();
+        let (signing, pubkey) = wallet();
+        let signature = sign_policy(&signing, &pubkey, "Y2lwaGVy", &accounts(2));
+
+        store(&mut contract, accounts(3), &pubkey, "Y2lwaGVy", signature);
+    }
+
+    /// And the honest path still works: the account named in the signature
+    /// stores the policy it signed for.
+    #[test]
+    fn the_named_caller_stores_the_policy_it_signed_for() {
+        let mut contract = setup_contract();
+        let (signing, pubkey) = wallet();
+        let signature = sign_policy(&signing, &pubkey, "Y2lwaGVy", &accounts(2));
+
+        store(&mut contract, accounts(2), &pubkey, "Y2lwaGVy", signature);
+
+        assert!(contract.has_wallet_policy(pubkey));
+    }
+
+    /// An existing policy survives the new signature format and can still be
+    /// updated by its controller.
+    ///
+    /// This is the question the change actually raises: the ENTRY format did
+    /// not move — `owner`, `encrypted_data`, `frozen`, `updated_at`,
+    /// `storage_deposit` — and no read path verifies a signature, so a policy
+    /// stored before the change keeps working. What needed a signature was
+    /// always the write, and this exercises a write on top of an existing
+    /// entry: same wallet, same controller, new blob.
+    #[test]
+    fn an_existing_policy_is_updated_in_place_by_its_controller() {
+        let mut contract = setup_contract();
+        let (signing, pubkey) = wallet();
+        let owner = accounts(2);
+
+        let first = sign_policy(&signing, &pubkey, "Y2lwaGVy", &owner);
+        store(&mut contract, owner.clone(), &pubkey, "Y2lwaGVy", first);
+        let before = contract.get_wallet_policy(pubkey.clone()).expect("stored");
+
+        let second = sign_policy(&signing, &pubkey, "bmV3ZXI=", &owner);
+        store(&mut contract, owner.clone(), &pubkey, "bmV3ZXI=", second);
+        let after = contract.get_wallet_policy(pubkey.clone()).expect("still there");
+
+        assert_eq!(after.encrypted_data, "bmV3ZXI=", "the new blob must be stored");
+        assert_eq!(after.owner, before.owner, "the controller must not change on an update");
+        // ONE entry, not two: the owner index is written for new entries only,
+        // and a second insert under the same key replaces rather than appends.
+        assert_eq!(contract.get_wallet_policies_by_owner(owner).len(), 1);
+    }
+
+    /// A stranger cannot take an existing policy over, even holding a valid
+    /// signature.
+    ///
+    /// Two independent rules stand here and this pins the second one: the
+    /// signature names its sender (so a lifted one is useless), and the
+    /// contract refuses a caller who is not the entry's controller. A test that
+    /// only checked the signature would not notice if that rule were dropped —
+    /// the owner would then be silently replaceable by anyone who could get a
+    /// signature, which is what an agent's own wallet does on request.
+    #[test]
+    #[should_panic(expected = "Only the original controller")]
+    fn a_stranger_with_a_valid_signature_cannot_take_over_an_existing_policy() {
+        let mut contract = setup_contract();
+        let (signing, pubkey) = wallet();
+        let owner = accounts(2);
+        let stranger = accounts(3);
+
+        let first = sign_policy(&signing, &pubkey, "Y2lwaGVy", &owner);
+        store(&mut contract, owner, &pubkey, "Y2lwaGVy", first);
+
+        // Signed FOR the stranger, so the signature itself is valid — what
+        // stops them is the controller rule.
+        let theirs = sign_policy(&signing, &pubkey, "dGhlaXJz", &stranger);
+        store(&mut contract, stranger, &pubkey, "dGhlaXJz", theirs);
+    }
+
+    /// A freeze survives a policy edit.
+    ///
+    /// Freezing takes no wallet signature, because it exists for the case where
+    /// the agent's key is compromised and the controller has to act anyway. The
+    /// controller's next move is to tighten the policy — and that edit used to
+    /// reset `frozen` to false, reopening the wallet while the attacker still
+    /// held the key, with nothing said about it. `unfreeze_wallet` is the way
+    /// out, and it is the same authority, so nothing is lost by making it
+    /// explicit.
+    #[test]
+    fn an_edit_does_not_thaw_a_frozen_wallet() {
+        let mut contract = setup_contract();
+        let (signing, pubkey) = wallet();
+        let owner = accounts(2);
+
+        let first = sign_policy(&signing, &pubkey, "Y2lwaGVy", &owner);
+        store(&mut contract, owner.clone(), &pubkey, "Y2lwaGVy", first);
+
+        testing_env!(get_context(owner.clone(), NearToken::from_near(0)).build());
+        contract.freeze_wallet(pubkey.clone());
+        assert!(contract.get_wallet_policy(pubkey.clone()).unwrap().frozen);
+
+        // The controller tightens the policy while the wallet is frozen.
+        let second = sign_policy(&signing, &pubkey, "dGlnaHRlcg==", &owner);
+        store(&mut contract, owner.clone(), &pubkey, "dGlnaHRlcg==", second);
+
+        let after = contract.get_wallet_policy(pubkey.clone()).unwrap();
+        assert_eq!(after.encrypted_data, "dGlnaHRlcg==", "the edit must land");
+        assert!(after.frozen, "the freeze must survive the edit");
+
+        // And thawing is still one explicit call away.
+        testing_env!(get_context(owner, NearToken::from_near(0)).build());
+        contract.unfreeze_wallet(pubkey.clone());
+        assert!(!contract.get_wallet_policy(pubkey).unwrap().frozen);
+    }
+
+    /// Freezing and thawing work on the key however it is SPELLED.
+    ///
+    /// A policy is stored under the canonical key — `store_wallet_policy`
+    /// rebuilds it from the parsed bytes, so the hex is lower case. Freeze and
+    /// unfreeze looked the entry up by the raw string, so the same
+    /// cryptographic key written in upper case answered "Wallet policy not
+    /// found": an emergency freeze that fails on capitalisation, and worse, a
+    /// wallet that cannot be thawed by a controller who spells it differently
+    /// from whatever they stored it with.
+    #[test]
+    fn a_freeze_and_a_thaw_follow_the_key_not_its_spelling() {
+        let mut contract = setup_contract();
+        let (signing, pubkey) = wallet();
+        let owner = accounts(2);
+        let shouted = pubkey.to_uppercase().replace("ED25519:", "ed25519:");
+        assert_ne!(shouted, pubkey, "the fixture must actually differ in case");
+
+        let sig = sign_policy(&signing, &pubkey, "Y2lwaGVy", &owner);
+        store(&mut contract, owner.clone(), &pubkey, "Y2lwaGVy", sig);
+
+        testing_env!(get_context(owner.clone(), NearToken::from_near(0)).build());
+        contract.freeze_wallet(shouted.clone());
+        assert!(
+            contract.get_wallet_policy(pubkey.clone()).unwrap().frozen,
+            "the shouted key names the same wallet"
+        );
+
+        testing_env!(get_context(owner, NearToken::from_near(0)).build());
+        contract.unfreeze_wallet(shouted);
+        assert!(!contract.get_wallet_policy(pubkey).unwrap().frozen);
+    }
+
+    /// A FIRST policy is not frozen. There is nothing to carry, and starting
+    /// frozen would make every new wallet dead on arrival.
+    #[test]
+    fn a_new_policy_starts_unfrozen() {
+        let mut contract = setup_contract();
+        let (signing, pubkey) = wallet();
+        let owner = accounts(2);
+
+        let sig = sign_policy(&signing, &pubkey, "Y2lwaGVy", &owner);
+        store(&mut contract, owner, &pubkey, "Y2lwaGVy", sig);
+
+        assert!(!contract.get_wallet_policy(pubkey).unwrap().frozen);
+    }
+
+    /// The data is length-prefixed, so a policy blob may contain colons — and
+    /// two different blobs can never produce one message.
+    #[test]
+    fn the_length_prefix_keeps_two_blobs_apart() {
+        let caller: AccountId = "alice.near".parse().unwrap();
+        let a = crate::wallet::policy_store_message("ed25519:ab", "x:y", &caller);
+        let b = crate::wallet::policy_store_message("ed25519:ab", "x", &caller);
+        assert_ne!(a, b);
+        assert!(a.contains(":3:x:y:"), "{a}");
+        assert!(b.contains(":1:x:"), "{b}");
+    }
+}

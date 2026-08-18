@@ -80,7 +80,7 @@ anyhow::bail!("Feature X is not supported. Please use Y instead.");
 | `contract/` | - | Main NEAR contract (outlayer.near) |
 | `worker/` | - | Polls tasks, compiles GitHub repos, executes WASM |
 | `keystore-worker/` | 8081 | Secrets decryption with TEE (via coordinator proxy) |
-| [dashboard](https://github.com/out-layer/dashboard) | 3000 | Next.js UI + docs (separate repo, extracted 2026-08-04) |
+| [dashboard](https://github.com/out-layer/dashboard) | 3000 | Next.js UI + docs (separate repo, extracted 2026-08-04). Local checkout: `/Users/alice/projects/outlayer-dashboard` |
 | `register-contract/` | - | TEE worker registration contract |
 | `keystore-dao-contract/` | - | DAO contract for keystore governance |
 | `sdk/` | - | Client SDK for integration |
@@ -98,7 +98,9 @@ anyhow::bail!("Feature X is not supported. Please use Y instead.");
 cd contract && ./build.sh                # Build contract
 # Coordinator is in separate private repo: outlayer-coordinator
 cd worker && cargo run                   # Run worker
-# Dashboard is in separate repo: out-layer/dashboard (npm run dev there)
+# Dashboard: cd /Users/alice/projects/outlayer-dashboard && npm run dev
+# Its docs bundle is generated FROM this repo:
+#   LLMS_SOURCES_ROOT=/Users/alice/projects/near-offshore npm run llms
 cd keystore-worker && cargo run          # Run keystore
 
 # Coordinator (separate repo): SQLX_OFFLINE=true cargo check

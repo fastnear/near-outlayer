@@ -1807,6 +1807,115 @@ if want C18; then
   fi
 fi
 
+# ── C19: the two things an agent secret gained — a WASM scope, and a way out ──
+#
+# Both are new wire, in four places at once: the CLI names a scope, the
+# coordinator forwards it, the keystore seals and signs under it, and the
+# contract files it. A test that only read the chain could not tell which of
+# them dropped it, so this drives the CLI — the same path a person uses — and
+# reads the chain for the result.
+#
+# The WASM scope is deliberately a hash of NOTHING. The contract does not check
+# that a hash names a real build, and it should not: a secret may be stored for
+# a version that has not been published yet. Using a made-up one is therefore
+# the honest test of the accessor rather than a shortcut around publishing.
+if want C19; then
+  if [[ "$APPLY" != true ]]; then
+    printf '\033[90m  (dry-run) a wasm-scoped secret is stored and read back; a delete removes it\033[0m\n' >&2
+  elif [[ -z "$AGENT_WALLET_KEY" ]]; then
+    note "C19 SKIPPED — needs AGENT_WALLET_KEY (a wallet's wk_)"
+  else
+    log "C19 a WASM-scoped secret, and deleting one"
+
+    C19_PROJECT="${ORDINARY_PROJECT:-$PROJECT}"
+    # A hash of this run, so a re-run is a fresh secret rather than a rewrite of
+    # the last one — the delete below must remove something it can see arrive.
+    C19_HASH=$(printf 'c19-%s' "$(openssl rand -hex 8)" | shasum -a 256 | cut -d' ' -f1)
+
+    # The agent this wk_ speaks for. Asked for under the WASM scope, because
+    # that is the request whose answer everything below depends on: a
+    # coordinator that does not know the scope answers with an error here rather
+    # than sealing a secret nobody can read.
+    #
+    # ONE call, read twice. Two calls would be two answers, and a section that
+    # asserts a seed from one request against an agent from another is asserting
+    # nothing when they disagree.
+    #
+    # A deployment that predates the scope answers this in PLAIN TEXT
+    # ("missing field `project_id`", 400), so the reads tolerate a body that is
+    # not JSON at all — jq's complaint would otherwise be printed as if the test
+    # itself had gone wrong.
+    C19_PUBKEY=$(curl -s "$COORDINATOR_URL/wallet/v1/agent-secret/pubkey?wasm_hash=$C19_HASH" \
+                   -H "Authorization: Bearer $AGENT_WALLET_KEY")
+    C19_AGENT=$(echo "$C19_PUBKEY" | jq -r '.agent_account // empty' 2>/dev/null)
+    C19_SEED=$(echo "$C19_PUBKEY" | jq -r '.seed // empty' 2>/dev/null)
+
+    if [[ -z "$C19_AGENT" ]]; then
+      note "C19 SKIPPED — the coordinator does not answer the pubkey endpoint for a wasm_hash yet; deploy it and re-run"
+    else
+      # The seed decides what can ever open this secret, and it is the one thing
+      # a mistake here would not show until read time, months later.
+      [[ "$C19_SEED" == "wasm_hash:$C19_HASH:$C19_AGENT" ]] \
+        && pass "C19 a wasm scope seals to wasm_hash:{hash}:{agent} — the seed the worker rebuilds" \
+        || fail "C19 the wasm scope sealed to '$C19_SEED', which is not what the read path rebuilds"
+
+      OUTLAYER_NETWORK="$NETWORK" "$OUTLAYER_BIN" secrets set-for-agent '{"C19":"wasm-scoped"}' \
+        --wasm-hash "$C19_HASH" --api-key "$AGENT_WALLET_KEY" >/tmp/c19_store 2>&1
+      # Output KEPT: a store that never happened reads downstream as "the chain
+      # holds nothing", and this section would then report a contract problem
+      # about code it never reached.
+      C19_STORED=""
+      for _ in $(seq 1 12); do
+        C19_STORED=$(view get_secrets "$(jq -nc --arg h "$C19_HASH" --arg a "$C19_AGENT" \
+          '{accessor:{WasmHash:{hash:$h}}, profile:$a, owner:$a}')" \
+          | jq -r '.encrypted_secrets // empty' 2>/dev/null)
+        [[ -n "$C19_STORED" ]] && break
+        sleep 2
+      done
+
+      if [[ -z "$C19_STORED" ]]; then
+        fail "C19 nothing landed under the wasm accessor: $(tail -c 220 /tmp/c19_store)"
+      else
+        pass "C19 a wasm-scoped secret is on chain under WasmHash($(printf '%.8s' "$C19_HASH")…)"
+
+        # And the SAME agent under a project is a different secret entirely —
+        # otherwise the scope would be a label rather than a boundary.
+        C19_CROSS=$(view get_secrets "$(jq -nc --arg p "$C19_PROJECT" --arg a "$C19_AGENT" \
+          '{accessor:{Project:{project_id:$p}}, profile:$a, owner:$a}')" \
+          | jq -r '.encrypted_secrets // empty' 2>/dev/null)
+        [[ "$C19_CROSS" != "$C19_STORED" ]] \
+          && pass "C19 the same agent's project secret is a DIFFERENT secret — the scope is a boundary" \
+          || fail "C19 the wasm scope and the project scope name one secret — one of them is being ignored"
+
+        # ── The way out ────────────────────────────────────────────────────
+        # `--yes` because a script has no keyboard: without it the command waits
+        # on a confirmation prompt that nothing will ever answer.
+        OUTLAYER_NETWORK="$NETWORK" "$OUTLAYER_BIN" secrets delete-for-agent --yes \
+          --wasm-hash "$C19_HASH" --api-key "$AGENT_WALLET_KEY" >/tmp/c19_del 2>&1
+        C19_RC=$?
+
+        if [[ $C19_RC -ne 0 ]] && grep -qiE "unrecognized subcommand|404|not found" /tmp/c19_del; then
+          note "C19 the delete SKIPPED — this build has no delete route yet: $(tail -c 160 /tmp/c19_del)"
+        elif [[ $C19_RC -ne 0 ]]; then
+          fail "C19 the delete was refused: $(tail -c 220 /tmp/c19_del)"
+        else
+          C19_LEFT="$C19_STORED"
+          for _ in $(seq 1 12); do
+            C19_LEFT=$(view get_secrets "$(jq -nc --arg h "$C19_HASH" --arg a "$C19_AGENT" \
+              '{accessor:{WasmHash:{hash:$h}}, profile:$a, owner:$a}')" \
+              | jq -r '.encrypted_secrets // empty' 2>/dev/null)
+            [[ -z "$C19_LEFT" ]] && break
+            sleep 2
+          done
+          [[ -z "$C19_LEFT" ]] \
+            && pass "C19 the secret is gone from the chain — an owner can take a credential back" \
+            || fail "C19 the delete reported success and the chain still holds the ciphertext"
+        fi
+      fi
+    fi
+  fi
+fi
+
 echo
 log "SUMMARY"
 if [[ "$APPLY" != true ]]; then

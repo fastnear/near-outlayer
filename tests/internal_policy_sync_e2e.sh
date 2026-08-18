@@ -131,7 +131,7 @@ prepare_and_store_policy() {
   sig_resp=$(curl -sS -X POST "$COORDINATOR_URL/wallet/v1/sign-policy" \
     -H "Authorization: Bearer $bearer" \
     -H 'Content-Type: application/json' \
-    -d "$(jq -nc --arg ed "$enc_b64" '{encrypted_data: $ed}')")
+    -d "$(jq -nc --arg ed "$enc_b64" --arg c "$PARENT" '{encrypted_data: $ed, caller: $c}')")
   local sig_hex
   sig_hex=$(echo "$sig_resp" | jq -r '.signature_hex // empty')
   [[ -n "$sig_hex" && "$sig_hex" != "null" ]] || { echo "sign-policy FAIL: $sig_resp" >&2; return 1; }

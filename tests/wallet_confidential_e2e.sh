@@ -501,7 +501,9 @@ cmd_multisig() {
     body=$(jq -nc --arg wid "$WID" --argjson p "$POL" '$p + {wallet_id:$wid}')
     enc=$(curl -sS -X POST "$COORDINATOR_URL/wallet/v1/encrypt-policy" -H "$(AUTHH "$SEED")" -H 'Content-Type: application/json' -d "$body")
     encb64=$(echo "$enc" | jq -r '.encrypted_base64 // empty'); [ -n "$encb64" ] || { echo -e "${RED}encrypt-policy failed: $enc${NC}"; exit 1; }
-    sg=$(curl -sS -X POST "$COORDINATOR_URL/wallet/v1/sign-policy" -H "$(AUTHH "$SEED")" -H 'Content-Type: application/json' -d "$(jq -nc --arg ed "$encb64" '{encrypted_data:$ed}')")
+    # `caller` is SIGNED: the answer is good only for the account that sends the
+    # store below, which is $PARENT here.
+    sg=$(curl -sS -X POST "$COORDINATOR_URL/wallet/v1/sign-policy" -H "$(AUTHH "$SEED")" -H 'Content-Type: application/json' -d "$(jq -nc --arg ed "$encb64" --arg c "$PARENT" '{encrypted_data:$ed, caller:$c}')")
     sig_hex=$(echo "$sg" | jq -r '.signature_hex // empty'); pub_hex=$(echo "$sg" | jq -r '.public_key_hex // empty')
     [ -n "$sig_hex" ] || { echo -e "${RED}sign-policy failed: $sg${NC}"; exit 1; }
     store_args=$(jq -nc --arg pk "ed25519:$pub_hex" --arg ed "$encb64" --arg sg "$sig_hex" '{wallet_pubkey:$pk, encrypted_data:$ed, wallet_signature:$sg}')

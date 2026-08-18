@@ -914,12 +914,15 @@ mod tests {
     }
 
     /// Lock-down for the /wallet/sign-policy oracle (audit round 2, #1): the endpoint must
-    /// DECRYPT-VALIDATE `encrypted_data` before signing `sha256(encrypted_data)` with the
-    /// wallet's `:near` tx key. This mirrors the handler's exact logic against a real
-    /// Keystore and proves: (a) arbitrary bytes / a tx_hash / another wallet's ciphertext
-    /// FAIL decryption → never reach signing (so a transaction can't be forged); (c) the
-    /// signed message is sha256(the exact blob); (d) a genuine policy ciphertext signs and
-    /// verifies against the UNCHANGED contract check (bare sha256(encrypted_data)).
+    /// DECRYPT-VALIDATE `encrypted_data` before it signs anything with the wallet's `:near`
+    /// tx key. This mirrors that gate against a real Keystore and proves: (a) arbitrary bytes
+    /// / a tx_hash / another wallet's ciphertext FAIL decryption → never reach signing (so a
+    /// transaction can't be forged); (d) a genuine policy ciphertext passes and signs.
+    ///
+    /// The MESSAGE is no longer the bare `sha256(encrypted_data)` — the contract now verifies
+    /// a domain-separated string naming the caller, pinned by `the_policy_store_message_format_is_pinned`
+    /// in `api.rs`. What is exercised here is the gate, which is orthogonal to the message and
+    /// still the reason a caller cannot choose the bytes being signed.
     #[test]
     fn sign_policy_decrypt_validation_blocks_tx_forging_and_keeps_legit_flow() {
         use sha2::{Digest, Sha256};
@@ -939,13 +942,15 @@ mod tests {
         let pt = ks.decrypt(None, &policy_seed, &b64.decode(&encrypted_data).unwrap()).unwrap();
         assert_eq!(pt, policy_json, "genuine policy must decrypt to its plaintext");
 
-        // (c)+(d): sign the BARE sha256(encrypted_data) and verify exactly as the unchanged
-        // contract does (ed25519 over sha256(encrypted_data) with the wallet's :near pubkey).
+        // (d): a blob that passed the gate can be signed and verified with the wallet's
+        // `:near` key. The exact preimage is the message builder's business — see
+        // `api.rs` — so this signs the blob's hash as a stand-in and checks the key round
+        // trip, which is what this file is about.
         let msg_hash = Sha256::digest(encrypted_data.as_bytes());
         let sig = ks.sign(None, &near_seed, &msg_hash).unwrap();
         assert!(
             ks.verify(None, &near_seed, &msg_hash, &sig).is_ok(),
-            "legit policy signature must verify against the unchanged contract's bare sha256"
+            "a policy that passed the gate must sign and verify under the wallet's own key"
         );
 
         // (a): the EXACT original attack — encrypted_data = borsh(tx) (arbitrary bytes). The

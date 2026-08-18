@@ -720,9 +720,14 @@ policy_resp = wallet_request_by_seed(seed, "POST", "/wallet/v1/encrypt-policy", 
 })
 encrypted_policy = policy_resp.json()
 
-# 2b. Sign encrypted policy with wallet's key (coordinator asks keystore)
-wallet_request_by_seed(seed, "POST", "/wallet/v1/sign-policy", json=encrypted_policy)
-# Policy is now stored on-chain → enforced on every operation
+# 2b. Sign encrypted policy with wallet's key (coordinator asks keystore).
+# `caller` is the NEAR account that will send store_wallet_policy — it is part
+# of what gets signed, so the answer works for that account and no other.
+wallet_request_by_seed(seed, "POST", "/wallet/v1/sign-policy", json={
+    **encrypted_policy,
+    "caller": "you.near",
+})
+# Send store_wallet_policy from that account → enforced on every operation
 
 # 3. Hand wk_ key to sub-agent
 sub_agent = spawn_agent(task="Buy USDT", wallet_key=sub_key)
