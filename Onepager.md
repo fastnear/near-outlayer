@@ -1,301 +1,212 @@
-# NEAR OutLayer
+# OutLayer
 
-**Compute beyond the blockchain. Keep your security on-chain.**
+**Verifiable compute and custody for AI agents.**
 
 ---
 
 ## The Problem
 
-Smart contracts on blockchain face the same constraints as businesses in high-tax jurisdictions:
+AI agents are being handed money, credentials and the authority to act. Today that
+means handing a cloud provider all three at once: the private keys, the API tokens,
+the agent's own logic — and the ability to change any of it silently.
 
-- ⛽ **High operational costs** (gas fees for every computation)
-- 🐌 **Strict limitations** (can't run complex algorithms)
-- 🚫 **Regulatory restrictions** (blockchain consensus limits what's possible)
-- 💸 **Expensive operations** (ML models, simulations, heavy math = impossible)
+The security model is "trust us". For a chatbot that is fine. For an autonomous
+process that moves funds, signs transactions and talks to a bank, it is not.
 
-Developers are forced to choose between:
-- **Keep everything on-chain** → Expensive, slow, limited
-- **Build L2/sidechain** → Complexity, fragmented liquidity, bridging hell
-- **Use traditional cloud** → Lose blockchain guarantees, trust AWS
+Two things have to be true at the same time, and no one delivers both:
 
----
-
-## The Solution: NEAR OutLayer
-
-Smart contracts can now move computation **out of the blockchain layer** while keeping funds and security on NEAR L1.
-
-### How It Works
-
-```
-1. Your smart contract calls execute() → Pauses execution (yield)
-2. Computation runs off-chain → Fast, cheap, unlimited power
-3. Results return with proof → Contract resumes with verified results
-4. Funds never leave NEAR → Security and settlement on L1
-```
-
-**Break out of on-chain limitations** - unlimited computation power outside the blockchain, while security stays on NEAR L1.
+- **The keys must be out of everyone's reach** — including the operator's.
+- **The code that uses those keys must be out of everyone's reach too.** A guarded
+  key is worthless if the program deciding what to sign runs on an ordinary server.
 
 ---
 
-## Why "OutLayer"?
+## What OutLayer Is
 
-The name explains the concept:
+Two products in one attested enclave.
 
-| On-Chain (In-Layer) | OutLayer (Out of Layer) |
-|---------------------|-------------------------|
-| High gas costs | 100x cheaper |
-| Limited computation | Unlimited power |
-| Consensus constraints | No blockchain limits |
-| Expensive operations | Run anything (ML, simulations) |
-| Everything on L1 | Results return to your contract |
-| Settlement on NEAR | Settlement on NEAR L1 |
+### 1. Agent Custody
 
----
+A multi-chain wallet an agent can spend but never leak.
 
-## What Makes It Unique?
+- Keys are derived and used **inside an Intel TDX enclave** and never leave it.
+- Addresses on **NEAR, EVM and Solana**; deposits and withdrawals reach BTC, ETH,
+  SOL and more through NEAR Intents.
+- **Gasless and cross-chain**: the agent does not need a native token on every
+  network in order to act. For an autonomous process this is not a convenience —
+  it is the difference between running and stalling on the first chain where it
+  has no gas.
+- A **spending policy set by the human owner** — per-transaction caps, velocity
+  limits, allowlists, time windows, multisig thresholds, emergency freeze — stored
+  encrypted on chain and enforced inside the enclave.
+- **A full audit trail.** Every signature leaves a receipt.
 
-### 🔐 **TEE-Attested Security**
-- Computation runs in Trusted Execution Environments (Intel SGX / AWS Nitro)
-- Cryptographic proof that code executed correctly
-- Secrets encrypted, never exposed to operator
-- **Trustless like blockchain, efficient like cloud**
+Onboarding is one HTTPS call. No browser, no extension, no seed phrase.
 
-### 🔍 **Fully Transparent**
-- All code on GitHub (public repos only)
-- Anyone can audit before using
-- Reproducible builds from commit hashes
-- **If you can read the code, you can trust the execution**
+### 2. Connectors
 
-### ⚡ **Asynchronous Architecture**
-- First call: compiles your code (3-5 min)
-- Subsequent calls: instant execution (cached)
-- Pay only for what you use
-- **100x cheaper than on-chain computation**
+Priced operations the agent can call — and the reason the compute layer exists.
 
-### 🌍 **No L2 Complexity**
-- No new chain to secure
-- No bridging
-- No fragmented liquidity
-- **Pure L1 with offshore benefits**
+A connector is not "run my code". It is a named operation with a published price:
+`send_email`, `pay_invoice`, `place_order`. The agent names the operation, pays the
+price, gets the result. Prices live on chain; the contract refuses a call that does
+not attach the exact price of the operation it names.
 
----
+Live and in progress today:
 
-## Use Cases
+| Connector | Status |
+|---|---|
+| Email (near.email) | Live |
+| Bank (Mercury — bill pay and invoicing, under policy) | Built, deploying |
+| Hyperliquid | In progress |
+| Polymarket | In progress |
 
-### 🤖 **AI-Powered DeFi**
-- Run ML models for trading signals
-- Credit scoring for lending protocols
-- Sentiment analysis for prediction markets
-- Risk modeling for derivatives
+Anyone can write one: a connector is an ordinary WASI project published under the
+curated namespace, and its author is paid a share of every call, on chain, per
+operation.
 
-### 🎮 **On-Chain Gaming**
-- Complex physics simulations
-- AI opponents and NPCs
-- Procedural world generation
-- Anti-cheat verification
+### Why they belong together
 
-### 🎨 **Generative NFTs**
-- On-demand art generation
-- Music synthesis
-- 3D rendering for metaverse
-- Dynamic NFT evolution
+A connector runs **in the same enclave that holds the keys**. The bank token, the
+exchange credential and the signing key are all inside the same attested boundary —
+so the money and the logic never end up in two different trust zones.
 
-### 💱 **Advanced Trading**
-- Multi-DEX arbitrage strategies
-- Portfolio optimization
-- Options pricing (Black-Scholes+)
-- Cross-chain liquidity aggregation
-
-### 🔐 **Privacy & Security**
-- Zero-knowledge proof generation
-- Heavy cryptographic operations
-- Multi-party computation
-- Encrypted data processing
+That is the whole architecture in one sentence, and it is what a signing service
+structurally cannot copy.
 
 ---
 
-## The OutLayer Advantage
+## What Makes It Different — Four Claims, Each Independently Checkable
 
-**Traditional Approach:**
-```
-User → Smart Contract → Try to do everything on-chain
-        ↓
-    Gas explosion 💥
-    Or impossible entirely 🚫
-```
+> **The agent's code and the agent's keys live inside the same attested enclave.
+> The key's root comes from a decentralised MPC network. The enclave build and the
+> spending policy live on a public chain. Every action is signed and can be
+> re-verified without our involvement.**
 
-**NEAR OutLayer Approach:**
-```
-User → Smart Contract → Call OutLayer → Get results
-        ↓                    ↓              ↓
-    Stays cheap       Runs heavy      Returns verified
-    Stays secure      computation     Continues execution
-```
+**1. The key root is a decentralised network, not our cloud.**
+The master secret is issued by the **NEAR validators' MPC network** via Confidential
+Key Derivation. No single party ever holds it whole, and it is delivered into the
+enclave — not generated in an account we control.
 
----
+**2. The enclave build is approved on chain, by a DAO.**
+Workers are verified against all five Intel TDX measurements. A worker whose build is
+not on the on-chain list cannot take jobs, and that list is readable from any RPC
+node.
 
-## Technical Highlights
+**3. The spending policy lives encrypted on chain.**
+Not a row in a vendor's database. Its existence and every change to it are publicly
+auditable; it is decrypted only inside the enclave.
 
-### For Developers:
-- 📦 **Deploy any WASM**: Rust, C++, AssemblyScript, Go
-- 🔑 **Secret management**: Encrypted API keys, credentials
-- 📊 **Resource limits**: Set max time, memory, CPU
-- 💰 **Predictable pricing**: Know costs before execution
+**4. Proof that does not depend on us.**
+Every execution returns an enclave-signed attestation binding code hash, input hash
+and output hash. It chains to Intel's root certificate, not to any key we hold.
+**OutLayer Verify** is an open-source binary your own engineers run on their own
+machines — no account, no API key — so the verdict never touches our servers.
 
-### For Protocols:
-- 🔌 **Drop-in integration**: Single function call
-- ⚡ **Instant upgrades**: Change offshore logic without redeploying contract
-- 📈 **Auto-scaling**: We handle infrastructure
-- 🛡️ **Security audited**: Contract + worker + TEE
-
-### For Users:
-- 🚀 **Better UX**: Complex operations feel instant
-- 💸 **Lower costs**: 100x cheaper than on-chain computation
-- 🔒 **Same security**: TEE attestation + NEAR settlement
-- 👁️ **Full transparency**: Audit any code before using
+Registration keys are post-quantum (**ML-DSA-65**) alongside Ed25519.
 
 ---
 
-## Why Now?
+## You Are Not Moving Your Agent
 
-### ✅ **NEAR is uniquely positioned**
-- `yield/resume` mechanism (no other L1 has this)
-- Fast finality (no 15-minute confirmation waits)
-- Low L1 fees (affordable for small operations)
-- Developer-friendly (Rust, TypeScript SDKs)
+We are not an agent hosting platform and we are not asking you to migrate.
 
-### ✅ **TEE technology is mature**
-- AWS Nitro Enclaves (production-ready)
-- Intel SGX (battle-tested)
-- Cryptographic attestation (industry standard)
-- No need to trust operators
+> **Run your agent wherever you like. When money is involved, it goes through us.**
 
-### ✅ **Market needs it**
-- DeFi needs better execution (MEV, optimization)
-- Gaming needs complex logic (physics, AI)
-- AI needs on-chain integration (trustless inference)
-- Users need better UX (no multi-step flows)
+Custody is a feature you can adopt on its own, over plain HTTPS, from any framework.
 
 ---
 
-## The Vision
+## What Runs On It Today
 
-**NEAR OutLayer is foundational infrastructure that makes the impossible possible.**
+In production on NEAR mainnet since late 2025. Contract: `outlayer.near`.
 
-Breaking free from blockchain layer constraints enables a new generation of powerful on-chain applications.
+- **market.near.ai** — NEAR AI's agent marketplace; its agents operate through
+  confidential intents under OutLayer custody, via a vault.
+- **near.email** — every NEAR account gets a mailbox; mail is encrypted on arrival
+  and decrypted only inside the TEE.
+- **TEE Price Oracle** — ~15 sources, median computed in-enclave. Built as NEAR's
+  oracle RFP answer; **RHEA Finance was going to build their own and launched on
+  OutLayer instead**, and integration into their oracle is agreed.
+- **near.fm** — AI music marketplace; cross-chain tipping through custody wallets.
+- **Voulai** — private trading agent on confidential intents (closed beta).
+- **EAS attestor** — TEE-attested balance attestations for Ethereum networks.
 
-### Today:
-Smart contracts are constrained by gas and blockchain consensus limits.
-
-### Tomorrow:
-Smart contracts leverage unlimited computation outside the blockchain layer while maintaining security on-chain.
-
-### The Result:
-**A new category of blockchain applications that were theoretically possible but practically infeasible.**
-
----
-
-## Competitive Landscape
-
-### vs. AWS Lambda
-- ✅ Blockchain-native (contracts call directly)
-- ✅ Crypto payments (NEAR tokens)
-- ✅ Transparent code (GitHub-based)
-- ✅ Verifiable execution (TEE proof)
-
-### vs. Oracles (Chainlink)
-- ✅ Arbitrary computation (not just data)
-- ✅ User-controlled logic (upload your code)
-- ✅ Unlimited complexity (ML models, simulations)
-
-### vs. L2s/Sidechains
-- ✅ No new chain (no security assumptions)
-- ✅ No bridging (results return to L1)
-- ✅ Same NEAR tokens (no wrapped assets)
-- ✅ Instant integration (one function call)
+Scale so far: **2,500+ agent wallets registered** and **23,600+ custody operations** —
+swaps, transfers and cross-chain moves, not test pings. Execution success rate across
+ten months of production: **99.85%**.
 
 ---
 
-## Go-to-Market
+## How It Is Paid For
 
-### Phase 1: MVP (4-5 months)
-- TEE-secured execution from day one
-- 5-10 launch partners (DeFi + gaming)
-- Testnet pilot program
-- Security audit + documentation
-
-### Phase 2: Production (2-3 months)
-- Mainnet launch
-- 100+ developer accounts
-- 10+ production dApps
-- Advanced monitoring + SLA
-
-### Phase 3: Decentralization (6+ months)
-- Multiple independent operators
-- Operator marketplace
-- Governance for pricing
-- Cross-chain expansion
+- **Agent custody is free.** It is how the audience grows.
+- **Connectors are priced per operation**, on chain, with a share going to the
+  connector's author.
+- **Subscriptions** turn per-call charges into a flat allowance for a key.
+  *(Both currently live on testnet.)*
+- **Integrations pay directly** — RHEA pays per call to the TEE oracle.
 
 ---
 
-## Pricing Model
+## Why Now, and Why NEAR
 
-**Pay-per-use, like AWS Lambda but cheaper:**
-
-```
-Cost = Base Fee + Resources Used
-
-Example:
-- Simple calculation: ~$0.02
-- ML inference: ~$1.36
-- Long computation: ~$3.11
-
-vs. On-chain:
-- Same operations: $50-500 in gas
-```
-
-**No refunds policy:**
-- Protects against DoS
-- Fair pricing (pay for resources, not success)
-- Predictable costs
+- **NEAR Intents** gives agents gasless, cross-chain settlement and confidential
+  swaps — the rails an autonomous wallet actually needs.
+- **NEAR's MPC network** provides a key root nobody holds, including us.
+- **`yield/resume`** lets a smart contract pause on an off-chain result and resume
+  with it verified.
+- **Intel TDX** is mature, and remote attestation is a standard an auditor already
+  accepts.
 
 ---
 
-## The Tagline
+## Where We Sit In The Market
 
-**"Keep your security on-chain. Scale computation off-chain — out of the blockchain layer."**
+**Against agent-wallet providers** (Turnkey, Privy, Coinbase Agentic Wallets,
+Crossmint): they sign; they do not execute. The agent's logic — and the secrets that
+logic uses — run on the customer's own server. Their key root is a company cloud.
+Keys-in-a-TEE is table stakes now; claims 1–4 above are what sits above that line.
 
----
+**Against TEE clouds** (Phala, Oasis, Marlin, Acurast): they sell a property of the
+hardware and leave the buyer to invent the use case. We sell the job: a wallet with
+policy, and operations with prices.
 
-## Call to Action
-
-### For Developers:
-Build applications that were impossible before. AI-powered DeFi. Real-time gaming. Generative NFTs. Zero-knowledge privacy.
-
-**NEAR OutLayer makes it possible.**
-
-### For Protocols:
-Upgrade your smart contracts with unlimited computational power. No redeployment. No complexity. Just call `execute()`.
-
-**NEAR OutLayer makes it simple.**
-
-### For Investors:
-This is foundational infrastructure for the next generation of blockchain applications. Not a Layer 2. Not an oracle. Something entirely new.
-
-**NEAR OutLayer makes it inevitable.**
+**Against verifiable-compute-for-contracts** (Chainlink Functions, Gelato, ZK
+coprocessors): narrow by construction — data only, or no secrets, no network calls,
+no signing.
 
 ---
 
-## Contact
+## Honest Trust Assumptions
 
-**Contact:** outlayer.near / outlayer.testnet
-**Website:** app.outlayer.ai
-**Docs:** app.outlayer.ai/docs
-**GitHub:** github.com/fastnear/near-outlayer
-**Twitter:** @out_layer
+We would rather state this than have it discovered.
 
-**Let's compute beyond the blockchain, together.**
+- OutLayer trusts the **Intel TDX** hardware and the DCAP / Intel PCS attestation
+  chain — a single-vendor hardware root — plus on-chain approval of the enclave's
+  measurements.
+- The key root is distributed (NEAR MPC), the enclave root is not. Those are
+  different guarantees and we do not blur them.
+- **If we shut down, you keep custody.** A user or partner operating through a vault
+  can export every secret **after OutLayer stops** and restore custody themselves —
+  locally or in someone else's TEE. The procedure is documented, not theoretical.
 
 ---
 
-*NEAR OutLayer - Unlimited Computation for Smart Contracts*
+## Links
+
+| | |
+|---|---|
+| Site | [outlayer.ai](https://outlayer.ai) |
+| App & docs | [app.outlayer.ai](https://app.outlayer.ai) · [/docs](https://app.outlayer.ai/docs) |
+| API | `https://api.outlayer.ai` |
+| Contracts | `outlayer.near` · `outlayer.testnet` |
+| Attestation portal | [workers.outlayer.ai](https://workers.outlayer.ai) |
+| Agent skill file | [skills.outlayer.ai/agent-custody/SKILL.md](https://skills.outlayer.ai/agent-custody/SKILL.md) |
+| Source | [github.com/fastnear/near-outlayer](https://github.com/fastnear/near-outlayer) |
+| X | [@out_layer](https://x.com/out_layer) |
+
+---
+
+*OutLayer — the agent's wallet is the account, connectors are what it can do, and
+both live in the same enclave.*

@@ -447,6 +447,9 @@ cmd_multisig() {
     echo -e "${CYAN}== Confidential MULTISIG (mainnet): pending_approval → approve → leaves pending_approval ==${NC}"
 
     local PARENT_PRIVKEY; PARENT_PRIVKEY=$(jq -r '.private_key' "$CREDS_DIR/$PARENT.json")
+    # Without this, `outlayer` follows ~/.outlayer/default-network, which need not
+    # be the network this run targets — the check would compare the wrong account.
+    export OUTLAYER_NETWORK="$NETWORK"
     local WHOAMI; WHOAMI=$(outlayer whoami 2>/dev/null | awk -F': *' '/^Account:/{print $2; exit}')
     [ "$WHOAMI" = "$PARENT" ] || { echo -e "${RED}outlayer logged in as '$WHOAMI', not PARENT='$PARENT'${NC}"; exit 1; }
 

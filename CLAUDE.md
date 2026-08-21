@@ -72,7 +72,7 @@ anyhow::bail!("Feature X is not supported. Please use Y instead.");
 
 ## Project Overview
 
-**NEAR OutLayer** - verifiable off-chain computation for NEAR smart contracts using TEE (Intel TDX via Phala Cloud).
+**NEAR OutLayer** - verifiable compute and custody for AI agents, on NEAR. An agent gets a TEE-held multi-chain wallet under an owner-set policy, plus priced connectors (named operations) that execute in the same Intel TDX enclave. The compute layer is also callable directly from a NEAR contract (yield/resume) or over HTTPS.
 
 ## Components
 | Component | Port | Description |

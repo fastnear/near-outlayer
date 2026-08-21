@@ -1225,6 +1225,12 @@ pub const SYSTEM_ENV_VARS: &[&str] = &[
     // function, but a forged value in the environment would still mislead
     // anything that reads it instead.
     "WALLET_ID",
+    // Capability advertisement, written by the P2 executor straight onto the
+    // WASI builder rather than through the map above. Present only when the
+    // proxy exists — and a name written CONDITIONALLY is exactly the shape a
+    // caller's secret survives in, so it belongs here regardless of the fact
+    // that, today, the executor happens to write it after the secrets.
+    "NEAR_RPC_PROXY_AVAILABLE",
 ];
 
 /// Merge user secrets with system environment variables
@@ -2914,8 +2920,14 @@ async fn handle_execute_job(
                     }
 
                     // Report to coordinator (async, can fail without breaking flow)
+                    // The one completion the earnings ledger reads: an on-chain
+                    // execute. The refund travels to the CONTRACT separately via
+                    // `resolve_execution`, so leaving it out here does not
+                    // misplace a single token — it only makes
+                    // `earnings_history` credit the author with money the caller
+                    // was given back.
                     if let Err(e) = api_client
-                        .complete_job(
+                        .complete_job_with_refund(
                             job.job_id,
                             execution_result.success,
                             execution_result.output.clone(),
@@ -2927,6 +2939,7 @@ async fn handle_execute_job(
                             if compile_cost > 0 { Some(compile_cost.to_string()) } else { None },
                             None, // No error category for success
                             None, // No compile_result
+                            execution_result.refund_usd,
                         )
                         .await
                     {
@@ -3799,7 +3812,23 @@ mod verified_sender_tests {
             .split_once("#[cfg(test)]")
             .map(|(before, _)| before)
             .expect("the test modules sit at the end of this file");
-        let injected = injected_env_names(production);
+        // The guest's environment is not assembled in one file. `main.rs` fills
+        // the map, and the P2 executor writes straight onto the WASI builder
+        // afterwards — which is how `NEAR_RPC_PROXY_AVAILABLE` came to be
+        // injected, undeclared and unreserved, until a live `env` probe on
+        // 2026-08-21 reported it as a name it did not recognise. Reading only
+        // this file is what let that happen.
+        let p2 = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/executor/wasi_p2.rs"
+        ))
+        .expect("the P2 executor writes to the same environment and must be read too");
+        let mut injected = injected_env_names(production);
+        for name in injected_env_names(&p2) {
+            if !injected.contains(&name) {
+                injected.push(name);
+            }
+        }
 
         // If a refactor renames the map, the scan would find nothing and this
         // test would pass while checking nothing at all.
@@ -3828,15 +3857,21 @@ mod verified_sender_tests {
     /// both.
     fn injected_env_names(src: &str) -> Vec<String> {
         let mut names = Vec::new();
-        let mut rest = src;
-        while let Some(at) = rest.find("env_vars.insert(") {
-            rest = &rest[at + "env_vars.insert(".len()..];
-            let Some(open) = rest.find('"') else { break };
-            let after = &rest[open + 1..];
-            let Some(close) = after.find('"') else { break };
-            let name = &after[..close];
-            if !name.is_empty() && !names.iter().any(|n: &String| n == name) {
-                names.push(name.to_string());
+        for marker in ["env_vars.insert(", "wasi_builder.env("] {
+            let mut rest = src;
+            while let Some(at) = rest.find(marker) {
+                rest = &rest[at + marker.len()..];
+                // The name must be a LITERAL right here. `wasi_builder.env(&key,
+                // &value)` — the loop that writes the caller's own secrets —
+                // passes a variable, and reaching past it for the next quote in
+                // the file would attribute somebody else's string to this call.
+                let literal = rest.trim_start();
+                let Some(after) = literal.strip_prefix('"') else { continue };
+                let Some(close) = after.find('"') else { break };
+                let name = &after[..close];
+                if !name.is_empty() && !names.iter().any(|n: &String| n == name) {
+                    names.push(name.to_string());
+                }
             }
         }
         names

@@ -108,6 +108,7 @@ const RESERVED_SECRET_KEYS: &[&str] = &[
     "ATTACHED_USD",
     "USD_PAYMENT",
     "WALLET_ID",
+    "NEAR_RPC_PROXY_AVAILABLE",
 ];
 
 /// Refuse a write that names one of [`RESERVED_SECRET_KEYS`].

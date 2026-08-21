@@ -1,6 +1,6 @@
 # OutLayer SDK
 
-Rust SDK for building WASM applications on [OutLayer](https://app.outlayer.ai) - verifiable off-chain computation for NEAR.
+Rust SDK for building WASM applications on [OutLayer](https://app.outlayer.ai) - verifiable compute and custody for AI agents, on NEAR.
 
 [![Crates.io](https://img.shields.io/crates/v/outlayer.svg)](https://crates.io/crates/outlayer)
 [![Documentation](https://docs.rs/outlayer/badge.svg)](https://docs.rs/outlayer)

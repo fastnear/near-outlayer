@@ -1,8 +1,10 @@
 # NEAR OutLayer
 
-**Verifiable off-chain computation for NEAR smart contracts using Intel TDX**
+**Verifiable compute and custody for AI agents, on NEAR**
 
-OutLayer lets smart contracts execute arbitrary code off-chain and receive verified results on-chain. Computation runs inside Intel TDX Trusted Execution Environments (TEEs) on Phala Cloud, ensuring that neither the operator nor any third party can tamper with execution or access secrets.
+An agent gets a multi-chain wallet whose keys never leave an Intel TDX enclave, spends it under a policy its owner sets, and calls priced **connectors** — named operations like `send_email` or `pay_invoice` — that run inside that same enclave. Keys and the code that uses them never end up in different trust zones.
+
+The same compute layer is callable directly: a NEAR smart contract can request an execution and resume on the verified result, and a web2 backend can call it over HTTPS. Neither the operator nor any third party can tamper with what runs or read the secrets it uses, and every execution returns an enclave-signed attestation that chains to Intel's root certificate.
 
 ## Quick Links
 

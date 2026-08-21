@@ -106,6 +106,36 @@ const SYSTEM_VARS: &[&str] = &[
     // from every list until the worker's own `SYSTEM_ENV_VARS` was written
     // down and compared against the source.
     "WALLET_ID",
+    // Capability advertisement, written by the P2 executor onto the WASI
+    // builder. This probe found it on 2026-08-21 by reporting it as a name it
+    // did not know — at which point it turned out to be in no list at all:
+    // neither stripped from a caller's secrets nor refused as a secret key.
+    "NEAR_RPC_PROXY_AVAILABLE",
+];
+
+/// The subset of [`SYSTEM_VARS`] whose ABSENCE is lawful, per the table in
+/// `wasi-examples/WASM_ENV_VARS.md`: those are documented "If project" and
+/// "If wallet", not "Yes".
+///
+/// A run that legitimately has neither still has to report every OTHER variable,
+/// so these are excluded from the missing list rather than the report — they are
+/// still shown, with `found: false`, which is the honest answer to "did it
+/// arrive".
+///
+/// `WALLET_ID` earns its place here the hard way: an on-chain `request_execution`
+/// reaches the worker through the event monitor, which carries the caller's
+/// account and no wallet at all, so the variable is legitimately absent on that
+/// door. Treating it as mandatory made this probe fail a healthy stack.
+const CONDITIONAL_VARS: &[&str] = &[
+    // "If project"
+    "OUTLAYER_PROJECT_ID",
+    "OUTLAYER_PROJECT_UUID",
+    "OUTLAYER_PROJECT_NAME",
+    "OUTLAYER_PROJECT_OWNER",
+    // "If wallet"
+    "WALLET_ID",
+    // "If proxy" — absent whenever the run has no RPC proxy attached.
+    "NEAR_RPC_PROXY_AVAILABLE",
 ];
 
 /// Prefixes the WORKER owns. A variable with one of these that is not in
@@ -395,7 +425,7 @@ fn env_report(op: &str) -> Output {
 
     let missing: Vec<&str> = system_env
         .iter()
-        .filter(|v| !v.found)
+        .filter(|v| !v.found && !CONDITIONAL_VARS.contains(&v.key.as_str()))
         .map(|v| v.key.as_str())
         .collect();
     let detail = if missing.is_empty() && unknown_system_vars.is_empty() {

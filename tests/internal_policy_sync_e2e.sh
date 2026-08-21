@@ -74,6 +74,9 @@ log "Building customer-recovery"
 (cd "$SCRIPT_DIR/../scripts/customer-recovery" && cargo build --release --quiet) || \
   fail "customer-recovery build failed"
 
+# Without this, `outlayer` follows ~/.outlayer/default-network — mainnet on this
+# machine — and the check below compares against the wrong network's account.
+export OUTLAYER_NETWORK="$NETWORK"
 WHOAMI=$(outlayer whoami 2>/dev/null | awk -F': *' '/^Account:/{print $2; exit}')
 [[ "$WHOAMI" == "$PARENT" ]] || fail "outlayer logged in as '$WHOAMI', not '$PARENT'"
 pass "logged in as $PARENT on $NETWORK"

@@ -99,7 +99,7 @@ tools for different risk models.
 
 ### Compute and custody in one environment
 
-Outlayer's core is verifiable off-chain computation. An agent's logic and its
+Outlayer pairs custody with verifiable compute. An agent's logic and its
 signing run in the same TEE, so it can compute privately and sign the result in
 one attested environment rather than splitting where it thinks from where it
 signs. The TLA model is a custody-and-ownership layer; it has no co-located

@@ -9,7 +9,7 @@ Copyright holder for all first-party code: **OutLayer LLC**.
 
 ## Rationale
 
-OutLayer sells verifiable off-chain computation. The value proposition depends on
+OutLayer sells verifiable compute and custody. The value proposition depends on
 third parties being able to read, build, and independently attest the code that runs
 inside the TEE. Anything a customer must inspect in order to trust us, or must copy
 in order to integrate with us, is released under an OSI-approved permissive license.

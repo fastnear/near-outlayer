@@ -227,6 +227,7 @@ fn main() {
 | `NEAR_MAX_MEMORY_MB` | Yes | Yes | No |
 | `NEAR_MAX_EXECUTION_SECONDS` | Yes | Yes | No |
 | `WALLET_ID` | If wallet | If wallet | No |
+| `NEAR_RPC_PROXY_AVAILABLE` | If proxy | If proxy | No |
 
 Every name in this table is **reserved**: `store_secrets` refuses it as a secret
 key, and the worker strips it from your secrets before writing its own value. So

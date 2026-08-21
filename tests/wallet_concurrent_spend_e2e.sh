@@ -76,6 +76,9 @@ for tool in jq curl near outlayer cargo; do
 done
 CREDS_DIR="$HOME/.near-credentials/$NETWORK"
 [[ -f "$CREDS_DIR/$PARENT.json" ]] || { echo "✗ creds missing: $CREDS_DIR/$PARENT.json" >&2; exit 1; }
+# Without this, `outlayer` follows ~/.outlayer/default-network — mainnet on this
+# machine — and the check below compares against the wrong network's account.
+export OUTLAYER_NETWORK="$NETWORK"
 WHOAMI=$(outlayer whoami 2>/dev/null | awk -F': *' '/^Account:/{print $2; exit}')
 [[ "$WHOAMI" == "$PARENT" ]] || { echo "✗ outlayer logged in as '$WHOAMI', not '$PARENT'" >&2; exit 1; }
 PARENT_PRIVKEY=$(jq -r '.private_key' "$CREDS_DIR/$PARENT.json")
@@ -122,19 +125,27 @@ chain_balance() {
 # out. Everything slow happens before the fork; the fork contains one curl.
 #
 # Writes "<http_code> <body>" so a backgrounded caller can hand its result back
-# — a subshell can return nothing to its parent except a file.
+# — a subshell can return nothing to its parent except a file. The duration of
+# the request itself goes to "$out.time", measured by curl rather than by the
+# shell: P2 reads it to tell a grace that was APPLIED from one that is gone, and
+# a wall-clock reading around the fork cannot separate those two.
 spend() {
-  local auth=$1 amount=$2 out=$3 body http
+  local auth=$1 amount=$2 out=$3 body meta http secs
   body=$(jq -nc --arg to "$PARENT" --arg a "$amount" '{chain:"near", to:$to, amount:$a}')
-  http=$(curl -sS -o "$out.body" -w '%{http_code}' -X POST "$COORDINATOR_URL/wallet/v1/transfer" \
+  meta=$(curl -sS -o "$out.body" -w '%{http_code} %{time_total}' -X POST "$COORDINATOR_URL/wallet/v1/transfer" \
     -H "$auth" -H 'Content-Type: application/json' -d "$body")
+  http=${meta%% *}; secs=${meta##* }
   printf '%s %s\n' "$http" "$(tr -d '\n' < "$out.body")" > "$out"
+  printf '%s\n' "$secs" > "$out.time"
   rm -f "$out.body"
 }
 
 http_of() { awk '{print $1}' "$1" 2>/dev/null; }
 body_of() { cut -d' ' -f2- "$1" 2>/dev/null; }
 code_of() { body_of "$1" | jq -r '.error // empty' 2>/dev/null; }
+time_of() { cat "$1.time" 2>/dev/null || echo 0; }
+# Float compare without bc, which is not installed everywhere.
+ge() { awk -v a="$1" -v b="$2" 'BEGIN{exit !(a+0 >= b+0)}'; }
 
 # store_policy <seed> <wallet_id> <rules-json> — encrypt, sign, put on chain.
 # The policy is the only place a velocity limit can live: it is encrypted for
@@ -275,40 +286,53 @@ case "$OK" in
     fail "P1 neither spend passed ($H1 / $H2) — the wallet is refusing for some other reason, so this probe proved nothing: $(body_of "$OUT1" | head -c 200)"
     ;;
 esac
-rm -f "$OUT1" "$OUT2"
+rm -f "$OUT1" "$OUT2" "$OUT1.time" "$OUT2.time"
 
 # ── P2: the grace ────────────────────────────────────────────────────────────
-log "P2 two simultaneous spends that BOTH fit — the 2s grace must let them queue"
+#
+# The grace is `try_acquire`: a `tokio::time::timeout(WALLET_BUSY_GRACE, …)`
+# around the lock, so a loser WAITS up to two seconds before it is told "busy".
+#
+# Asking for "both must pass" cannot test that on a live chain. The winner holds
+# the wallet across a real NEAR broadcast — three seconds and up, comfortably
+# past the grace — so the loser is refused no matter how healthy the grace is,
+# and the probe reported INCONCLUSIVE on every honest run. It measured the
+# winner's speed, which is not the thing under test.
+#
+# What separates a grace that WAS APPLIED from one that is gone is the LOSER's
+# own duration. Waited ≈2s then 409 → the timeout ran. Refused in milliseconds →
+# somebody swapped the timeout for a bare `try_lock` and every client making two
+# quick calls now gets a 409 for doing nothing wrong. curl times each request
+# itself, so this reads the request and not the fork around it.
+log "P2 two simultaneous spends that BOTH fit — the loser must WAIT out the 2s grace"
 OUT3=$(mktemp -t concspend_p2a.XXXXXX); OUT4=$(mktemp -t concspend_p2b.XXXXXX)
 AUTH_B1=$(AUTH "$SEED_B"); AUTH_B2=$(AUTH "$SEED_B")
-# Started AFTER the headers exist, so it measures the two requests and not the
-# signing that preceded them. With signing inside the window this reading was
-# inflated past the grace on a healthy stack, and the branch below would then
-# excuse a real regression as "the signer was slow".
-T0=$(date +%s)
 spend "$AUTH_B1" "$TINY_YOCTO" "$OUT3" &
 P3=$!
 spend "$AUTH_B2" "$TINY_YOCTO" "$OUT4" &
 P4=$!
 wait $P3; wait $P4
-ELAPSED=$(( $(date +%s) - T0 ))
 H3=$(http_of "$OUT3"); H4=$(http_of "$OUT4")
-note "P2 responses: $H3 ($(code_of "$OUT3")) / $H4 ($(code_of "$OUT4")) in ${ELAPSED}s"
+T3=$(time_of "$OUT3"); T4=$(time_of "$OUT4")
+note "P2 responses: $H3 ($(code_of "$OUT3")) in ${T3}s / $H4 ($(code_of "$OUT4")) in ${T4}s"
+# 1.5 rather than 2.0: the timeout fires at two seconds, but the loser's clock
+# starts when curl connects, a moment BEFORE the server begins waiting. A margin
+# below the grace keeps that skew from failing a healthy stack, and is still far
+# above the milliseconds a missing grace would produce.
+GRACE_FLOOR=1.5
 if [[ "$H3" == 2?? && "$H4" == 2?? ]]; then
-  pass "P2 both passed — a client making two quick calls sees no errors"
-elif [[ "$(code_of "$OUT3")" == "wallet_busy" || "$(code_of "$OUT4")" == "wallet_busy" ]]; then
-  # A 409 here is only a defect if the winner finished INSIDE the grace. If the
-  # whole pair took longer than that, the wallet was legitimately still busy
-  # and this probe is inconclusive rather than failed.
-  if [[ "$ELAPSED" -lt 2 ]]; then
-    fail "P2 wallet_busy although the pair completed in ${ELAPSED}s — the grace is gone, and every client doing two quick calls will now see 409s"
+  pass "P2 both passed — the winner finished inside the grace and the loser queued behind it"
+elif [[ "$(code_of "$OUT3")" == "wallet_busy" ]] || [[ "$(code_of "$OUT4")" == "wallet_busy" ]]; then
+  if [[ "$(code_of "$OUT3")" == "wallet_busy" ]]; then LOSER_T=$T3; else LOSER_T=$T4; fi
+  if ge "$LOSER_T" "$GRACE_FLOOR"; then
+    pass "P2 the loser waited ${LOSER_T}s before wallet_busy — the grace ran (floor ${GRACE_FLOOR}s)"
   else
-    warn "P2 INCONCLUSIVE — wallet_busy after ${ELAPSED}s, longer than the 2s grace. The refusal is correct; re-run when the signer is faster."
+    fail "P2 wallet_busy returned in ${LOSER_T}s, under the ${GRACE_FLOOR}s floor — the grace is gone, and every client doing two quick calls will now see 409s"
   fi
 else
   fail "P2 a spend inside the limit was refused: $(body_of "$OUT3" | head -c 200) / $(body_of "$OUT4" | head -c 200)"
 fi
-rm -f "$OUT3" "$OUT4"
+rm -f "$OUT3" "$OUT4" "$OUT3.time" "$OUT4.time"
 
 # ── P3: the lock is per wallet ───────────────────────────────────────────────
 log "P3 two DIFFERENT wallets spending at once — neither may wait on the other"
@@ -331,7 +355,7 @@ else
   note "P3 not both passed, and neither said wallet_busy — the lock is not the cause"
   pass "P3 no cross-wallet blocking"
 fi
-rm -f "$OUT5" "$OUT6"
+rm -f "$OUT5" "$OUT6" "$OUT5.time" "$OUT6.time"
 
 printf '\n\033[1m%d passed, %d failed\033[0m\n' "$PASS" "$FAILED" >&2
 for n in "${FAILED_NAMES[@]:-}"; do [[ -n "$n" ]] && printf '  \033[31m✗ %s\033[0m\n' "$n" >&2; done

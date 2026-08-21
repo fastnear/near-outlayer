@@ -144,6 +144,9 @@ RECOVERY_BIN="$SCRIPT_DIR/../scripts/customer-recovery/target/release/customer-r
 log "Building customer-recovery (sign-nep413 + sign-bearer-near)"
 (cd "$SCRIPT_DIR/../scripts/customer-recovery" && cargo build --release --quiet) || { echo "build failed" >&2; exit 1; }
 
+# Without this, `outlayer` follows ~/.outlayer/default-network, which need not be
+# the network this run targets — the check below would compare the wrong account.
+export OUTLAYER_NETWORK="$NETWORK"
 WHOAMI=$(outlayer whoami 2>/dev/null | awk -F': *' '/^Account:/{print $2; exit}')
 [[ "$WHOAMI" == "$PARENT" ]] || { echo "✗ outlayer logged in as '$WHOAMI', not '$PARENT'" >&2; exit 1; }
 PARENT_PRIVKEY=$(jq -r '.private_key' "$CREDS_DIR/$PARENT.json")

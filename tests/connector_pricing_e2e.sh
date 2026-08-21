@@ -1358,6 +1358,10 @@ if want C15; then
         | jq -r '.earned.developer_share_usd'
     }
     SHARE_BEFORE=$(author_share_now)
+    # How many of the six calls actually RAN. The ledger check below is a claim
+    # about those calls, so with none of them made it has no subject and must
+    # say so rather than read an empty window as a verdict.
+    C15_RAN=0
 
     # ping is free, whoami is priced with a zero share, secret is priced with a
     # 7000bp share. Under an allowance all three must come out of the allowance
@@ -1378,6 +1382,7 @@ if want C15; then
           note "C15 $CRED $OP INCONCLUSIVE — the call was refused ($RC $(jq -r '.reason // "?"' /tmp/c15_r 2>/dev/null)), so nothing was charged either way"
           continue
         fi
+        C15_RAN=$((C15_RAN + 1))
         sleep 5
         B=$(curl -s "$COORDINATOR_URL/subscription/status" -H "X-Payment-Key: $KEY" | jq -r '.allowance_available_usd')
         SPENT=$(( A - B ))
@@ -1395,15 +1400,28 @@ if want C15; then
       done
     done
 
-    # And the ledger: none of the six calls above reached the author.
-    R15=$(curl -s "$COORDINATOR_URL/admin/earnings?from=$SINCE15" -H "Authorization: Bearer $ADMIN_TOKEN")
-    SHARE_AFTER=$(echo "$R15" | jq -r '.earned.developer_share_usd')
-    SPENT15=$(echo "$R15" | jq -r '(.given.spent_from_grants_usd|tonumber) + (.given.spent_from_subscriptions_usd|tonumber)')
-    CREDITED=$(( SHARE_AFTER - SHARE_BEFORE ))
-    if [[ $CREDITED == 0 && "$SPENT15" -gt 0 ]]; then
-      pass "C15 six allowance calls credited the author 0 (window holds $SPENT15 of allowance spend)"
+    # And the ledger: none of the calls above reached the author.
+    if [[ "$C15_RAN" -eq 0 ]]; then
+      # Both credentials were missing, so nothing was called and the window is
+      # empty for that reason alone. Asserting here reported "credit moved by 0 —
+      # an allowance must pay nobody", which is the PASSING condition spelled as
+      # a failure: the delta was right and the run had simply not happened.
+      note "C15 the ledger check SKIPPED — none of the six calls ran (set TRIAL_KEY and/or SUB_KEY)"
     else
-      fail "C15 six allowance calls moved the author's credit by $CREDITED ($SHARE_BEFORE → $SHARE_AFTER) — an allowance must pay nobody"
+      R15=$(curl -s "$COORDINATOR_URL/admin/earnings?from=$SINCE15" -H "Authorization: Bearer $ADMIN_TOKEN")
+      SHARE_AFTER=$(echo "$R15" | jq -r '.earned.developer_share_usd')
+      SPENT15=$(echo "$R15" | jq -r '(.given.spent_from_grants_usd|tonumber) + (.given.spent_from_subscriptions_usd|tonumber)')
+      CREDITED=$(( SHARE_AFTER - SHARE_BEFORE ))
+      if [[ $CREDITED != 0 ]]; then
+        fail "C15 $C15_RAN allowance calls moved the author's credit by $CREDITED ($SHARE_BEFORE → $SHARE_AFTER) — an allowance must pay nobody"
+      elif [[ "$SPENT15" -le 0 ]]; then
+        # Credit did not move, but neither did allowance spend — so the zero
+        # above proves nothing about who was paid. Separated from the case
+        # above because the two have different causes and different fixes.
+        fail "C15 $C15_RAN allowance calls ran, yet the window shows no allowance spend ($SPENT15) — the ledger is not seeing them, so 'the author got 0' is unproven"
+      else
+        pass "C15 $C15_RAN allowance calls credited the author 0 (window holds $SPENT15 of allowance spend)"
+      fi
     fi
   fi
 fi

@@ -833,6 +833,9 @@ impl ApiClient {
     /// * `actual_cost_yocto` - Total cost from contract (for execute jobs)
     /// * `compile_cost_yocto` - Compilation cost calculated by worker (for compile jobs)
     /// * `compile_result` - Result to pass to executor (e.g., FastFS URL)
+    ///
+    /// Reports no refund. Compile jobs and every failure path have none to
+    /// report; the execute paths that do call [`Self::complete_job_with_refund`].
     #[allow(clippy::too_many_arguments)]
     pub async fn complete_job(
         &self,
@@ -847,6 +850,53 @@ impl ApiClient {
         compile_cost_yocto: Option<String>,
         error_category: Option<JobStatus>,
         compile_result: Option<String>,
+    ) -> Result<()> {
+        self.complete_job_with_refund(
+            job_id,
+            success,
+            output,
+            error,
+            time_ms,
+            instructions,
+            wasm_checksum,
+            actual_cost_yocto,
+            compile_cost_yocto,
+            error_category,
+            compile_result,
+            None,
+        )
+        .await
+    }
+
+    /// [`Self::complete_job`] plus the refund the guest asked for.
+    ///
+    /// The coordinator computes the author's share as
+    /// `attached_usd - refund_usd` for `earnings_history`. Without this the
+    /// refund reads as zero there and the ledger credits the author with money
+    /// the caller got back — the CHAIN settles correctly either way, because
+    /// `resolve_execution` carries the refund of its own accord, so the defect
+    /// is silent and shows up only as a wrong number on the earnings page.
+    ///
+    /// A separate entry point rather than a twelfth argument on a function
+    /// already called from two dozen places: the refund exists on exactly the
+    /// execute paths that have an `ExecutionResult` in hand, and threading
+    /// `None` through the rest would be two dozen chances to put it in the
+    /// wrong position.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn complete_job_with_refund(
+        &self,
+        job_id: i64,
+        success: bool,
+        output: Option<ExecutionOutput>,
+        error: Option<String>,
+        time_ms: u64,
+        instructions: u64,
+        wasm_checksum: Option<String>,
+        actual_cost_yocto: Option<String>,
+        compile_cost_yocto: Option<String>,
+        error_category: Option<JobStatus>,
+        compile_result: Option<String>,
+        refund_usd: Option<u64>,
     ) -> Result<()> {
         let url = format!("{}/jobs/complete", self.base_url);
 
@@ -865,6 +915,10 @@ impl ApiClient {
             error_category: Option<JobStatus>,
             #[serde(skip_serializing_if = "Option::is_none")]
             compile_result: Option<String>,
+            /// Stringified: the coordinator parses it as a decimal string, the
+            /// same shape `attached_usd` arrives in.
+            #[serde(skip_serializing_if = "Option::is_none")]
+            refund_usd: Option<String>,
         }
 
         let request = CompleteJobRequest {
@@ -879,6 +933,7 @@ impl ApiClient {
             compile_cost_yocto,
             error_category,
             compile_result,
+            refund_usd: refund_usd.map(|v| v.to_string()),
         };
 
         tracing::debug!(
@@ -1272,6 +1327,11 @@ impl ApiClient {
             compile_only: bool,
             force_rebuild: bool,
             store_on_fastfs: bool,
+            /// Sent unconditionally, NOT skipped when false. The coordinator
+            /// reads it with `#[serde(default)]`, so an omitted field and an
+            /// explicit `false` are the same to it — but only one of them keeps
+            /// this body a faithful record of what the chain asked for.
+            use_bound_identity: bool,
             #[serde(skip_serializing_if = "Option::is_none")]
             project_uuid: Option<String>,
             #[serde(skip_serializing_if = "Option::is_none")]
@@ -1299,6 +1359,7 @@ impl ApiClient {
             compile_only: params.compile_only,
             force_rebuild: params.force_rebuild,
             store_on_fastfs: params.store_on_fastfs,
+            use_bound_identity: params.use_bound_identity,
             project_uuid: params.project_uuid,
             project_id: params.project_id,
         };
@@ -2428,6 +2489,68 @@ pub struct StoreAttestationRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every field the caller hands to `create_task` must survive into the JSON
+    /// body, and this reads the source to prove it.
+    ///
+    /// `use_bound_identity` reached `CreateTaskParams` and stopped there: the
+    /// wire struct inside `create_task` is declared separately and simply did
+    /// not list it. Nothing failed. The coordinator reads that field with
+    /// `#[serde(default)]`, so a body without it is a body that asked for
+    /// nothing, and the on-chain half of Agent Connect did nothing at all while
+    /// every unit test on both sides stayed green — the defect lives in the gap
+    /// between two correct programs, which is the one place unit tests cannot
+    /// look.
+    ///
+    /// Field-by-field equality, not a whitelist: a field added to the carrier
+    /// and forgotten in the body fails here rather than in production.
+    #[test]
+    fn create_task_sends_every_field_it_was_given() {
+        let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/api_client.rs"))
+            .expect("api_client.rs must be readable");
+
+        // The two structs sit at different indentation levels — one at the top
+        // of the file, one inside a function — so the end is found by matching
+        // the brace rather than by guessing how far it is indented.
+        fn fields_of(src: &str, header: &str) -> Vec<String> {
+            let start = src.find(header).unwrap_or_else(|| panic!("{header} not found"));
+            let body = &src[start + header.len()..];
+            let mut depth = 1usize;
+            let mut end = body.len();
+            for (i, c) in body.char_indices() {
+                match c {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = i;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            body[..end]
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.starts_with("//") && !l.starts_with("#[") && !l.is_empty())
+                .filter_map(|l| l.split(':').next().map(|n| n.trim_start_matches("pub ").trim().to_string()))
+                .filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
+                .collect()
+        }
+
+        let carried = fields_of(&src, "pub struct CreateTaskParams {");
+        let sent = fields_of(&src, "struct CreateRequest {");
+        assert!(!carried.is_empty() && !sent.is_empty(), "the parser found nothing — it is broken, not the code");
+
+        let dropped: Vec<_> = carried.iter().filter(|f| !sent.contains(f)).collect();
+        assert!(
+            dropped.is_empty(),
+            "create_task never sends {dropped:?} — the coordinator will read the default \
+             instead of what the chain asked for. Add the field to the CreateRequest struct \
+             and assign it from `params`."
+        );
+    }
 
     #[test]
     fn test_api_client_creation() {

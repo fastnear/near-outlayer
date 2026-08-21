@@ -1,9 +1,9 @@
 # OutLayer API
 
 The OutLayer HTTP API is served by the **coordinator** — the task queue and
-gateway that fronts the TEE workers, contracts, and keystore. It exposes
-verifiable off-chain computation (execute WASI modules) and the Agent Custody
-wallet over plain HTTPS.
+gateway that fronts the TEE workers, contracts, and keystore. It exposes the
+Agent Custody wallet and the verifiable compute layer — connectors and arbitrary
+WASI modules — over plain HTTPS.
 
 ## Base URLs (Networks)
 

@@ -1,10 +1,12 @@
 # NEAR OutLayer — Technical Specification
 
-**Verifiable off-chain computation for NEAR smart contracts using Intel TDX**
+**Verifiable compute and custody for AI agents, on NEAR — Intel TDX**
 
 ## Executive Summary
 
-**NEAR OutLayer** is a verifiable off-chain computation platform that enables any NEAR smart contract to execute arbitrary untrusted code off-chain using NEAR Protocol's yield/resume mechanism. Computation runs inside Intel TDX confidential VMs on Phala Cloud, providing hardware-enforced security guarantees.
+**NEAR OutLayer** gives an AI agent two things inside one attested Intel TDX enclave: a multi-chain **custody wallet** whose keys never leave the enclave and whose spending policy its owner sets, and **verifiable compute** — arbitrary untrusted code executed with hardware-enforced guarantees and an enclave-signed attestation of what ran.
+
+Compute reaches customers primarily as **connectors**: named operations with on-chain prices (`send_email`, `pay_invoice`) that run in the same enclave that holds the keys. It is also callable directly by a NEAR smart contract via the yield/resume mechanism, or by any backend over HTTPS.
 
 Two integration modes:
 - **Blockchain (NEAR transactions)**: Smart contract calls `request_execution()` → worker executes in TEE → result resumes on-chain
