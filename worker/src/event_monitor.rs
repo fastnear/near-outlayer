@@ -157,6 +157,11 @@ pub struct RequestData {
     pub force_rebuild: bool,
     #[serde(default)]
     pub store_on_fastfs: bool,
+    /// Agent Connect: the caller asked to run under its bound account's name.
+    /// Carried through untouched — the claim is settled against the chain in
+    /// the TEE, not here.
+    #[serde(default)]
+    pub use_bound_identity: bool,
     /// Project UUID for persistent storage (passed from request_execution_project)
     #[serde(default)]
     pub project_uuid: Option<String>,
@@ -1162,6 +1167,7 @@ impl EventMonitor {
             compile_only: request_data.compile_only,
             force_rebuild: request_data.force_rebuild,
             store_on_fastfs: request_data.store_on_fastfs,
+            use_bound_identity: request_data.use_bound_identity,
             project_uuid: request_data.project_uuid.clone(),
             project_id: request_data.project_id.clone(),
         };

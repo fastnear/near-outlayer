@@ -92,6 +92,7 @@ near_call set_project_pricing "$(cat <<EOF
     "author_account_id": "$PROBE_AUTHOR",
     "operations": [
       {"operation": "ping",            "price_usd": "0",     "developer_share_bp": 0},
+      {"operation": "env",             "price_usd": "0",     "developer_share_bp": 0},
       {"operation": "whoami",          "price_usd": "10000", "developer_share_bp": 0},
       {"operation": "secret",          "price_usd": "10000", "developer_share_bp": 7000},
       {"operation": "burn",            "price_usd": "10000", "developer_share_bp": 3333},

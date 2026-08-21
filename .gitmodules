@@ -49,3 +49,6 @@
 [submodule "wasi-examples/eas-attestor"]
 	path = wasi-examples/eas-attestor
 	url = https://github.com/out-layer/eas-attestor.git
+[submodule "wasi-examples/mercury-connector"]
+	path = wasi-examples/mercury-connector
+	url = git@github.com:out-layer/mercury-connector.git

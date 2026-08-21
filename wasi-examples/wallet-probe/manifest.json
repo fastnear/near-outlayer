@@ -1,0 +1,15 @@
+{
+  "display": {
+    "name": "Wallet probe",
+    "author": "zavodil.testnet"
+  },
+  "operations": [
+    "whoami",
+    "balance",
+    "transfer",
+    "request_status"
+  ],
+  "capabilities": {
+    "network": []
+  }
+}

@@ -287,14 +287,17 @@ if want C2; then
       view get_user_stablecoin_balance "$(jq -nc --arg a "$CALLER" '{account_id:$a}')" | jq -r 'if . == null then 0 else fromjson end'
     }
     U0=$(user_balance); A0=$(earnings_of "$AUTHOR"); O0=$(earnings_of "$PROJECT_OWNER")
-    near --quiet contract call-function as-transaction "$CONTRACT_ID" request_execution \
+    # Output is KEPT: a suppressed send that fails reports itself as a product
+    # failure in all three checks below (seen live 2026-08-18 — a broadcast
+    # transient read as "the split was 0/0"). C17 made the same mistake first.
+    OVER_OUT=$(near --quiet contract call-function as-transaction "$CONTRACT_ID" request_execution \
       json-args "$(jq -nc --arg p "$PROJECT" --arg i '{"operation":"secret"}' \
         '{source:{Project:{project_id:$p}}, input_data:$i,
           resource_limits:{max_instructions:1000000000,max_memory_mb:128,max_execution_seconds:30},
           params:{attached_usd:"15000"}}')" \
       prepaid-gas '300.0 Tgas' attached-deposit '0.1 NEAR' \
-      sign-as "$CALLER" network-config "$NETWORK" sign-with-keychain send >/dev/null 2>&1 \
-      || fail "C2 the over-attached call did not land"
+      sign-as "$CALLER" network-config "$NETWORK" sign-with-keychain send 2>&1) \
+      || fail "C2 the over-attached call did not land: $(tail -c 300 <<<"$OVER_OUT")"
     A1=$A0; O1=$O0; U1=$U0
     for _ in $(seq 1 30); do
       A1=$(earnings_of "$AUTHOR"); O1=$(earnings_of "$PROJECT_OWNER"); U1=$(user_balance)
@@ -334,6 +337,34 @@ if want C3; then
     [[ -n "$(echo "$R" | jq -r '.output.sender_id // empty')" ]] \
       && pass "C3 whoami reports the caller the worker injected ($(echo "$R" | jq -r .output.sender_id))" \
       || fail "C3 whoami: $(echo "$R" | head -c 200)"
+
+    # Every system variable the worker is supposed to inject, checked from
+    # INSIDE the guest. `merge_env_vars` has unit tests, but nothing covered
+    # the rest of the chain — worker to wasmtime to guest — so a variable lost
+    # downstream would show up as a connector acting on the wrong identity
+    # months later, with no error anywhere. `env` reports every one of them,
+    # and `ok` is false the moment a single one fails to arrive.
+    R=$(probe env)
+    if [[ "$(echo "$R" | jq -r '.output.ok')" == true ]]; then
+      SEEN=$(echo "$R" | jq -r '.output.system_env | length')
+      SENDER=$(echo "$R" | jq -r '.output.system_env[] | select(.key=="NEAR_SENDER_ID") | .value')
+      # Named explicitly on top of the blanket check: this is the one every
+      # connector acts on. near-email turns it into a mailbox, so a blank here
+      # is mail sent from the wrong account rather than an error.
+      if [[ -n "$SENDER" ]]; then
+        pass "C3 all $SEEN system variables arrived, NEAR_SENDER_ID=$SENDER"
+      else
+        fail "C3 env: every variable is present but NEAR_SENDER_ID is blank — a connector would act as nobody"
+      fi
+    else
+      fail "C3 env: $(echo "$R" | jq -r '.output.detail // .' | head -c 300)"
+    fi
+
+    # A variable the worker sends that this build of the probe does not know.
+    # Not a failure — it is how a RENAME announces itself, and it is worth
+    # seeing next to the missing one it replaced.
+    UNKNOWN=$(echo "$R" | jq -r '.output.unknown_system_vars // [] | join(", ")')
+    [[ -n "$UNKNOWN" ]] && note "C3 the worker also sent variables the probe does not know: $UNKNOWN (add them to SYSTEM_VARS)"
 
     # Refused before the module runs: an unpriced operation is not a free one.
     R=$(probe unpriced)

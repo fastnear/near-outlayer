@@ -121,7 +121,7 @@ PUB_HEX_SHORT=$(echo "$ADDR_RESP" | jq -r '.public_key' | sed 's/^ed25519://')
 WALLET_PUBKEY_HEX="ed25519:$PUB_HEX_SHORT"
 
 log "2.1 Fund sub-wallet ($SUB_ADDR) with 0.05 NEAR from $PARENT"
-near_tty "near tokens $PARENT send-near $SUB_ADDR '0.05 NEAR' \\
+near_tty "near --quiet tokens $PARENT send-near $SUB_ADDR '0.05 NEAR' \\
   network-config $NETWORK sign-with-keychain send" || \
   fail "funding sub-wallet failed"
 for _ in 1 2 3 4 5 6; do

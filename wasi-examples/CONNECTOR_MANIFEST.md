@@ -67,11 +67,26 @@ and exactly the ones priced on chain — see the next section.
 
 | Field | Allowed | Anything else |
 |---|---|---|
+| `operation` | your operation, **without your connector id** | see below |
 | `window` | `day` \| `week` \| `month` | read as **`month`** |
 | `applies` | `everyone` \| `unpaid` \| `covered` | read as **`everyone`** |
 
 `unpaid` is everyone without a purchased subscription; `covered` is everyone
 whose calls come out of an allowance, trial and gift included.
+
+**Do not write your connector id in `operation`.** It is prefixed for you when
+the declaration is stored, so `send:external` becomes `near-email:send:external`
+— which is what the counter is keyed by. Writing the prefix yourself produces
+`near-email:near-email:send:external`, and rules are matched exactly: it would
+match nothing, cap nothing, and say nothing about it. The prefix is added rather
+than accepted so that a manifest cannot declare limits about a *different*
+connector.
+
+The rest of the name is yours, and it can be finer than the operation itself —
+`send:external` is not a second operation, it is what a `send` counts as when
+any recipient is outside near.email. That distinction is one only the connector
+can make, which is why the key is built from the request rather than from the
+price list.
 
 **A word we do not recognise is read at its strictest, not dropped.** That is
 deliberate, and it is the second version of this rule: the first one skipped

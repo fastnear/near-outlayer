@@ -253,6 +253,7 @@ impl Contract {
             "compile_only": compile_only,
             "force_rebuild": request_params.force_rebuild,
             "store_on_fastfs": request_params.store_on_fastfs,
+            "use_bound_identity": request_params.use_bound_identity,
             "project_uuid": request_params.project_uuid,
             "project_id": project_id
         });

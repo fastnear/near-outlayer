@@ -3838,6 +3838,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "shared-tee-helpers",
  "tar",
  "tempfile",
  "thiserror 1.0.69",
@@ -5118,6 +5119,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
+]
+
+[[package]]
+name = "shared-tee-helpers"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "bs58 0.5.1",
+ "hex",
+ "near-crypto",
+ "rand 0.8.5",
+ "reqwest 0.11.27",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

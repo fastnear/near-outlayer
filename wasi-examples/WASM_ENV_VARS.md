@@ -226,6 +226,14 @@ fn main() {
 | `NEAR_MAX_INSTRUCTIONS` | Yes | Yes | No |
 | `NEAR_MAX_MEMORY_MB` | Yes | Yes | No |
 | `NEAR_MAX_EXECUTION_SECONDS` | Yes | Yes | No |
+| `WALLET_ID` | If wallet | If wallet | No |
+
+Every name in this table is **reserved**: `store_secrets` refuses it as a secret
+key, and the worker strips it from your secrets before writing its own value. So
+what you read here always came from the worker — never from whoever called you.
+
+`WALLET_ID` is informational. The authoritative answer is the `wallet::get_id`
+host function, which cannot be influenced by the environment at all.
 
 ## See Also
 

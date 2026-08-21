@@ -60,3 +60,4 @@ package-lock.json
 .research
 multi-keystore-research.md
 cloudflare-account-migration.md
+CONNECTOR_TEST_LOG.md

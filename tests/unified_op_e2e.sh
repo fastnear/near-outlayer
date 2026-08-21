@@ -438,7 +438,10 @@ assert_funded() {
   return 0
 }
 
-fund_near() { near_tty "near tokens $PARENT send-near $1 '$2' network-config $NETWORK sign-with-keychain send"; }
+# --quiet: the receiver is usually a FRESH implicit account, and near-cli-rs answers a
+# does-not-exist warning with an interactive prompt — headless (no TTY) that dies with
+# "The input device is not a TTY" and the sub-wallet is silently never funded.
+fund_near() { near_tty "near --quiet tokens $PARENT send-near $1 '$2' network-config $NETWORK sign-with-keychain send"; }
 
 # ─── register BENEFICIARY on wNEAR (mainnet) ───────────────────────────────────
 # The intents-balance sweeps (sweep_one step 4 / T6) withdraw wNEAR to BENEFICIARY, which requires
@@ -700,6 +703,15 @@ if want T11; then
   fund_near "$ADDR" "0.005 NEAR" || warn "T11c funding"
   # Wait until the wallet-to-delete exists on-chain (funding settles) before deleting.
   for _ in $(seq 1 6); do [[ "$(near_bal "$ADDR")" != "0" ]] && break; sleep 2; done
+  # A funding send can vanish silently (`near --quiet` swallows a broadcast transient and
+  # still exits 0), and deleting an account that never came to exist answers a misleading
+  # on-chain 422. Retry once and report the FUNDING as the failure, not the delete.
+  if [[ "$(near_bal "$ADDR")" == "0" ]]; then
+    warn "T11c funding did not land — retrying once"
+    fund_near "$ADDR" "0.005 NEAR" || warn "T11c refunding"
+    for _ in $(seq 1 6); do [[ "$(near_bal "$ADDR")" != "0" ]] && break; sleep 2; done
+    [[ "$(near_bal "$ADDR")" == "0" ]] && fail "T11c the funding never landed on $ADDR — cannot exercise the delete"
+  fi
   store_policy "$SEED" "$WID" "$DEL_POL" || fail "T11c store_policy"
   BEN_BEFORE=$(near_bal "$BENEFICIARY")
   post POST /wallet/v1/delete "$SEED" "$(jq -nc --arg b "$BENEFICIARY" '{beneficiary:$b, chain:"near"}')"

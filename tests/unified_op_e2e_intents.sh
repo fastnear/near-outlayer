@@ -434,7 +434,10 @@ assert_funded() {
   return 0
 }
 
-fund_near() { near_tty "near tokens $PARENT send-near $1 '$2' network-config $NETWORK sign-with-keychain send"; }
+# --quiet: the receiver is usually a FRESH implicit account, and near-cli-rs answers a
+# does-not-exist warning with an interactive prompt — headless (no TTY) that dies with
+# "The input device is not a TTY" and the sub-wallet is silently never funded.
+fund_near() { near_tty "near --quiet tokens $PARENT send-near $1 '$2' network-config $NETWORK sign-with-keychain send"; }
 
 # ─── register BENEFICIARY on wNEAR (mainnet) ───────────────────────────────────
 # The intents-balance sweeps (sweep_one step 4 / T6) withdraw wNEAR to BENEFICIARY, which requires

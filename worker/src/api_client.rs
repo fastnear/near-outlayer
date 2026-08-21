@@ -116,6 +116,11 @@ pub struct ExecutionRequest {
     /// Payment Key nonce for HTTPS calls
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payment_key_nonce: Option<i32>,
+    /// Agent Connect: the binding kind behind a bound context sender — the
+    /// hint for WHICH verifier to run before adopting that sender. A hint,
+    /// not truth: each verifier is fail-closed against the wrong contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding_kind: Option<String>,
     /// USD payment amount for HTTPS calls (X-Attached-Deposit, in minimal token units)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usd_payment: Option<String>,
@@ -289,6 +294,10 @@ pub struct CreateTaskParams {
     pub compile_only: bool,
     pub force_rebuild: bool,
     pub store_on_fastfs: bool,
+    /// Agent Connect: the on-chain caller asked to be seen as its bound
+    /// account. A CLAIM, settled against the chain in the TEE before the guest
+    /// is given any name.
+    pub use_bound_identity: bool,
     /// Project UUID for persistent storage (from request_execution_project)
     pub project_uuid: Option<String>,
     /// Project ID for project-based secrets (e.g., "alice.near/my-app")

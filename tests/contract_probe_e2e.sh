@@ -118,45 +118,57 @@ else
   note "P1 SKIPPED — the store was refused: $(tail -c 200 <<<"$OUT")"
 fi
 
-# ── P2: a payment key's profile IS its nonce, unnormalised ───────────────────
+# ── P2: a payment key's profile IS its nonce, in one spelling ────────────────
 #
 # `delete_payment_key` looks the key up at `nonce.to_string()`, and the
-# coordinator holds one row per (owner, nonce). A key filed at "01" is a second
-# on-chain key for the same nonce that neither of them can see.
+# coordinator holds one row per (owner, nonce). The bug class is a key filed at
+# "01" becoming a SECOND on-chain key for nonce 1 that neither of them can see.
+# The contract's answer is `canonical_profile`: the padded spelling is rendered
+# from the parsed number, so "01" and "1" are ONE slot. This probe asserts
+# exactly that — and because the store now lands ON the canonical slot, it must
+# know what sits there BEFORE it writes: the first guard here read the slot
+# after the write and could only ever see its own bytes.
 log "P2 a payment key at profile \"01\""
 
-NEXT_BEFORE=$(view get_next_payment_key_nonce "$(jq -nc --arg a "$OTHER" '{account_id:$a}')")
 acc_pk='{"System":"PaymentKey"}'
 
-if call "$OTHER" store_secrets \
-      "$(jq -nc --argjson a "$acc_pk" '{accessor:$a, profile:"01", encrypted_secrets_base64:"cHJvYmU=", access:"AllowAll", vault_id:null}')" \
-      '0.1 NEAR'; then
-  fail "P2 a payment key was stored at profile \"01\" — the same nonce as \"1\", in a slot delete_payment_key(1) cannot reach"
-
-  NEXT_AFTER=$(view get_next_payment_key_nonce "$(jq -nc --arg a "$OTHER" '{account_id:$a}')")
-  note "P2 get_next_payment_key_nonce: $NEXT_BEFORE → $NEXT_AFTER (it parses the profile, so it does count this one)"
-
-  # Does a REAL key already sit at "1"? If so, leave it alone — `delete_payment_key(1)`
-  # would remove that one, not the probe's. The first run of this probe did
-  # exactly that to `zavodil2.testnet`'s nonce 1 before the check existed.
-  REAL_ONE=$(view get_secrets "$(jq -nc --argjson a "$acc_pk" --arg o "$OTHER" '{accessor:$a, profile:"1", owner:$o}')")
-  if [[ "$REAL_ONE" != "null" && -n "$REAL_ONE" ]]; then
-    note "P2 not calling delete_payment_key(1) — $OTHER has a real key at nonce 1 and it is not this probe's to remove"
-  else
-    call "$OTHER" delete_payment_key "$(jq -nc '{nonce:1}')" '1 yoctoNEAR' \
-      && note "P2 delete_payment_key(1) removed something — check which" \
-      || note "P2 delete_payment_key(1) cannot see the padded key: $(grep -o 'Payment key not found[^\"]*' <<<"$OUT" | head -1)"
-  fi
-
-  call "$OTHER" delete_secrets \
-    "$(jq -nc --argjson a "$acc_pk" '{accessor:$a, profile:"01"}')" '0 NEAR' \
-    && note "P2 cleaned up through delete_secrets (deposit refunded)" \
-    || note "P2 cleanup FAILED, 0.1 NEAR left staked: $(tail -c 200 <<<"$OUT")"
+PRE_ONE=$(view get_secrets "$(jq -nc --argjson a "$acc_pk" --arg o "$OTHER" '{accessor:$a, profile:"1", owner:$o}')")
+if [[ "$PRE_ONE" != "null" && -n "$PRE_ONE" ]]; then
+  note "P2 SKIPPED — $OTHER holds a real key at nonce 1, and a canonicalised store would overwrite it"
 else
-  if refused_with "nonce"; then
-    pass "P2 a zero-padded nonce is refused: $(grep -o 'Payment key[^"]*' <<<"$OUT" | head -1)"
+  NEXT_BEFORE=$(view get_next_payment_key_nonce "$(jq -nc --arg a "$OTHER" '{account_id:$a}')")
+
+  if call "$OTHER" store_secrets \
+        "$(jq -nc --argjson a "$acc_pk" '{accessor:$a, profile:"01", encrypted_secrets_base64:"cHJvYmU=", access:"AllowAll", vault_id:null}')" \
+        '0.1 NEAR'; then
+    GOT_ONE=$(view get_secrets "$(jq -nc --argjson a "$acc_pk" --arg o "$OTHER" '{accessor:$a, profile:"1", owner:$o}')")
+    GOT_PAD=$(view get_secrets "$(jq -nc --argjson a "$acc_pk" --arg o "$OTHER" '{accessor:$a, profile:"01", owner:$o}')")
+    NEXT_AFTER=$(view get_next_payment_key_nonce "$(jq -nc --arg a "$OTHER" '{account_id:$a}')")
+
+    if [[ "$GOT_ONE" != "null" && -n "$GOT_ONE" && "$GOT_ONE" == "$GOT_PAD" ]]; then
+      pass "P2 the padded spelling lands in the canonical slot — one nonce, one slot, both spellings read it"
+    else
+      fail "P2 two slots for one nonce: \"1\" → $(head -c 24 <<<"$GOT_ONE") vs \"01\" → $(head -c 24 <<<"$GOT_PAD")"
+    fi
+    note "P2 get_next_payment_key_nonce: $NEXT_BEFORE → $NEXT_AFTER"
+
+    # The canonical door must be able to remove what a padded store created —
+    # this is the half that failed live before `canonical_profile` existed.
+    if call "$OTHER" delete_payment_key "$(jq -nc '{nonce:1}')" '1 yoctoNEAR'; then
+      pass "P2 delete_payment_key(1) reaches what the padded store created (deposit refunded)"
+    else
+      fail "P2 delete_payment_key(1) cannot see the padded key: $(tail -c 160 <<<"$OUT")"
+      call "$OTHER" delete_secrets \
+        "$(jq -nc --argjson a "$acc_pk" '{accessor:$a, profile:"01"}')" '0 NEAR' \
+        && note "P2 cleaned up through delete_secrets (deposit refunded)" \
+        || note "P2 cleanup FAILED, 0.1 NEAR left staked: $(tail -c 200 <<<"$OUT")"
+    fi
   else
-    note "P2 INCONCLUSIVE — refused for another reason: $(tail -c 200 <<<"$OUT")"
+    if refused_with "nonce"; then
+      pass "P2 a zero-padded nonce is refused outright: $(grep -o 'Payment key[^"]*' <<<"$OUT" | head -1)"
+    else
+      note "P2 INCONCLUSIVE — refused for another reason: $(tail -c 200 <<<"$OUT")"
+    fi
   fi
 fi
 

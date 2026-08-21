@@ -13,6 +13,11 @@
 //! |---|---|---|
 //! | `ping` | 0 | a free operation is still a REAL price: it runs only on a key that can pay, and it is refused when the key cannot |
 //! | `whoami` | 0 | what the guest was told about its caller — the identity the worker injected, and nothing the caller could have chosen |
+//! | `env` | 0 | EVERY system variable the worker is supposed to inject, present or missing — so one going quiet is a failed probe rather than a connector that misbehaves months later |
+//!
+//! (Prices above are the ones in `scripts/set_connector_prices_testnet.sh`.
+//! Note `whoami` is listed there at $0.01, not 0 — the table row is stale and
+//! the script is what the coordinator actually charges.)
 //! | `secret` | $0.01 | the owner's secret arrived, WITHOUT printing it: presence, length, and a hash prefix |
 //! | `burn` | $0.01 | compute actually costs something: burns instructions on demand, so a charge can be watched |
 //! | `fetch` | $0.015 | the declared host is reachable |
@@ -48,6 +53,65 @@ use sha2::{Digest, Sha256};
 #[link_section = "outlayer.manifest"]
 static OUTLAYER_MANIFEST: [u8; include_bytes!("../manifest.json").len()] =
     *include_bytes!("../manifest.json");
+
+/// Every environment variable the worker injects, as of this build.
+///
+/// This list is the POINT of the `env` operation. `merge_env_vars` in the
+/// worker is unit-tested, but nothing checked the whole chain — worker →
+/// wasmtime → guest — so a variable dropped anywhere downstream would surface
+/// as a connector quietly acting on the wrong identity, months later, with no
+/// error anywhere. Here it surfaces as `found: false`.
+///
+/// Blank is NOT missing. On an HTTPS call the worker deliberately sets the
+/// blockchain-only fields to empty strings, because a guest that reads
+/// `NEAR_BLOCK_HEIGHT` should see "no block" rather than fall through to
+/// whatever the host had. So the report distinguishes the two.
+///
+/// When the worker gains a variable, add it here. When one of these disappears
+/// from the worker on purpose, delete it here in the same change — a list that
+/// drifts is a list nobody trusts.
+const SYSTEM_VARS: &[&str] = &[
+    // Identity — who the guest acts as, and who pays.
+    "NEAR_SENDER_ID",
+    "NEAR_USER_ACCOUNT_ID",
+    "NEAR_PREDECESSOR_ID",
+    "NEAR_SIGNER_PUBLIC_KEY",
+    // Where and what kind of run.
+    "NEAR_NETWORK_ID",
+    "OUTLAYER_EXECUTION_TYPE",
+    // Correlation.
+    "NEAR_REQUEST_ID",
+    "OUTLAYER_CALL_ID",
+    "NEAR_TRANSACTION_HASH",
+    "NEAR_RECEIPT_ID",
+    // On-chain context (empty on an HTTPS call).
+    "NEAR_CONTRACT_ID",
+    "NEAR_BLOCK_HEIGHT",
+    "NEAR_BLOCK_TIMESTAMP",
+    "NEAR_GAS_BURNT",
+    // Money.
+    "NEAR_PAYMENT_YOCTO",
+    "ATTACHED_USD",
+    "USD_PAYMENT",
+    // Limits.
+    "NEAR_MAX_INSTRUCTIONS",
+    "NEAR_MAX_MEMORY_MB",
+    "NEAR_MAX_EXECUTION_SECONDS",
+    // Project.
+    "OUTLAYER_PROJECT_ID",
+    "OUTLAYER_PROJECT_UUID",
+    "OUTLAYER_PROJECT_NAME",
+    "OUTLAYER_PROJECT_OWNER",
+    // Custody. Injected outside `merge_env_vars`, which is why it was missing
+    // from every list until the worker's own `SYSTEM_ENV_VARS` was written
+    // down and compared against the source.
+    "WALLET_ID",
+];
+
+/// Prefixes the WORKER owns. A variable with one of these that is not in
+/// [`SYSTEM_VARS`] is reported BY NAME, because that is how a rename shows
+/// itself: the old name goes missing and a new one appears in the same run.
+const SYSTEM_PREFIXES: &[&str] = &["NEAR_", "OUTLAYER_", "ATTACHED_", "USD_"];
 
 /// The one host this connector may reach, and it must match `manifest.json`.
 /// A change here without a change there produces a connector that cannot reach
@@ -86,6 +150,28 @@ struct Input {
     rounds: Option<u32>,
 }
 
+/// One system variable, as the guest actually received it.
+#[derive(Debug, Serialize)]
+struct VarSeen {
+    key: String,
+    /// The worker set it. `false` means it never arrived — the thing this
+    /// operation exists to catch.
+    found: bool,
+    /// Set but empty. The worker does this deliberately for blockchain fields
+    /// on an HTTPS call, so it is a different fact from missing.
+    blank: bool,
+    /// The value. Safe to print because the worker STRIPS every name in
+    /// `SYSTEM_ENV_VARS` from the owner's secrets before writing its own, so
+    /// whatever arrives under one of these names came from the worker: an
+    /// identifier, a network name, a number or a hash. That strip is what makes
+    /// the claim true — while the guarantee was "system values are written
+    /// last", the conditionally-written names (`OUTLAYER_PROJECT_OWNER` and
+    /// friends) could still carry a secret straight into this field. The
+    /// owner's secrets themselves are counted, not shown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    value: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 struct SecretSeen {
     key: String,
@@ -114,6 +200,25 @@ struct Output {
     call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     network: Option<String>,
+    /// Who PAID, as opposed to who the guest acts as. Reported next to
+    /// `sender_id` so a bound run is self-evident: the two differ exactly when
+    /// a bound identity is in effect, and billing stays on this one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user_account_id: Option<String>,
+    /// `HTTPS` or `NEAR` — which door this run came through.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    execution_type: Option<String>,
+    // ---- env ----
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    system_env: Vec<VarSeen>,
+    /// Names carrying a worker-owned prefix that this build does not know.
+    /// Populated when the worker renames or adds a variable.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    unknown_system_vars: Vec<String>,
+    /// Everything else in the environment — the owner's own secrets. COUNTED,
+    /// never named and never valued.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    other_var_count: Option<usize>,
     // ---- secret ----
     #[serde(skip_serializing_if = "Vec::is_empty")]
     secrets: Vec<SecretSeen>,
@@ -161,6 +266,7 @@ fn run(input: &Input) -> Output {
             ..Default::default()
         },
         "whoami" => whoami(op),
+        "env" => env_report(op),
         "secret" => secret(op),
         "burn" => burn(op, input.rounds.unwrap_or(1)),
         "fetch" => fetch(op, ALLOWED_HOST, "the declared host must be reachable"),
@@ -196,15 +302,130 @@ fn run(input: &Input) -> Output {
 /// Every value here is injected by the worker. None of it is anything the
 /// caller could have set in the request body, which is the point: a test can
 /// compare what it sent with what the guest saw.
+/// Who the guest was told it is — BOTH identities, because Agent Connect
+/// splits them and the whole point of `use_bound_identity` is that only one
+/// of the two moves.
+///
+/// * `sender_id` (`NEAR_SENDER_ID`) is who the guest ACTS AS. near-email turns
+///   it into the mailbox it sends from. This is the one a binding renames.
+/// * `user_account_id` (`NEAR_USER_ACCOUNT_ID`) is who PAID. It must never
+///   follow a binding — if it did, usage would be attributed to an account
+///   that paid nothing.
+///
+/// `execution_type` is here so one probe answers for both entry paths: the
+/// same request run over HTTPS and over an on-chain transaction has to give
+/// the same `sender_id`, and without this field a run tells you nothing about
+/// which path produced it.
 fn whoami(op: &str) -> Output {
+    let sender = env::signer_account_id();
+    let payer = env::var("NEAR_USER_ACCOUNT_ID");
+    // Both empty-or-missing is its own fact: it means the worker told the guest
+    // nothing about who it is, which no run should ever look like.
+    let detail = match (sender.as_deref(), payer.as_deref()) {
+        (None, _) => "no sender was injected at all — this run has no identity".to_string(),
+        (Some(s), Some(p)) if s == p => {
+            format!("acting as the caller '{s}' — no bound identity in effect")
+        }
+        (Some(s), Some(p)) => {
+            format!("acting as '{s}', paid by '{p}' — a bound identity IS in effect")
+        }
+        (Some(s), None) => format!("acting as '{s}'; no payer was injected"),
+    };
     Output {
-        ok: true,
+        ok: sender.is_some(),
         operation: op.into(),
-        detail: "identity as the worker injected it".into(),
-        sender_id: env::signer_account_id(),
+        detail,
+        sender_id: sender,
+        user_account_id: payer,
+        execution_type: env::var("OUTLAYER_EXECUTION_TYPE"),
         request_id: env::request_id(),
         call_id: env::var("OUTLAYER_CALL_ID"),
         network: env::var("NEAR_NETWORK_ID"),
+        ..Default::default()
+    }
+}
+
+/// Every system variable, present or missing — and nothing else.
+///
+/// Reads the environment DIRECTLY rather than through the known list alone, so
+/// the report answers two questions at once: did anything we expect go
+/// missing, and did anything we do not expect appear. A rename shows as both
+/// at the same time, in one run.
+///
+/// **It cannot leak a secret, by construction.** The owner's secrets are in
+/// this same environment — the worker merges them first and writes the system
+/// variables over them — so a naive dump would turn every test run into a
+/// leak, which is exactly what this module's rules forbid. Three tiers
+/// instead: known system variables get their value (none of them ever carries
+/// a secret), unknown variables carrying a worker-owned PREFIX get their name
+/// only (enough to spot a rename), and everything else is counted and never
+/// named.
+fn env_report(op: &str) -> Output {
+    let system_env: Vec<VarSeen> = SYSTEM_VARS
+        .iter()
+        .map(|key| match env::var(key) {
+            Some(value) => VarSeen {
+                key: (*key).into(),
+                found: true,
+                blank: value.is_empty(),
+                value: Some(value),
+            },
+            None => VarSeen {
+                key: (*key).into(),
+                found: false,
+                blank: false,
+                value: None,
+            },
+        })
+        .collect();
+
+    let mut unknown_system_vars = Vec::new();
+    let mut other_var_count = 0usize;
+    for (key, _) in std::env::vars() {
+        if SYSTEM_VARS.contains(&key.as_str()) {
+            continue;
+        }
+        if SYSTEM_PREFIXES.iter().any(|p| key.starts_with(p)) {
+            unknown_system_vars.push(key);
+        } else {
+            other_var_count += 1;
+        }
+    }
+    unknown_system_vars.sort();
+
+    let missing: Vec<&str> = system_env
+        .iter()
+        .filter(|v| !v.found)
+        .map(|v| v.key.as_str())
+        .collect();
+    let detail = if missing.is_empty() && unknown_system_vars.is_empty() {
+        "every system variable this build knows about arrived".to_string()
+    } else if missing.is_empty() {
+        format!(
+            "all known variables arrived, but the worker also sent {} this build \
+             does not know: {}. Add them to SYSTEM_VARS — or, if one replaced a \
+             variable that is now missing, that was a rename.",
+            unknown_system_vars.len(),
+            unknown_system_vars.join(", ")
+        )
+    } else {
+        format!(
+            "MISSING: {}. A guest reading one of these gets nothing, and nothing \
+             upstream reports an error — which is why this probe exists.",
+            missing.join(", ")
+        )
+    };
+
+    Output {
+        // `ok` is about the ENVIRONMENT, not about the call: a run that
+        // reaches this code and reports a missing variable succeeded as a
+        // call and failed as a probe, and the test wants the second answer.
+        ok: missing.is_empty(),
+        operation: op.into(),
+        detail,
+        system_env,
+        unknown_system_vars,
+        other_var_count: Some(other_var_count),
         ..Default::default()
     }
 }

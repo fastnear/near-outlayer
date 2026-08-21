@@ -16,6 +16,47 @@ wasmtime::component::bindgen!({
 /// Result type: (json_result, error)
 type WalletResult = (String, String);
 
+/// Turn a coordinator error body into the one string a guest gets back.
+///
+/// `"<code>: <message>"`, plus `key=value` for anything the caller has to ACT
+/// on. That shape is what `wallet.wit` documents (`"policy_denied: ..."`), and
+/// a guest needs the code far more than the prose: `wallet_busy` clears by
+/// itself and is worth retrying, `policy_denied` never will be. A guest handed
+/// only a sentence has to match on wording, and wording changes.
+///
+/// Appended fields are the ones that change what to do next, not everything in
+/// the body:
+/// * `terminal` — retrying an Agent Connect refusal that is terminal spins
+///   forever while the owner is never told to act;
+/// * `in_flight_request_id` — what to poll instead of retrying blindly.
+///
+/// A body that is not the expected JSON comes back verbatim: inventing a code
+/// for it would be worse than passing on what the server actually said.
+fn guest_error(body: &str) -> String {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(body) else {
+        return body.to_string();
+    };
+    let Some(code) = json["error"].as_str() else {
+        // No code to lead with; the message alone still beats raw JSON.
+        return json["message"].as_str().unwrap_or(body).to_string();
+    };
+    let message = json["message"].as_str().unwrap_or_default();
+
+    let mut out = if message.is_empty() {
+        code.to_string()
+    } else {
+        format!("{code}: {message}")
+    };
+    if let Some(terminal) = json["terminal"].as_bool() {
+        out.push_str(&format!(" terminal={terminal}"));
+    }
+    if let Some(id) = json["in_flight_request_id"].as_str() {
+        out.push_str(&format!(" in_flight_request_id={id}"));
+    }
+    out
+}
+
+
 /// Host state for wallet functions
 pub struct WalletHostState {
     /// Wallet ID from execution context (e.g. "ed25519:abc...")
@@ -106,15 +147,7 @@ impl WalletHostState {
                         if status.is_success() {
                             (text, String::new())
                         } else {
-                            // Extract error message from JSON response if possible
-                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
-                                let msg = json["message"].as_str()
-                                    .or_else(|| json["error"].as_str())
-                                    .unwrap_or(&text);
-                                (String::new(), msg.to_string())
-                            } else {
-                                (String::new(), text)
-                            }
+                            (String::new(), guest_error(&text))
                         }
                     }
                     Err(e) => (String::new(), format!("Failed to read response: {}", e)),
@@ -376,5 +409,53 @@ mod tests {
         let (id, err) = state.get_id();
         assert_eq!(id, "ed25519:abc123");
         assert!(err.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod guest_error_tests {
+    use super::guest_error;
+
+    /// The code comes FIRST, because that is the only part a guest can route
+    /// on. `wallet.wit` documents this shape (`"policy_denied: ..."`), and a
+    /// guest handed prose alone would have to match on wording.
+    #[test]
+    fn the_code_leads_and_the_message_follows() {
+        let body = r#"{"error":"policy_denied","message":"daily limit exceeded"}"#;
+        assert_eq!(guest_error(body), "policy_denied: daily limit exceeded");
+    }
+
+    /// Busy clears by itself, so the guest's move is to wait — and it is told
+    /// exactly what to wait for rather than retrying blindly.
+    #[test]
+    fn busy_carries_the_operation_to_poll() {
+        let body = r#"{"error":"wallet_busy",
+                       "message":"another operation is using this wallet",
+                       "in_flight_request_id":"req-42"}"#;
+        let out = guest_error(body);
+        assert!(out.starts_with("wallet_busy: "), "{out}");
+        assert!(out.contains("in_flight_request_id=req-42"), "{out}");
+    }
+
+    /// The field that decides whether retrying is pointless at all. An agent
+    /// that retries a terminal refusal spins forever while its owner is never
+    /// told to act.
+    #[test]
+    fn a_refusal_says_whether_retrying_is_pointless() {
+        let body = r#"{"error":"agent_connect_denied","message":"the grant is spent",
+                       "class":"grant_exhausted","terminal":true}"#;
+        let out = guest_error(body);
+        assert!(out.starts_with("agent_connect_denied: "), "{out}");
+        assert!(out.contains("terminal=true"), "{out}");
+    }
+
+    /// Anything that is not the expected JSON is passed on WHOLE. Inventing a
+    /// code for it would be worse than repeating what the server said.
+    #[test]
+    fn an_unexpected_body_is_passed_on_verbatim() {
+        assert_eq!(guest_error("502 Bad Gateway"), "502 Bad Gateway");
+        assert_eq!(guest_error(r#"{"detail":"nope"}"#), r#"{"detail":"nope"}"#);
+        // JSON with only a message still beats handing back raw JSON.
+        assert_eq!(guest_error(r#"{"message":"plain"}"#), "plain");
     }
 }

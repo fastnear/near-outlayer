@@ -63,6 +63,79 @@ const MAX_APPROVAL_VOTES: usize = 16;
 /// calls; the refusal says so.
 const MAX_GENERATED_SECRETS: usize = 16;
 
+/// Secret key names the worker owns, refused on the way IN.
+///
+/// This is the first of the two locks on the guest's environment. The second
+/// is in the worker: `merge_env_vars` strips every one of these from the
+/// secrets before writing a single system value, so a name that slips past
+/// here is still not forgeable. They fail differently, though — this one tells
+/// the owner at store time, in an error they can act on, while the worker's
+/// silently drops a secret the owner thought they had set. Both are wanted.
+///
+/// **Must cover every name the worker injects.** The list mirrors
+/// `worker::SYSTEM_ENV_VARS`, and
+/// `reserved_keys_tests::every_worker_system_variable_is_a_reserved_secret_key`
+/// reads the worker's source to prove it: add a variable there and this test
+/// fails until it is added here.
+const RESERVED_SECRET_KEYS: &[&str] = &[
+    "NEAR_SENDER_ID",
+    "NEAR_CONTRACT_ID",
+    "NEAR_BLOCK_HEIGHT",
+    "NEAR_BLOCK_TIMESTAMP",
+    "NEAR_RECEIPT_ID",
+    "NEAR_PREDECESSOR_ID",
+    "NEAR_SIGNER_PUBLIC_KEY",
+    "NEAR_GAS_BURNT",
+    "NEAR_USER_ACCOUNT_ID",
+    "NEAR_PAYMENT_YOCTO",
+    "NEAR_TRANSACTION_HASH",
+    "NEAR_MAX_INSTRUCTIONS",
+    "NEAR_MAX_MEMORY_MB",
+    "NEAR_MAX_EXECUTION_SECONDS",
+    "NEAR_REQUEST_ID",
+    "NEAR_NETWORK_ID",
+    "OUTLAYER_PROJECT_ID",
+    "OUTLAYER_PROJECT_UUID",
+    // Added once the worker's own list was written down and compared: each of
+    // these was injected into the guest while remaining a legal secret key.
+    // `OUTLAYER_PROJECT_OWNER` and `OUTLAYER_PROJECT_NAME` were the reachable
+    // pair — the worker writes them only when a project id exists AND contains
+    // a slash, so the overwrite lock did not cover them either.
+    "OUTLAYER_EXECUTION_TYPE",
+    "OUTLAYER_CALL_ID",
+    "OUTLAYER_PROJECT_NAME",
+    "OUTLAYER_PROJECT_OWNER",
+    "ATTACHED_USD",
+    "USD_PAYMENT",
+    "WALLET_ID",
+];
+
+/// Refuse a write that names one of [`RESERVED_SECRET_KEYS`].
+///
+/// One function rather than the same filter written at each door: the list
+/// itself used to exist twice, the two copies drifted, and the names that had
+/// only ever been added to one of them were exactly the ones a caller could
+/// forge. A single list closed that; a single check keeps the doors from
+/// drifting the same way.
+///
+/// Every name is reported, not just the first — an owner fixing a JSON blob
+/// wants one round trip, not one per offending key.
+fn reject_reserved_secret_keys<'a>(
+    keys: impl Iterator<Item = &'a str>,
+) -> Result<(), ApiError> {
+    let reserved: Vec<&str> = keys.filter(|k| RESERVED_SECRET_KEYS.contains(k)).collect();
+    if reserved.is_empty() {
+        return Ok(());
+    }
+    tracing::warn!(reserved_keys = ?reserved, "Rejected secrets with reserved keywords");
+    Err(ApiError::BadRequest(format!(
+        "Cannot use reserved system keywords as secret keys: {}. \
+         These environment variables are automatically set by OutLayer worker. \
+         Please use different key names.",
+        reserved.join(", ")
+    )))
+}
+
 /// In-memory TEE challenge entry (for challenge-response protocol)
 struct TeeChallenge {
     created_at: std::time::Instant,
@@ -1097,6 +1170,15 @@ pub struct WalletSignRequest {
     /// rules + multisig independently.
     #[serde(default)]
     pub usage: Option<serde_json::Value>,
+    /// Agent Connect: which binding mode the coordinator believes this wallet
+    /// operates in, and — for the leased mode — the wallet implementation
+    /// version the bound account runs. Both are CLAIMS: the enclave has no
+    /// chain access, so it cannot check them, only refuse what it cannot
+    /// evaluate. See `binding::signing_version_gate` for what that buys.
+    #[serde(default)]
+    pub binding_kind: Option<String>,
+    #[serde(default)]
+    pub impl_version: Option<u32>,
 }
 
 /// Supplementary signing material — see `WalletSignRequest::artifact`.
@@ -1188,6 +1270,13 @@ pub struct WalletCheckPolicyRequest {
     /// When provided, skips fetching from NEAR contract.
     #[serde(default)]
     pub encrypted_policy_data: Option<String>,
+    /// See `WalletSignRequest::binding_kind`. The pre-flight check must answer
+    /// what the signature would, or a caller could be told "allowed" and then
+    /// refused at signing.
+    #[serde(default)]
+    pub binding_kind: Option<String>,
+    #[serde(default)]
+    pub impl_version: Option<u32>,
 }
 
 /// Response from policy check. The decrypted policy is NEVER returned — it does not
@@ -1471,46 +1560,7 @@ async fn pubkey_handler(
     let secrets_map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&req.secrets_json)
         .map_err(|e| ApiError::BadRequest(format!("Invalid JSON format: {}", e)))?;
 
-    // Reserved keywords that should not be overridden by user secrets
-    const RESERVED_KEYWORDS: &[&str] = &[
-        "NEAR_SENDER_ID",
-        "NEAR_CONTRACT_ID",
-        "NEAR_BLOCK_HEIGHT",
-        "NEAR_BLOCK_TIMESTAMP",
-        "NEAR_RECEIPT_ID",
-        "NEAR_PREDECESSOR_ID",
-        "NEAR_SIGNER_PUBLIC_KEY",
-        "NEAR_GAS_BURNT",
-        "NEAR_USER_ACCOUNT_ID",
-        "NEAR_PAYMENT_YOCTO",
-        "NEAR_TRANSACTION_HASH",
-        "NEAR_MAX_INSTRUCTIONS",
-        "NEAR_MAX_MEMORY_MB",
-        "NEAR_MAX_EXECUTION_SECONDS",
-        "NEAR_REQUEST_ID",
-        "NEAR_NETWORK_ID",
-        "OUTLAYER_PROJECT_ID",
-        "OUTLAYER_PROJECT_UUID",
-    ];
-
-    // Check for reserved keywords
-    let reserved_found: Vec<&str> = secrets_map.keys()
-        .filter(|k| RESERVED_KEYWORDS.contains(&k.as_str()))
-        .map(|k| k.as_str())
-        .collect();
-
-    if !reserved_found.is_empty() {
-        tracing::warn!(
-            reserved_keys = ?reserved_found,
-            "Rejected secrets with reserved keywords"
-        );
-        return Err(ApiError::BadRequest(format!(
-            "Cannot use reserved system keywords as secret keys: {}. \
-            These environment variables are automatically set by OutLayer worker. \
-            Please use different key names.",
-            reserved_found.join(", ")
-        )));
-    }
+    reject_reserved_secret_keys(secrets_map.keys().map(String::as_str))?;
 
     // Check for PROTECTED_ prefix in manual secrets (reserved for generated secrets)
     let protected_manual_keys: Vec<&str> = secrets_map.keys()
@@ -2731,39 +2781,7 @@ async fn add_generated_secret_handler(
     );
 
     // 4. Validate no reserved keywords (final check)
-    const RESERVED_KEYWORDS: &[&str] = &[
-        "NEAR_SENDER_ID",
-        "NEAR_CONTRACT_ID",
-        "NEAR_BLOCK_HEIGHT",
-        "NEAR_BLOCK_TIMESTAMP",
-        "NEAR_RECEIPT_ID",
-        "NEAR_PREDECESSOR_ID",
-        "NEAR_SIGNER_PUBLIC_KEY",
-        "NEAR_GAS_BURNT",
-        "NEAR_USER_ACCOUNT_ID",
-        "NEAR_PAYMENT_YOCTO",
-        "NEAR_TRANSACTION_HASH",
-        "NEAR_MAX_INSTRUCTIONS",
-        "NEAR_MAX_MEMORY_MB",
-        "NEAR_MAX_EXECUTION_SECONDS",
-        "NEAR_REQUEST_ID",
-        "NEAR_NETWORK_ID",
-        "OUTLAYER_PROJECT_ID",
-        "OUTLAYER_PROJECT_UUID",
-    ];
-
-    let reserved_found: Vec<&str> = secrets_map.keys()
-        .filter(|k| RESERVED_KEYWORDS.contains(&k.as_str()))
-        .map(|k| k.as_str())
-        .collect();
-
-    if !reserved_found.is_empty() {
-        return Err(ApiError::BadRequest(format!(
-            "Cannot use reserved system keywords as secret keys: {}. \
-            These environment variables are automatically set by OutLayer worker.",
-            reserved_found.join(", ")
-        )));
-    }
+    reject_reserved_secret_keys(secrets_map.keys().map(String::as_str))?;
 
     // 5. Re-encrypt merged secrets
     let final_secrets_json = serde_json::to_string(&secrets_map)
@@ -2806,6 +2824,18 @@ async fn update_user_secrets_handler(
             "Keystore not ready. Waiting for DAO approval and master key from MPC.".to_string()
         ));
     }
+
+    // What this request is ASKING to store, checked before anything is loaded
+    // or decrypted: `ensure_customer_loaded` below can run an on-chain MPC
+    // derivation paid out of the vault's balance, and a request that cannot be
+    // stored should not cost that.
+    //
+    // The incoming keys only, never the merged result. In `Append` mode the
+    // merge carries whatever the owner already has, and a name that predates
+    // this list would then block every future update — including the one that
+    // would remove it. Refusing what is being written is the whole rule; what
+    // is already written is the worker's second lock to neutralize.
+    reject_reserved_secret_keys(req.secrets.keys().map(String::as_str))?;
 
     // Vault scope from request body. The Append-mode decrypt
     // and the final encrypt MUST run under the same scope, otherwise
@@ -5457,11 +5487,39 @@ async fn wallet_sign_handler(
     // from the coordinator. Approver signatures must cover exactly this.
     let request_hash = wallet_policy::request_hash(&req.op);
 
+    // K8: the nested request of `w_execute_extension` is parsed by a decoder
+    // chosen in THIS image. If the account moved to a schema this build has no
+    // decoder for, the parse would still succeed and mean something else — so
+    // the policy below would be enforced against effects that are not the
+    // request's. Refuse before that can happen, and before the key is touched.
+    if let shared_tee_helpers::wallet_policy::Op::Call { method, .. } = &req.op {
+        if let Err(reason) = shared_tee_helpers::binding::signing_version_gate(
+            method,
+            req.binding_kind.as_deref(),
+            req.impl_version,
+        ) {
+            return Err(ApiError::Forbidden(reason));
+        }
+    }
+
     // 1. Evaluate the on-chain policy. The keystore enforces the STATELESS subset
     //    (usage = None); the coordinator enforces stateful velocity. No policy on-chain
-    //    → single-sig wallet → nothing to enforce.
+    //    → single-sig wallet → the owner's rules are empty.
+    //
+    //    Evaluated even then, against an EMPTY policy, because a few of the
+    //    engine's rules are not the owner's to relax. `w_execute_extension` is
+    //    the one that matters: it denies account-CONTROL operations
+    //    (`add_extension` hands a stranger the whole lane) and anything whose
+    //    effects cannot be stated. Those hold for every wallet — and a wallet
+    //    with no policy is the state every wallet is in right after
+    //    registration, so gating them behind "has a policy" would have left the
+    //    default open. Every other section is inert on an empty policy: no
+    //    rules, no capabilities, no approval block, not frozen — so this
+    //    changes nothing for any op that is not the extension door.
     let policy = load_wallet_policy(&state, &req.wallet_id, customer.as_ref()).await?;
-    if let Some(policy) = policy.as_ref() {
+    {
+        let empty = wallet_policy::Policy::default();
+        let effective = policy.as_ref().unwrap_or(&empty);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -5472,7 +5530,7 @@ async fn wallet_sign_handler(
             .usage
             .as_ref()
             .map(wallet_policy::Usage::from_current_usage);
-        match wallet_policy::evaluate(policy, &req.op, usage.as_ref(), now) {
+        match wallet_policy::evaluate(effective, &req.op, usage.as_ref(), now) {
             Decision::Frozen => return Err(ApiError::Forbidden("Wallet is frozen".to_string())),
             Decision::Deny { reason } => return Err(ApiError::Forbidden(reason)),
             Decision::RequiresApproval { threshold } => {
@@ -5487,9 +5545,12 @@ async fn wallet_sign_handler(
                 // path). See plan "Trusted ops under multisig".
                 let wallet_pubkey =
                     derive_wallet_ed25519_pubkey(&state, customer.as_ref(), &req.wallet_id).await?;
+                // `effective` IS the on-chain policy here: the empty stand-in
+                // has no approval block and no capabilities, and those are the
+                // only two things that can produce this decision.
                 verify_approvals(
                     &state,
-                    policy,
+                    effective,
                     &wallet_pubkey,
                     &request_hash,
                     req.approval_info.as_ref(),
@@ -6026,21 +6087,16 @@ async fn wallet_check_policy_handler(
         load_wallet_policy(&state, &req.wallet_id, customer.as_ref()).await?
     };
 
-    // No policy on-chain → allow (single-sig / quick onboarding).
-    let policy = match policy {
-        Some(p) => p,
-        None => {
-            return Ok(Json(WalletCheckPolicyResponse {
-                allowed: true,
-                frozen: false,
-                requires_approval: None,
-                required_approvals: None,
-                reason: None,
-                request_hash: Some(request_hash),
-                webhook_url: None,
-            }));
-        }
-    };
+    // No policy on-chain → an EMPTY policy, not a short-circuit to "allowed".
+    //
+    // Every section of the engine is inert on an empty policy, so the answer
+    // is the same "allow" for single-sig / quick onboarding — with one
+    // exception that must not be skipped: `w_execute_extension` is denied for
+    // account-control operations and for effects that cannot be stated,
+    // whatever the owner did or did not configure. Returning early here would
+    // also let the pre-flight answer "allowed" for a request the signing path
+    // then refuses, which is exactly the split this endpoint exists to avoid.
+    let policy = policy.unwrap_or_default();
 
     // Narrow carve-out surfaced to the coordinator (the rest of the policy stays here).
     let webhook_url = policy.webhook_url.clone();
@@ -6049,6 +6105,26 @@ async fn wallet_check_policy_handler(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    // K8, same gate as the signing path — a pre-flight that answered
+    // differently would tell a caller "allowed" and then refuse the signature.
+    if let shared_tee_helpers::wallet_policy::Op::Call { method, .. } = &req.op {
+        if let Err(reason) = shared_tee_helpers::binding::signing_version_gate(
+            method,
+            req.binding_kind.as_deref(),
+            req.impl_version,
+        ) {
+            return Ok(Json(WalletCheckPolicyResponse {
+                allowed: false,
+                frozen: false,
+                requires_approval: None,
+                required_approvals: None,
+                reason: Some(reason),
+                request_hash: Some(request_hash),
+                webhook_url: None,
+            }));
+        }
+    }
+
     let usage = req.usage.as_ref().map(wallet_policy::Usage::from_current_usage);
     let decision = wallet_policy::evaluate(&policy, &req.op, usage.as_ref(), now);
 
@@ -8165,6 +8241,180 @@ mod signing_oracle_tests {
             base64::decode(&as_text).is_err(),
             "a transaction preimage must not survive the base64 decode that \
              happens before /wallet/sign-policy signs anything"
+        );
+    }
+}
+
+#[cfg(test)]
+mod reserved_keys_tests {
+    use super::{reject_reserved_secret_keys, RESERVED_SECRET_KEYS};
+
+    /// The check every door shares: refuse, name every offender, leave
+    /// everything else alone.
+    #[test]
+    fn the_shared_check_refuses_every_reserved_name_and_nothing_else() {
+        for name in RESERVED_SECRET_KEYS {
+            let err = reject_reserved_secret_keys([*name].into_iter())
+                .expect_err("a reserved name must be refused");
+            assert!(
+                format!("{err:?}").contains(name),
+                "the refusal for {name} does not say which key was wrong, so the owner has to \
+                 guess which of their secrets to rename"
+            );
+        }
+        assert!(reject_reserved_secret_keys(["API_KEY", "DB_URL"].into_iter()).is_ok());
+        // Case matters: the environment is case-sensitive, so a lowercase
+        // spelling is a different variable and reserving it would take a name
+        // from the owner for nothing.
+        assert!(reject_reserved_secret_keys(["wallet_id"].into_iter()).is_ok());
+
+        // All offenders in one answer — an owner editing a JSON blob should
+        // need one round trip, not one per key.
+        let err =
+            reject_reserved_secret_keys(["API_KEY", "WALLET_ID", "NEAR_SENDER_ID"].into_iter())
+                .expect_err("a batch containing reserved names must be refused");
+        let text = format!("{err:?}");
+        assert!(text.contains("WALLET_ID") && text.contains("NEAR_SENDER_ID"), "{text}");
+        assert!(!text.contains("API_KEY"), "a legal key was named as an offender: {text}");
+    }
+
+    /// The worker's list of injected variables, read from its source.
+    ///
+    /// A cross-crate read rather than a shared constant on purpose: the two
+    /// binaries ship in different images and are deployed separately, so a
+    /// compile-time dependency would say nothing about what is actually
+    /// running. What matters is that whoever EDITS the worker is told, in the
+    /// same working tree, that the keystore has to change too.
+    fn worker_system_env_vars() -> Vec<String> {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../worker/src/main.rs");
+        let src = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("cannot read the worker source at {path}: {e}"));
+        let (_, after) = src
+            .split_once("pub const SYSTEM_ENV_VARS: &[&str] = &[")
+            .expect("worker::SYSTEM_ENV_VARS — the list this test exists to follow — is gone");
+        let (body, _) = after
+            .split_once("];")
+            .expect("SYSTEM_ENV_VARS is not terminated");
+
+        let mut names = Vec::new();
+        let mut rest = body;
+        while let Some(open) = rest.find('"') {
+            let after_open = &rest[open + 1..];
+            let Some(close) = after_open.find('"') else { break };
+            names.push(after_open[..close].to_string());
+            rest = &after_open[close + 1..];
+        }
+        names
+    }
+
+    /// Every variable the worker injects must be refused as a secret key.
+    ///
+    /// Without this the two lists drift silently, and drift here is not
+    /// cosmetic: a worker-injected name that is NOT reserved can be set as a
+    /// secret, and the guest then reads a caller-chosen value as a fact about
+    /// its run. That is how `OUTLAYER_PROJECT_OWNER`, `OUTLAYER_PROJECT_NAME`
+    /// and `WALLET_ID` came to be forgeable — each was added to the worker and
+    /// nobody remembered this list.
+    #[test]
+    fn every_worker_system_variable_is_a_reserved_secret_key() {
+        let worker_vars = worker_system_env_vars();
+        assert!(
+            worker_vars.len() >= 20,
+            "read only {} names out of worker::SYSTEM_ENV_VARS — the parse stopped matching the \
+             list, so this guard is no longer guarding anything",
+            worker_vars.len()
+        );
+
+        let unreserved: Vec<&String> = worker_vars
+            .iter()
+            .filter(|name| !RESERVED_SECRET_KEYS.contains(&name.as_str()))
+            .collect();
+        assert!(
+            unreserved.is_empty(),
+            "the worker injects {unreserved:?} into the guest, but a customer may still store \
+             secrets under those names — add them to RESERVED_SECRET_KEYS"
+        );
+    }
+
+    /// Every door that stores a secret has to consult the list.
+    ///
+    /// The two tests around this one compare LISTS. This one compares
+    /// HANDLERS, and it exists because the gap that was found was neither list
+    /// being wrong: `update_user_secrets` simply never asked. A list guard
+    /// cannot see a door that does not consult it, which is why the hole
+    /// survived a round of auditing that was looking straight at the lists.
+    ///
+    /// The set is derived from the source rather than written here: a handler
+    /// counts if it works with a map of secret keys at all, so a fourth door
+    /// added tomorrow is held to the same rule on the day it appears.
+    #[test]
+    fn every_handler_that_stores_secrets_refuses_reserved_names() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/api.rs");
+        let src = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("cannot read {path}: {e}"));
+        // Stop at the tests. This module names the same things it looks for,
+        // and the last handler's chunk would otherwise run to end-of-file and
+        // pass on the strength of this comment.
+        let code = src.split("#[cfg(test)]").next().unwrap_or_default();
+        // Both spellings are used at file scope; one form to split on.
+        let normalized = code.replace("\npub async fn ", "\nasync fn ");
+
+        let mut handles_secrets: Vec<(&str, bool)> = Vec::new();
+        let mut chunks = normalized.split("\nasync fn ");
+        chunks.next(); // everything before the first handler
+        for chunk in chunks {
+            let name = chunk.split('(').next().unwrap_or("").trim();
+            // A body that names a secrets map is a body that can write one.
+            // Deliberately loose: a false positive costs one call to the
+            // guard, a false negative is the bug this test is about.
+            if !(chunk.contains("secrets_map") || chunk.contains("req.secrets")) {
+                continue;
+            }
+            handles_secrets.push((name, chunk.contains("reject_reserved_secret_keys")));
+        }
+
+        // The scan itself, pinned: if a rename or a reformat makes it stop
+        // seeing handlers, an empty set would otherwise satisfy every
+        // assertion below.
+        for expected in ["pubkey_handler", "add_generated_secret_handler", "update_user_secrets_handler"] {
+            assert!(
+                handles_secrets.iter().any(|(name, _)| *name == expected),
+                "the scan no longer finds {expected}, so this guard is guarding nothing — \
+                 found: {:?}",
+                handles_secrets.iter().map(|(n, _)| *n).collect::<Vec<_>>()
+            );
+        }
+
+        let unguarded: Vec<&str> = handles_secrets
+            .iter()
+            .filter(|(_, guarded)| !guarded)
+            .map(|(name, _)| *name)
+            .collect();
+        assert!(
+            unguarded.is_empty(),
+            "these handlers work with secret keys without calling \
+             reject_reserved_secret_keys: {unguarded:?} — a caller can store a name the worker \
+             injects, and the only thing left standing is the worker's own strip"
+        );
+    }
+
+    /// The reverse direction is a WARNING, not a failure: reserving a name the
+    /// worker does not inject costs a customer a key name and nothing else, and
+    /// un-reserving one is itself a breaking change. So this test only pins the
+    /// names that are deliberately reserved beyond the worker's list — today,
+    /// none — so that the set is a decision rather than an accident.
+    #[test]
+    fn nothing_is_reserved_without_a_reason() {
+        let worker_vars = worker_system_env_vars();
+        let extra: Vec<&&str> = RESERVED_SECRET_KEYS
+            .iter()
+            .filter(|k| !worker_vars.iter().any(|w| w == *k))
+            .collect();
+        assert!(
+            extra.is_empty(),
+            "these keys are reserved but the worker never injects them: {extra:?} — either the \
+             worker dropped a variable (then drop it here too) or the reservation needs a comment \
+             saying what it is for"
         );
     }
 }

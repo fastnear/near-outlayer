@@ -723,6 +723,81 @@ fn main() {
 }
 ```
 
+### 3a. Wallet calls: the error is half the answer
+
+Every `wallet::*` host function returns `(result, error)`. The call reaches the
+network, a policy engine and a chain — it fails for reasons that have nothing
+to do with your code, and an ignored error leaves you parsing an empty string
+as if it were an answer.
+
+The error string leads with a **machine code**, then a message, then any field
+that changes what to do next:
+
+```
+"<code>: <message>[ key=value]..."
+```
+
+Match on the code, never on the wording:
+
+```rust
+// ✅ CORRECT: route on the code, and treat an empty result as no answer
+let (result, error) = wallet::transfer("near", &to, &amount, "");
+if !error.is_empty() {
+    let code = error.split(':').next().unwrap_or("");
+    match code {
+        // Something else holds the wallet right now — it clears by itself.
+        // `in_flight_request_id=<id>` names the operation to poll.
+        "wallet_busy" => return Ok(json!({ "retry": true, "reason": error })),
+        // The owner has to act. Retrying is noise.
+        "policy_denied" | "wallet_frozen" => {
+            return Ok(json!({ "needs_owner": true, "reason": error }))
+        }
+        // Agent Connect refused before signing, so no gas was spent.
+        // `terminal=true` means the same request will never work.
+        "agent_connect_denied" if error.contains("terminal=true") => {
+            return Ok(json!({ "needs_owner": true, "reason": error }))
+        }
+        _ => return Err(error.into()),
+    }
+}
+let moved: serde_json::Value = serde_json::from_str(&result)?;
+
+// ❌ WRONG: the error is dropped and `result` is "" on every failure path
+let (result, _) = wallet::transfer("near", &to, &amount, "");
+let moved: serde_json::Value = serde_json::from_str(&result)?; // fails obscurely
+```
+
+Codes worth knowing: `wallet_busy`, `policy_denied`, `wallet_frozen`,
+`agent_connect_denied`, `insufficient_balance`. A failure that is not one of
+ours arrives verbatim rather than dressed in an invented code.
+
+**A wallet runs one money operation at a time.** Two of your own calls in
+flight together — two WASI runs paid by the same key, or one run doing two
+things at once — will meet `wallet_busy`, and it waits a couple of seconds
+before it says so. That is deliberate: spending limits are counted per wallet,
+and counting them correctly means one decision at a time.
+
+**Importing the wallet makes it required.** The worker decides whether to
+provide these host functions by looking at what your component imports, and a
+component that imports `outlayer:wallet/api` is refused outright when the
+request carries no wallet:
+
+```
+WASM imports outlayer:wallet/api but wallet is not available.
+Wallet requires: X-Wallet-Id header in the execution request.
+```
+
+That happens before `main` runs, so it fails every call — including the ones
+that were never going to touch the wallet. A module that imports the wallet can
+only ever be called **with** one: `Authorization: Bearer wk_...` plus an
+explicit `X-Wallet-Id`. An absent header, or one with an empty value, means no
+wallet at all rather than "my own".
+
+So keep wallet-using code in its own module rather than adding it to one that
+also serves payment-key or on-chain calls. `wasi-examples/wallet-probe` is the
+smallest working example of that shape, and its README covers the calling
+conventions.
+
 ### 4. Output Size
 
 ```rust

@@ -137,6 +137,25 @@ pub struct RequestParams {
     /// Deducted from user's stablecoin balance in contract
     #[serde(default)]
     pub attached_usd: Option<U128>,
+
+    /// Agent Connect: run the guest under the caller's BOUND account name, so
+    /// `NEAR_SENDER_ID` inside the WASI module is the bound account instead of
+    /// the caller's own.
+    ///
+    /// The same field the HTTPS path takes, so one agent's module behaves the
+    /// same whichever way it was started. Opt-in on both: a binding is a
+    /// capability the caller gains, not a silent change to who they are.
+    ///
+    /// The contract neither knows nor checks what this means — it only carries
+    /// the request. The claim is settled off-chain against the chain itself:
+    /// the caller must be a live extension of the account it wants to be seen
+    /// as, verified inside the worker's TEE before the guest is given a name.
+    ///
+    /// Not stored in `ExecutionRequest`, only carried in the emitted request
+    /// data — exactly like `force_rebuild` and `store_on_fastfs`. That is what
+    /// keeps this a pure code change with no state migration.
+    #[serde(default)]
+    pub use_bound_identity: bool,
 }
 
 /// Response format for execution output

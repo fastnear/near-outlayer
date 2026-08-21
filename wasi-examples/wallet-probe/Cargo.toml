@@ -1,0 +1,29 @@
+[package]
+name = "wallet-probe"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "A WASI module whose only job is exercising the outlayer:wallet host functions"
+
+[[bin]]
+name = "wallet-probe"
+path = "src/main.rs"
+
+[dependencies]
+# The wallet host functions are NOT in the `outlayer` SDK crate — its world is
+# storage + rpc. The bindings are generated from `wit/wallet.wit`, a copy of the
+# worker's own `worker/wit/deps/wallet.wit`.
+#
+# The SDK crate is deliberately NOT a dependency: bringing it in would also
+# bring its generated `outlayer` module, which collides by name with the one
+# generated from the WIT package `outlayer:wallet`. Input and output here are
+# plain stdin/stdout, which is all the SDK does for them anyway.
+wit-bindgen = "0.36"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1
