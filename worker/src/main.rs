@@ -3510,33 +3510,25 @@ struct TopUpResult {
 
 /// The public name of a payment key, as `payment_keys.key_hash` holds it.
 ///
-/// **This one line decides what kind of key it is**, everywhere. The
-/// coordinator's `payment_keys.is_agent` is a generated column reading
-/// `key_hash = owner`, so what this returns is what every later rule sees: which
-/// key a `wk_` may spend, which key refuses deletion, whether one agent key
-/// already exists, and which account a connector's secret is looked up under.
+/// A key's name is the HASH of its key string. Publishing the string itself
+/// would hand out an oracle for guessing it, so the hash is what the row carries
+/// and what every later rule compares against.
 ///
-/// The rule itself:
+/// `None` when the blob carries no usable `key`. That used to mean an AGENT key
+/// — a key with no string, named after the wallet's account instead — and the
+/// account was substituted here. Those keys are not issued any more: a wallet
+/// pays with a key it owns and presents, like every other caller. So a blob
+/// without a key is not a second kind of key, it is a blob this worker cannot
+/// name, and the caller refuses it rather than inventing a name for a row that
+/// decides who may spend what.
 ///
-/// * an ORDINARY key has a `key` in its blob, and its public name is the hash of
-///   that key — as it has always been. Publishing the key itself would hand out
-///   an oracle for guessing it;
-/// * an AGENT key has no `key` at all. That key is derived inside the keystore
-///   from the agent's identity and is deliberately written nowhere, so there is
-///   nothing to hash — and the agent's public name is its wallet's account,
-///   which is `owner`. The ABSENCE is the definition, not a fallback.
-///
-/// A blob may not claim the answer: it is written by the key's owner, and the
-/// only thing it can do here is omit a field, which costs it the key it would
-/// have needed to spend an ordinary key. There used to be a `target` field
-/// saying "this is an agent's key" in so many words; it was a second encoding of
-/// this same fact, and a caller-supplied one.
-fn public_key_name(blob: &serde_json::Value, owner: &str) -> String {
+/// A blob may not claim the answer either way: it is written by the key's owner,
+/// and the only thing it can do here is omit a field.
+fn public_key_name(blob: &serde_json::Value) -> Option<String> {
     use sha2::{Digest, Sha256};
     blob.get("key")
         .and_then(|v| v.as_str())
         .map(|key| hex::encode(Sha256::digest(key.as_bytes())))
-        .unwrap_or_else(|| owner.to_string())
 }
 
 /// Process a single TopUp task
@@ -3587,12 +3579,19 @@ async fn process_topup_task(
 
     // 2. Parse JSON and extract fields
     // Payment Key format: {"key":"base64_key","initial_balance":"123","project_ids":[],"max_per_call":"1000"}
-    // An AGENT key's blob has no `key` at all, and that is the whole of what
-    // makes it one — see the `key_hash` step below.
     let mut payment_key_data: serde_json::Value = serde_json::from_str(&decrypted_str)
         .context("Failed to parse Payment Key JSON")?;
 
-    let key_hash = public_key_name(&payment_key_data, &task.owner);
+    // Refused, not renamed. A blob with no `key` was an agent key, and those are
+    // gone; naming the row after the account would resurrect the second kind of
+    // key inside a top-up, where nobody would look for it.
+    let key_hash = public_key_name(&payment_key_data).with_context(|| {
+        format!(
+            "payment key {}:{} has no `key` in its blob — keyless (agent) payment keys are no \
+             longer issued, and this worker will not name a key row after an account",
+            task.owner, task.nonce
+        )
+    })?;
 
     // Extract project_ids
     let project_ids: Vec<String> = payment_key_data
@@ -3706,23 +3705,22 @@ mod payment_key_name_tests {
 
     const OWNER: &str = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
 
-    /// The whole definition of an agent key, asserted at the one place that
-    /// decides it. `payment_keys.is_agent` is generated from `key_hash = owner`,
-    /// so this function's answer IS the kind of key, everywhere downstream.
+    /// A key is named by the hash of its string, and a blob without one has no
+    /// name at all — the caller refuses it rather than naming the row after an
+    /// account, which is what the removed agent keys did.
     #[test]
-    fn a_blob_with_no_key_names_the_account_and_one_with_a_key_names_a_hash() {
-        let agent = public_key_name(&json!({"initial_balance": "0"}), OWNER);
+    fn a_key_is_named_by_its_hash_and_a_keyless_blob_has_no_name() {
         assert_eq!(
-            agent, OWNER,
-            "no key to hash means the public name is the wallet's account — which \
-             is what makes it an agent key"
+            public_key_name(&json!({"initial_balance": "0"})),
+            None,
+            "no key means no name: keyless keys are not issued and must not be invented"
         );
 
-        let ordinary = public_key_name(&json!({"key": "aa", "initial_balance": "0"}), OWNER);
+        let ordinary = public_key_name(&json!({"key": "aa", "initial_balance": "0"}))
+            .expect("a blob with a key has a name");
         assert_ne!(
             ordinary, OWNER,
-            "a key that HAS a key string must never be read as an agent's: a `wk_` \
-             would then reach a key whose string the wallet may have handed away"
+            "a key that HAS a key string is named by its hash, never by an account"
         );
         assert_eq!(
             ordinary,
@@ -3742,38 +3740,32 @@ mod payment_key_name_tests {
             "project_ids": [],
             "max_per_call": "0"
         });
-        assert_ne!(public_key_name(&old, OWNER), OWNER);
+        assert!(public_key_name(&old).is_some());
     }
 
-    /// A blob cannot CLAIM to be an agent's, only fail to carry a key — and
-    /// that costs it the key it would have needed to spend an ordinary one.
-    ///
-    /// It used to be able to claim it, in a `target` field the owner wrote.
+    /// A blob cannot CLAIM a name, only carry a key or fail to. Written by the
+    /// key's owner, so anything it asserts about itself is unverified input.
     #[test]
-    fn a_blob_cannot_declare_itself_an_agents() {
+    fn a_blob_cannot_declare_its_own_name() {
         let forged = json!({
             "key": "aa",
             "target": OWNER,
             "is_agent": true,
             "allowance_usd": 999_999_999u64,
         });
-        assert_ne!(
-            public_key_name(&forged, OWNER),
-            OWNER,
-            "nothing a blob says makes it an agent key — only the absence of `key` does"
+        assert_eq!(
+            public_key_name(&forged),
+            public_key_name(&json!({"key": "aa"})),
+            "the extra fields change nothing — only `key` is read"
         );
     }
 
-    /// A non-string `key` is not a key. Reading it as one would name the row
-    /// after the account and quietly promote a forged blob to an agent key.
+    /// A non-string `key` is not a key, and a blob this malformed did not come
+    /// from us. It gets no name, so the caller refuses it — the same answer as
+    /// any blob without a key, and the one that cannot be mistaken for a row.
     #[test]
-    fn a_key_that_is_not_a_string_does_not_name_the_account() {
-        // The safe direction is debatable either way, so it is pinned: a blob
-        // this malformed did not come from us, and the value it gets is the
-        // account — the same as any keyless blob. It buys nothing, because an
-        // agent key has no string to present and the wallet's `wk_` still has
-        // to resolve to this exact row.
-        assert_eq!(public_key_name(&json!({"key": 42}), OWNER), OWNER);
+    fn a_key_that_is_not_a_string_has_no_name() {
+        assert_eq!(public_key_name(&json!({"key": 42})), None);
     }
 }
 

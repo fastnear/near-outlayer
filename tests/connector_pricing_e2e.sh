@@ -47,9 +47,11 @@
 #               C3 and C5 need it. C5 additionally needs one with NO
 #               subscription — under one, a call costs the caller nothing and
 #               there is no fee to see landing on top of compute.
-#   AGENT_WALLET_KEY  a custody wallet's `wk_` whose agent key exists
-#               (`POST /wallet/v1/create-payment-key {"agent":true}`). C6 and C7
-#               need it: both are about an AGENT, not about a payment key.
+#   AGENT_WALLET_KEY  a custody wallet's `wk_`. C6 and C7 need it to STORE the
+#               secret (a wallet operation), and
+#   AGENT_PAYMENT_KEY a payment key that wallet OWNS, to make the call with.
+#               `agent_secrets_ref` keys off the key's `owner`, so the secret is
+#               found when the owner is the wallet's own implicit account.
 #   ADMIN_TOKEN the coordinator's admin bearer. C4 and C8 need it.
 #
 # The prices themselves are NOT set here — `scripts/set_connector_prices_testnet.sh`
@@ -76,6 +78,7 @@ PAYMENT_KEY="${PAYMENT_KEY:-}"
 # A custody wallet's `wk_`, for the checks that are about an AGENT rather than
 # about a payment key: the owner's secret (C6) and the per-wallet quota (C7).
 AGENT_WALLET_KEY="${AGENT_WALLET_KEY:-}"
+AGENT_PAYMENT_KEY="${AGENT_PAYMENT_KEY:-}"
 ADMIN_TOKEN="${ADMIN_TOKEN:-}"
 # Which arrangement of the fleet C9 is being run against. See C9's own comment.
 C9_PHASE="${C9_PHASE:-}"
@@ -563,13 +566,14 @@ if want C5; then
 fi
 
 # ── C6: the owner's secret reaches the guest, and only when asked ────────────
-# Needs an AGENT key: `agent_secrets_ref` returns nothing for a key owned by a
-# NAMED account, because its holder addresses their own secrets through the
-# body. So this is the custody path — a wallet's `wk_`, and the secret named
-# after the wallet itself.
+# Needs a key a custody WALLET owns: `agent_secrets_ref` reads the key's `owner`
+# and returns nothing when that owner is a NAMED account, because its holder
+# addresses their own secrets through the body. So this is the custody path —
+# the wallet's `wk_` stores the secret, and a payment key the wallet owns makes
+# the call.
 if want C6; then
-  if [[ -z "$AGENT_WALLET_KEY" ]]; then
-    note "C6 SKIPPED: set AGENT_WALLET_KEY to a wallet's wk_ whose agent key exists (POST /wallet/v1/create-payment-key {\"agent\":true})"
+  if [[ -z "$AGENT_WALLET_KEY" || -z "$AGENT_PAYMENT_KEY" ]]; then
+    note "C6 SKIPPED: set AGENT_WALLET_KEY (a wallet's wk_) and AGENT_PAYMENT_KEY (a key that wallet owns)"
   elif ! "$OUTLAYER_BIN" secrets set-for-agent --help >/dev/null 2>&1; then
     note "C6 SKIPPED: '$OUTLAYER_BIN secrets set-for-agent' is not available to store the secret"
   elif [[ "$APPLY" != true ]]; then
@@ -577,7 +581,7 @@ if want C6; then
   else
     log "C6 the owner's secret"
     agent_probe() {
-      curl -s -X POST "$COORDINATOR_URL/call/$PROJECT" -H "Authorization: Bearer $AGENT_WALLET_KEY" \
+      curl -s -X POST "$COORDINATOR_URL/call/$PROJECT" -H "X-Payment-Key: $AGENT_PAYMENT_KEY" \
         "$@" -H 'Content-Type: application/json' -d '{"input":{"operation":"secret"}}'
     }
     # Fresh values each run, and the expectation is computed from them rather
@@ -619,10 +623,10 @@ fi
 
 # ── C7: the per-wallet daily quota ───────────────────────────────────────────
 # Free execution cannot also be unmetered. Counted per (wallet, connector), so
-# this burns the day's quota for whichever wallet AGENT_WALLET_KEY belongs to.
+# this burns the day's quota for whichever wallet AGENT_PAYMENT_KEY belongs to.
 if want C7; then
-  if [[ -z "$AGENT_WALLET_KEY" ]]; then
-    note "C7 SKIPPED: needs AGENT_WALLET_KEY, same as C6"
+  if [[ -z "$AGENT_PAYMENT_KEY" ]]; then
+    note "C7 SKIPPED: needs AGENT_PAYMENT_KEY, same as C6"
   elif [[ "$APPLY" != true ]]; then
     printf '\033[90m  (dry-run) call ping until the wallet is refused, and read the reason\033[0m\n' >&2
   else
@@ -633,7 +637,7 @@ if want C7; then
     # it already — so call until refused rather than counting to a number this
     # script would have to keep in step with the coordinator's config.
     for _ in $(seq 1 30); do
-      R=$(curl -s -X POST "$COORDINATOR_URL/call/$PROJECT" -H "Authorization: Bearer $AGENT_WALLET_KEY" \
+      R=$(curl -s -X POST "$COORDINATOR_URL/call/$PROJECT" -H "X-Payment-Key: $AGENT_PAYMENT_KEY" \
             -H 'Content-Type: application/json' -d '{"input":{"operation":"ping"}}')
       if [[ "$(echo "$R" | jq -r '.reason // empty')" == "connector_quota_exceeded" ]]; then hit=$R; break; fi
     done
@@ -950,7 +954,7 @@ fi
 # rule that stays correct only while something checks it.
 if want C11; then
   if [[ "$APPLY" != true ]]; then
-    printf '\033[90m  (dry-run) a trial cannot pay an author; a connector deposit is void; one agent key; it cannot be deleted\033[0m\n' >&2
+    printf '\033[90m  (dry-run) a trial cannot pay an author; a connector deposit is void; agent:true is refused\033[0m\n' >&2
   else
     log "C11 the refusals"
 
@@ -993,41 +997,22 @@ if want C11; then
       note "C11 the connector-deposit check SKIPPED — needs PAYMENT_KEY and ADMIN_TOKEN"
     fi
 
-    # 3. One agent key per wallet. An agent key's address IS its wallet's, so a
-    #    second would share it — a key the customer paid to create and could
-    #    never spend.
+    # 3. `agent: true` is refused rather than ignored. Keyless keys are gone —
+    #    a wallet pays with a key it owns and presents — and a caller asking for
+    #    one must be told, not handed a different kind of key in silence.
     if [[ -n "$AGENT_WALLET_KEY" ]]; then
       RC=$(curl -s -o /tmp/c11_c -w '%{http_code}' -X POST "$COORDINATOR_URL/wallet/v1/create-payment-key" \
              -H "Authorization: Bearer $AGENT_WALLET_KEY" -H 'Content-Type: application/json' \
              -d '{"agent":true,"initial_deposit_usdc":"0.10"}')
-      if [[ "$RC" == 4?? ]] && grep -qi "already has an agent key" /tmp/c11_c; then
-        pass "C11 a wallet cannot have a second agent key ($RC)"
+      if [[ "$RC" == 4?? ]] && grep -qi "no longer issued" /tmp/c11_c; then
+        pass "C11 agent:true is refused and says why ($RC)"
       else
-        fail "C11 a second agent key answered $RC: $(head -c 160 /tmp/c11_c)"
+        fail "C11 agent:true answered $RC: $(head -c 160 /tmp/c11_c)"
       fi
     else
-      note "C11 the one-agent-key rule SKIPPED — needs AGENT_WALLET_KEY (a wallet that already has one)"
+      note "C11 the agent:true refusal SKIPPED — needs AGENT_WALLET_KEY"
     fi
 
-    # 4. An agent key cannot be deleted. Its balance sits in an on-chain record
-    #    only that key can spend, and its address is bound to the wallet
-    #    forever — deleting the row would strand both. The way to stop an agent
-    #    is to revoke the wallet key.
-    #
-    #    An INTERNAL route (worker-authenticated), so this needs the same token
-    #    the worker uses, not a wallet's.
-    if [[ -n "$INTERNAL_TOKEN" && -n "$AGENT_ACCOUNT" ]]; then
-      RC=$(curl -s -o /tmp/c11_d -w '%{http_code}' -X POST "$COORDINATOR_URL/payment-keys/delete" \
-             -H "Authorization: Bearer $INTERNAL_TOKEN" -H 'Content-Type: application/json' \
-             -d "$(jq -nc --arg o "$AGENT_ACCOUNT" '{owner:$o, nonce:1}')")
-      if [[ "$RC" == "409" ]] && grep -qi "agent key cannot be deleted" /tmp/c11_d; then
-        pass "C11 an agent key cannot be deleted, and the answer says what to revoke instead (409)"
-      else
-        fail "C11 deleting an agent key answered $RC: $(head -c 160 /tmp/c11_d)"
-      fi
-    else
-      note "C11 the undeletable-agent-key rule SKIPPED — needs INTERNAL_TOKEN and AGENT_ACCOUNT"
-    fi
   fi
 fi
 
@@ -1037,8 +1022,8 @@ fi
 # worker, guest — actually applies it to a real credential. These are the ways
 # somebody could try to reach a secret that is not theirs, run end to end.
 #
-# Needs AGENT_WALLET_KEY (a wallet whose agent key exists) with a secret already
-# stored for it — C6 stores one, so run `ONLY=C6,C12`.
+# Needs AGENT_WALLET_KEY (a wallet's wk_) with a secret already stored for it —
+# C6 stores one, so run `ONLY=C6,C12`.
 if want C12; then
   if [[ -z "$AGENT_WALLET_KEY" || -z "$AGENT_ACCOUNT" ]]; then
     note "C12 SKIPPED: needs AGENT_WALLET_KEY and AGENT_ACCOUNT"
@@ -1808,7 +1793,7 @@ if want C18; then
           write_with_cli "$WK_B" "$C18_PROJECT" '{"C18":"after-rotation"}'
           CT_AFTER=$(ciphertext_after_write "$AGENT" "$C18_PROJECT" "$CT_BEFORE")
           if [[ -n "$CT_AFTER" && "$CT_AFTER" != "$CT_BEFORE" ]]; then
-            pass "C18 the NEW wk_ rewrote the same agent's secret — the agent key never moved, so the new credential speaks for it"
+            pass "C18 the NEW wk_ rewrote the same agent's secret — the wallet never moved, so the new credential speaks for it"
           else
             fail "C18 the rotated wk_ could not rewrite the secret — rotating an API key would freeze everything behind it"
           fi
