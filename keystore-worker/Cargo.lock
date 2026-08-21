@@ -4511,6 +4511,7 @@ dependencies = [
 [[package]]
 name = "shared-tee-helpers"
 version = "0.1.0"
+source = "git+https://github.com/out-layer/shared-tee-helpers?branch=main#bb25e09785e5a5015beefe4af67cb886d4a8d9fd"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

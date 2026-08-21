@@ -11,6 +11,8 @@
 # Rust
 target/
 **/.cargo/config.toml
+# Parked local [patch] overrides — see */bump-shared-tee-lock.sh
+**/.cargo/config.toml.local
 # Cargo.lock is committed for binary crates (reproducible builds)
 **/*.rs.bk
 
