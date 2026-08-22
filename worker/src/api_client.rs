@@ -2552,6 +2552,52 @@ mod tests {
         );
     }
 
+    /// The completion carries the refund, and the money says so.
+    ///
+    /// Same defect shape as the test above and the second half of the same
+    /// day's findings: a value the guest produced never reached the body, so
+    /// `earnings_history` recorded the whole `attached_usd` as the author's and
+    /// the refund existed only in the worker's memory. Nothing failed, no test
+    /// went red, and the ledger was quietly wrong.
+    ///
+    /// Read from the source because that gap is between two programs. Both
+    /// halves are asserted: the field on the wire, and the ASSIGNMENT that
+    /// fills it — a struct field left at `None` would satisfy a shape check and
+    /// lose exactly as much money.
+    #[test]
+    fn a_completed_job_reports_what_it_gave_back() {
+        let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/api_client.rs"))
+            .expect("api_client.rs must be readable");
+
+        let (_, after) = src
+            .split_once("struct CompleteJobRequest {")
+            .expect("the completion body this test follows is gone");
+        let (fields, _) = after
+            .split_once('}')
+            .expect("the CompleteJobRequest struct is not closed");
+        assert!(
+            fields.contains("refund_usd"),
+            "CompleteJobRequest no longer carries `refund_usd`, so a guest that gave money back \
+             is billed as though it had not"
+        );
+
+        // Scoped to the struct literal, NOT to the rest of the file. Searching
+        // the remainder found this very assertion's own text and passed with
+        // the assignment deleted — a guard that reads itself proves only that
+        // it exists.
+        let (_, built) = src
+            .split_once("let request = CompleteJobRequest {")
+            .expect("the completion is no longer built from a struct literal");
+        let (assignments, _) = built
+            .split_once("};")
+            .expect("the CompleteJobRequest literal is not closed");
+        assert!(
+            assignments.contains("refund_usd: refund_usd.map("),
+            "`refund_usd` is on the wire but is not assigned from the parameter — a field that \
+             is always None costs the caller the same as a missing one"
+        );
+    }
+
     #[test]
     fn test_api_client_creation() {
         let client = ApiClient::new(

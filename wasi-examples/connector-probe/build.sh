@@ -11,6 +11,26 @@ echo "Building WASI module (wasm32-wasip2)..."
 # Add target if needed
 rustup target add wasm32-wasip2 2>/dev/null || true
 
+# The WIT copies must match the worker's, or this module is generated against
+# an interface the host does not implement — which shows up at runtime as a
+# component that will not instantiate, long after the change that caused it.
+for w in vrf payment; do
+    WORKER_WIT="../../worker/wit/deps/$w.wit"
+    if [ -f "$WORKER_WIT" ]; then
+        if ! diff -q "$WORKER_WIT" "wit/deps/$w.wit" >/dev/null; then
+            echo "ERROR: wit/deps/$w.wit has drifted from $WORKER_WIT"
+            echo ""
+            diff "$WORKER_WIT" "wit/deps/$w.wit" || true
+            echo ""
+            echo "Update the copy in the same change that moved the worker's:"
+            echo "  cp $WORKER_WIT wit/deps/$w.wit"
+            exit 1
+        fi
+    else
+        echo "WARNING: $WORKER_WIT not found — cannot check wit/deps/$w.wit for drift"
+    fi
+done
+
 # Build
 cargo build --target wasm32-wasip2 --release
 
@@ -35,6 +55,21 @@ echo "Size: ${SIZE_KB} KB (${SIZE_MB} MB)"
 # `#[used]`, say), this module would publish with NO allowlist and, being a
 # connector, would be refused all outbound network at runtime. Loud here beats
 # discovering it in production.
+# Both host interfaces must actually be imported. A build that dropped them
+# would still run every existing operation and silently test nothing in the two
+# that were added for it.
+if command -v wasm-tools >/dev/null 2>&1; then
+    for iface in "near:vrf" "near:payment"; do
+        if ! wasm-tools component wit "$WASM_FILE" 2>/dev/null | grep -q "$iface"; then
+            echo ""
+            echo "ERROR: $WASM_FILE does not import $iface"
+            echo "The vrf/refund operations depend on it; a build without it tests nothing."
+            exit 1
+        fi
+    done
+    echo "OK: near:vrf and near:payment are imported"
+fi
+
 if ! grep -qa 'outlayer.manifest' "$WASM_FILE"; then
     echo ""
     echo "ERROR: outlayer.manifest custom section is missing from $WASM_FILE"

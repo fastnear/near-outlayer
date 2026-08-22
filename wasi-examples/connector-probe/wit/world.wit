@@ -1,0 +1,15 @@
+package outlayer:connector-probe@0.1.0;
+
+/// The host interfaces this probe imports, in one world.
+///
+/// Two packages (`near:vrf` and `near:payment`) cannot both be root packages of
+/// one directory, so they sit in `deps/` — verbatim copies of the worker's own
+/// `worker/wit/deps/` — and this file is the root that pulls them together.
+///
+/// `outlayer:wallet` is deliberately NOT here: the worker refuses to run a
+/// component importing it when the request names no wallet, which is most calls
+/// to this connector. That interface lives in `wallet-probe`.
+world probe-host {
+    import near:vrf/api@0.1.0;
+    import near:payment/api@0.1.0;
+}

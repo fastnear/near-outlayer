@@ -55,7 +55,11 @@ pass() { printf '\033[32m✓ %s\033[0m\n' "$*" >&2; }
 fail() { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 
 near_tty() {
-  if command -v script >/dev/null 2>&1; then
+  # `-t 1` as well as the binary: without a terminal `script` dies with
+    # `tcgetattr/ioctl: Operation not supported on socket` and takes the step
+    # with it — which surfaces as whatever that step was called, not as a
+    # missing terminal. Guarded this way in the other copies of this helper.
+    if command -v script >/dev/null 2>&1 && [ -t 1 ]; then
     local tmp; tmp=$(mktemp -t aprwk_cmd.XXXXXX.sh)
     printf 'set -euo pipefail\n%s\n' "$*" > "$tmp"
     script -q /dev/null bash "$tmp"; local rc=$?

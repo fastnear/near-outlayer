@@ -31,6 +31,15 @@ SCENARIO="${1:-help}"
 [[ "${1:-}" == "--apply" ]] && { APPLY=true; SCENARIO="unilateral"; }
 
 NETWORK="${NETWORK:-testnet}"
+# EXPORTED, or the value above is a decoration.
+#
+# Every `outlayer …` call below follows `~/.outlayer/default-network` unless
+# this is in the environment, and on a machine whose default is mainnet that
+# means a script announcing testnet acts on MAINNET. Caught on 2026-08-22:
+# this suite reported `parent: fastjambo.near / vault account:
+# vault.fastjambo.near` and was stopped from deploying a real mainnet vault
+# only by that account holding 0.2 NEAR against the 1.1 it needed.
+export OUTLAYER_NETWORK="$NETWORK"
 PARENT="${PARENT:-}"
 VAULT_NAME="${VAULT_NAME:-recovery-test-$(date +%s)}"
 VAULT_CONTRACT_DIR="${VAULT_CONTRACT_DIR:-$SCRIPT_DIR/../vault-contract}"
@@ -62,7 +71,11 @@ run() {
     # backslash-newline continuations survive `script`'s argv
     # tokenisation (passing a multi-line string via `-c` re-parses
     # ANSI escapes that `log` left in the conversation buffer).
-    if command -v script >/dev/null 2>&1; then
+    # `-t 1` as well as the binary: without a terminal `script` dies with
+    # `tcgetattr/ioctl: Operation not supported on socket` and takes the run
+    # with it. `stuck_request_repair_e2e.sh` guards the same helper this way;
+    # this copy did not, so the suite could not run headless at all.
+    if command -v script >/dev/null 2>&1 && [ -t 1 ]; then
       local tmp_cmd
       tmp_cmd=$(mktemp -t vault_e2e_cmd.XXXXXX.sh)
       printf 'set -euo pipefail\n%s\n' "$*" > "$tmp_cmd"

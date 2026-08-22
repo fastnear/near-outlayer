@@ -33,12 +33,19 @@
 # the SOURCE (`op_canonical`), but it cannot see a renamed field inside it —
 # only this run can.
 #
-# Requires: psql reachable at $PGURL against the coordinator's database (this
-# is an operator step: on prod the database is not exposed), $PARENT with a
+# Requires: a way to run SQL against the coordinator's database — either
+# $PGURL for a direct psql, or $PSQL_CMD when the database is not reachable
+# from here (on the deployed environments it is not) — plus $PARENT with a
 # keychain credential and ~0.3 NEAR, and `outlayer` logged in as $PARENT.
+#
+# R4 additionally needs a wallet with an ACTIVE binding, which this script
+# cannot create: pass REUSE_SEED and BOUND_TO. Produce one with
+#   PARENT=you.testnet KEEP=1 ./tests/binding_lifecycle_e2e.sh --apply
 #
 # Run (spends real testnet NEAR and writes to the coordinator's database):
 #   PGURL=postgres://... PARENT=you.testnet ./tests/stuck_request_repair_e2e.sh --apply
+#   PSQL_CMD=./tsql PARENT=you.testnet REUSE_SEED=binding-... BOUND_TO=... \
+#     ./tests/stuck_request_repair_e2e.sh --apply
 
 set -uo pipefail
 
@@ -53,8 +60,31 @@ RPC_URL="${RPC_URL:-https://rpc.${NETWORK}.fastnear.com}"
 WNEAR="${WNEAR:-wrap.testnet}"
 PARENT="${PARENT:-}"
 PGURL="${PGURL:-}"
-# A binding to exercise the door half. Left empty, R4 says so and skips.
+# The RECIPIENT of the door transfer R4 repairs — someone else's account, not
+# the bound account itself. Passing the bound account makes the contract panic
+# with "self-calls are not allowed", which reads as a broken door and is only a
+# misused parameter. Left empty, R4 says so and skips.
 BOUND_TO="${BOUND_TO:-}"
+
+# Run against an EXISTING wallet instead of minting one.
+#
+# R4 is the reason. It needs a wallet with an ACTIVE binding, and a binding is
+# not something this script can produce — it takes an on-chain account with the
+# wallet contract installed and a handshake (`binding_lifecycle_e2e.sh`). A
+# freshly minted `stuckrep-*` wallet has no binding and never will inside one
+# run, so R4 was unreachable for as long as this script insisted on its own
+# wallet.
+#
+# The reused wallet is NOT swept at the end: it is somebody else's, it was here
+# before this run and is expected to outlive it.
+REUSE_SEED="${REUSE_SEED:-}"
+
+# How to run ONE statement of SQL, when a direct `psql "$PGURL"` cannot reach
+# the database. On the deployed environments it cannot: the coordinator's
+# PostgreSQL is not exposed off its host, which is the reason this script's own
+# doc calls PGURL an operator step. A command given here is invoked with the
+# statement as its single argument.
+PSQL_CMD="${PSQL_CMD:-}"
 
 # The call R1 repairs: a storage registration on wNEAR. Real, cheap, idempotent
 # and — the part that matters — it carries a non-zero deposit, which is exactly
@@ -70,14 +100,17 @@ pass() { printf '\033[32m✓ %s\033[0m\n' "$*" >&2; PASS=$((PASS+1)); }
 fail() { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; FAILED=$((FAILED+1)); FAILED_NAMES+=("$*"); }
 
 if [[ "$APPLY" != true ]]; then
-  sed -n '3,41p' "$0" >&2
+  sed -n '3,48p' "$0" >&2
   echo "  Pass --apply to run." >&2
   exit 0
 fi
 
 [[ -n "$PARENT" ]] || { echo "USAGE: PGURL=... PARENT=you.testnet $0 --apply" >&2; exit 1; }
-[[ -n "$PGURL" ]]  || { echo "✗ PGURL is required — the stuck state can only be produced in the database" >&2; exit 1; }
-for tool in jq curl near outlayer cargo psql; do
+[[ -n "$PGURL" || -n "$PSQL_CMD" ]] \
+  || { echo "✗ PGURL or PSQL_CMD is required — the stuck state can only be produced in the database" >&2; exit 1; }
+TOOLS="jq curl near outlayer cargo"
+[[ -z "$PSQL_CMD" ]] && TOOLS="$TOOLS psql"
+for tool in $TOOLS; do
   command -v "$tool" >/dev/null || { echo "✗ missing $tool" >&2; exit 1; }
 done
 CREDS_DIR="$HOME/.near-credentials/$NETWORK"
@@ -94,7 +127,7 @@ log "Building customer-recovery (sign-bearer-near)"
 (cd "$SCRIPT_DIR/../scripts/customer-recovery" && cargo build --release --quiet) \
   || { echo "✗ customer-recovery build failed" >&2; exit 1; }
 
-sql() { psql "$PGURL" -Atqc "$1"; }
+sql() { if [[ -n "$PSQL_CMD" ]]; then $PSQL_CMD "$1"; else psql "$PGURL" -Atqc "$1"; fi; }
 sql "SELECT 1" >/dev/null || { echo "✗ cannot reach the database at PGURL" >&2; exit 1; }
 
 LEDGER="$(mktemp -t stuckrep_ledger.XXXXXX)"
@@ -171,29 +204,48 @@ cleanup() {
 trap cleanup EXIT
 
 # ── a funded wallet that may make calls ──────────────────────────────────────
-log "Minting a funded sub-wallet"
-SEED="stuckrep-$(date +%s)-$$"
-ADDR_RESP=$(curl -sS -G "$COORDINATOR_URL/wallet/v1/address" --data-urlencode "chain=near" -H "$(AUTH "$SEED")")
-WID=$(echo "$ADDR_RESP" | jq -r '.wallet_id // empty')
-ADDR=$(echo "$ADDR_RESP" | jq -r '.address // empty')
-[[ -n "$WID" && -n "$ADDR" ]] || { echo "✗ /address failed: $(head -c 200 <<<"$ADDR_RESP")" >&2; exit 1; }
-printf '%s %s %s\n' "$SEED" "$WID" "$ADDR" >> "$LEDGER"
+if [[ -n "$REUSE_SEED" ]]; then
+  log "Using the wallet behind REUSE_SEED"
+  SEED="$REUSE_SEED"
+  ADDR_RESP=$(curl -sS -G "$COORDINATOR_URL/wallet/v1/address" --data-urlencode "chain=near" -H "$(AUTH "$SEED")")
+  WID=$(echo "$ADDR_RESP" | jq -r '.wallet_id // empty')
+  ADDR=$(echo "$ADDR_RESP" | jq -r '.address // empty')
+  [[ -n "$WID" && -n "$ADDR" ]] || { echo "✗ /address failed: $(head -c 200 <<<"$ADDR_RESP")" >&2; exit 1; }
+  # Deliberately NOT added to $LEDGER — the sweep deletes the account it is
+  # given, and this one is not ours to delete.
+  BAL=$(chain_balance "$ADDR")
+  [[ "$BAL" != "0" ]] || { echo "✗ $ADDR holds nothing on chain; fund it before reusing it" >&2; exit 1; }
+  # The policy is REPLACED rather than assumed: whatever this wallet was doing
+  # before, the calls below need `call`, and `delete` is left off precisely
+  # because nothing here may delete a wallet somebody else is using.
+  store_policy "$SEED" "$WID" '{"rules":{"transaction_types":["call"]}}' \
+    || { echo "✗ policy not stored — every call below would be refused for the wrong reason" >&2; exit 1; }
+  pass "reusing wallet $ADDR ($BAL yocto), permitted to call"
+else
+  log "Minting a funded sub-wallet"
+  SEED="stuckrep-$(date +%s)-$$"
+  ADDR_RESP=$(curl -sS -G "$COORDINATOR_URL/wallet/v1/address" --data-urlencode "chain=near" -H "$(AUTH "$SEED")")
+  WID=$(echo "$ADDR_RESP" | jq -r '.wallet_id // empty')
+  ADDR=$(echo "$ADDR_RESP" | jq -r '.address // empty')
+  [[ -n "$WID" && -n "$ADDR" ]] || { echo "✗ /address failed: $(head -c 200 <<<"$ADDR_RESP")" >&2; exit 1; }
+  printf '%s %s %s\n' "$SEED" "$WID" "$ADDR" >> "$LEDGER"
 
-BEFORE_FUND=$(chain_balance "$ADDR")
-# Output kept, result judged by the chain: near-cli-rs exits 0 on a swallowed
-# broadcast transient, and a funding step that never landed would surface much
-# later as a confusing refusal from the product.
-SEND_OUT=$(near_tty "near --quiet tokens $PARENT send-near $ADDR '$FUND_NEAR NEAR' \
-  network-config $NETWORK sign-with-keychain send" 2>&1)
-AFTER_FUND=$(chain_balance "$ADDR")
-if [[ "$AFTER_FUND" == "$BEFORE_FUND" || "$AFTER_FUND" == "0" ]]; then
-  echo "✗ funding did not land on $ADDR — the SENDER failed, not the coordinator" >&2
-  tail -c 400 <<<"$SEND_OUT" >&2
-  exit 1
+  BEFORE_FUND=$(chain_balance "$ADDR")
+  # Output kept, result judged by the chain: near-cli-rs exits 0 on a swallowed
+  # broadcast transient, and a funding step that never landed would surface much
+  # later as a confusing refusal from the product.
+  SEND_OUT=$(near_tty "near --quiet tokens $PARENT send-near $ADDR '$FUND_NEAR NEAR' \
+    network-config $NETWORK sign-with-keychain send" 2>&1)
+  AFTER_FUND=$(chain_balance "$ADDR")
+  if [[ "$AFTER_FUND" == "$BEFORE_FUND" || "$AFTER_FUND" == "0" ]]; then
+    echo "✗ funding did not land on $ADDR — the SENDER failed, not the coordinator" >&2
+    tail -c 400 <<<"$SEND_OUT" >&2
+    exit 1
+  fi
+  store_policy "$SEED" "$WID" '{"rules":{"transaction_types":["call","delete"]}}' \
+    || { echo "✗ policy not stored — every call below would be refused for the wrong reason" >&2; exit 1; }
+  pass "wallet $ADDR funded and permitted to call"
 fi
-store_policy "$SEED" "$WID" '{"rules":{"transaction_types":["call","delete"]}}' \
-  || { echo "✗ policy not stored — every call below would be refused for the wrong reason" >&2; exit 1; }
-pass "wallet $ADDR funded and permitted to call"
 
 # ── a real, finished call to put back into `processing` ──────────────────────
 log "Making a real call that finishes normally"

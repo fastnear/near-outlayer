@@ -26,6 +26,28 @@ SCENARIO="${1:-all}"
 [[ "${1:-}" == "--apply" ]] && { APPLY=true; SCENARIO="all"; }
 
 NETWORK="${NETWORK:-testnet}"
+# EXPORTED, or the value above is a decoration.
+#
+# Every `outlayer …` call below follows `~/.outlayer/default-network` unless
+# this is in the environment, and on a machine whose default is mainnet that
+# means a script announcing testnet acts on MAINNET. Caught on 2026-08-22:
+# this suite reported `parent: fastjambo.near / vault account:
+# vault.fastjambo.near` and was stopped from deploying a real mainnet vault
+# only by that account holding 0.2 NEAR against the 1.1 it needed.
+export OUTLAYER_NETWORK="$NETWORK"
+
+RPC_URL="${RPC_URL:-https://rpc.${NETWORK}.fastnear.com}"
+
+# Is this account on chain at all? Used to tell "deploy a vault" from "a vault
+# is already deployed" — `vault init` refuses the second case outright.
+account_exists() {
+  local acct=$1 rpc amount err
+  rpc=$(curl -s "$RPC_URL" -X POST -H 'Content-Type: application/json' \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"query\",\"params\":{\"request_type\":\"view_account\",\"finality\":\"final\",\"account_id\":\"$acct\"}}" 2>/dev/null || echo '')
+  err=$(echo "$rpc" | jq -r '.error // .result.error // empty' 2>/dev/null)
+  amount=$(echo "$rpc" | jq -r '.result.amount // empty' 2>/dev/null)
+  [[ -z "$err" && -n "$amount" ]]
+}
 COORDINATOR_URL="${COORDINATOR_URL:-http://localhost:8080}"
 
 # Two distinct test accounts so multi-customer isolation can be
@@ -68,7 +90,19 @@ scenario_happy() {
   run "outlayer vault verify vault.$CUSTOMER_A || true"
 
   log "1.2: deploy a fresh vault (default 24h exit window)"
-  run "outlayer vault init"
+  # Reuse what is already there, the way `unified_vault_e2e.sh` does.
+  #
+  # `vault init` refuses outright when the account exists, so on any environment
+  # where this suite has run before, every scenario below died at step 1.2 —
+  # and the failure read as a broken deploy rather than as a vault that was
+  # already deployed. `vault resume` is idempotent and is what the CLI's own
+  # error message recommends.
+  if account_exists "vault.$CUSTOMER_A" 2>/dev/null; then
+    warn "vault.$CUSTOMER_A already on chain — reusing it (running vault resume idempotently)"
+    run "outlayer vault resume vault.$CUSTOMER_A || true"
+  else
+    run "outlayer vault init"
+  fi
 
   log "1.3: status — vault should be verified, locked, no recovery"
   run "outlayer vault status vault.$CUSTOMER_A"

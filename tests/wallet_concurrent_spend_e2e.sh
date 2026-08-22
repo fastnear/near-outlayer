@@ -329,6 +329,16 @@ elif [[ "$(code_of "$OUT3")" == "wallet_busy" ]] || [[ "$(code_of "$OUT4")" == "
   else
     fail "P2 wallet_busy returned in ${LOSER_T}s, under the ${GRACE_FLOOR}s floor — the grace is gone, and every client doing two quick calls will now see 409s"
   fi
+elif [[ "$(code_of "$OUT3")" == "service_unavailable" ]] || [[ "$(code_of "$OUT4")" == "service_unavailable" ]]; then
+  # A TRANSIENT is not a refusal, and this probe is about the grace window.
+  #
+  # The one seen live: `the transaction expired before it reached the chain` —
+  # the block it was signed against left the node's window. Nothing executed
+  # and nothing was spent, and the coordinator says exactly that and asks for a
+  # retry. Counting it as "a spend inside the limit was refused" reports a
+  # working rule as broken because the network was slow for a second.
+  note "P2 NOT JUDGED — one side hit a transient: $(body_of "$OUT3" | head -c 120) / $(body_of "$OUT4" | head -c 120)"
+  note "P2 re-run to exercise the grace window; nothing here says the limit misbehaved"
 else
   fail "P2 a spend inside the limit was refused: $(body_of "$OUT3" | head -c 200) / $(body_of "$OUT4" | head -c 200)"
 fi

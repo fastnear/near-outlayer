@@ -458,7 +458,11 @@ cmd_multisig() {
 
     # near CLI sometimes needs a TTY for the keychain signer — wrap via `script` if available.
     near_tty() {
-        if command -v script >/dev/null 2>&1; then
+        # `-t 1` as well as the binary: without a terminal `script` dies with
+    # `tcgetattr/ioctl: Operation not supported on socket` and takes the step
+    # with it — which surfaces as whatever that step was called, not as a
+    # missing terminal. Guarded this way in the other copies of this helper.
+    if command -v script >/dev/null 2>&1 && [ -t 1 ]; then
             local tmp; tmp=$(mktemp -t conf_cmd.XXXXXX.sh)
             printf 'set -euo pipefail\n%s\n' "$*" > "$tmp"
             script -q /dev/null bash "$tmp"; local rc=$?; rm -f "$tmp"; return $rc

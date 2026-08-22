@@ -22,6 +22,8 @@
 //! | `burn` | $0.01 | compute actually costs something: burns instructions on demand, so a charge can be watched |
 //! | `fetch` | $0.015 | the declared host is reachable |
 //! | `forbidden_fetch` | $0.015 | an undeclared host is NOT, and the refusal comes from the worker rather than from politeness here |
+//! | `vrf` | $0.01 | the ALPHA the randomness is bound to — the same seed through both doors must name the same account, differing only in the request id |
+//! | `refund` | $0.01 | money handed back reaches `earnings_history`: a non-zero `refund_usd` and an `amount` reduced by it. The worker computed this for a while and never sent it |
 //!
 //! And one operation that is deliberately absent from the price list —
 //! `unpriced` — which the coordinator must refuse BEFORE this module runs. It
@@ -53,6 +55,43 @@ use sha2::{Digest, Sha256};
 #[link_section = "outlayer.manifest"]
 static OUTLAYER_MANIFEST: [u8; include_bytes!("../manifest.json").len()] =
     *include_bytes!("../manifest.json");
+
+/// Host bindings for VRF and refunds, generated from `wit/` — copies of the
+/// worker's own `worker/wit/deps/{vrf,payment}.wit`.
+///
+/// Copies rather than path references because `wasi-examples/` is what an
+/// author copies from, and an example that reaches up into the worker's tree
+/// cannot be lifted out. `build.sh` diffs both, so drift is reported rather
+/// than discovered.
+///
+/// WHAT IMPORTING THESE COSTS, because it is not free and the wallet interface
+/// is the cautionary tale. The worker links a host interface only into a
+/// component that imports it, and for two of the three it also REFUSES to run
+/// such a component when the interface is unavailable:
+///
+///   * `near:payment/api` — always linked, even at `attached_usd = 0`, where a
+///     refund simply comes back as an error. Importing it risks nothing.
+///   * `near:vrf/api` — refused outright when the worker has no keystore
+///     CONFIGURED. Configured, not reachable: `KEYSTORE_BASE_URL` is read from
+///     the environment once, so a keystore that is down still leaves the
+///     component instantiable and fails only the VRF call itself. The failure
+///     mode is therefore a worker deployed without that variable — where every
+///     operation here would stop, including `ping`. That is a uniform property
+///     of a deployment rather than a per-request one, so it is accepted; if a
+///     keystore-less worker is ever meant to serve this connector, move `vrf`
+///     to its own module the way `wallet-probe` was split off.
+///   * `outlayer:wallet/api` — refused whenever the request names no wallet,
+///     which is MOST calls to this connector. That one stays out, and lives in
+///     `wallet-probe` instead.
+mod probe_host {
+    wit_bindgen::generate!({
+        world: "probe-host",
+        path: "wit",
+        generate_all,
+    });
+}
+use probe_host::near::vrf::api as vrf;
+use probe_host::near::payment::api as payment;
 
 /// Every environment variable the worker injects, as of this build.
 ///
@@ -178,6 +217,15 @@ struct Input {
     /// `burn` only: roughly how much work to do. Capped below.
     #[serde(default)]
     rounds: Option<u32>,
+    /// `vrf` only: the caller's half of alpha. The host prepends the request
+    /// id, which the guest cannot influence — that is what makes the result
+    /// unmanipulable, and why the same seed on two doors is a fair comparison.
+    #[serde(default)]
+    seed: Option<String>,
+    /// `refund` only: how much of `ATTACHED_USD` to hand back, in minimal
+    /// units. Absent means all of it.
+    #[serde(default)]
+    refund_usd: Option<u64>,
 }
 
 /// One system variable, as the guest actually received it.
@@ -262,6 +310,106 @@ struct Output {
     http_status: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     http_error: Option<String>,
+    // ---- vrf ----
+    /// The full alpha the HOST built. The whole point of the operation: it
+    /// names the identity the randomness is bound to, and the two doors must
+    /// agree on that name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vrf_alpha: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vrf_output: Option<String>,
+    /// Present so a caller can verify the proof without this module being
+    /// trusted about any of it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vrf_signature: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vrf_pubkey: Option<String>,
+    // ---- refund ----
+    /// What was asked back, and what the host said about it. `refund_error`
+    /// empty means the refund stands.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    refunded_usd: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    refund_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    attached_usd: Option<String>,
+}
+
+/// Verifiable randomness, and — the reason this exists — the ALPHA it was
+/// bound to.
+///
+/// `output` and `signature` are reported so a caller can verify the proof
+/// without trusting this module about any of it. But the probe is `alpha`: the
+/// host builds it as `vrf:{request_id}:{user_seed}` around an identity the
+/// guest cannot choose, and a defect once made that identity the payment key's
+/// owner on one door and the guest's borrowed name on the other. One module,
+/// one flag, different randomness depending on how it was started.
+///
+/// So the same seed through both doors must produce an alpha naming the SAME
+/// account, differing only in the request id.
+fn vrf_report(op: &str, seed: &str) -> Output {
+    let (output, signature, alpha, error) = vrf::generate(seed);
+    if !error.is_empty() {
+        return Output {
+            ok: false,
+            operation: op.into(),
+            detail: format!("vrf::generate failed: {error}"),
+            ..Default::default()
+        };
+    }
+    // Absent rather than fatal: the proof above is complete without it, and a
+    // key that cannot be read says nothing about the alpha under test.
+    let (pubkey, pk_err) = vrf::pubkey();
+    Output {
+        ok: !alpha.is_empty(),
+        operation: op.into(),
+        detail: if alpha.is_empty() {
+            "vrf::generate returned no alpha — there is nothing to bind the randomness to".into()
+        } else {
+            format!("alpha `{alpha}`")
+        },
+        vrf_alpha: Some(alpha),
+        vrf_output: Some(output),
+        vrf_signature: Some(signature),
+        vrf_pubkey: pk_err.is_empty().then_some(pubkey),
+        ..Default::default()
+    }
+}
+
+/// Hand part of the attached payment back.
+///
+/// What this is for is the LEDGER, not the guest: a refund has to reach
+/// `earnings_history` and reduce what the author is credited, and for a while
+/// it did not — the worker computed it and never sent it, so the author was
+/// paid for money the guest had returned. Nothing failed, and the figure was
+/// simply wrong.
+///
+/// Absent `refund_usd` means "all of it", read from `ATTACHED_USD` — the same
+/// value the host checks the refund against, so the ordinary call is a full
+/// refund rather than an amount this module invented.
+fn refund(op: &str, amount: Option<u64>) -> Output {
+    let attached = env::var("ATTACHED_USD").unwrap_or_default();
+    let want = match amount {
+        Some(a) => a,
+        None => attached.trim().parse::<u64>().unwrap_or(0),
+    };
+    let error = payment::refund_usd(want);
+    Output {
+        // A REFUSED refund is still a well-formed answer — over-refunding is
+        // supposed to fail — so `ok` follows whether the host said anything
+        // coherent, and the caller reads `refund_error` for the outcome.
+        ok: true,
+        operation: op.into(),
+        detail: if error.is_empty() {
+            format!("refunded {want} of {attached}")
+        } else {
+            format!("refund of {want} refused: {error}")
+        },
+        refunded_usd: error.is_empty().then_some(want),
+        refund_error: (!error.is_empty()).then_some(error),
+        attached_usd: Some(attached),
+        ..Default::default()
+    }
 }
 
 fn main() {
@@ -270,6 +418,8 @@ fn main() {
         Ok(None) => Input {
             operation: String::new(),
             rounds: None,
+            seed: None,
+            refund_usd: None,
         },
         Err(e) => {
             let _ = env::output_json(&Output {
@@ -299,6 +449,8 @@ fn run(input: &Input) -> Output {
         "env" => env_report(op),
         "secret" => secret(op),
         "burn" => burn(op, input.rounds.unwrap_or(1)),
+        "vrf" => vrf_report(op, input.seed.as_deref().unwrap_or("probe")),
+        "refund" => refund(op, input.refund_usd),
         "fetch" => fetch(op, ALLOWED_HOST, "the declared host must be reachable"),
         "forbidden_fetch" => fetch(
             op,

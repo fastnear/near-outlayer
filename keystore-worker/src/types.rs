@@ -45,8 +45,18 @@ pub enum AccessCondition {
     Whitelist {
         accounts: Vec<String>,
     },
-    /// Match account name pattern (regex)
-    /// Example: ".*\\.gov\\.near" matches all .gov.near accounts
+    /// Match the caller's account id against a regular expression.
+    ///
+    /// The pattern is matched against the WHOLE id (anchored `\A(?:…)\z` in
+    /// [`compile_anchored_account_pattern`]), never a substring. Two regex
+    /// facts still bite the unwary, so prefer [`AccessCondition::Whitelist`]
+    /// for an exact set of accounts:
+    ///   * `.` is a metacharacter — write `\.` for a literal dot, otherwise
+    ///     `team.near` also admits `teamXnear`;
+    ///   * a pattern is only as tight as it is written — `.*\.gov\.near`
+    ///     admits every `*.gov.near`, which may be broader than intended.
+    ///
+    /// Example: `.*\.gov\.near` matches any `*.gov.near` account and only those.
     AccountPattern {
         pattern: String,
     },
@@ -77,6 +87,39 @@ pub enum AccessCondition {
     },
 }
 
+/// Compile an [`AccessCondition::AccountPattern`] into a FULL-MATCH regex.
+///
+/// The pattern is wrapped in `\A(?:…)\z`, so it must match the ENTIRE caller
+/// id. Without this, `regex::Regex::is_match` succeeds on any partial match:
+/// a pattern `team\.near`, written as an exact check, would also admit
+/// `xteam.near`, `team.near.attacker.near`, or — because `.` is a
+/// metacharacter — `teamXnear`. That is a silent whitelist bypass that hands
+/// one account's secrets to another, so the anchoring is a security boundary,
+/// not a nicety.
+///
+/// `\A` / `\z` (absolute start / end of text) are deliberate over `^` / `$`,
+/// but NOT for the reason that is usually given. In Perl, PCRE and Python `$`
+/// also matches just before a trailing `\n`; in Rust's `regex` it does not —
+/// measured, both `^team\.near$` and `\Ateam\.near\z` reject `"team.near\n"`.
+///
+/// The real difference is that `^` and `$` can be RE-POINTED by the pattern
+/// itself: an owner writing `(?m)` turns them into line anchors, after which
+/// `^team\.near$` is satisfied by the second line of `"evil.near\nteam.near"`.
+/// `\A` and `\z` are absolute and no inline flag moves them, which is what
+/// makes the full-match guarantee hold against a pattern its own author wrote.
+/// See `test_owner_multiline_flag_cannot_defeat_absolute_anchors`.
+///
+/// The wrapping group `(?:…)` is required so a top-level alternation binds
+/// correctly: `a|b` becomes `\A(?:a|b)\z`, not `\Aa|b\z` ("starts with a" OR
+/// "ends with b"). An owner's own anchors, if present, are preserved —
+/// `\A(?:^team\.near$)\z` is a harmless double anchor. A pattern that is
+/// invalid on its own is invalid wrapped too, and the caller treats a compile
+/// error as denial (fail-closed); wrapping a VALID pattern can never make it
+/// invalid.
+fn compile_anchored_account_pattern(pattern: &str) -> Result<regex::Regex, regex::Error> {
+    regex::Regex::new(&format!(r"\A(?:{})\z", pattern))
+}
+
 impl AccessCondition {
     /// Validate access condition against caller account
     ///
@@ -101,7 +144,11 @@ impl AccessCondition {
             }
 
             AccessCondition::AccountPattern { pattern } => {
-                match regex::Regex::new(pattern) {
+                // Anchored full match — NOT `Regex::new(pattern).is_match`,
+                // which matches a substring and silently turns an exact-looking
+                // pattern into a whitelist bypass. See
+                // [`compile_anchored_account_pattern`].
+                match compile_anchored_account_pattern(pattern) {
                     Ok(re) => {
                         let granted = re.is_match(caller);
                         tracing::debug!(
@@ -330,6 +377,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_pattern_is_anchored_full_match() {
+        // `team.near`, escaped, meant as an exact check. Unanchored `is_match`
+        // used to admit every near-miss an attacker can register; anchoring
+        // must reject all of them while still matching the real account.
+        let condition = AccessCondition::AccountPattern {
+            pattern: r"team\.near".to_string(),
+        };
+        assert!(condition.validate("team.near", None).await.unwrap());
+        // Substring bypasses — all of these `is_match(caller)` accepted before.
+        assert!(!condition.validate("xteam.near", None).await.unwrap());
+        assert!(!condition.validate("team.near.attacker.near", None).await.unwrap());
+        assert!(!condition.validate("team.nearx", None).await.unwrap());
+        // A trailing newline must not satisfy the anchor. (Rust's `$` would
+        // also reject this one — see the note on `\A`/`\z` above for what the
+        // absolute anchors actually buy.)
+        assert!(!condition.validate("team.near\n", None).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_unescaped_dot_matches_one_char_but_never_a_substring() {
+        // Anchoring does NOT fix the `.`-is-a-metachar footgun (that needs the
+        // owner to escape it); it only removes the SUBSTRING bypass. This pins
+        // the anchored behaviour so a refactor cannot silently un-anchor.
+        let condition = AccessCondition::AccountPattern {
+            pattern: r"team.near".to_string(), // unescaped dot — owner mistake
+        };
+        assert!(condition.validate("team.near", None).await.unwrap());
+        // `.` still matches one arbitrary char (the documented footgun)...
+        assert!(condition.validate("teamXnear", None).await.unwrap());
+        // ...but only as a whole-id match, never as a substring of a longer id.
+        assert!(!condition.validate("teamXnear.attacker.near", None).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_pattern_top_level_alternation_is_grouped() {
+        // `a|b` must anchor as a whole: `\A(?:a|b)\z`, not `\Aa|b\z`, which
+        // would mean "starts with a" OR "ends with b" — a bypass on both sides.
+        let condition = AccessCondition::AccountPattern {
+            pattern: r"alice\.near|bob\.near".to_string(),
+        };
+        assert!(condition.validate("alice.near", None).await.unwrap());
+        assert!(condition.validate("bob.near", None).await.unwrap());
+        assert!(!condition.validate("alice.near.evil.near", None).await.unwrap());
+        assert!(!condition.validate("evil.bob.near", None).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_empty_pattern_denies_instead_of_granting_everyone() {
+        // Latent bug the anchoring incidentally closes: `Regex::new("")` matches
+        // ANY input, so an empty pattern used to grant every caller. Anchored,
+        // `\A(?:)\z` matches only the empty string, so a real account is denied.
+        let condition = AccessCondition::AccountPattern { pattern: String::new() };
+        assert!(!condition.validate("anyone.near", None).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_metachar_injection_cannot_escape_the_anchors() {
+        // A pattern that injects its own parens can restructure the groups but
+        // never remove `\A`/`\z`: `a)(b` compiles to `\A(?:a)(b)\z`, still a
+        // full match of exactly "ab" — no substring bypass survives.
+        let condition = AccessCondition::AccountPattern { pattern: "a)(b".to_string() };
+        assert!(condition.validate("ab", None).await.unwrap());
+        assert!(!condition.validate("xabx", None).await.unwrap());
+        // A pattern that unbalances the wrapper is invalid → fail-closed deny.
+        let broken = AccessCondition::AccountPattern { pattern: ")".to_string() };
+        assert!(!broken.validate("anything.near", None).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_owner_multiline_flag_cannot_defeat_absolute_anchors() {
+        // `\A`/`\z` are absolute, unlike `^`/`$`, so even an owner-injected
+        // `(?m)` (which only re-points `^`/`$` at line boundaries) cannot let a
+        // second line satisfy the match across an embedded newline.
+        let condition = AccessCondition::AccountPattern {
+            pattern: r"(?m)^team\.near$".to_string(),
+        };
+        assert!(!condition.validate("evil.near\nteam.near", None).await.unwrap());
+        assert!(condition.validate("team.near", None).await.unwrap());
+    }
+
+    #[tokio::test]
     async fn test_pattern_invalid_regex() {
         let condition = AccessCondition::AccountPattern {
             pattern: "[invalid".to_string(), // unclosed bracket
@@ -423,3 +551,4 @@ mod near_sdk_format_tests {
         }
     }
 }
+

@@ -63,6 +63,18 @@ near_call() {
 #   burn               10000, 33.33%     — 3333, and per OPERATION: a single
 #                                          share per project would print 7000
 #                                          here too and prove nothing
+#   vrf                10000, share 0    — priced like `whoami`, because what it
+#                                          proves is about the ALPHA and not
+#                                          about money; a share would only add
+#                                          noise to the earnings rows the refund
+#                                          row below is read against
+#   refund             10000, 70%        — a share that is NOT zero, deliberately.
+#                                          The refund is subtracted from the
+#                                          AUTHOR's earnings, so with a zero
+#                                          share there would be nothing for it to
+#                                          come out of and the ledger row could
+#                                          not tell a working refund from a
+#                                          dropped one
 #   fetch              15000, 100%       — the whole fee to the author
 #   forbidden_fetch    15000, 33.33%     — 4999.5 floored to 4999. The ONLY
 #                                          combination on the probe that
@@ -97,7 +109,9 @@ near_call set_project_pricing "$(cat <<EOF
       {"operation": "secret",          "price_usd": "10000", "developer_share_bp": 7000},
       {"operation": "burn",            "price_usd": "10000", "developer_share_bp": 3333},
       {"operation": "fetch",           "price_usd": "15000", "developer_share_bp": 10000},
-      {"operation": "forbidden_fetch", "price_usd": "15000", "developer_share_bp": 3333}
+      {"operation": "forbidden_fetch", "price_usd": "15000", "developer_share_bp": 3333},
+      {"operation": "vrf",             "price_usd": "10000", "developer_share_bp": 0},
+      {"operation": "refund",          "price_usd": "10000", "developer_share_bp": 7000}
     ]
   }
 }

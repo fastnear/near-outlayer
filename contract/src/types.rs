@@ -39,8 +39,26 @@ pub enum AccessConditionV1 {
     Whitelist {
         accounts: Vec<AccountId>,
     },
-    /// Match account name pattern (regex)
-    /// Example: ".*\\.gov\\.near" matches all .gov.near accounts
+    /// Match the caller's account id against a regular expression.
+    ///
+    /// The contract STORES this pattern and signs it into the message that
+    /// authorises the write; it never evaluates it. Evaluation happens in the
+    /// keystore, which compiles it anchored — `\A(?:…)\z` — so the pattern must
+    /// match the WHOLE id and never a substring. A pattern meant as an exact
+    /// check does not silently admit `victim.near.attacker.near`.
+    ///
+    /// Two regex facts still bite the unwary, so prefer [`AccessCondition::Whitelist`]
+    /// when the intent is an exact set of accounts:
+    ///   * `.` is a metacharacter — write `\.` for a literal dot, or
+    ///     `team.near` also admits `teamXnear`;
+    ///   * a pattern is only as tight as it is written — `.*\.gov\.near` admits
+    ///     every `*.gov.near`, which may be wider than intended.
+    ///
+    /// Nothing here validates the pattern: one that does not compile is stored
+    /// happily and then denies every caller, because the keystore treats a
+    /// compile error as a refusal.
+    ///
+    /// Example: `.*\.gov\.near` matches any `*.gov.near` account and only those.
     AccountPattern {
         pattern: String,
     },
