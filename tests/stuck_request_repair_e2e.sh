@@ -349,7 +349,12 @@ else
     -H "$(AUTH "$SEED")" -H 'Content-Type: application/json' \
     -d "$(jq -nc --arg to "$BOUND_TO" --arg a "$CALL_DEPOSIT" '{to:$to, amount:$a}')")
   DREQ=$(jq -r '.request_id // empty' <<<"$D")
-  if [[ -z "$DREQ" ]]; then
+  if grep -q 'self-calls are not allowed' <<<"$D"; then
+    # Named separately from the generic failure below: the contract is behaving
+    # exactly as designed, and reporting it as a broken door sends whoever reads
+    # this run looking at the coordinator instead of at their own invocation.
+    fail "R4 BOUND_TO is the bound account itself, so the door refused a self-call — pass someone else's account (see the note at the top of this file)"
+  elif [[ -z "$DREQ" ]]; then
     fail "R4 the door call returned no request_id: $(head -c 300 <<<"$D")"
   else
     DUSAGE_BEFORE=$(usage_native "$WID")

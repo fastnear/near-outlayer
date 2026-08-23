@@ -101,7 +101,11 @@ if [[ $INIT_RC -ne 0 ]] && echo "$INIT_OUT" | grep -q "outlayer vault resume"; t
     if outlayer vault resume "$VAULT_ID" >&2; then INIT_RC=0; break; fi
   done
 fi
-[[ $INIT_RC -eq 0 ]] || fail "vault init failed"
+# The CLI's own words, not just the exit code: this step deploys a sub-account
+# and can fail for reasons the operator can act on — a name already taken, a
+# balance too small, a network pointed elsewhere — and none of them survive an
+# exit status.
+[[ $INIT_RC -eq 0 ]] || fail "vault init failed (rc=$INIT_RC): $(tail -c 500 <<<"$INIT_OUT")"
 pass "vault $VAULT_ID deployed + verified"
 
 # ─── Helper: end-to-end "encrypt → sign → store policy" for one wallet ────
@@ -234,6 +238,17 @@ echo "  HTTP $HTTP_B body=$BODY_B" >&2
 
 if [[ "$HTTP_B" == "200" ]]; then
   pass "Scenario B: /internal/wallet-policy-sync succeeded (HTTP 200) — control path intact"
+elif [[ "$HTTP_B" == "401" ]] && grep -q 'internal wallet auth token' <<<"$BODY_B"; then
+  # The control path refusing the CREDENTIAL says nothing about the decrypt
+  # path this file exists to test. `/internal/*` accepts a worker token whose
+  # sha256 is registered in the coordinator's `worker_auth_tokens`, which the
+  # running worker holds and a checkout does not — so the token in a local
+  # `worker/.env*` is usually some other deployment's. Reported as a skip and
+  # not a failure: called red, it sends whoever reads the run looking for a
+  # regression in code that was never reached.
+  warn "SKIPPED — API_AUTH_TOKEN is not one of the tokens this coordinator has registered"
+  warn "Supply the token the LIVE testnet worker runs with (its sha256 must be in worker_auth_tokens); a local worker/.env* copy is usually a different deployment's."
+  exit 3
 else
   fail "Scenario B (control) UNEXPECTEDLY failed: HTTP $HTTP_B body=$BODY_B"
 fi

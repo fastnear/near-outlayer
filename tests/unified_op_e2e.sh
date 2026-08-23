@@ -1070,10 +1070,19 @@ MONEY=false; sweep_now; verify_all_drained
 
 echo
 log "SUMMARY"
+# Snapshot BEFORE the line below: `pass` increments the counter it is printing.
+CHECKS_RUN=$PASS
 pass "passed: $PASS"
 if [[ $FAILED -gt 0 ]]; then
   for n in "${FAILED_NAMES[@]}"; do printf '\033[31m  ✗ %s\033[0m\n' "$n" >&2; done
   fail "FAILED: $FAILED"; exit 1
+fi
+# A suite that asserted nothing is a skip, not a pass — exit 3 is the code
+# `run_custody.sh` records as such. Reached here only if every probe stepped
+# aside, which on this file would mean its whole subject was unreachable.
+if (( CHECKS_RUN == 0 )); then
+  warn "NOTHING RAN — every check stepped aside; this verified nothing."
+  exit 3
 fi
 pass "ALL UNIFIED-OP E2E CHECKS PASSED"
 [[ -n "$VAULT_ID" ]] && warn "Cleanup (optional): $VAULT_ID holds locked NEAR + per-wallet policy storage stakes."

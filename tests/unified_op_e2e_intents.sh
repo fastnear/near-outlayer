@@ -1299,10 +1299,23 @@ MONEY=false; sweep_now; verify_all_drained
 
 echo
 log "SUMMARY"
+# Snapshot BEFORE the line below: `pass` increments the counter it is printing,
+# so reading $PASS after it always sees at least one and the ran-nothing check
+# never fires.
+CHECKS_RUN=$PASS
 pass "passed: $PASS"
 if [[ $FAILED -gt 0 ]]; then
   for n in "${FAILED_NAMES[@]}"; do printf '\033[31m  ✗ %s\033[0m\n' "$n" >&2; done
   fail "FAILED: $FAILED"; exit 1
+fi
+# A run in which nothing ran is not a run that passed. On testnet every probe
+# in this file steps aside — there are no solvers and the coordinator answers
+# 503 — and the summary below used to print ALL CHECKS PASSED over a count of
+# zero, which `run_custody.sh` then recorded as a green suite. Exit 3 is the
+# runner's "ran nothing" code, so the line in its verdict reads as a skip.
+if (( CHECKS_RUN == 0 )); then
+  warn "NOTHING RAN — every probe here needs NEAR Intents, which is mainnet-only. Re-run with NETWORK=mainnet to actually test this surface."
+  exit 3
 fi
 pass "ALL UNIFIED-OP E2E CHECKS PASSED"
 [[ -n "$VAULT_ID" ]] && warn "Cleanup (optional): $VAULT_ID holds locked NEAR + per-wallet policy storage stakes."

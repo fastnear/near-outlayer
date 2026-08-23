@@ -1,5 +1,30 @@
 #!/bin/bash
-# End-to-end test for Phase 6+7 sovereign vaults.
+# MANUAL RUNBOOK for Phase 6+7 sovereign vaults — NOT an automated test.
+#
+# Read this before trusting a green run: nothing here asserts anything. `run()`
+# hands its command to `eval` and ignores the result, several steps tell the
+# operator to read a `wk_` off the screen and paste it into the next one, and
+# the isolation scenario ends by printing a response for a human to compare.
+# A run that reports no failures has verified nothing — it has printed a
+# procedure.
+#
+# THE AUTOMATED COVERAGE IS ELSEWHERE, and it is better:
+#   tests/unified_vault_e2e.sh V1  two vault scopes under one parent derive
+#                                  DIFFERENT addresses, sign with DIFFERENT
+#                                  public keys, and a client-supplied
+#                                  `X-Customer-Vault` header is IGNORED — the
+#                                  exact claims scenario 5 below asks a human
+#                                  to eyeball
+#   tests/unified_vault_e2e.sh V3/V5  sovereign exit: finalize_recovery, the
+#                                  keystore refusing afterwards, and the
+#                                  customer re-deriving the same address
+#                                  offline
+#   tests/unified_vault_e2e.sh V4/V6  per-vault secret decrypt before/after
+#                                  recovery, and creating a secret FOR an agent
+#
+# What is left here is the part no script can do: DAO votes, 7-day windows, and
+# deploying under a second real NEAR login. Kept as a procedure, labelled as
+# one.
 #
 # Drives the testable subset of Phase 10's 7 scenarios from the
 # per-vault master plan (partitioned-dreaming-patterson.md lines
@@ -63,12 +88,28 @@ log()   { printf '\n\033[36m▶ %s\033[0m\n' "$*"; }
 warn()  { printf '\033[33m⚠ %s\033[0m\n' "$*"; }
 fail()  { printf '\033[31m✗ %s\033[0m\n' "$*"; exit 1; }
 pass()  { printf '\033[32m✓ %s\033[0m\n' "$*"; }
+# A step whose verdict a human has to reach. Deliberately NOT `pass`: this
+# script used to end its isolation scenario with a green tick over a printed
+# response nobody compared, which reads as covered and is worse than silence.
+manual() { printf '\033[33m☐ MANUAL — %s\033[0m\n' "$*"; }
 
 # Either run a command, or just print it — depending on $APPLY.
+#
+# The exit status is REPORTED but not judged: what these commands mean is what
+# the operator reads in their output, and there is no assertion here to hang a
+# failure on. A non-zero status at least stops looking like success.
+#
+# `|| rc=$?` and not a bare `eval`: this file runs under `set -e` (line 45), so
+# an unguarded `eval` would abort the whole runbook on the first non-zero step
+# and never reach the warning below — the opposite of what a procedure someone
+# is following by hand should do.
 run() {
   if [[ "$APPLY" == true ]]; then
     log "$ $*"
-    eval "$@"
+    local rc=0
+    eval "$@" || rc=$?
+    (( rc != 0 )) && warn "^ exited $rc — read the output above before continuing"
+    return 0
   else
     printf '\033[90m  (dry-run) $ %s\033[0m\n' "$*"
   fi
@@ -118,7 +159,7 @@ scenario_happy() {
   log "1.6: round-trip — sign a NEP-413 message via the vault wallet"
   run "outlayer checks sign-message --api-key \$OUTLAYER_WALLET_KEY 'hello vault' 'verifier.testnet' --nonce \$(openssl rand -base64 32)"
 
-  pass "Scenario 1 (happy path) — manual verification: address must derive deterministically from the per-vault master, NOT the OutLayer default master."
+  manual "Scenario 1: confirm the address derives from the PER-VAULT master, not the OutLayer default one. Automated equivalent: unified_vault_e2e.sh V1/V2."
 }
 
 # ─── Scenario 5: multi-customer isolation ──────────────────────────
@@ -150,7 +191,7 @@ scenario_isolation() {
 NOT from the request header. The cross-vault header is silently ignored. The auth gate IS the API key, \
 not the X-Customer-Vault header — confirm this by checking the response equals 5.3's A_ADDR."
 
-  pass "Scenario 5 (isolation) — manual asserts above"
+  manual "Scenario 5: compare 5.6's response against 5.3's A_ADDR yourself. This claim IS automated — unified_vault_e2e.sh V1 asserts distinct addresses, distinct signing keys, and the ignored header."
 }
 
 # ─── Scenario 6: backward compat ───────────────────────────────────
@@ -174,7 +215,7 @@ scenario_compat() {
   log "6.3: confirm the address is derived from the OutLayer default master (NOT a per-vault one)"
   warn "Manual check: the address should match what a Phase 4-pre-vault keystore returned for the same wallet_id."
 
-  pass "Scenario 6 (compat) — legacy path remains functional"
+  manual "Scenario 6: confirm from the output above that the legacy path still works."
 }
 
 # ─── Scenarios that require manual / governance work ───────────────
