@@ -624,33 +624,6 @@ fi
 # ── C7: the per-wallet daily quota ───────────────────────────────────────────
 # Free execution cannot also be unmetered. Counted per (wallet, connector), so
 # this burns the day's quota for whichever wallet AGENT_PAYMENT_KEY belongs to.
-if want C7; then
-  if [[ -z "$AGENT_PAYMENT_KEY" ]]; then
-    note "C7 SKIPPED: needs AGENT_PAYMENT_KEY, same as C6"
-  elif [[ "$APPLY" != true ]]; then
-    printf '\033[90m  (dry-run) call ping until the wallet is refused, and read the reason\033[0m\n' >&2
-  else
-    log "C7 the daily quota"
-    warn "C7 burns this wallet's quota for the connector for the rest of the day"
-    hit=""
-    # The limit is a tier, not a constant, and the wallet may have spent some of
-    # it already — so call until refused rather than counting to a number this
-    # script would have to keep in step with the coordinator's config.
-    for _ in $(seq 1 30); do
-      R=$(curl -s -X POST "$COORDINATOR_URL/call/$PROJECT" -H "X-Payment-Key: $AGENT_PAYMENT_KEY" \
-            -H 'Content-Type: application/json' -d '{"input":{"operation":"ping"}}')
-      if [[ "$(echo "$R" | jq -r '.reason // empty')" == "connector_quota_exceeded" ]]; then hit=$R; break; fi
-    done
-    if [[ -z "$hit" ]]; then
-      fail "C7 thirty calls and never refused — the quota is not being enforced"
-    elif echo "$hit" | grep -qE "[0-9]+"; then
-      pass "C7 refused with connector_quota_exceeded, and the message names the numbers: $(echo "$hit" | jq -r '.error' | head -c 120)"
-    else
-      fail "C7 refused, but the message says neither what was used nor what the limit is: $(echo "$hit" | head -c 160)"
-    fi
-  fi
-fi
-
 # ── C8: what our own side recorded ───────────────────────────────────────────
 # The guest's word for "the undeclared host was refused" and ours must agree.
 # Seen from here it is the proof the allowlist was ENFORCED rather than merely
@@ -1025,8 +998,8 @@ fi
 # Needs AGENT_WALLET_KEY (a wallet's wk_) with a secret already stored for it —
 # C6 stores one, so run `ONLY=C6,C12`.
 if want C12; then
-  if [[ -z "$AGENT_WALLET_KEY" || -z "$AGENT_ACCOUNT" ]]; then
-    note "C12 SKIPPED: needs AGENT_WALLET_KEY and AGENT_ACCOUNT"
+  if [[ -z "$AGENT_WALLET_KEY" || -z "$AGENT_ACCOUNT" || -z "$AGENT_PAYMENT_KEY" ]]; then
+    note "C12 SKIPPED: needs AGENT_WALLET_KEY, AGENT_PAYMENT_KEY and AGENT_ACCOUNT"
   elif [[ "$APPLY" != true ]]; then
     printf '\033[90m  (dry-run) another agent, the owner themselves, another project, and a planted credential\033[0m\n' >&2
   else
@@ -1054,7 +1027,14 @@ if want C12; then
 
     # The owner's own agent reads it. Stated first so the refusals below mean
     # "not for you" rather than "nothing is there".
-    MINE=$(secret_seen -H "Authorization: Bearer $AGENT_WALLET_KEY")
+    #
+    # Paid for with the agent's OWN PAYMENT KEY, not with its `wk_`. A `wk_`
+    # names a wallet and buys nothing — the coordinator refuses it as
+    # `wk_is_not_a_payer`, which this probe then read as "the agent cannot see
+    # its own secret" and reported a working stack as broken. The two are the
+    # same identity to the keystore: `agent_secrets_ref` keys off the payment
+    # key's `owner`, and that owner is the wallet's own account.
+    MINE=$(secret_seen -H "X-Payment-Key: $AGENT_PAYMENT_KEY")
     if [[ "$MINE" == yes ]]; then
       pass "C12 the agent the secret is named after does read it"
     else
@@ -1949,6 +1929,42 @@ if want C19; then
     fi
   fi
 fi
+
+# ── C7: the daily quota ──────────────────────────────────────────────────────
+# LAST, and that placement is the test. It calls until the wallet is refused,
+# so every later section calling the same connector from the same wallet would
+# be refused too — C12 read that as "the agent cannot see its own secret", C14
+# and C16 as product refusals, and C15 charged nothing because nothing ran.
+# The header has claimed this ordering since it was written; the block sat
+# seventh of nineteen until 2026-08-23, and four sections downstream of it were
+# reporting an exhausted quota as a defect.
+if want C7; then
+  if [[ -z "$AGENT_PAYMENT_KEY" ]]; then
+    note "C7 SKIPPED: needs AGENT_PAYMENT_KEY, same as C6"
+  elif [[ "$APPLY" != true ]]; then
+    printf '\033[90m  (dry-run) call ping until the wallet is refused, and read the reason\033[0m\n' >&2
+  else
+    log "C7 the daily quota"
+    warn "C7 burns this wallet's quota for the connector for the rest of the day"
+    hit=""
+    # The limit is a tier, not a constant, and the wallet may have spent some of
+    # it already — so call until refused rather than counting to a number this
+    # script would have to keep in step with the coordinator's config.
+    for _ in $(seq 1 30); do
+      R=$(curl -s -X POST "$COORDINATOR_URL/call/$PROJECT" -H "X-Payment-Key: $AGENT_PAYMENT_KEY" \
+            -H 'Content-Type: application/json' -d '{"input":{"operation":"ping"}}')
+      if [[ "$(echo "$R" | jq -r '.reason // empty')" == "connector_quota_exceeded" ]]; then hit=$R; break; fi
+    done
+    if [[ -z "$hit" ]]; then
+      fail "C7 thirty calls and never refused — the quota is not being enforced"
+    elif echo "$hit" | grep -qE "[0-9]+"; then
+      pass "C7 refused with connector_quota_exceeded, and the message names the numbers: $(echo "$hit" | jq -r '.error' | head -c 120)"
+    else
+      fail "C7 refused, but the message says neither what was used nor what the limit is: $(echo "$hit" | head -c 160)"
+    fi
+  fi
+fi
+
 
 echo
 log "SUMMARY"
