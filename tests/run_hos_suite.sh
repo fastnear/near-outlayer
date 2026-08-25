@@ -12,7 +12,9 @@
 #   PARENT=you.testnet ./tests/run_hos_suite.sh --apply
 #   PARENT=you.testnet ONLY="decoder custody" ./tests/run_hos_suite.sh --apply
 #
-# Exits non-zero if any suite failed.
+# Exits non-zero if any suite failed. A suite that RAN and judged nothing exits 3
+# and is reported as NOTHING — never as ok, because the run is silent about what
+# it covers rather than green on it.
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -49,6 +51,10 @@ bash "$SCRIPT_DIR/hos_fixture.sh" --apply 2>&1 | tee "$LOGDIR/fixture.log" >&2 |
 
 declare -a RESULTS=()
 FAILED_SUITES=0
+# Suites that ran and judged nothing (exit 3 — see `verdict` in lib/hos_common.sh).
+# Counted apart from failures and apart from passes: their subject was not
+# reachable from here, so the run says nothing about it either way.
+NOTHING_SUITES=0
 for entry in "${SUITES[@]}"; do
   name=${entry%%|*}; rest=${entry#*|}; script=${rest%%|*}; desc=${rest#*|}
   if [[ -n "$ONLY" && " $ONLY " != *" $name "* ]]; then
@@ -62,8 +68,12 @@ for entry in "${SUITES[@]}"; do
   f=$(grep -oE "[0-9]+ failed" <<<"$line" | grep -oE "[0-9]+")
   s=$(grep -oE "[0-9]+ skipped" <<<"$line" | grep -oE "[0-9]+")
   g=$(grep -oE "[0-9]+ finding" <<<"$line" | grep -oE "[0-9]+")
-  RESULTS+=("$name|$( ((rc==0)) && echo ok || echo FAILED )|${p:-?}|${f:-?}|${s:-0}/${g:-0}|$desc")
-  ((rc==0)) || FAILED_SUITES=$((FAILED_SUITES+1))
+  case $rc in
+    0) st=ok ;;
+    3) st=NOTHING; NOTHING_SUITES=$((NOTHING_SUITES+1)) ;;
+    *) st=FAILED; FAILED_SUITES=$((FAILED_SUITES+1)) ;;
+  esac
+  RESULTS+=("$name|$st|${p:-?}|${f:-?}|${s:-0}/${g:-0}|$desc")
   tail -25 "$LOGDIR/$name.log" >&2
   note "full log: $LOGDIR/$name.log"
   # The per-IP window is a minute wide; a gap between suites costs a minute and
@@ -129,5 +139,11 @@ log "Verdict"
 if (( FAILED_SUITES > 0 )); then
   echo "  $FAILED_SUITES suite(s) failed — see $LOGDIR" >&2
   exit 1
+fi
+if (( NOTHING_SUITES > 0 )); then
+  echo "  $NOTHING_SUITES suite(s) judged NOTHING — the run is silent about what they cover," >&2
+  echo "  not green on it. Read their SKIP lines above and supply what they asked for." >&2
+  echo "  Everything that did run, passed. Logs in $LOGDIR" >&2
+  exit 0
 fi
 echo "  every suite passed. Logs in $LOGDIR" >&2

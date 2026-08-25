@@ -55,6 +55,16 @@ verdict() {
     for n in "${FAILED_NAMES[@]}"; do printf '  \033[31m✗ %s\033[0m\n' "$n" >&2; done
     return 1
   fi
+  # A suite that asserted NOTHING is not a suite that passed. Its subject may be
+  # unreachable from here — a quota spent, a credential this machine does not
+  # hold — and the run is then worth exactly as much as it judged. Returning 0
+  # here would print a green tick over a count of zero, which is the reading
+  # every skip in this harness exists to prevent. 3 is the runner's
+  # "ran nothing" code (`run_hos_suite.sh`, `run_custody.sh`).
+  if (( PASS == 0 )); then
+    warn "NOTHING RAN in $name — every probe stepped aside; see the SKIP lines above for why"
+    return 3
+  fi
   return 0
 }
 
@@ -361,6 +371,68 @@ new_bound_wallet() {
   done
   [[ "$status" == "active" ]] || { warn "$tag: the binding never went active ('$status')"; return 1; }
   pass "$tag: a fresh bound wallet, with its full monthly custody allowance"
+}
+
+# buy_payment_key <wk_key> <wallet-near-address> — a payment key for a wallet
+# the coordinator MINTED, bought with stablecoin instead of claimed as a trial.
+#
+# The trial route is capped at three keys per IP and the counter is in the
+# coordinator's memory, so a suite that can only claim trials loses itself to a
+# quota — and §5, which judges the HTTPS half of `use_bound_identity`, is the
+# suite that finds things. This route spends the PARENT's testnet USDC instead
+# and is not capped.
+#
+# NOT the NEAR-deposit route: `top_up_payment_key_with_near` wraps NEAR and
+# swaps it through Intents, and its own contract doc says it works on mainnet
+# only. On testnet its third promise calls `request_execution` for a project
+# that does not exist there and the whole call panics with "Project not found",
+# which reads as a coordinator defect and is not one.
+#
+# Sets PAID_KEY on success.
+PAID_KEY=""
+buy_payment_key() {
+  local wk=$1 addr=$2 reg="" have="" i
+  local token="${TOKEN_CONTRACT:-usdc.fakes.testnet}"
+  local minimal="${FUND_USDC_MINIMAL:-1500000}" deposit="${DEPOSIT_USDC:-0.30}"
+  PAID_KEY=""
+
+  near --quiet contract call-function as-transaction "$token" storage_deposit \
+    json-args "$(jq -nc --arg a "$addr" '{account_id:$a, registration_only:true}')" \
+    prepaid-gas '30.0 Tgas' attached-deposit '0.00125 NEAR' \
+    sign-as "$PARENT" network-config "$NETWORK" sign-with-keychain send >/dev/null 2>&1
+  # The registration has to be FINAL before the tokens are sent: NEP-141 refuses
+  # a transfer to an account it has not registered, and the two calls go out on
+  # one access key back to back.
+  for i in $(seq 1 10); do
+    reg=$(near_view "$token" storage_balance_of "$(jq -nc --arg a "$addr" '{account_id:$a}')")
+    [[ -n "$reg" && "$reg" != "null" && "$reg" != "ERR" ]] && break
+    reg=""; sleep 2
+  done
+  [[ -n "$reg" ]] || { warn "$token never registered $addr — the storage_deposit did not land"; return 1; }
+
+  near --quiet contract call-function as-transaction "$token" ft_transfer \
+    json-args "$(jq -nc --arg a "$addr" --arg m "$minimal" '{receiver_id:$a, amount:$m}')" \
+    prepaid-gas '30.0 Tgas' attached-deposit '1 yoctoNEAR' \
+    sign-as "$PARENT" network-config "$NETWORK" sign-with-keychain send >/dev/null 2>&1
+  # NEAR as well as tokens: the key is created by transactions the KEYSTORE
+  # signs as this wallet, and they pay their own gas and storage deposits.
+  fund_account "$addr" 1.0
+
+  for i in $(seq 1 10); do
+    have=$(near_view "$token" ft_balance_of "$(jq -nc --arg a "$addr" '{account_id:$a}')" | tr -d '"')
+    [[ -n "$have" && "$have" != "null" && "$have" != "ERR" ]] \
+      && python3 -c "exit(0 if int('$have') >= int('$minimal') else 1)" && break
+    have=""; sleep 3
+  done
+  [[ -n "$have" ]] || { warn "the stablecoin never arrived at $addr — create-payment-key would answer 402, correctly"; return 1; }
+
+  api_wk "$wk" POST /wallet/v1/create-payment-key "$(jq -nc --arg d "$deposit" '{initial_deposit_usdc:$d}')" >/dev/null
+  PAID_KEY=$(jq -r '.payment_key // empty' <<<"$BODY")
+  # The SENTENCE first, the code second: these refusals name the figure that is
+  # short, and a bare `wallet_underfunded` sends the reader to the coordinator
+  # instead of to the funding above.
+  [[ -n "$PAID_KEY" ]] || { warn "create-payment-key refused (HTTP $HTTP): $(jq -r '.message // .error // .' <<<"$BODY" | head -c 200)"; return 1; }
+  return 0
 }
 
 # ── the w_execute_extension envelope ─────────────────────────────────────────

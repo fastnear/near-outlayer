@@ -9,6 +9,17 @@ This was validated on **testnet** (node account `fastnearmpc.testnet`) on a serv
 Dell R760 (2× Xeon Gold 6548Y+, Emerald Rapids), 2026-06-17. The mainnet path is the same
 with mainnet accounts/contract.
 
+> **Scope — this is node *operation*, not OutLayer custody.** Running an MPC node makes
+> you a **participant** in NEAR Chain Signatures: you hold a share of the network's
+> threshold key and help produce signatures for everybody's requests. That is a separate
+> thing from how OutLayer's keystore obtains its own secrets. The keystore is a **client**
+> of the same network — it gets its master through MPC Chain Key Derivation
+> (`mpc_contract.request_app_private_key`, see `keystore-worker/src/mpc_ckd.rs` and
+> [`../../VAULTS.md`](../../VAULTS.md)), and so does every per-customer vault master. That
+> derivation works identically whoever the participants happen to be, so OutLayer custody
+> does not depend on us running a node — and running one grants us no extra access to any
+> key derived by the network.
+
 > **Authoritative upstream:** NEAR's own guide
 > [`running-an-mpc-node-in-tdx-external-guide.md`](https://github.com/near/mpc/blob/main/docs/running-an-mpc-node-in-tdx-external-guide.md)
 > in `github.com/near/mpc`. This runbook is *our* concrete, gotcha-annotated walk of that

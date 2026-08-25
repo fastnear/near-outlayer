@@ -150,8 +150,15 @@ if [[ -z "${BINDING_SEED:-}" || -z "${ASSET:-}" ]] \
   log "Minting one binding for the suites that need it (KEEP=1)"
   BL=$(mktemp -t custody_bind.XXXXXX)
   if KEEP=1 "$SCRIPT_DIR/binding_lifecycle_e2e.sh" --apply 2>&1 | tee "$BL" >&2; then
-    BINDING_SEED=$(grep -o 'BINDING_SEED=[^ ]*' "$BL" | tail -1 | cut -d= -f2)
-    ASSET=$(grep -o 'ASSET=[^ ]*' "$BL" | tail -1 | cut -d= -f2)
+    # STRIP THE COLOURS FIRST. The line is printed through `note`, which wraps it
+    # in an ANSI reset, and `[^ ]*` stops at a space — which `\033[0m` is not. So
+    # the LAST value on the line came out with the escape glued to it, and only
+    # that one: `ASSET` survived because something follows it. A seed carrying a
+    # reset is refused by `/wallet/v1/address` ("only [a-zA-Z0-9._-] allowed"),
+    # which reads as a broken endpoint rather than a mangled argument.
+    BL_PLAIN=$(sed $'s/\033\[[0-9;]*[mK]//g' "$BL")
+    BINDING_SEED=$(grep -o 'BINDING_SEED=[^ ]*' <<<"$BL_PLAIN" | tail -1 | cut -d= -f2)
+    ASSET=$(grep -o 'ASSET=[^ ]*' <<<"$BL_PLAIN" | tail -1 | cut -d= -f2)
     export BINDING_SEED ASSET
     # `stuck_request_repair_e2e.sh` reads REUSE_SEED/BOUND_TO, not
     # BINDING_SEED/ASSET — without these its R4 door probe silently skips, and

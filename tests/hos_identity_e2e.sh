@@ -52,11 +52,26 @@ note "wallet $WID / executor $EXEC"
 CLAIM=$(curl -sS -m 60 -X POST "$COORDINATOR_URL/trial-key" -H "Authorization: Bearer $WK" \
   -H 'Content-Type: application/json' -d '{}' 2>/dev/null)
 PK=$(jq -r '.payment_key // empty' <<<"$CLAIM")
+
+# The trial quota is three keys per IP and it is not resettable from outside —
+# so the section that judges the HTTPS half of `use_bound_identity` used to be
+# lost to a counter, on a run that then reported nothing wrong. A wallet can buy
+# its own key instead. The key it gets is owned by the same implicit account the
+# trial key would have been, which is what makes I1 land on the binding lookup
+# rather than on "this key names no wallet".
 if [[ -z "$PK" ]]; then
-  skip "§5 — no trial key could be claimed from this address: $(jq -r '.error // .' <<<"$CLAIM" | head -c 160)"
-  verdict "§5 identity"; exit 0
+  note "no trial key ($(jq -r '.error // .' <<<"$CLAIM" | head -c 90)) — buying one with stablecoin instead"
+  buy_payment_key "$WK" "$EXEC" && PK="$PAID_KEY"
 fi
-note "trial key claimed (allowance $(jq -r '.allowance_usd' <<<"$CLAIM"))"
+
+if [[ -z "$PK" ]]; then
+  skip "§5 — this wallet has no key to pay with: the trial quota for this address is spent and the stablecoin route did not go through either (see the warning above for which step)"
+  # Exit 3, not 0: without a key this suite judges nothing, and §5 is where the
+  # HTTPS half of `use_bound_identity` is judged at all. A zero here reads in
+  # the runner's table as a suite that passed.
+  verdict "§5 identity"; exit 3
+fi
+note "paying with ${PK:0:8}… ($(jq -r 'if .allowance_usd then "trial allowance \(.allowance_usd)" else "bought with stablecoin" end' <<<"$CLAIM" 2>/dev/null || echo "bought with stablecoin"))"
 
 ACC="hos-ident-$(openssl rand -hex 3).$PARENT"
 cleanup() {

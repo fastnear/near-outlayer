@@ -538,6 +538,31 @@ Legacy deposit names (`intents_deposit`/`storage_deposit`/`cross_chain_deposit`)
 policy are normalized to `call` so old policies keep matching. Note `cross_chain_withdraw` is its
 **own** type (NOT folded into `withdraw`) — a policy must list it explicitly to permit bridging out.
 
+### Bound wallets: the fund lane faces the rules twice
+
+A `w_execute_extension` call — the lane a bound wallet spends through — is judged first by its
+DECODED effects (every receiver, token move, refund destination and storage beneficiary inside
+`args_base64`), and then, on the way out, by the ordinary scalar rules applied to the OUTER call.
+Both layers are deliberate. What the outer call looks like to the second layer:
+
+| field | value on the fund lane |
+|---|---|
+| destination | the wallet's **bound account** — the door the call goes through, not a payee |
+| token | `native` — the outer call carries a 1-yoctoNEAR marker, whatever moves inside |
+
+So a policy governing a bound wallet must **also**:
+
+- list the **bound account itself** in `addresses.list` (or use `mode: "none"`), or every call
+  through the lane is refused with `Address '<bound account>' is not in whitelist` — naming an
+  account the owner never listed as a destination;
+- include `native` (or `"*"`) in `allowed_tokens`, or every native transfer through the lane is
+  refused with `Token 'native' is not allowed by policy`, even when what actually moves is a token
+  the list does allow.
+
+Narrowing `allowed_tokens` to a single fungible token therefore switches off native spending on the
+lane. That is the rule working as written, not a defect — but it is not what the policy looks like
+it says.
+
 ### Roles
 
 | Role | Approve transactions | Modify policy | Freeze wallet |
