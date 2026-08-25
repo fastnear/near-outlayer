@@ -14,7 +14,13 @@
 #       loser is either 409 wallet_busy (the winner still holds the wallet) or
 #       403 policy_denied (the winner already wrote its usage). Both are
 #       correct; BOTH SUCCEEDING is the defect, and it is silent — two lawful
-#       calls, two 200s, and a wallet over its ceiling
+#       calls, two 200s, and a wallet over its ceiling.
+#
+#       A 409 must leave the loser something to act on: `in_flight_request_id`
+#       once the winner's row exists, or `in_flight_operation` before it does —
+#       the id is withheld until the row is written, since one given earlier
+#       answers 404 and reads as a request that was lost. Neither field is the
+#       failure
 #   P2  the 2-second grace still works — two simultaneous spends that BOTH fit
 #       under the limit must both succeed. Without the grace every client
 #       making two quick calls would see a stream of 409s for doing nothing
@@ -268,10 +274,27 @@ case "$OK" in
     LOSER=$([[ "$H1" == 2?? ]] && echo "$OUT2" || echo "$OUT1")
     case "$(code_of "$LOSER")" in
       wallet_busy)
+        # A refusal has to leave the caller something to act on, and there are
+        # two shapes of that — because the id is withheld until the winner's
+        # request row is written. One handed out before that answers 404, which
+        # reads as a request that was lost, and the reasonable response to a
+        # lost request is to send it again.
+        #
+        # This probe fires both spends AT ONCE, so the loser arrives just as the
+        # winner takes the wallet — before its INSERT far more often than after.
+        # Demanding an id here would fail a correct stack nearly every run.
+        # `in_flight_operation` is what is always there, and it is the half that
+        # decides how long to wait: seconds for a transfer, minutes for a
+        # cross-chain withdraw.
         ID=$(body_of "$LOSER" | jq -r '.in_flight_request_id // empty')
-        [[ -n "$ID" ]] \
-          && pass "P1 the loser got wallet_busy with in_flight_request_id=$ID to poll" \
-          || fail "P1 wallet_busy carried no in_flight_request_id — the caller has nothing to poll and no way to learn the outcome"
+        OP=$(body_of "$LOSER" | jq -r '.in_flight_operation // empty')
+        if [[ -n "$ID" ]]; then
+          pass "P1 the loser got wallet_busy with in_flight_request_id=$ID to poll${OP:+ (a $OP)}"
+        elif [[ -n "$OP" ]]; then
+          pass "P1 the loser got wallet_busy naming a $OP to wait for — the winner's row is not written yet"
+        else
+          fail "P1 wallet_busy carried NEITHER an id nor an operation — the caller has nothing to poll, nothing to wait for, and no way to learn the outcome"
+        fi
         ;;
       policy_denied)
         pass "P1 the loser was refused by the limit, reading a usage total that already included the winner" ;;

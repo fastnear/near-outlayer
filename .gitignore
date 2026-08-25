@@ -63,3 +63,7 @@ package-lock.json
 multi-keystore-research.md
 cloudflare-account-migration.md
 CONNECTOR_TEST_LOG.md
+
+# HoS suite fixture coordinates (live testnet accounts and bearer seeds)
+tests/.hos_fixture.env
+tests/hos-status-stub/target/

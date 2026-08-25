@@ -374,9 +374,31 @@ Agent → POST /wallet/v1/intents/withdraw { to, amount, chain, token }
         15. Enqueue webhook if configured
 ```
 
-**Usage is recorded only after a successful operation** (`record_usage()` runs post-settle, never
-on create-pending or failure). This keeps the velocity counters honest while still bounding each
-op by the exact (stateless) per-transaction limit, whitelist, and capability checks inside the TEE.
+**Usage is recorded post-settle, never on create-pending.** Nothing is reserved when a request is
+accepted and nothing is released when it fails — `record_usage()` is the only writer of these
+counters and it runs after the outcome is known. This keeps the velocity counters honest while
+still bounding each op by the exact (stateless) per-transaction limit, whitelist, and capability
+checks inside the TEE.
+
+What that means for each outcome, because the spend windows and the transaction count answer
+differently:
+
+| outcome | `daily`/`hourly`/`monthly` spend | `rate_limit.max_per_hour` |
+|---------|----------------------------------|---------------------------|
+| refused before it was sent — by this policy, or by a pre-flight check | nothing | nothing |
+| reached the chain and reverted | nothing — no money moved | **one** |
+| settled | the amount that moved | one per (token, amount) pair |
+
+A reverted request costing nothing against the spend windows but still consuming one of the hourly
+allowance is deliberate: a limiter a caller can walk past by failing its own calls is not a
+limiter. By the same rule, one request moving both NEAR and a token counts twice.
+
+**What a call spends is the deposit it ATTACHED, not what it turned out to cost.** Most contracts
+refund the change, and the refund is *not* credited back — attach what you mean to spend. The same
+holds for a call that panics: the protocol returns the deposit, the counter keeps it. This errs the
+safe way, and it is the rule rather than an omission — a limit that under-counts stops being a
+limit. The 1-yoctoNEAR marker a payable method demands (`assert_one_yocto`) is protocol overhead,
+deducted before anything is counted.
 
 **Token options for `chain=near`** — the `token` field selects what the recipient receives:
 

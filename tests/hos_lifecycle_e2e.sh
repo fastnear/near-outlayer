@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+#
+# §6 of the HoS test plan — lifecycle and invalidation (acceptance R5) for the
+# `personal_account` mode, live on chain.
+#
+# In this mode there is exactly one lifecycle event: the executor leaving the
+# account's extension set. The partner's mode has more (lease, rotation,
+# freeze), and those live behind the stub in §10 — but the machinery that
+# CARRIES a fault into a refusal is the same one, and this suite proves it end
+# to end against a real account whose control set really changes.
+#
+# It builds and destroys its OWN account and binding. The shared fixture is
+# deliberately not used: removing an executor is TERMINAL, and a suite that
+# ended the fixture would take every later run with it.
+#
+# What is pinned:
+#   R5a  the lane works, so the refusals below are refusals of something
+#   R5b  RemoveExtension(executor) → `executor_not_in_control_set`, terminal
+#   R5c  the refusal arrives within the observation cache window (5 s), i.e.
+#        a permission cached a moment ago does not outlive the fact
+#   R5d  the binding ends up `revoked` and a later GET says so
+#   R5e  a revoked binding cannot be nursed back — the owner must re-bind,
+#        and re-binding the same account works
+#   R5f  DELETE cancels what was pending
+#   R5g  a wiped account is refused, not silently allowed
+#
+#   PARENT=you.testnet ./tests/hos_lifecycle_e2e.sh --apply
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hos_common.sh"
+
+[[ "${1:-}" == "--apply" ]] || { sed -n '3,28p' "$0" >&2; echo "  Pass --apply to run." >&2; exit 0; }
+hos_require
+
+WL="${WL:-zavodil2.testnet}"
+TINY="500000000000000000000"
+
+SEED_L="hos-life-$(date +%s)-$$"
+read -r WID_L EXEC_L < <(wallet_address "$SEED_L")
+[[ -n "$WID_L" ]] || { echo "✗ could not mint the wallet" >&2; exit 1; }
+ACC="hos-life-$(openssl rand -hex 3).$PARENT"
+note "wallet $WID_L / executor $EXEC_L / account $ACC"
+
+cleanup() {
+  local rc=$?
+  api "$SEED_L" DELETE /wallet/v1/binding >/dev/null 2>&1 || true
+  account_exists "$ACC" && { note "cleaning up $ACC"; delete_account "$ACC"; }
+  return $rc
+}
+trap cleanup EXIT
+
+log "Building the account, the wallet contract and the binding"
+create_subaccount "$ACC" 0.7 || { echo "✗ $ACC never appeared" >&2; exit 1; }
+api "$SEED_L" PUT /wallet/v1/binding "$(jq -nc --arg a "$ACC" '{asset_account_id:$a, kind:"personal_account"}')" >/dev/null
+[[ "$HTTP" == "200" ]] || { echo "✗ PUT failed $HTTP: $BODY" >&2; exit 1; }
+install_wallet "$ACC" "$EXEC_L" || { echo "✗ the setup transaction did not land" >&2; exit 1; }
+fund_account "$EXEC_L" 0.25
+store_policy "$SEED_L" "$WID_L" "$(jq -nc --arg a "$ACC" --arg w "$WL" \
+  '{rules:{addresses:{mode:"whitelist",list:[$a,$w]},limits:{per_transaction:{native:"1000000000000000000000000"}}}}')" \
+  || { echo "✗ policy not stored" >&2; exit 1; }
+
+STATUS=""
+for _ in 1 2 3 4 5 6 7 8; do
+  api "$SEED_L" GET /wallet/v1/binding >/dev/null
+  STATUS=$(jq -r '.binding_status // ""' <<<"$BODY"); [[ "$STATUS" == "active" ]] && break; sleep 3
+done
+[[ "$STATUS" == "active" ]] && pass "R5a the binding is ACTIVE" || { fail "R5a never went active ('$STATUS')"; verdict "§6 lifecycle"; exit 1; }
+
+log "R5a control — the lane spends before anything is broken"
+call_ext "$SEED_L" "$ACC" "$(ext_transfer "$WL" "$TINY")" >/dev/null
+assert_status "R5a the lane works" 200
+
+# ── R5b/R5c the executor is cut from the control set ───────────────────────
+log "R5b the owner signs RemoveExtension(executor) directly on the account"
+REMOVE=$(jq -nc --arg e "$EXEC_L" '{request:{internal:[{op:"remove_extension",payload:{account_id:$e}}]}}')
+if extension_op "$ACC" "$REMOVE"; then
+  pass "R5b the removal landed on chain"
+else
+  fail "R5b the removal transaction did not land — nothing below is judgeable"
+fi
+
+# Straight away: the cached ALLOW is at most five seconds old, so a call now is
+# the interesting one. Waiting first would prove only that a cache expires.
+CUT_AT=$(date +%s)
+call_ext "$SEED_L" "$ACC" "$(ext_transfer "$WL" "$TINY")" >/dev/null
+IMMEDIATE_HTTP=$HTTP; IMMEDIATE_CLASS=$(class_of)
+if [[ "$IMMEDIATE_HTTP" == "403" && "$IMMEDIATE_CLASS" == "executor_not_in_control_set" ]]; then
+  pass "R5c refused $(( $(date +%s) - CUT_AT ))s after the cut, class '$IMMEDIATE_CLASS' — inside the 5 s window, so no cached permission outlived the fact"
+elif [[ "$IMMEDIATE_HTTP" == "200" ]]; then
+  # A cached allow inside the window is the documented behaviour, not a defect;
+  # what would be a defect is the refusal never arriving.
+  note "the call inside the cache window was still admitted — re-asking after the TTL"
+  sleep 7
+  call_ext "$SEED_L" "$ACC" "$(ext_transfer "$WL" "$TINY")" >/dev/null
+  assert_class "R5c refused once the 5 s observation cache expired" "executor_not_in_control_set"
+  finding "a cut executor was still admitted for up to OBSERVATION_TTL_SECS (5 s) after RemoveExtension landed. That is the documented cache, and the partner's R5 wording is 'immediately' — worth stating to them explicitly as a bounded 5 s window rather than letting them discover it."
+else
+  fail "R5c refused as HTTP $IMMEDIATE_HTTP class '${IMMEDIATE_CLASS:-none}', expected executor_not_in_control_set: $(msg_of)"
+fi
+
+log "R5b' the refusal is marked TERMINAL — an agent must stop, not retry"
+if [[ "$(jq -r '.terminal // ""' <<<"$BODY")" == "true" ]]; then
+  pass "R5b' terminal=true"
+else
+  fail "R5b' the answer is not marked terminal: $(head -c 200 <<<"$BODY")"
+fi
+
+# ── R5d the record follows the chain ───────────────────────────────────────
+log "R5d GET /binding after the cut"
+api "$SEED_L" GET /wallet/v1/binding >/dev/null
+S1=$HTTP; ST=$(jq -r '.binding_status // ""' <<<"$BODY")
+if [[ "$ST" == "revoked" ]]; then
+  pass "R5d the record reports 'revoked' once, informatively, rather than a bare 404"
+  api "$SEED_L" GET /wallet/v1/binding >/dev/null
+  assert_status "R5d the NEXT read is a 404 — the binding is gone" 404
+elif [[ "$S1" == "404" ]]; then
+  pass "R5d the binding is gone (404)"
+else
+  fail "R5d status after the cut is '$ST' (HTTP $S1), expected revoked or 404"
+fi
+
+# ── R5e re-binding is the only way back ────────────────────────────────────
+log "R5e the owner puts the executor back and re-binds"
+READD=$(jq -nc --arg e "$EXEC_L" '{request:{internal:[{op:"add_extension",payload:{account_id:$e}}]}}')
+if extension_op "$ACC" "$READD"; then
+  api "$SEED_L" PUT /wallet/v1/binding "$(jq -nc --arg a "$ACC" '{asset_account_id:$a, kind:"personal_account"}')" >/dev/null
+  if [[ "$HTTP" == "200" ]]; then
+    ST2=""
+    for _ in 1 2 3 4 5 6; do
+      api "$SEED_L" GET /wallet/v1/binding >/dev/null
+      ST2=$(jq -r '.binding_status // ""' <<<"$BODY"); [[ "$ST2" == "active" ]] && break; sleep 3
+    done
+    [[ "$ST2" == "active" ]] \
+      && pass "R5e a NEW binding on the same account goes active — a terminal fault ends a lane, not an account" \
+      || fail "R5e the new binding never went active ('$ST2')"
+  else
+    fail "R5e re-binding the same account was refused (HTTP $HTTP): $(msg_of)"
+  fi
+else
+  fail "R5e the re-add transaction did not land"
+fi
+
+# ── R5f DELETE cancels what was pending ────────────────────────────────────
+log "R5f DELETE the binding, then try to spend"
+api "$SEED_L" DELETE /wallet/v1/binding >/dev/null
+assert_status "R5f DELETE" 200
+call_ext "$SEED_L" "$ACC" "$(ext_transfer "$WL" "$TINY")" >/dev/null
+# With no binding the pre-flight has nothing of ours to enforce; the account's
+# own contract still refuses a stranger. What must NOT happen is the call being
+# admitted AND signed as though the binding were alive.
+if [[ "$HTTP" == "200" && "$(jq -r '.status // ""' <<<"$BODY")" == "success" ]]; then
+  fail "R5f a spend on the unbound account still succeeded — DELETE left the lane open"
+else
+  pass "R5f after DELETE the spend does not go through (HTTP $HTTP, $(jq -r '.status // .error // "?"' <<<"$BODY"))"
+fi
+
+# ── R5g a wiped account ────────────────────────────────────────────────────
+log "R5g deleting the account from under a live binding"
+api "$SEED_L" PUT /wallet/v1/binding "$(jq -nc --arg a "$ACC" '{asset_account_id:$a, kind:"personal_account"}')" >/dev/null
+for _ in 1 2 3 4 5 6; do
+  api "$SEED_L" GET /wallet/v1/binding >/dev/null
+  [[ "$(jq -r '.binding_status // ""' <<<"$BODY")" == "active" ]] && break; sleep 3
+done
+delete_account "$ACC"
+sleep 8
+call_ext "$SEED_L" "$ACC" "$(ext_transfer "$WL" "$TINY")" >/dev/null
+if [[ "$HTTP" =~ ^4 ]]; then
+  pass "R5g a wiped account is refused ($HTTP $(err_of)/$(class_of)) — the code hash is no longer one we recognize"
+else
+  fail "R5g a spend against a deleted account answered $HTTP: $(msg_of)"
+fi
+
+verdict "§6 lifecycle"

@@ -124,6 +124,14 @@ struct ParsedError {
     /// through `get_request_status`. Without it a busy answer is a dead end.
     #[serde(skip_serializing_if = "Option::is_none")]
     in_flight_request_id: Option<String>,
+    /// What the holder is DOING, set even when there is no id to poll yet.
+    /// It is what decides whether waiting is worth it: a transfer clears in
+    /// seconds, a cross-chain withdraw can run for minutes.
+    ///
+    /// Skipped when absent for the same reason as the fields above: an agent
+    /// must be able to tell "the answer did not say" from a value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    in_flight_operation: Option<String>,
 }
 
 /// Split `"<code>: <message>[ key=value]..."` back into its parts.
@@ -151,7 +159,11 @@ fn parse_guest_error(raw: &str) -> ParsedError {
     // The trailing fields, read off the END so they are not mistaken for part
     // of the message, and removed from it as they are read.
     let mut message = head;
-    for (key, is_id) in [("in_flight_request_id=", true), ("terminal=", false)] {
+    // RIGHTMOST FIRST. Each field read is cut off the end of the message, so
+    // the order here has to mirror the order the host appends them in — a key
+    // sought before one that sits to its right is found in a message that still
+    // has the other glued on.
+    for key in ["in_flight_operation=", "in_flight_request_id=", "terminal="] {
         let Some(at) = message.rfind(&format!(" {key}")) else {
             continue;
         };
@@ -164,10 +176,10 @@ fn parse_guest_error(raw: &str) -> ParsedError {
         if value.is_empty() {
             continue;
         }
-        if is_id {
-            out.in_flight_request_id = Some(value);
-        } else {
-            out.terminal = value.parse::<bool>().ok();
+        match key {
+            "in_flight_operation=" => out.in_flight_operation = Some(value),
+            "in_flight_request_id=" => out.in_flight_request_id = Some(value),
+            _ => out.terminal = value.parse::<bool>().ok(),
         }
         message = &message[..at];
     }
@@ -615,4 +627,44 @@ mod guest_error_parse_tests {
         let p = parse_guest_error("wallet_busy: held in_flight_request_id=");
         assert_eq!(p.in_flight_request_id, None);
     }
+
+    /// A busy answer with no id yet still says what to wait for.
+    ///
+    /// This is the case the field exists for: the wallet was taken a moment ago
+    /// and the request row is not written, so the coordinator withholds the id
+    /// rather than handing out one that answers 404. Without the operation the
+    /// agent would know only "busy" and could not tell a two-second transfer
+    /// from a cross-chain withdraw running for minutes.
+    #[test]
+    fn a_busy_answer_without_an_id_still_names_the_operation() {
+        let parsed = parse_guest_error(
+            "wallet_busy: a transfer is using this wallet and has not written its request yet \
+             in_flight_operation=transfer",
+        );
+        assert_eq!(parsed.code.as_deref(), Some("wallet_busy"));
+        assert_eq!(parsed.in_flight_operation.as_deref(), Some("transfer"));
+        assert_eq!(parsed.in_flight_request_id, None);
+        assert!(
+            !parsed.message.contains("in_flight_operation"),
+            "the field must be taken OUT of the message, not left glued to it: {}",
+            parsed.message
+        );
+    }
+
+    /// Both fields together, in the order the host appends them.
+    ///
+    /// The order is load-bearing: these are read off the END and the message is
+    /// truncated at each one taken, so an operation appended before the id
+    /// would be orphaned in the message once the id was stripped.
+    #[test]
+    fn an_id_and_an_operation_are_both_lifted_out() {
+        let parsed = parse_guest_error(
+            "wallet_busy: a swap is using this wallet in_flight_request_id=req-42 \
+             in_flight_operation=swap",
+        );
+        assert_eq!(parsed.in_flight_request_id.as_deref(), Some("req-42"));
+        assert_eq!(parsed.in_flight_operation.as_deref(), Some("swap"));
+        assert_eq!(parsed.message, "wallet_busy: a swap is using this wallet".replace("wallet_busy: ", ""));
+    }
+
 }

@@ -40,12 +40,16 @@
 #       "was it refused" but "can the refusal be routed on". `terminal` is NOT
 #       expected here: `guest_error` appends it only when the body carries it,
 #       and a plain policy refusal sends the uniform `{error,message}`
-#   W6  `wallet_busy` in both halves: hold the wallet with a slower operation,
-#       call `transfer` inside the window → `code = wallet_busy` WITH an
-#       `in_flight_request_id`; then feed that id to `request_status` and get a
-#       readable status back. A refusal naming a request nobody can read is a
-#       dead end wrapped in an instruction, and nothing else tests the second
-#       half
+#   W6  `wallet_busy` routed on: hold the wallet with a slower operation, call
+#       `transfer` inside the window → `code = wallet_busy` carrying something
+#       to act on. TWO shapes are correct, because the coordinator withholds
+#       the id until the holder's row is written (one given earlier answers
+#       404): either an `in_flight_request_id`, which is then fed to
+#       `request_status` and must read back — a refusal naming a request nobody
+#       can read is a dead end wrapped in an instruction, and nothing else
+#       tests that — or, when the guest met the holder before its INSERT, an
+#       `in_flight_operation` and no id, which says what to wait for. NEITHER
+#       is the failure
 #   W7  `X-Wallet-Id` naming SOMEBODY ELSE's wallet → refused. The header
 #       confirms the wallet the credential already names; it never selects one
 #
@@ -175,9 +179,18 @@ store_policy() { # store_policy <policy-json>
   [[ -n "$sig_hex" ]] || { warn "sign-policy failed: $(head -c 200 <<<"$sg")"; return 1; }
   store_args=$(jq -nc --arg pk "ed25519:$pub_hex" --arg ed "$encb64" --arg sg "$sig_hex" \
     '{wallet_pubkey:$pk, encrypted_data:$ed, wallet_signature:$sg}')
-  near --quiet contract call-function as-transaction "${CONTRACT_ID:-outlayer.testnet}" store_wallet_policy \
+  # The CLI's own words, not just its exit code. The two curl steps above each
+  # quote what failed; this one used to send everything to /dev/null, so a run
+  # that died here said only "policy not stored" — a contract refusal, an
+  # underfunded signer and a network pointed elsewhere all looked identical.
+  local out rc=0
+  out=$(near --quiet contract call-function as-transaction "${CONTRACT_ID:-outlayer.testnet}" store_wallet_policy \
     json-args "$store_args" prepaid-gas '100.0 Tgas' attached-deposit '0.1 NEAR' \
-    sign-as "$PARENT" network-config "$NETWORK" sign-with-keychain send >/dev/null 2>&1 || return 1
+    sign-as "$PARENT" network-config "$NETWORK" sign-with-keychain send 2>&1) || rc=$?
+  if (( rc != 0 )); then
+    warn "store_wallet_policy failed (rc=$rc): $(tail -c 500 <<<"$out")"
+    return 1
+  fi
   sleep 5
 }
 
@@ -213,13 +226,71 @@ if [[ "$MINTED" == true ]]; then
     json-args "$(jq -nc --arg a "$ADDRESS" '{account_id:$a, registration_only:true}')" \
     prepaid-gas '30.0 Tgas' attached-deposit '0.00125 NEAR' \
     sign-as "$PARENT" network-config "$NETWORK" sign-with-keychain send >/dev/null 2>&1
+  # WAIT FOR THE REGISTRATION TO BE VISIBLE before sending the tokens. A NEP-141
+  # `ft_transfer` to an account the token has not registered yet is refused BY
+  # THE TOKEN, and these two calls used to go out back to back with nothing
+  # between them: run by hand, seconds apart, both succeed; run by the script,
+  # the transfer overtakes its own registration. Its output went to /dev/null,
+  # so the run showed a funded-looking wallet with no stablecoin in it and the
+  # coordinator took the blame for answering `wallet_underfunded` correctly.
+  REGISTERED=""
+  for _ in $(seq 1 10); do
+    REG=$(curl -s "$RPC_URL" -X POST -H 'Content-Type: application/json' \
+      -d "$(jq -nc --arg t "$TOKEN_CONTRACT" --arg a "$(jq -nc --arg x "$ADDRESS" '{account_id:$x}' | base64)" \
+          '{jsonrpc:"2.0",id:1,method:"query",params:{request_type:"call_function",finality:"final",account_id:$t,method_name:"storage_balance_of",args_base64:$a}}')" \
+      | jq -r 'try (.result.result | implode) catch "null"' 2>/dev/null)
+    [[ -n "$REG" && "$REG" != "null" ]] && { REGISTERED=$REG; break; }
+    sleep 2
+  done
+  # Say which step failed, rather than falling through to send tokens that the
+  # token contract will refuse. Left silent, the check further down reports "the
+  # transfer never arrived" — true, but it names the wrong step, and the next
+  # person goes looking at `ft_transfer` instead of at the registration it was
+  # waiting on.
+  [[ -n "$REGISTERED" ]] || {
+    echo "✗ $TOKEN_CONTRACT never registered $ADDRESS (storage_balance_of stayed null for 20s)." >&2
+    echo "  The storage_deposit from $PARENT did not land, so the ft_transfer below would be" >&2
+    echo "  refused by the token — not by the coordinator." >&2
+    exit 1
+  }
   near --quiet contract call-function as-transaction "$TOKEN_CONTRACT" ft_transfer \
     json-args "$(jq -nc --arg a "$ADDRESS" --arg m "$FUND_USDC_MINIMAL" '{receiver_id:$a, amount:$m}')" \
     prepaid-gas '30.0 Tgas' attached-deposit '1 yoctoNEAR' \
     sign-as "$PARENT" network-config "$NETWORK" sign-with-keychain send >/dev/null 2>&1
   near --quiet tokens "$PARENT" send-near "$ADDRESS" "$FUND_NEAR NEAR" \
     network-config "$NETWORK" sign-with-keychain send >/dev/null 2>&1
-  sleep 4
+
+  # WAIT FOR THE STABLECOIN, and say so when it never comes.
+  #
+  # `create-payment-key` reads the wallet's own token balance and refuses at 402
+  # `wallet_underfunded` before doing anything else — so a funding transfer that
+  # quietly failed came back as a coordinator error, and one run of this suite
+  # was spent looking for a defect in a coordinator that had answered correctly.
+  # It happens: the three sends above go out back to back on ONE access key, and
+  # a `storage_deposit` that is not final yet, or a nonce that collides, takes
+  # the `ft_transfer` down while the plain NEAR send after it succeeds. Their
+  # output goes to /dev/null, so nothing says which.
+  #
+  # Polled rather than slept, because "not yet" and "never" look the same at a
+  # fixed four seconds.
+  FUNDED=""
+  for _ in $(seq 1 10); do
+    sleep 3
+    HAVE=$(curl -s "$RPC_URL" -X POST -H 'Content-Type: application/json' \
+      -d "$(jq -nc --arg t "$TOKEN_CONTRACT" --arg a "$(jq -nc --arg x "$ADDRESS" '{account_id:$x}' | base64)" \
+          '{jsonrpc:"2.0",id:1,method:"query",params:{request_type:"call_function",finality:"final",account_id:$t,method_name:"ft_balance_of",args_base64:$a}}')" \
+      | jq -r 'try (.result.result | implode | fromjson) catch "0"' 2>/dev/null | tr -d '"')
+    [[ -n "$HAVE" && "$HAVE" != "null" ]] || HAVE=0
+    if python3 -c "exit(0 if int('${HAVE:-0}') >= int('$FUND_USDC_MINIMAL') else 1)" 2>/dev/null; then
+      FUNDED=$HAVE; break
+    fi
+  done
+  [[ -n "$FUNDED" ]] || {
+    echo "✗ the wallet never received its stablecoin (holds ${HAVE:-0} of $FUND_USDC_MINIMAL $TOKEN_CONTRACT)." >&2
+    echo "  The funding transfer from $PARENT failed, not the coordinator: create-payment-key would" >&2
+    echo "  answer 402 wallet_underfunded, which is the correct answer to an unfunded wallet." >&2
+    exit 1
+  }
   K=$(curl -sS -m 120 -X POST "$COORDINATOR_URL/wallet/v1/create-payment-key" \
         -H "$(AUTH)" -H 'Content-Type: application/json' \
         -d "$(jq -nc --arg d "$DEPOSIT_USDC" '{initial_deposit_usdc:$d}')")
@@ -431,7 +502,7 @@ hold_loop() {
 # minutes earlier it was refused. Both loops are between requests at the same
 # instant often enough to matter. One attempt therefore decides by coin toss
 # whether a real contract is reported as unproven, which is worse than slow.
-CODE=""; INFLIGHT=""; BODY=""
+CODE=""; INFLIGHT=""; INFLIGHT_OP=""; BODY=""
 for attempt in 1 2 3 4; do
   : > "$HOLD_FLAG"
   hold_loop & HOLD1=$!
@@ -446,6 +517,7 @@ for attempt in 1 2 3 4; do
   BODY=${R#* }
   CODE=$(jq -r '.output.error_parsed.code // empty' <<<"$BODY")
   INFLIGHT=$(jq -r '.output.error_parsed.in_flight_request_id // empty' <<<"$BODY")
+  INFLIGHT_OP=$(jq -r '.output.error_parsed.in_flight_operation // empty' <<<"$BODY")
   [[ "$CODE" == "wallet_busy" ]] && break
   note "W6 attempt $attempt: the guest slipped through the gap; trying again"
 done
@@ -457,10 +529,29 @@ if [[ "$CODE" != "wallet_busy" ]]; then
   note "W6 counts as neither passed nor failed: the contract stays unproven"
 else
   pass "W6 the guest saw wallet_busy"
-  if [[ -z "$INFLIGHT" ]]; then
-    fail "W6 wallet_busy arrived WITHOUT in_flight_request_id — the agent is told to wait and not told for what"
+  # TWO valid shapes, and the difference is not a defect.
+  #
+  # The coordinator withholds the id until the holder's request row is written
+  # — one handed out earlier answers 404, which reads as a request that was
+  # lost. So a holder has two windows of roughly equal length: the keystore
+  # round trip before its INSERT, and the broadcast after it. The guest fires
+  # immediately behind the holder and lands in either.
+  #
+  # Landing in the first is CORRECT behaviour and used to be reported here as
+  # "arrived WITHOUT in_flight_request_id" — the very sentence that started the
+  # investigation — which would have made this probe flap between red and green
+  # on identical builds. What is actually broken is being told neither.
+  if [[ -z "$INFLIGHT" && -n "$INFLIGHT_OP" ]]; then
+    pass "W6 no id yet, and it says what to wait for ($INFLIGHT_OP) — the row is not written yet"
+    note "W6 the id half is unproven this run: the guest met the holder before its INSERT"
+  elif [[ -z "$INFLIGHT" ]]; then
+    # Every path that takes the wallet names its operation, and the database
+    # fallback reads one off the row — so on matching versions this is left only
+    # for the sliver between acquiring the lock and announcing, which no real
+    # caller lands in twice. Read it as a defect, not as a race.
+    fail "W6 wallet_busy carried NEITHER an id nor an operation — the agent is told to wait, and not told for what nor for how long"
   else
-    pass "W6 it names the holding request ($INFLIGHT)"
+    pass "W6 it names the holding request ($INFLIGHT${INFLIGHT_OP:+, a $INFLIGHT_OP})"
     # The second half, which nothing else tests: an id that cannot be read back
     # is a dead end wrapped in an instruction.
     R2=$(probe "$(jq -nc --arg id "$INFLIGHT" '{input:{operation:"request_status", request_id:$id}}')" -H "$WID_HDR")

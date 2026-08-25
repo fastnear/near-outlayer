@@ -28,7 +28,10 @@ type WalletResult = (String, String);
 /// the body:
 /// * `terminal` — retrying an Agent Connect refusal that is terminal spins
 ///   forever while the owner is never told to act;
-/// * `in_flight_request_id` — what to poll instead of retrying blindly.
+/// * `in_flight_request_id` — what to poll instead of retrying blindly;
+/// * `in_flight_operation` — what to wait FOR. It is set even when there is no
+///   id yet, and it is the difference between retrying at once and backing off:
+///   a transfer clears in seconds, a cross-chain withdraw can run for minutes.
 ///
 /// A body that is not the expected JSON comes back verbatim: inventing a code
 /// for it would be worse than passing on what the server actually said.
@@ -52,6 +55,13 @@ fn guest_error(body: &str) -> String {
     }
     if let Some(id) = json["in_flight_request_id"].as_str() {
         out.push_str(&format!(" in_flight_request_id={id}"));
+    }
+    // LAST, and the order is load-bearing: the guest reads these fields off the
+    // END and truncates the message at each one it takes. Appended after the
+    // id, it is removed along with it; appended before, it would be left
+    // dangling in the message text once the id was stripped.
+    if let Some(op) = json["in_flight_operation"].as_str() {
+        out.push_str(&format!(" in_flight_operation={op}"));
     }
     out
 }
@@ -431,10 +441,28 @@ mod guest_error_tests {
     fn busy_carries_the_operation_to_poll() {
         let body = r#"{"error":"wallet_busy",
                        "message":"another operation is using this wallet",
-                       "in_flight_request_id":"req-42"}"#;
+                       "in_flight_request_id":"req-42",
+                       "in_flight_operation":"swap"}"#;
         let out = guest_error(body);
         assert!(out.starts_with("wallet_busy: "), "{out}");
         assert!(out.contains("in_flight_request_id=req-42"), "{out}");
+        assert!(out.contains("in_flight_operation=swap"), "{out}");
+        assert!(
+            out.find("in_flight_request_id=").unwrap() < out.find("in_flight_operation=").unwrap(),
+            "the operation must come after the id — the guest strips fields from the end and \
+             truncates at each, so a field before the id is orphaned in the message: {out}"
+        );
+
+        // No id yet, which is the case the operation exists for: the wallet was
+        // taken a moment ago and the row is not written. The guest must still
+        // learn what it is waiting for.
+        let pending = r#"{"error":"wallet_busy",
+                          "message":"a transfer is using this wallet and has not written its request yet",
+                          "in_flight_request_id":null,
+                          "in_flight_operation":"transfer"}"#;
+        let out = guest_error(pending);
+        assert!(!out.contains("in_flight_request_id="), "no id may be implied: {out}");
+        assert!(out.contains("in_flight_operation=transfer"), "{out}");
     }
 
     /// The field that decides whether retrying is pointless at all. An agent

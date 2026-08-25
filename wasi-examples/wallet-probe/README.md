@@ -123,11 +123,12 @@ can route on is a different thing from one a human can read:
   "ok": true,
   "operation": "transfer",
   "detail": "refused as `wallet_busy` — the wallet is held by request 9f1c-42. Poll it with …",
-  "error": "wallet_busy: another operation is using this wallet … in_flight_request_id=9f1c-42",
+  "error": "wallet_busy: a swap is using this wallet … in_flight_request_id=9f1c-42 in_flight_operation=swap",
   "error_parsed": {
     "code": "wallet_busy",
-    "message": "another operation is using this wallet …",
-    "in_flight_request_id": "9f1c-42"
+    "message": "a swap is using this wallet …",
+    "in_flight_request_id": "9f1c-42",
+    "in_flight_operation": "swap"
   }
 }
 ```
@@ -149,6 +150,16 @@ Start a slower operation on the same wallet first (a swap, a cross-chain
 withdraw, or another `/wallet/v1/call`), then call `transfer` here within it.
 The refusal arrives after the grace period, which is 2 seconds
 (`WALLET_BUSY_GRACE` in the coordinator).
+
+**`in_flight_request_id` can be absent while `in_flight_operation` is not.** The
+coordinator withholds the id until the request row is actually written — an id
+handed out earlier answers `404`, which reads as a request that was lost. So a
+busy answer arriving in that first moment names the operation and no id: wait
+briefly and ask again. When the operation records no request row at all (a
+cross-chain deposit intent), no id is ever coming, and the message says so.
+
+`in_flight_operation` is worth branching on either way: a `transfer` clears in
+seconds, a `cross_chain_withdraw` can run for minutes.
 
 Then feed the `in_flight_request_id` straight back:
 
