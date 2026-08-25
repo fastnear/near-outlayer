@@ -547,17 +547,29 @@ Both layers are deliberate. What the outer call looks like to the second layer:
 
 | field | value on the fund lane |
 |---|---|
+| type | `call` — a `w_execute_extension` is a call, whatever the payment inside it is |
 | destination | the wallet's **bound account** — the door the call goes through, not a payee |
-| token | `native` — the outer call carries a 1-yoctoNEAR marker, whatever moves inside |
+| token | `native` — a call is denominated in NEAR, whatever token its effects move |
 
 So a policy governing a bound wallet must **also**:
 
+- list `call` in `transaction_types`, or the lane is refused with `Transaction type 'call' is not
+  allowed by policy` — a policy of `["transfer"]` describes exactly what the owner wants and
+  refuses the only route that does it;
 - list the **bound account itself** in `addresses.list` (or use `mode: "none"`), or every call
   through the lane is refused with `Address '<bound account>' is not in whitelist` — naming an
   account the owner never listed as a destination;
 - include `native` (or `"*"`) in `allowed_tokens`, or every native transfer through the lane is
   refused with `Token 'native' is not allowed by policy`, even when what actually moves is a token
   the list does allow.
+
+Each of those three refusals names which of them it is, and says that the account or word it
+quotes belongs to the door rather than to the payment.
+
+The outer deposit is **not** exempt from the native limits: the caller chooses it, and whatever is
+attached is metered as native spend (less the 1-yoctoNEAR `assert_one_yocto` marker, which proves
+key ownership rather than paying anyone). A lane call that attaches real NEAR is measured for it,
+on top of the decoded effects inside.
 
 Narrowing `allowed_tokens` to a single fungible token therefore switches off native spending on the
 lane. That is the rule working as written, not a defect — but it is not what the policy looks like
