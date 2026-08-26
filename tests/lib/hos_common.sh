@@ -152,6 +152,25 @@ api_wk() {
   printf '%s %s\n' "$HTTP" "$BODY"
 }
 
+# bool_of <field> [body] — a BOOLEAN out of a JSON body, or "absent".
+#
+# Not `jq -r '.terminal // ""'`: jq's `//` treats FALSE as empty, exactly like
+# null, so a correct `terminal: false` reads as absent and a probe asserting it
+# can never pass — while its failure message sends the reader looking for a
+# field that was there all along.
+bool_of() {
+  local body=${2:-$BODY}
+  # An EMPTY body needs its own arm: jq reads no input, prints nothing and exits
+  # 0, so neither a catch nor a `||` ever fires and the caller is back to
+  # comparing against a blank — which is the whole reason this helper exists.
+  [[ -n "${body// /}" ]] || { echo absent; return; }
+  # `try … catch` INSIDE jq, not just `2>/dev/null` outside it: `has` throws on a
+  # body that is not an object — an HTML error page, a bare array — and the
+  # swallowed error printed nothing at all.
+  jq -r --arg f "$1" 'try (if has($f) then (.[$f]|tostring) else "absent" end) catch "absent"' \
+    <<<"$body" 2>/dev/null || echo absent
+}
+
 err_of()   { jq -r '.error // ""' <<<"${1:-$BODY}" 2>/dev/null; }
 class_of() { jq -r '.class // ""' <<<"${1:-$BODY}" 2>/dev/null; }
 msg_of()   { jq -r '.message // .error // ""' <<<"${1:-$BODY}" 2>/dev/null | head -c 300; }
@@ -204,13 +223,20 @@ assert_class() {
 # assert_msg <desc> <grep-pattern> — the refusal NAMES the thing. A bare status
 # assertion passes on any generic error; the point of most of these refusals is
 # that the caller is told which rule bit.
+# The quota guard is needed HERE too, and not only in the status assertions
+# above: these two are chained after them — `assert_denied … && assert_msg …` —
+# and a skip returns 0, so the chain runs on. Without this, an exhausted wallet
+# skipped the status and then FAILED on the sentence, reporting a monthly cap as
+# a missing diagnostic.
 assert_msg() {
+  if exhausted; then skip "$1 — the wallet has spent its monthly custody allowance; the rule was never reached"; return 0; fi
   local desc=$1 pat=$2
   if grep -qiE "$pat" <<<"$BODY"; then pass "$desc — message names /$pat/"; return 0; fi
   fail "$desc — message does not name /$pat/: $(msg_of | head -c 200)"; return 1
 }
 
 assert_json() {
+  if exhausted; then skip "$1 — the wallet has spent its monthly custody allowance; the rule was never reached"; return 0; fi
   local desc=$1 expr=$2 want=$3 got
   got=$(jq -r "$expr // \"\"" <<<"$BODY" 2>/dev/null)
   if [[ "$got" == "$want" ]]; then pass "$desc ($expr = $got)"; return 0; fi

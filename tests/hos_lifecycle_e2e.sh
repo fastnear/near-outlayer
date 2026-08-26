@@ -98,7 +98,7 @@ else
 fi
 
 log "R5b' the refusal is marked TERMINAL — an agent must stop, not retry"
-if [[ "$(jq -r '.terminal // ""' <<<"$BODY")" == "true" ]]; then
+if [[ "$(bool_of terminal)" == "true" ]]; then
   pass "R5b' terminal=true"
 else
   fail "R5b' the answer is not marked terminal: $(head -c 200 <<<"$BODY")"
@@ -163,10 +163,23 @@ done
 delete_account "$ACC"
 sleep 8
 call_ext "$SEED_L" "$ACC" "$(ext_transfer "$WL" "$TINY")" >/dev/null
-if [[ "$HTTP" =~ ^4 ]]; then
-  pass "R5g a wiped account is refused ($HTTP $(err_of)/$(class_of)) — the code hash is no longer one we recognize"
-else
+# The CLASS, not just a 4xx. This used to assert `^4` and then announce "the
+# code hash is no longer one we recognize" — a cause it never read. A wallet out
+# of money, a policy that stopped matching, a scope, are all 4xx too, and each
+# would have passed this probe while the deleted account went unnoticed.
+#
+# Two classes are defensible here and the difference is real, so the probe names
+# which one it got rather than flattening them: an account that no longer exists
+# has no code hash to recognise (`unrecognized_wallet_code`), and reading a
+# deleted account can equally come back as no reading at all
+# (`chain_status_unreadable`). Anything else means the refusal came from
+# somewhere other than the binding check.
+if [[ ! "$HTTP" =~ ^4 ]]; then
   fail "R5g a spend against a deleted account answered $HTTP: $(msg_of)"
+elif [[ "$(class_of)" == "unrecognized_wallet_code" || "$(class_of)" == "chain_status_unreadable" ]]; then
+  pass "R5g a wiped account is refused by the BINDING check ($HTTP $(err_of)/$(class_of))"
+else
+  fail "R5g the wiped account was refused $HTTP as '$(err_of)/$(class_of)' — a 4xx, but not from the binding check, so this probe says nothing about a deleted account: $(msg_of | head -c 160)"
 fi
 
 verdict "§6 lifecycle"

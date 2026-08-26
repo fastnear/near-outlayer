@@ -99,9 +99,13 @@ if set_policy "$(pol_addresses allowlist "$(jq -nc --arg a "$ASSET" --arg w "$WL
     # after a typo silently disabled a filter. On the door path the same policy
     # produces an ordinary 'receiver is not permitted' — the owner is told the
     # payee is wrong when the payee is fine and the mode is misspelt.
+    # A hard assertion, not a finding: a FINDING does not move the exit code, so
+    # while this was one, the sentence could go back to naming the payee and
+    # every run would still be green. The rule it guards is the one that was
+    # added after a typo silently switched an address filter off.
     grep -qi "allowlist" <<<"$BODY" \
       && pass "E1 the sentence names the word the owner typed" \
-      || finding "an unknown address MODE is fail-closed on the fund lane (good) but the refusal reads 'receiver <payee> is not permitted by the address rules' and never names the misspelt mode. The scalar path says 'address rule mode <x> is not one of whitelist, blacklist, none' — the door path loses that diagnostic, and a typo'd policy sends the owner to audit their payee list."
+      || fail "E1 the refusal never names the misspelt mode: it reads '$(msg_of | head -c 90)'. The scalar path says 'address rule mode <x> is not one of whitelist, blacklist, none' — the door path must say the same, or a typo'd policy sends the owner to audit a payee list that is correct"
   fi
   log "E2 the same typo on the scalar path (POST /wallet/v1/transfer)"
   api "$SEED" POST /wallet/v1/transfer "$(jq -nc --arg t "$WL" --arg a "$TINY" '{chain:"near", to:$t, amount:$a}')" >/dev/null
@@ -132,11 +136,16 @@ if set_policy "$POL_G" "G"; then
   door "G1 an ft_transfer of a token the policy does not allow, through a permitted contract" "$(ft_env "$TOKEN" "$WL" 1)"
   assert_denied "G1 refused" "policy_denied" && assert_msg "G1 names the token, not the contract" "$TOKEN"
   door "G2 native movement under a token allowlist that does not list 'native'" "$(ext_transfer "$WL" "$TINY")"
+  # The refusal is DELIBERATE — the outer call is denominated in NEAR, so a
+  # token allowlist without `native` stops the lane, and the layering that makes
+  # that happen is documented in the engine. What is asserted here is that the
+  # sentence SAYS so: an owner who narrowed allowed_tokens to one stablecoin is
+  # otherwise told about a token they never wrote down.
   if [[ "$HTTP" == "200" ]]; then
     pass "G2 the native path still works — the token rule stayed a token rule"
   else
-    finding "allowed_tokens without 'native' (or '*') stops NATIVE NEAR on the fund lane: the decoder's own token rule ignores native correctly, but the request then reaches the ordinary scalar gate as a call whose token is 'native' and is refused with \"Token 'native' is not allowed by policy\". An owner narrowing allowed_tokens to one FT silently loses native spending. Same root cause as the whitelist finding: the outer call is judged by the scalar rules as well."
-    note "  got: $(msg_of | head -c 140)"
+    assert_msg "G2 the refusal explains that a call is denominated in NEAR" "denominated in NEAR" \
+      || note "  got: $(msg_of | head -c 160)"
   fi
 fi
 

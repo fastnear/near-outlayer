@@ -44,6 +44,12 @@
 #        caller walks past by failing its own calls is not a limiter
 #   U10  the ceiling holds: a spend past the remaining headroom is refused, and
 #        the refusal names spent + amount > limit
+#   U12  the OUTER deposit of a door call is spent too, and is counted — the
+#        caller picks it, so a door that did not meter it was a way past the
+#        ceiling. Charged less the 1-yocto marker, which proves a key rather
+#        than paying anyone
+#   U13  the outer deposit AND the decoded effects, in one request: two
+#        different balances, one ceiling, no double count and no missed half
 #
 # Deltas are read against the DAILY bucket, not the hourly one: the run is short
 # but an hour boundary inside it would make every hourly delta a lie. U9 checks
@@ -284,13 +290,19 @@ STRANGER="nope-$(date +%s)-$$.testnet"
 # `failure` and NO `status` field, so judging by the body alone reports a
 # correct product as broken.
 OUT=""; OUT_HTTP=""
+# door_call <args-json> [outer-deposit-yocto]
+#
+# The deposit defaults to the 1-yoctoNEAR marker a payable method demands, which
+# is what a legitimate lane call carries. It is a PARAMETER because the caller
+# picks it on the real endpoint too, and what happens then is a rule with money
+# behind it — see U12.
 door_call() {
   local tmp; tmp=$(mktemp -t velacct_call.XXXXXX)
   OUT_HTTP=$(curl -sS -o "$tmp" -w '%{http_code}' -X POST "$COORDINATOR_URL/wallet/v1/call" \
     -H "$(AUTH "$BINDING_SEED")" -H 'Content-Type: application/json' \
-    -d "$(jq -nc --arg a "$ASSET" --argjson args "$1" \
+    -d "$(jq -nc --arg a "$ASSET" --argjson args "$1" --arg dep "${2:-1}" \
         '{receiver_id:$a, method_name:"w_execute_extension", args:$args,
-          gas:"100000000000000", deposit:"1"}')")
+          gas:"100000000000000", deposit:$dep}')")
   OUT=$(tr -d '\n' < "$tmp"); rm -f "$tmp"
   sleep 4
 }
@@ -522,6 +534,66 @@ else
     eq "$AA" "$AB" \
       && pass "U11 and no spend was charged for it" \
       || fail "U11 a refused call moved the spend window: $AB → $AA"
+  fi
+fi
+
+# ── U12 the OUTER deposit of a door call is spent, and is counted ───────────
+#
+# The one amount nothing counted for a long time. The gates on the way IN meter
+# `Op::amount()`, which for a call is the attached deposit; the charge on the way
+# OUT read only the decoded effects. So the deposit was compared against a
+# `spent` it never added to, and every call saw the same headroom again.
+#
+# The caller picks both the deposit and the receiver, so this is not a corner:
+# it is the shape an agent would use to move money past its own ceiling.
+#
+# EMPTY request on purpose — no decoded effects at all, so the only thing that
+# can move the counter is the deposit itself. Minus the marker, which proves a
+# key rather than paying anyone.
+log "U12 a door call with an outer deposit above the marker"
+OUTER=1000001
+U12_POLICY="missing"
+if ! store_policy "$BINDING_SEED" "$BOUND_WID" \
+     "$(jq -nc --arg d "$DAILY_LIMIT" --arg t "$PER_TX_LIMIT" \
+        '{rules:{transaction_types:["call","transfer","delete"],
+                 limits:{daily:{native:$d}, per_transaction:{native:$t}}}}')"; then
+  fail "U12 the policy could not be stored — nothing below is judgeable"
+else
+  U12_POLICY="stored"
+  B=$(usage_of "$BOUND_WID" "$(today_daily)")
+  door_call '{"request":{}}' "$OUTER"
+  note "U12 answer: HTTP $OUT_HTTP $(jq -r '.status // .error // "?"' <<<"$OUT" 2>/dev/null)"
+  if [[ "$OUT_HTTP" != "200" ]]; then
+    fail "U12 the call did not reach the chain (HTTP $OUT_HTTP: $(head -c 160 <<<"$OUT")) — a refusal costs nothing by design and proves nothing about this rule"
+  else
+    judge "U12" "$BOUND_WID" "$B" "$((OUTER - 1))" "the deposit the caller attached, less the 1-yocto marker — the door is not a free way past the ceiling"
+  fi
+fi
+
+# ── U13 the outer deposit and the decoded effects are BOTH counted ──────────
+#
+# Composition, because that is where a regression hides: charging one or the
+# other reads as correct in every single-sided probe. The two are different
+# money — the deposit leaves the executor that signed, the effects move the
+# BOUND account's balance — and one ceiling is measured over both.
+log "U13 an outer deposit alongside a decoded transfer"
+# Guarded by U12's policy write: without it the ceiling U10 deliberately closed
+# is still shut, this call is refused for THAT, and the probe reports "the call
+# did not reach the chain" — true, and pointing at the wrong rule.
+if [[ "$U12_POLICY" != "stored" ]]; then
+  fail "U13 skipped — the policy U12 stores is what reopens the headroom U10 closed, and it did not land"
+else
+  B=$(usage_of "$BOUND_WID" "$(today_daily)")
+  INNER=1000000000000000000000
+  door_call "$(jq -nc --arg to "$PARENT" --arg amt "$INNER" \
+      '{request:{external:[{receiver_id:$to, actions:[{action:"transfer", payload:{amount:$amt}}]}]}}')" \
+    "$OUTER"
+  note "U13 answer: HTTP $OUT_HTTP $(jq -r '.status // .error // "?"' <<<"$OUT" 2>/dev/null)"
+  if [[ "$OUT_HTTP" != "200" ]]; then
+    fail "U13 the call did not reach the chain (HTTP $OUT_HTTP: $(head -c 160 <<<"$OUT"))"
+  else
+    judge "U13" "$BOUND_WID" "$B" "$(python3 -c "print($INNER + $OUTER - 1)")" \
+      "the decoded transfer AND the attached deposit, less one marker — two balances, one ceiling"
   fi
 fi
 

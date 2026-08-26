@@ -352,8 +352,14 @@ elif [[ "$(code_of "$OUT3")" == "wallet_busy" ]] || [[ "$(code_of "$OUT4")" == "
   else
     fail "P2 wallet_busy returned in ${LOSER_T}s, under the ${GRACE_FLOOR}s floor — the grace is gone, and every client doing two quick calls will now see 409s"
   fi
-elif [[ "$(code_of "$OUT3")" == "service_unavailable" ]] || [[ "$(code_of "$OUT4")" == "service_unavailable" ]]; then
+elif [[ "$(code_of "$OUT3")" == "chain_unavailable" ]] || [[ "$(code_of "$OUT4")" == "chain_unavailable" ]]; then
   # A TRANSIENT is not a refusal, and this probe is about the grace window.
+  #
+  # The code is `chain_unavailable`, which is the coordinator's name for a node
+  # that could not answer this second. It is NOT `service_unavailable`: that one
+  # means a feature this deployment does not offer, carries no Retry-After, and
+  # nothing on this path can produce it — matching it here would leave the real
+  # transient falling through to the failure below.
   #
   # The one seen live: `the transaction expired before it reached the chain` —
   # the block it was signed against left the node's window. Nothing executed

@@ -78,10 +78,16 @@ if [[ -n "${WITH_A0:-}" ]]; then
     '{rules:{addresses:{mode:"whitelist",list:[$w,$t]},limits:{per_transaction:{native:$l}}}}')
   if store_policy "$SEED" "$WALLET_ID" "$POL_NO_DOOR"; then
     send "A0 the same permitted transfer, with the BOUND ACCOUNT left out of the whitelist" "$(ext_transfer "$WL" "$UNDER")"
+    # The refusal is DELIBERATE: after the decoded effects pass, the op
+    # continues through the scalar gates, and there the destination is the outer
+    # receiver. What is asserted is that the sentence SAYS so — an owner who
+    # listed only real payees is otherwise sent to audit a correct list over an
+    # account they never asked to pay.
     if [[ "$HTTP" == "200" ]]; then
       pass "A0 the address filter ignores the outer receiver — only the destinations the owner named are filtered"
     else
-      finding "the address whitelist is applied to the OUTER receiver of w_execute_extension (the bound account = the door). A policy listing only real payees kills the whole fund lane, and the refusal reads 'Address <bound account> is not in whitelist' — an account the owner never asked to pay. Got: $(msg_of | head -c 160)"
+      assert_msg "A0 the refusal explains that the OUTER destination is judged too" "outer destination" \
+        || note "  got: $(msg_of | head -c 180)"
     fi
     store_policy "$SEED" "$WALLET_ID" "$POL" >/dev/null || warn "could not restore the suite policy"
   else

@@ -770,6 +770,65 @@ If policy exists → keystore always reads fresh from chain (never cached).
 | `invalid_address` | Bad destination address |
 | `unsupported_token` | Token not supported |
 
+### Which HTTP status a failure gets
+
+The status is a decision about **what the caller should do next**, not about how
+sorry we are. Three questions, in order:
+
+1. **Did anything happen?**
+   * Nothing happened and the same request would work later — a view call that
+     could not reach the node, a database read that failed, a keystore that is
+     not ready, an event that has not been delivered yet — is **503** with
+     `Retry-After`. Codes: `chain_unavailable`, `keystore_error`,
+     `confidential_jwt_expired` on `/wallet/v1/*`, and `upstream_unavailable`
+     on `/call`.
+   * A feature this deployment does not offer — confidential intents with the
+     flag off, binding events with no webhook secret, intents on a network with
+     no solvers — is **503** WITHOUT `Retry-After`, code `service_unavailable`.
+     Same status, opposite instruction: there is no interval after which an
+     unset environment variable becomes set, and telling a client to come back
+     in five seconds is telling it to poll forever. The two shared one code
+     once, and the header could then only ever be right for one of them.
+
+     For the same reason `/call`'s transient answer is `upstream_unavailable`
+     rather than `service_unavailable`: a client's retry rule is written once
+     and applied to every door, so one code may carry only one instruction.
+   * Something MAY have happened and we cannot tell — a broadcast that timed
+     out, a write whose outcome we never read — is **500**, and the message must
+     say the outcome is unknown and what a retry would DO. This is the one place
+     an RPC failure keeps a 500, and it is enforced: `classify_rpc_error` is the
+     only site allowed to answer `internal_error` for a NEAR RPC error, and a
+     test reads the source to keep it that way. Every READ — a balance, a code
+     hash, an access key, a nonce — is `chain_unavailable` instead. `broadcast_tx_commit`
+     answering `TIMEOUT_ERROR` is the common case: it accepted the transaction
+     and ran out of its own polling window, so the transaction is usually on
+     chain. Calling that 503 invites the retry that spends twice.
+   * It happened and it failed on chain is **422** with the tx hash, never a 5xx.
+2. **Is it the caller's to fix?** Then 4xx, naming the field or the rule. A
+   refusal the caller cannot act on is worse than no explanation.
+3. **Is it OUR deployment being wrong** — a contract that is not there, a method
+   the deployed contract does not have, a variable that should have been set for
+   the path the caller legitimately reached? **500.** Not 400: telling a customer
+   to fix their request when they cannot is a wall with no door. Not 503 either:
+   "come back later" is false, because nothing improves without an operator, and
+   the client cannot tell a broken deployment from a busy one. 500 is what routes
+   to ops alerts.
+
+   The line between this and the `service_unavailable` above is whether the
+   absence is a CHOICE. A deployment that deliberately does not offer
+   confidential intents is answering correctly and says so; a deployment missing
+   `KEYSTORE_DAO_ACCOUNT_ID` while a customer uses vault scope is broken, and the
+   customer must not be told to come back for it.
+
+**Never 502 or 504.** Cloudflare replaces origin 502/504 with its own HTML page
+and the JSON body — the code the client branches on — never arrives. 503 passes
+through, and so does every 4xx.
+
+The distinction that keeps being re-derived: a **read** that failed changed
+nothing (503), a **write** that failed may have landed (500 + a sentence). Which
+is why "every database error is transient" is wrong in a codebase with more
+writes than reads.
+
 ---
 
 ## Per-customer Vaults (sovereignty option)

@@ -20,6 +20,9 @@
 # it is not repeated here.
 #
 #   PARENT=you.testnet ./tests/hos_identity_e2e.sh --apply
+#
+# Optional: NONWALLET_PAYMENT_KEY=<a funded key owned by a NAMED account> adds
+# I1c, the arm where the credential names no wallet at all.
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hos_common.sh"
 
@@ -107,8 +110,50 @@ if [[ "$HTTP" == "200" && "$S1" == "$S0" ]]; then
 elif [[ "$HTTP" == "200" ]]; then
   fail "I1 the job ran and the guest saw sender='$S1' with no binding in existence"
 else
-  pass "I1 refused (HTTP $HTTP) — asking to be somebody the wallet is not is an error, not a fallback"
+  # What this alone proves: the job did NOT go ahead under the caller's own
+  # name. Deliberately narrower than it used to read ("asking to be somebody the
+  # wallet is not is an error") — that claim is what the three assertions below
+  # are for, and stating it here made a wrong-reason refusal report one pass and
+  # three failures about a single observation.
+  pass "I1 refused rather than run (HTTP $HTTP) — nothing executed under the wrong identity"
   note "  $(jq -r '.message // .error // .' <<<"$BODY" | head -c 160)"
+  # WHICH refusal, not just any. A wallet that ran out of money, a project that
+  # moved, a key past its scope — each is a 4xx too, and any of them would let
+  # this probe pass while the flag went on being ignored.
+  [[ "$HTTP" == "409" ]] \
+    && pass "I1 409 — the wallet's state has no such name, which is a conflict rather than a fault of ours" \
+    || fail "I1 refused with HTTP $HTTP, expected 409: a refusal for some other reason passes this probe while the flag is still ignored"
+  [[ "$(jq -r '.reason // ""' <<<"$BODY")" == "no_bound_identity" ]] \
+    && pass "I1 and names itself no_bound_identity — the field clients branch on" \
+    || fail "I1 reason is '$(jq -r '.reason // "none"' <<<"$BODY")', not no_bound_identity"
+  [[ "$(bool_of terminal)" == "false" ]] \
+    && pass "I1 terminal:false — binding an account later makes this very call work" \
+    || fail "I1 terminal is '$(bool_of terminal)'; marking this terminal sends an agent away for good over a state its owner can change"
+fi
+
+# ── I1c a key that names no wallet cannot borrow a name either ─────────────
+#
+# The OTHER silent arm. `use_bound_identity` resolves the wallet from the
+# credential when no `X-Wallet-Id` is sent, and a payment key owned by a NAMED
+# account resolves to nothing at all — a different absence from "this wallet has
+# no binding", and one that no amount of binding will ever fix. It has its own
+# terminal flag for that reason, and the flag is the part a client acts on.
+#
+# Needs a key this machine cannot mint: `outlayer keys create` signs
+# `store_secrets` as the account itself. Supplied, or skipped loudly.
+log "I1c use_bound_identity=true from a key owned by a named account"
+if [[ -z "${NONWALLET_PAYMENT_KEY:-}" ]]; then
+  skip "I1c — set NONWALLET_PAYMENT_KEY to a funded key owned by a NAMED account (outlayer keys create + keys topup) to judge the second silent arm"
+else
+  probe "$NONWALLET_PAYMENT_KEY" true
+  if [[ "$HTTP" == "200" ]]; then
+    fail "I1c the flag was ignored for a key that names no wallet: the job ran as '$(guest '.sender_id')'"
+  else
+    pass "I1c refused (HTTP $HTTP) — a credential that names no wallet has no binding to run under"
+    [[ "$(bool_of terminal)" == "true" ]] \
+      && pass "I1c terminal:true — no owner action turns a named account's key into a wallet's key, so retrying is pointless" \
+      || fail "I1c terminal is '$(bool_of terminal)'; this arm never becomes true, and a client told to retry will retry forever"
+  fi
 fi
 
 # ── the binding ────────────────────────────────────────────────────────────
@@ -116,6 +161,30 @@ log "Binding the wallet to $ACC"
 create_subaccount "$ACC" 0.7 || { echo "✗ $ACC never appeared" >&2; exit 1; }
 api_wk "$WK" PUT /wallet/v1/binding "$(jq -nc --arg a "$ACC" '{asset_account_id:$a, kind:"personal_account"}')" >/dev/null
 [[ "$HTTP" == "200" ]] || { echo "✗ PUT failed $HTTP: $BODY" >&2; exit 1; }
+
+# ── I1b the binding exists and is PENDING, which authorizes nothing ────────
+#
+# The window between the PUT and the owner's transaction landing is a real
+# state, not a contrivance: it is where every binding starts. The SQL filters on
+# `status = 'active'`, so this ought to fall out for free — which is exactly the
+# kind of claim that is worth a probe rather than a reading of the query.
+log "I1b use_bound_identity=true while the binding is still pending"
+api_wk "$WK" GET /wallet/v1/binding >/dev/null
+PEND=$(jq -r '.binding_status // ""' <<<"$BODY")
+if [[ "$PEND" != "pending" ]]; then
+  skip "I1b the binding was '$PEND', not pending, by the time the probe ran — nothing to judge"
+else
+  probe "$PK" true
+  if [[ "$HTTP" == "200" ]]; then
+    fail "I1b a PENDING binding was honoured: the guest ran as '$(guest '.sender_id')' on the strength of a binding the owner has not confirmed on chain"
+  else
+    pass "I1b refused (HTTP $HTTP) — a binding nobody has confirmed authorizes nothing"
+    [[ "$(jq -r '.reason // ""' <<<"$BODY")" == "no_bound_identity" ]] \
+      && pass "I1b and for the right reason — the same refusal as no binding at all" \
+      || fail "I1b refused as '$(jq -r '.reason // .error // "?"' <<<"$BODY")', which is not the binding rule speaking"
+  fi
+fi
+
 install_wallet "$ACC" "$EXEC" || { echo "✗ the setup transaction did not land" >&2; exit 1; }
 ST=""
 for _ in 1 2 3 4 5 6 7 8; do

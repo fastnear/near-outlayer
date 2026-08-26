@@ -84,6 +84,7 @@ SUITES=(
   "credentials|call_credentials_e2e.sh|PARENT|which credential may pay for a /call and which may not"
   "probe|wallet_probe_e2e.sh|PARENT RECIPIENT OUTSIDER|the wallet surface end to end on a self-minted wallet"
   "bound-identity|bound_identity_onchain_e2e.sh|PARENT BINDING_SEED ASSET|use_bound_identity over the ON-CHAIN door, and that billing does not follow the borrowed name"
+  "identity-https|hos_identity_e2e.sh|PARENT|the HTTPS half of use_bound_identity: unbound, pending, and a key that names no wallet are refused rather than answered with the caller's own name"
   "stuck-repair|stuck_request_repair_e2e.sh|PARENT PSQL_CMD|the lazy repair of rows left in processing, including the door's per-promise detail"
   "approvals|approval_flow_wk_e2e.sh|PARENT APPROVER|multisig approval over a wk_ credential"
   "refusals|refusals_e2e.sh|PARENT|the endpoints that exist to say no: /reject's signature binding, the internal endpoints' auth gate, and delete toward an address the policy does not list"
