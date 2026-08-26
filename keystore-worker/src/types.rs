@@ -98,16 +98,29 @@ pub enum AccessCondition {
 /// not a nicety.
 ///
 /// `\A` / `\z` (absolute start / end of text) are deliberate over `^` / `$`,
-/// but NOT for the reason that is usually given. In Perl, PCRE and Python `$`
-/// also matches just before a trailing `\n`; in Rust's `regex` it does not —
-/// measured, both `^team\.near$` and `\Ateam\.near\z` reject `"team.near\n"`.
+/// as belt and braces rather than because `^` / `$` are known to fail here.
+/// Measured against this crate's `regex`, the two constructions agree on every
+/// input tried, including the ones usually cited:
 ///
-/// The real difference is that `^` and `$` can be RE-POINTED by the pattern
-/// itself: an owner writing `(?m)` turns them into line anchors, after which
-/// `^team\.near$` is satisfied by the second line of `"evil.near\nteam.near"`.
-/// `\A` and `\z` are absolute and no inline flag moves them, which is what
-/// makes the full-match guarantee hold against a pattern its own author wrote.
-/// See `test_owner_multiline_flag_cannot_defeat_absolute_anchors`.
+/// ```text
+/// pattern            caller                    \A(?:..)\z   ^(?:..)$
+/// team\.near         "team.near"               true         true
+/// team\.near         "team.near\n"             false        false
+/// (?m)^team\.near$   "evil.near\nteam.near"    false        false
+/// ```
+///
+/// An owner's inline `(?m)` does NOT re-point our anchors: in Rust's `regex` a
+/// flag applies from where it appears to the end of the ENCLOSING GROUP, and
+/// ours sit outside `(?:…)`. Reaching them would mean closing that group, which
+/// leaves an unbalanced pattern — invalid, and the caller treats a compile error
+/// as denial.
+///
+/// So the absolute anchors buy insurance, not the guarantee itself: they cannot
+/// be re-pointed by any future reading of inline flags, and they cost nothing.
+/// Simplifying them to `^` / `$` would not open the hole today — but the
+/// property this function exists for would then rest on where a flag happens to
+/// take effect, which is not where a security boundary should rest.
+/// See `test_a_second_line_never_satisfies_a_full_match`.
 ///
 /// The wrapping group `(?:…)` is required so a top-level alternation binds
 /// correctly: `a|b` becomes `\A(?:a|b)\z`, not `\Aa|b\z` ("starts with a" OR
@@ -446,10 +459,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_owner_multiline_flag_cannot_defeat_absolute_anchors() {
-        // `\A`/`\z` are absolute, unlike `^`/`$`, so even an owner-injected
-        // `(?m)` (which only re-points `^`/`$` at line boundaries) cannot let a
-        // second line satisfy the match across an embedded newline.
+    async fn test_a_second_line_never_satisfies_a_full_match() {
+        // Named for what it proves. It used to be called "…cannot defeat
+        // absolute anchors", which claims more than it shows: the same input is
+        // rejected with `^`/`$` too, because an owner's inline `(?m)` applies
+        // only inside the group it appears in and our anchors are outside it.
+        // What IS pinned here is the property that matters — a caller id with an
+        // embedded newline cannot be admitted by one of its lines.
         let condition = AccessCondition::AccountPattern {
             pattern: r"(?m)^team\.near$".to_string(),
         };

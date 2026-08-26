@@ -324,4 +324,27 @@ fi
 
 # Nothing to restore: this suite's wallet and account are its own and are
 # deleted on the way out.
+# ── §4.1 AccessCondition / AccountPattern — said, not silently absent ───────
+#
+# The plan's §4.1 marks the `AccountPattern` anchoring as a fresh and critical
+# fix: a pattern `team\.near` written as an exact check must not also admit
+# `xteam.near`, `team.near.attacker.near`, or — `.` being a metacharacter —
+# `teamXnear`. That is one account's secrets handed to another.
+#
+# It is NOT probed from here, and the reason is where the rule is enforced: the
+# keystore evaluates an `AccessCondition` while decrypting a secret INSIDE a
+# WASI run, so an end-to-end probe would have to publish a module, store a
+# secret under a pattern, and run it as a matching and a non-matching caller —
+# for a property whose whole surface is a regex.
+#
+# What stands instead: `keystore-worker/src/types.rs` compiles every pattern to
+# `\A(?:…)\z` and carries the vectors. Six of them fail the moment the
+# anchoring is removed — substring, metacharacter, empty pattern, full match,
+# top-level alternation, unescaped dot — which is checked by breaking it, not
+# by trusting it.
+#
+# Printed as a SKIP rather than left out, because a section with no line at all
+# reads as forgotten, and this one was decided.
+skip "§4.1 AccountPattern — enforced in the keystore at secret-decryption time, covered by its own vectors (see keystore-worker/src/types.rs, compile_anchored_account_pattern); an e2e here would prove a regex through a WASI run"
+
 verdict "§4 custody matrix"

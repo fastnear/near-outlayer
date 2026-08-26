@@ -23,6 +23,8 @@
 #        and re-binding the same account works
 #   R5f  DELETE cancels what was pending
 #   R5g  a wiped account is refused, not silently allowed
+#   R5h  code redeployed over a bound account → `unrecognized_wallet_code`,
+#        the one reachable fault class the matrix did not assert
 #
 #   PARENT=you.testnet ./tests/hos_lifecycle_e2e.sh --apply
 
@@ -180,6 +182,58 @@ elif [[ "$(class_of)" == "unrecognized_wallet_code" || "$(class_of)" == "chain_s
   pass "R5g a wiped account is refused by the BINDING check ($HTTP $(err_of)/$(class_of))"
 else
   fail "R5g the wiped account was refused $HTTP as '$(err_of)/$(class_of)' — a 4xx, but not from the binding check, so this probe says nothing about a deleted account: $(msg_of | head -c 160)"
+fi
+
+# ── R5h the account's code changed under a live binding ────────────────────
+#
+# The one fault class the whole HoS matrix left unasserted:
+# `unrecognized_wallet_code`. Of the three that had none, the other two cannot
+# be reached from here at all — `account_expired` has no variant in any contract
+# this build knows, and `binding_evidence_mismatch` needs a plumbing bug — so
+# they are unit-vector territory. This one is reachable, and it is the shape a
+# real owner reaches: the account is bound, the owner redeploys something else
+# onto it, and every later spend has to stop.
+#
+# Its OWN wallet and account rather than a hand-off from the probes above: that
+# account is walked through cut, re-bind and delete in a fixed order, and
+# deploying foreign code into the middle of it would decide which rule the later
+# refusals came from.
+log "R5h a foreign contract deployed over a bound account"
+STUB_WASM="$REPO_ROOT/tests/hos-status-stub/target/near/hos_status_stub.wasm"
+if [[ ! -f "$STUB_WASM" ]]; then
+  skip "R5h — no artifact to deploy: build it with (cd tests/hos-status-stub && cargo near build non-reproducible-wasm)"
+elif ! new_bound_wallet codehash; then
+  skip "R5h — the fresh bound wallet could not be built, so a refusal below would not be judgeable"
+else
+  # The pinned wallet is installed BY GLOBAL HASH, so `global_contract_hash` is
+  # what the verifier reads. Deploying a local wasm replaces it with an ordinary
+  # `code_hash` — which is exactly what a redeploy does to a real account.
+  # WITHOUT the init call: the stub's `new` is `#[init]`, and an init on an
+  # account that already carries the wallet's state panics and reverts the whole
+  # transaction — deploy included. Nothing here needs the stub to work; only its
+  # code hash matters, and that is what the verifier reads.
+  if near_tty "near contract deploy $ASSET use-file $STUB_WASM \
+      without-init-call network-config $NETWORK sign-with-keychain send" >/dev/null 2>&1; then
+    pass "R5h the foreign contract is on $ASSET"
+  else
+    fail "R5h the deploy did not land — nothing below judges the code-hash rule"
+  fi
+  sleep 6
+  call_ext "$SEED" "$ASSET" "$(ext_transfer "$WL" "$TINY")" >/dev/null
+  # THREE outcomes, not two. Written as "refused == 4xx" this reported a 503 —
+  # the answer the coordinator actually gave — as "the spend went through",
+  # which is the opposite of what happened and the same class of mistake the
+  # probe exists to catch.
+  if [[ "$HTTP" == 2?? ]]; then
+    fail "R5h a spend went through an account running code we do not recognize (HTTP $HTTP): $(msg_of)"
+  elif [[ "$(class_of)" == "unrecognized_wallet_code" ]]; then
+    pass "R5h refused as unrecognized_wallet_code — the code hash is read on every spend, not once at binding time"
+  elif [[ "$HTTP" == 503 ]]; then
+    fail "R5h refused 503 '$(msg_of | head -c 90)' — a TRANSIENT answer to a permanent state. The account runs foreign code and will until its owner redeploys; being told to retry never becomes true. The engine has unrecognized_wallet_code for exactly this and the caller never sees it"
+  else
+    fail "R5h refused $HTTP as '$(err_of)/$(class_of)', not unrecognized_wallet_code. The account runs a contract the allowlist does not name, and that is the rule that must speak: $(msg_of | head -c 160)"
+  fi
+  account_exists "$ASSET" && { note "cleaning up $ASSET"; delete_account "$ASSET"; }
 fi
 
 verdict "§6 lifecycle"

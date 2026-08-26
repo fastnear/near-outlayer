@@ -126,14 +126,19 @@ if assert_denied "D3 refused (its destination is an outsider)"; then
 fi
 
 # ── D4–D6 malformed args ────────────────────────────────────────────────────
+# Each of these names the DECODER as the layer that spoke, not merely "a 4xx".
+# Malformed args have several ways to be refused later — an address rule, a type
+# gate, a limit — and any of them would keep these probes green while the decode
+# had started accepting garbage and passing it on.
 send_raw "D4 args_base64 that is not base64 at all" '!!!not base64!!!'
-assert_denied "D4 refused"
+assert_denied "D4 refused" && assert_msg "D4 the decode spoke, naming base64" "not valid base64"
 send_raw "D5 valid base64 that is not JSON" "$(b64 'this is not json')"
-assert_denied "D5 refused"
+assert_denied "D5 refused" && assert_msg "D5 the decode spoke, naming the parse" "do not parse"
 send_raw "D6 truncated JSON" "$(b64 '{"request":{"external":[{"receiver_id":"a.testnet","actions":[')"
-assert_denied "D6 refused"
+assert_denied "D6 refused" && assert_msg "D6 the decode spoke, naming the parse" "do not parse"
 send_raw "D7 JSON without the 'request' envelope at all" "$(b64 '{"external":[]}')"
-assert_denied "D7 refused — 'request' is not defaulted"
+assert_denied "D7 refused — 'request' is not defaulted" \
+  && assert_msg "D7 the decode spoke: the envelope has no default" "do not parse"
 
 # ── D8 deeply nested JSON: the parser refuses, the enclave does not fall over ─
 DEEP=$(python3 -c 'print("{\"request\":{\"external\":" + "["*2000 + "]"*2000 + "}}")')
@@ -241,12 +246,17 @@ for op in add_extension remove_extension; do
 done
 ENV=$(jq -nc '{request:{internal:[{op:"set_signature_mode",payload:{enable:true}}]}}')
 send "R4 internal 'set_signature_mode'" "$ENV"
-assert_denied "R4 [set_signature_mode] refused" "policy_denied"
+assert_denied "R4 [set_signature_mode] refused" "policy_denied" \
+  && assert_msg "R4 [set_signature_mode] says the lane only spends" "internal|never rewires|control"
 
 # mixed: one legal promise carrying an internal op alongside it
 ENV=$(jq -nc --arg w "$WL" --arg u "$UNDER" --arg e "$EXECUTOR" \
   '{request:{internal:[{op:"add_extension",payload:{account_id:$e}}], external:[{receiver_id:$w, actions:[{action:"transfer",payload:{amount:$u}}]}]}}')
 send "R4 an internal op smuggled alongside a perfectly legal transfer" "$ENV"
-assert_denied "R4 [mixed] refused — a legal promise does not launder an illegal one" "policy_denied"
+# The message matters MOST here. The transfer beside the smuggled op is legal, so
+# a refusal for any other reason — a drifted whitelist, a limit — would keep this
+# probe green while `add_extension` was no longer hard-denied at all.
+assert_denied "R4 [mixed] refused — a legal promise does not launder an illegal one" "policy_denied" \
+  && assert_msg "R4 [mixed] and the ACCOUNT-CONTROL rule is the one that spoke" "internal|never rewires|control"
 
 verdict "§3 decoder + core policy"
