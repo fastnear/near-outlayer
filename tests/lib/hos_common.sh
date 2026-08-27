@@ -243,6 +243,45 @@ assert_json() {
   fail "$desc — $expr is '$got', expected '$want'"; return 1
 }
 
+# ── the coordinator's own rows ───────────────────────────────────────────────
+#
+# `PSQL_CMD` is a command the operator supplies that runs ONE statement of SQL
+# against the coordinator's database and prints tuples only — see
+# `.idea/TESTING-WITH-ADMIN.md`. The database is not reachable off the
+# coordinator's host, so a suite that needs it either is given a command or says
+# out loud that it judged nothing.
+#
+# An empty answer means two entirely different things: the row is not there
+# (yet), or the transport died on the way. A wrapper over ssh returns the empty
+# string for the second as readily as for the first — with ssh multiplexing left
+# on it does so on every call after the first — and a probe that then compares
+# "" against "" reports a pass. So nothing here interprets an absence until
+# `sql_alive` has shown the command works at all, and `sql_row` waits for a row
+# that may simply be late.
+PSQL_CMD="${PSQL_CMD:-}"
+
+sql() { [[ -n "$PSQL_CMD" ]] && $PSQL_CMD "$1"; }
+
+# Does reading the coordinator's rows work at all? Asks a question whose answer
+# cannot be empty, so a broken command is told apart from an absent row BEFORE
+# either is believed.
+sql_alive() {
+  [[ -n "$PSQL_CMD" ]] || return 1
+  [[ "$(sql "SELECT 'alive'")" == "alive" ]]
+}
+
+# sql_row <statement> [attempts] — one row, waited for. A row written by the
+# worker's callback lands seconds after the answer the client already has, so an
+# immediate read of a correct system finds nothing. Empty only after the wait.
+sql_row() {
+  local q=$1 n=${2:-10} out
+  for _ in $(seq 1 "$n"); do
+    out=$(sql "$q"); [[ -n "$out" ]] && { printf '%s' "$out"; return 0; }
+    sleep 3
+  done
+  return 1
+}
+
 # ── chain ────────────────────────────────────────────────────────────────────
 
 account_field() {

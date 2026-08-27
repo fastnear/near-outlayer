@@ -41,6 +41,7 @@ You are a world-class expert. Apply these consistently across the session.
 - **Limited functionality**: Don't implement features for one platform but skip another without asking
 - **Arbitrary delays**: No `tokio::time::sleep()` without strong justification - discuss with human first
 - **Logs for user errors**: `tracing::debug/warn/error` go to server logs only. Use `anyhow::bail!()` to propagate errors to users
+- **History in docs/comments**: Docs and comments describe ONLY the final state. No changelog narration — no "раньше было", "an earlier version", "used to key off X", "removed because…" — **even when the old behaviour is real git history.** A doc is not a log; git is the log. Keep the current invariant and its reason; drop the evolution.
 
 ### WASI Development
 When writing WASI containers:

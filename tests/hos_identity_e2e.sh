@@ -23,13 +23,24 @@
 #
 # Optional: NONWALLET_PAYMENT_KEY=<a funded key owned by a NAMED account> adds
 # I1c, the arm where the credential names no wallet at all.
+#
+# Optional: PSQL_CMD=<one-statement SQL command> adds §I6/§I7 — who the call is
+# BILLED to, and whether one operation can be followed from the id a client
+# holds down to the enclave's own evidence (R8). Everything above them judges
+# the guest, which cannot answer either question. See .idea/TESTING-WITH-ADMIN.md.
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hos_common.sh"
 
-[[ "${1:-}" == "--apply" ]] || { sed -n '3,22p' "$0" >&2; echo "  Pass --apply to run." >&2; exit 0; }
+[[ "${1:-}" == "--apply" ]] || { sed -n '3,31p' "$0" >&2; echo "  Pass --apply to run." >&2; exit 0; }
 hos_require
 
 PROJECT="${PROJECT:-connectors.outlayer.testnet/connector-probe}"
+
+# Set by I2 when the bound call goes through, and read by §I6/§I7. Declared here
+# because this harness runs under `set -u`: an I2 that failed would otherwise
+# take the whole script down at the first mention of them, turning one failed
+# assertion into a suite that reports nothing at all.
+CALL_BOUND=""; ATT_URL=""; BODY_I2=""
 
 # probe <payment-key> <flag> <operation> — one HTTPS call into the guest.
 probe() {
@@ -40,6 +51,10 @@ probe() {
     -H "X-Payment-Key: $pk" -H 'Content-Type: application/json' \
     -d "$(jq -nc --arg o "$op" --argjson f "$flag" '{input:{operation:$o}, use_bound_identity:$f}')" 2>/dev/null)
   BODY="$(tr -d '\n' < "$out")"; rm -f "$out"
+  # The handle the API gives a client, and the only one it gives: §I7 walks the
+  # coordinator's rows starting from this and nothing else, because nothing else
+  # is what a caller holds.
+  CALL_ID=$(jq -r '.call_id // ""' <<<"$BODY" 2>/dev/null)
 }
 guest() { jq -r "$1 // \"\"" <<<"$(jq -r '.output // .result // "{}"' <<<"$BODY" 2>/dev/null)" 2>/dev/null; }
 
@@ -198,7 +213,12 @@ log "I2 use_bound_identity=true with the binding live"
 probe "$PK" true
 if [[ "$HTTP" == "200" ]]; then
   S2=$(guest '.sender_id'); P2=$(guest '.user_account_id')
-  note "sender=$S2 payer=$P2"
+  # Kept for §I6/§I7, which judge THIS call's record rather than making another:
+  # a second call would leave a second set of rows, and "the row I found" is not
+  # the same claim as "the row for the answer I hold".
+  CALL_BOUND="$CALL_ID"; BODY_I2="$BODY"
+  ATT_URL=$(jq -r '.attestation_url // ""' <<<"$BODY")
+  note "sender=$S2 payer=$P2 call=$CALL_BOUND"
   [[ "$S2" == "$ACC" ]] \
     && pass "I2 the guest acts as the BOUND account ($S2) — verified in the worker against the chain, not taken from the request" \
     || fail "I2 the guest saw sender='$S2', expected the bound account '$ACC'"
@@ -246,6 +266,191 @@ if [[ -n "$V_OFF$V_ON" ]]; then
   pass "I5 both doors answered — the alpha inputs are recorded above for the comparison the plan asks for"
 else
   skip "I5 — the probe's vrf operation returned nothing to compare"
+fi
+
+# ── §I6/§I7 the record: who is billed, and can one call be followed ────────
+#
+# Everything above judged the guest — the right subject for "who am I", and the
+# wrong one for "who pays" and "what is on file". Those two live in the
+# coordinator's own rows, and the rows are what an operator, an invoice and a
+# support request are all built from. R8 of the acceptance list asks for one
+# operation to be followable from the answer a client holds all the way to the
+# receipts; §I6 and §I7 are that walk over the HTTPS door.
+#
+# NOT reachable from a laptop without a command that reads the coordinator's
+# database: it listens on its host only. Skipped loudly rather than quietly
+# reduced to what the answer envelope alone can show.
+log "§I6/§I7 the coordinator's rows for the bound call"
+if [[ -z "$CALL_BOUND" ]]; then
+  skip "§I6/§I7 — I2 produced no call_id, so there is no call to follow"
+elif ! sql_alive; then
+  skip "§I6/§I7 — set PSQL_CMD to a command that runs one statement of SQL against the coordinator's database (see .idea/TESTING-WITH-ADMIN.md). Without it the money and the audit trail are judged by nothing but the answer that was already read above"
+else
+  # ── I6 the two identities as the REQUEST records them ────────────────────
+  ROW=$(sql_row "SELECT request_id || '|' || COALESCE(context_sender_id,'') || '|' \
+                     || COALESCE(user_account_id,'') || '|' || COALESCE(payment_key_owner,'') || '|' \
+                     || COALESCE(binding_kind,'') || '|' || is_https_call
+                   FROM execution_requests WHERE call_id = '$CALL_BOUND'")
+  if [[ -z "$ROW" ]]; then
+    fail "I6 no execution_requests row for call $CALL_BOUND — the call the client was told about left no record"
+  else
+    IFS='|' read -r R_REQ R_SENDER R_USER R_PKO R_KIND R_HTTPS <<<"$ROW"
+    note "request $R_REQ: sender=$R_SENDER payer=$R_USER key-owner=$R_PKO kind=$R_KIND"
+    [[ "$R_SENDER" == "$ACC" ]] \
+      && pass "I6 the request records the BORROWED name ($R_SENDER) — the guest's answer and the file agree" \
+      || fail "I6 the request records sender '$R_SENDER', expected the bound account '$ACC'"
+    # The half nobody would notice breaking: the guest goes on answering
+    # correctly while the money moves to a name in the record.
+    [[ "$R_USER" == "$P0" ]] \
+      && pass "I6 and the PAYER is unchanged ($R_USER) — the borrowed name never reaches the column billing reads" \
+      || fail "I6 the payer column holds '$R_USER', expected the key's own account '$P0' — usage would be attributed to an account that paid nothing"
+    [[ "$R_PKO" == "$P0" ]] \
+      && pass "I6 the payment key's owner is recorded as itself ($R_PKO)" \
+      || fail "I6 payment_key_owner is '$R_PKO', expected '$P0'"
+    [[ "$R_KIND" == "personal_account" ]] \
+      && pass "I6 the row says WHICH kind of binding was used ($R_KIND) — without it a bound call is indistinguishable afterwards from an ordinary one" \
+      || fail "I6 binding_kind is '$R_KIND', expected personal_account"
+    # Which DOOR. The two are billed by different code down different tables,
+    # and a request filed under the wrong one is earned on twice or not at all.
+    # `true`, not `t`: psql's one-letter rendering of a boolean is how it DISPLAYS
+    # a column of its own, and this one arrives inside a concatenation, where it
+    # has already been cast to text by Postgres itself.
+    [[ "$R_HTTPS" == "true" ]] \
+      && pass "I6 and the row knows this came in over HTTPS, which is what decides where the money is accounted" \
+      || fail "I6 is_https_call is '$R_HTTPS' for a call made over HTTPS"
+  fi
+
+  # ── I6b the LEDGER, which is a different table and a different rule ──────
+  #
+  # An earnings row appears only when somebody is OWED something, and the probes
+  # above owe nobody: `whoami` is priced at a fee whose author share is zero, so
+  # the call costs money and credits no developer. The `secret` operation of the
+  # same connector carries a 70% author share, which is what makes a row exist —
+  # and the row is where attribution either holds or silently does not.
+  #
+  # Deliberately NOT done with `X-Attached-Deposit`, the other route to a
+  # developer's earnings: the connector path refuses it (`call.rs` says so and a
+  # unit test names the three places), so a deposit here buys a completed call
+  # and no row at all — which reads exactly like the defect this probe is for.
+  log "I6b a bound call that actually owes somebody money"
+  probe "$PK" true secret
+  DEP_CALL="$CALL_ID"
+  if [[ "$HTTP" != "200" || -z "$DEP_CALL" ]]; then
+    skip "I6b — the priced operation answered HTTP $HTTP ($(msg_of | head -c 140)); with no call there is nothing to attribute"
+  elif [[ "$(sql "SELECT allowance_covered::text FROM https_calls WHERE call_id = '$DEP_CALL'")" == "true" ]]; then
+    # A trial or a subscription pays a connector's author nothing — the caller
+    # paid us nothing for it — so there is correctly no row to read.
+    skip "I6b — this key's call was covered by an allowance, which owes the connector's author nothing and so writes no earnings row"
+  else
+    ROWS=$(sql_row "SELECT string_agg(project_owner || '~' || COALESCE(caller,'NULL') || '~' \
+                        || COALESCE(payment_key_owner,'NULL') || '~' || amount, ' ') \
+                      FROM earnings_history WHERE call_id = '$DEP_CALL'")
+    if [[ -z "$ROWS" ]]; then
+      fail "I6b a call that owed a connector's author their share left no earnings_history row (call $DEP_CALL) — money changed hands and the ledger does not say between whom"
+    else
+      note "earnings: $ROWS"
+      BAD=0; SEEN=0
+      for r in $ROWS; do
+        SEEN=$((SEEN+1)); ROW_OK=true
+        E_CALLER=$(cut -d'~' -f2 <<<"$r"); E_PKO=$(cut -d'~' -f3 <<<"$r")
+        # The whole point, stated over every identity column at once rather than
+        # over the one that happens to be filled today: a schema that starts
+        # populating `caller` for HTTPS rows must not populate it with the name
+        # the guest borrowed.
+        [[ "$E_CALLER" == "$ACC" || "$E_PKO" == "$ACC" ]] && { ROW_OK=false; note "  row names the BORROWED account"; }
+        [[ "$E_PKO" == "$P0" ]] || { ROW_OK=false; note "  row credits '$E_PKO', not the payer '$P0'"; }
+        # Counted per ROW, not per broken assertion: two complaints about one
+        # row otherwise report "2 of 1 rows", and a count that cannot be read is
+        # a count nobody checks.
+        $ROW_OK || BAD=$((BAD+1))
+      done
+      (( SEEN > 0 && BAD == 0 )) \
+        && pass "I6b every earnings row for this call names the PAYER ($P0) and none names the borrowed account ($ACC) — $SEEN row(s)" \
+        || fail "I6b $BAD of $SEEN earnings rows attribute this call to the wrong account: $ROWS"
+    fi
+  fi
+
+  # ── I7 the ladder: from the handle a client holds down to the receipts ───
+  #
+  # A client is given `call_id` and nothing else — no request id, no job id, no
+  # worker. So the walk starts there, and each rung has to be reachable from the
+  # one above it. A break anywhere is a call that cannot be answered questions
+  # about after the fact, which is the whole of R8.
+  log "I7 following one call from its id to the run that produced it"
+  [[ "$ATT_URL" == "/attestations/by-call/$CALL_BOUND" ]] \
+    && pass "I7 rung 1 the answer carries the attestation's address, derived from the call id ($ATT_URL)" \
+    || fail "I7 rung 1 attestation_url is '$ATT_URL', expected '/attestations/by-call/$CALL_BOUND' — a client cannot reach the quote from what it was given"
+
+  CROW=$(sql_row "SELECT status || '|' || COALESCE(instructions::text,'') || '|' \
+                      || COALESCE(time_ms::text,'') || '|' || COALESCE(compute_cost::text,'') \
+                    FROM https_calls WHERE call_id = '$CALL_BOUND'")
+  if [[ -z "$CROW" ]]; then
+    fail "I7 rung 2 no https_calls row for $CALL_BOUND — the call the client holds an id for is not on file"
+  else
+    IFS='|' read -r C_ST C_INS C_MS C_COST <<<"$CROW"
+    [[ "$C_ST" == "completed" ]] \
+      && pass "I7 rung 2 the call is on file as completed" \
+      || fail "I7 rung 2 the row says status '$C_ST' for a call the client was answered 200 on"
+    # The numbers a caller is billed on. If the answer and the row disagree,
+    # every invoice dispute is unresolvable — and neither side is obviously
+    # wrong, which is the worst shape this can take.
+    A_INS=$(jq -r '.instructions // ""' <<<"$BODY_I2"); A_COST=$(jq -r '.compute_cost // ""' <<<"$BODY_I2")
+    if [[ -n "$A_INS" ]]; then
+      [[ "$A_INS" == "$C_INS" ]] \
+        && pass "I7 rung 2 the instruction count the client was told matches the row ($C_INS)" \
+        || fail "I7 rung 2 the client was told $A_INS instructions and the row records $C_INS"
+    else
+      note "  the answer carried no instruction count to compare"
+    fi
+    if [[ -n "$A_COST" ]]; then
+      [[ "$A_COST" == "$C_COST" ]] \
+        && pass "I7 rung 2 and so does the cost ($C_COST)" \
+        || fail "I7 rung 2 the client was told cost $A_COST and the row records $C_COST"
+    fi
+    A_MS=$(jq -r '.time_ms // ""' <<<"$BODY_I2")
+    if [[ -n "$A_MS" ]]; then
+      [[ "$A_MS" == "$C_MS" ]] \
+        && pass "I7 rung 2 and so does the time it took ($C_MS ms)" \
+        || fail "I7 rung 2 the client was told $A_MS ms and the row records $C_MS"
+    fi
+  fi
+
+  if [[ -z "${R_REQ:-}" ]]; then
+    fail "I7 rung 3 the call id reaches no execution request, so the walk stops here — the rungs below it cannot be judged either"
+  else
+    pass "I7 rung 3 the call id reaches the execution request ($R_REQ)"
+    JROW=$(sql_row "SELECT job_id || '|' || COALESCE(worker_id,'') || '|' || status \
+                      FROM jobs WHERE request_id = $R_REQ ORDER BY created_at DESC LIMIT 1")
+    if [[ -z "$JROW" ]]; then
+      fail "I7 rung 4 no job for request $R_REQ — the request that ran cannot be tied to the run"
+    else
+      IFS='|' read -r J_ID J_WORKER J_ST <<<"$JROW"
+      note "job $J_ID on worker '${J_WORKER:-none}' — $J_ST"
+      [[ -n "$J_WORKER" ]] \
+        && pass "I7 rung 4 the run names the WORKER that did it ($J_WORKER) — the last link before the attestation, and the one that says whose enclave to ask" \
+        || fail "I7 rung 4 the job records no worker; an execution nobody can be named for cannot be attested to afterwards"
+      [[ "$J_ST" == "completed" ]] \
+        && pass "I7 rung 4 and the job agrees the run finished" \
+        || fail "I7 rung 4 the job is '$J_ST' for a call answered 200"
+    fi
+  fi
+
+  # Rung 5 — the receipts. Deterministic from the call id, so the address is
+  # answerable at once; the QUOTE behind it is uploaded by the worker after the
+  # answer went out, which is why this waits rather than reads once.
+  ATT_CODE=""
+  for _ in 1 2 3 4 5 6; do
+    throttle
+    ATT_CODE=$(curl -sS -o /dev/null -w '%{http_code}' -m 30 "$COORDINATOR_URL$ATT_URL" 2>/dev/null)
+    [[ "$ATT_CODE" == "200" ]] && break; sleep 5
+  done
+  if [[ "$ATT_CODE" == "200" ]]; then
+    pass "I7 rung 5 the TEE attestation for this very call is reachable from the id the client holds — the walk closes"
+  elif [[ "$ATT_CODE" == "404" ]]; then
+    finding "I7 rung 5 the attestation for call $CALL_BOUND was still 404 half a minute after the answer. The address is right and the run is on file; what a client sees is a verification that is not yet there and nothing telling it when to look again"
+  else
+    fail "I7 rung 5 the attestation address answered HTTP $ATT_CODE"
+  fi
 fi
 
 verdict "§5 identity"

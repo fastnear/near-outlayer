@@ -12,13 +12,18 @@
 #   PARENT=you.testnet ./tests/run_hos_suite.sh --apply
 #   PARENT=you.testnet ONLY="decoder custody" ./tests/run_hos_suite.sh --apply
 #
+# Export PSQL_CMD as well to get §I6/§I7 — attribution and the R8 audit trail.
+# They read the coordinator's own rows, which is the only place the question
+# "who is billed for this, and what happened to it" has an answer; without the
+# variable both sections step aside loudly. See .idea/TESTING-WITH-ADMIN.md.
+#
 # Exits non-zero if any suite failed. A suite that RAN and judged nothing exits 3
 # and is reported as NOTHING — never as ok, because the run is silent about what
 # it covers rather than green on it.
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-[[ "${1:-}" == "--apply" ]] || { sed -n '3,16p' "$0" >&2; echo "  Pass --apply to run." >&2; exit 0; }
+[[ "${1:-}" == "--apply" ]] || { sed -n '3,22p' "$0" >&2; echo "  Pass --apply to run." >&2; exit 0; }
 : "${PARENT:?USAGE: PARENT=you.testnet $0 --apply}"
 export OUTLAYER_NETWORK="${NETWORK:-testnet}"
 LOGDIR="${LOGDIR:-/tmp/hos-suite-$(date +%Y%m%d-%H%M%S)}"
@@ -32,6 +37,7 @@ SUITES=(
   "decoder|hos_decoder_policy_e2e.sh|§3 the decoder and the mode-blind core policy"
   "lease|hos_lease_stub_e2e.sh|§3.1 the hos_lease profile, through the §10 stub"
   "custody|hos_custody_matrix_e2e.sh|§4 limits, rights, capabilities, multisig, freeze"
+  "gas|hos_gas_floor_e2e.sh|§R6 the executor's gas floor, warning and terminal refusal"
   "identity|hos_identity_e2e.sh|§5 use_bound_identity and attribution"
   "lifecycle|hos_lifecycle_e2e.sh|§6 lifecycle and invalidation (R5)"
   "dos|hos_dos_e2e.sh|§7 resource abuse"
@@ -118,14 +124,31 @@ cat >&2 <<'MAP'
        stub   lease §C-* (frozen, parked, suspended, lease expired) and §ROT (ownership rotation)
        gap    the partner's revoke WEBHOOK is unconfigured on testnet — see the findings
   R6   gas: source, submit, retry, replay specified and exercised
-       live   endpoints §E12 (gas_balance + the low-gas flag), custody §L (one spend at a time)
-       partial a deliberate executor-below-floor terminal error was not driven here
+       live   endpoints §E12 (the balance is on /address), custody §L (one spend at a time)
+       live   gas §F1/§F4 — the 0.05 NEAR warning on the binding flips both ways, and the
+              threshold it measured against is named
+       live   gas §F2 — an executor starved below the cost of a call is refused 402
+              wallet_underfunded, naming what it holds and what the call costs, with the
+              money still sitting untouched in the bound account
+       live   gas §F3 — and the refused request is SETTLED (failed / never_admitted) rather
+              than left for a repair to reconstruct. Needs PSQL_CMD
+       live   gas §F4 — the same envelope goes through once the executor can pay, which is
+              what makes the three refusals above refusals ABOUT GAS
   R7   reads do not mix the two identities
        live   endpoints §E10/E12/E13 (asset vs executor, intents sent to the right door, /balance unmoved)
        stub   lease reserve_yocto is read from hos_agent_status (§R1)
   R8   one operation traceable from API to inner receipts
-       partial request_id / tx_hash / promise_index / additional_violations observed on every refusal
-              and every send; the full status ladder needs the coordinator's own rows (DB access)
+       live   identity §I7 walks the HTTPS door from the only handle a client is given — the call id
+              — through https_calls, the execution request, the job and the worker that ran it, to
+              the TEE attestation at /attestations/by-call
+       live   bound_identity_onchain §B7 walks the other door from the only handle a caller holds
+              there — the transaction hash — to the chain's own inner receipts, the job and worker,
+              the priced record, and /attestations/by-tx. Run APART from this runner: it needs an
+              existing binding (BINDING_SEED + ASSET), which nothing here produces
+       live   attribution on both doors: identity §I6/§I6b and §B6 — the request row and the
+              earnings row name the PAYER, never the account the guest borrowed
+       needs  PSQL_CMD. Without it those sections skip and say so, and nothing below the answer
+              envelope is judged at all
   R9   an unsupported impl_version is rejected before signing
        live   endpoints §E3i (PUT refuses version 999, names the supported set, says terminal)
        stub   lease §C-version (a chain that reports version 5 → unsupported_wallet_implementation)

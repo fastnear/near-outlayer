@@ -157,6 +157,67 @@ else
   pass "G0 the pre-flight let a granted spend through (HTTP $HTTP) — the refusals below are refusals of something"
 fi
 
+# HERE, not at the end of the file, and that is not cosmetic: the cases below
+# walk the binding through faults that END it — an expired lease, an ownership
+# rotation — after which no call succeeds and a probe needing a HEALTHY lane
+# cannot tell its own failure from the fixture's. Written at the tail first,
+# this ran after the rotation and reported the lane shut when the lane had been
+# shut on purpose two cases earlier.
+# ── W. the partner's lifecycle webhook, and what it can honestly prove ─────
+#
+# §6 of the plan asks for one thing above all: their revoke stops the agent NOW,
+# not when our 5 s observation cache happens to expire.
+#
+# That exact claim CANNOT be driven from outside, and the reason is worth
+# writing down rather than rediscovering. The cache is written and read in ONE
+# place — `preflight_extension_call` — so the only way to warm it is a call that
+# also broadcasts a transaction. The write happens at the start of that request
+# and the answer comes back seconds later, so by the time a test can send the
+# NEXT call, most of the 5 s window is already spent. Measured here: the cached
+# ALLOW was gone before the follow-up call could even start. A probe built on
+# that race would pass or fail on network latency, and a green run would say
+# nothing about the webhook.
+#
+# What IS judgeable, and what this probe pins:
+#   W1  the endpoint re-reads the CHAIN rather than believing its caller: the
+#       body says `frozen`, and the answer must carry the status the chain
+#       actually reports, not the word in the request
+#   W2  after the event, the lane is refused with the fault the chain reports
+#
+# Neither proves the invalidation beat the TTL. Both would fail if the webhook
+# were a no-op that returned a canned answer, which is the failure this section
+# exists to catch.
+log "W the partner's lifecycle webhook re-reads the chain"
+WH_SECRET="${BINDING_WEBHOOK_SECRET:-}"
+if [[ -z "$WH_SECRET" ]]; then
+  skip "W — set BINDING_WEBHOOK_SECRET (it lives in prod_configs/coordinator/.env.testnet) to judge the webhook"
+elif ! set_status "$(status_json "$GRANT_OK" Active SelfFrozen)"; then
+  skip "W — the stub would not report a frozen account, so there is nothing for the event to find"
+else
+  WH=$(curl -sS -m 30 -X POST "$COORDINATOR_URL/wallet/v1/binding/events" \
+    -H "X-Binding-Webhook-Secret: $WH_SECRET" -H 'Content-Type: application/json' \
+    -d "$(jq -nc --arg a "$STUB" '{asset_account_id:$a, event:"frozen"}')" 2>/dev/null)
+  WH_STATUS=$(jq -r '.binding_status // ""' <<<"$WH")
+  note "W the event answered: $WH"
+  # `frozen` is reversible, so the binding is suspended rather than revoked —
+  # and either way it must NOT still be `active`, which is what a webhook that
+  # answered without looking would say.
+  if [[ -n "$WH_STATUS" && "$WH_STATUS" != "active" ]]; then
+    pass "W1 the event re-read the chain and reported '$WH_STATUS' — the body was a hint, the chain was the answer"
+  else
+    fail "W1 the event answered '$WH_STATUS' for an account the chain reports as frozen: either it believed the request or it did not look"
+  fi
+
+  send "W2 a spend right after the event" "$(ext_transfer "$WL" "1000000000000000000000")"
+  assert_class "W2 the lane is refused with the fault the chain reports" "account_frozen"
+
+  # RESTORE. Everything below reads the healthy grant this suite set up, and a
+  # probe that leaves the stub frozen turns twenty-two later cases into
+  # `account_frozen` — which is how this one was first written.
+  set_status "$(status_json "$GRANT_OK")" \
+    || fail "W the stub could not be returned to a healthy state — every case below is now judging a frozen account"
+fi
+
 # ── the grant ladder, in the contract's own order ──────────────────────────
 send "G1 a receiver the grant never named (plain transfer)" "$(ext_transfer "$OUTSIDER" "1000000000000000000000")"
 assert_class "G1" "receiver_not_granted"

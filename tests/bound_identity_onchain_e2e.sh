@@ -25,6 +25,8 @@
 #   B4  flag on with NO binding → REFUSED, not quietly run under the caller's
 #       own name
 #   B5  the flag is not a way to borrow a name — see the note at B5
+#   B6  the EARNINGS row names the payer, not the account the guest borrowed
+#   B7  R8 — one run followed from its transaction hash to the enclave's quote
 #
 # Requires: an ACTIVE personal_account binding. Produce one with
 #   PARENT=you.testnet KEEP=1 ./tests/binding_lifecycle_e2e.sh --apply
@@ -80,7 +82,7 @@ pass() { printf '\033[32m✓ %s\033[0m\n' "$*" >&2; PASS=$((PASS+1)); }
 fail() { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; FAILED=$((FAILED+1)); FAILED_NAMES+=("$*"); }
 
 if [[ "$APPLY" != true ]]; then
-  sed -n '3,35p' "$0" >&2
+  sed -n '3,41p' "$0" >&2
   echo "  Pass --apply to run." >&2
   exit 0
 fi
@@ -384,6 +386,176 @@ elif ROW=$(identity_of "$EXECUTOR" "$MARK"); then
     || fail "B1 binding_kind is '$KIND', expected personal_account"
 else
   fail "B1 nothing reached the chain — the send answered '${SEND_ERR:-nothing}': $(head -c 200 <<<"$OUT")"
+fi
+
+# ── B6: the LEDGER names the payer, never the borrowed account ───────────────
+#
+# B2 above asked the request row who paid. This asks the money.
+#
+# They are different questions with different answers available: the request
+# carries both identities, and `earnings_history` carries ONE — the column an
+# invoice, a developer's earnings page and every revenue total are built from.
+# Filling it from the guest's name would credit this call to an account that
+# attached nothing and fold every caller sharing one bound account into a single
+# payer, and none of it would look wrong on the page.
+#
+# The coordinator has a named function for the choice (`earnings_caller`) and
+# unit tests over it. This is the same rule asked of the running system, where
+# the two columns are populated by a different path than the one the unit test
+# hands them.
+log "B6 the earnings row for the bound run"
+if [[ -z "$PSQL_CMD" ]]; then
+  warn "B6 SKIPPED — needs PSQL_CMD"
+elif ! BROW=$(identity_of "$EXECUTOR" "$MARK"); then
+  fail "B6 the bound request never appeared in the coordinator's rows, so there is no run to follow the money for"
+else
+  B_REQ="${BROW%%|*}"
+  # `attached_usd` is what buys a row at all: nothing is owed on a free call and
+  # nothing is written, so an absence here would otherwise read as a defect when
+  # it is a run that cost nobody anything.
+  B_ATT=$(sql "SELECT COALESCE(attached_usd,'0') FROM execution_requests WHERE request_id = $B_REQ")
+  if [[ "${B_ATT:-0}" == "0" || -z "$B_ATT" ]]; then
+    warn "B6 SKIPPED — request $B_REQ attached nothing, so no developer was owed anything and no earnings row exists to attribute"
+  else
+    EROW=""
+    for _ in $(seq 1 15); do
+      EROW=$(sql "SELECT COALESCE(caller,'NULL') || '|' || source || '|' || COALESCE(tx_hash,'') \
+                    FROM earnings_history WHERE request_id = $B_REQ ORDER BY id DESC LIMIT 1")
+      [[ -n "$EROW" ]] && break; sleep 4
+    done
+    if [[ -z "$EROW" ]]; then
+      fail "B6 request $B_REQ attached $B_ATT and left no earnings_history row — money was taken and the ledger does not say who from"
+    else
+      E_CALLER="${EROW%%|*}"; REST="${EROW#*|}"; E_SOURCE="${REST%%|*}"; E_TX="${REST##*|}"
+      note "earnings: caller=$E_CALLER source=$E_SOURCE tx=$E_TX"
+      [[ "$E_CALLER" == "$EXECUTOR" ]] \
+        && pass "B6 the ledger names the PAYER ($E_CALLER)" \
+        || fail "B6 the ledger names '$E_CALLER', expected the account that paid, '$EXECUTOR'"
+      # Stated separately and on purpose: the assertion above already fails when
+      # the borrowed name is used, but it fails the same way for a typo, and the
+      # two want different reading. This one can only mean one thing.
+      [[ "$E_CALLER" != "$ASSET" ]] \
+        && pass "B6 and it is NOT the borrowed account ($ASSET) — a bound run bills the wallet that ran it" \
+        || fail "B6 the ledger credits this call against '$ASSET', which attached nothing: usage is being attributed to the name the guest was allowed to borrow"
+      [[ "$E_SOURCE" == "blockchain" ]] \
+        && pass "B6 recorded as a blockchain earning, which is where the balance lives on this door" \
+        || fail "B6 source is '$E_SOURCE', expected blockchain for an on-chain request"
+    fi
+  fi
+fi
+
+# ── B7: R8 — one operation, followed from a hash to the enclave that ran it ──
+#
+# What a client holds after `request_execution` is a transaction hash. Nothing
+# else: not the request id the contract assigned, not the coordinator's job, not
+# the worker. So the walk starts there and every rung has to be reachable from
+# the one above, or an operation cannot be asked questions about after it has
+# happened — which is the whole of R8 in the acceptance list.
+log "B7 following the bound run from its transaction to its attestation"
+if [[ -z "$PSQL_CMD" ]]; then
+  warn "B7 SKIPPED — needs PSQL_CMD"
+elif [[ -z "${B_REQ:-}" ]]; then
+  warn "B7 SKIPPED — B6 never established which request to follow"
+else
+  TXH=$(sql "SELECT COALESCE(context_transaction_hash,'') FROM execution_requests WHERE request_id = $B_REQ")
+  if [[ -z "$TXH" ]]; then
+    fail "B7 rung 1 request $B_REQ records no transaction hash — the only handle the caller has leads nowhere"
+  else
+    pass "B7 rung 1 the request names the transaction that started it ($TXH)"
+
+    # Rung 2 — the chain's own account of it. Asked of the node rather than of
+    # our database, so a row we wrote cannot vouch for itself.
+    #
+    # Retried, and a node that keeps saying TIMEOUT_ERROR is not counted as a
+    # failure of ours: that is what this RPC answers both for a transaction it
+    # has not finalised yet and for one it has already pruned — a public node
+    # keeps only a few epochs — and neither says anything about whether the run
+    # is traceable. Only an answer that comes back and is WRONG is a failure.
+    TXST=""; RCPTS=""; RECV=""
+    for _ in 1 2 3 4 5; do
+      TXST=$(curl -s "$RPC_URL" -X POST -H 'Content-Type: application/json' --max-time 30 \
+        -d "$(jq -nc --arg h "$TXH" --arg a "$EXECUTOR" \
+            '{jsonrpc:"2.0",id:1,method:"EXPERIMENTAL_tx_status",params:[$h,$a]}')" 2>/dev/null)
+      RCPTS=$(jq -r '.result.receipts_outcome | length' <<<"$TXST" 2>/dev/null)
+      RECV=$(jq -r '.result.transaction.receiver_id // ""' <<<"$TXST" 2>/dev/null)
+      [[ -n "$RCPTS" && "$RCPTS" != "null" ]] && break
+      sleep 5
+    done
+    if [[ -z "$RCPTS" || "$RCPTS" == "null" ]]; then
+      warn "B7 rung 2 NOT JUDGED — the node would not return the transaction ($(jq -r '.error.cause.name // .error.message // "no answer"' <<<"$TXST")). Rungs 1 and 3-5 below still stand"
+    else
+      (( RCPTS > 0 )) \
+        && pass "B7 rung 2 the chain carries $RCPTS inner receipts for it — the receipts R8 asks to reach" \
+        || fail "B7 rung 2 the transaction resolved with no receipts at all"
+      [[ "$RECV" == "$CONTRACT_ID" ]] \
+        && pass "B7 rung 2 and it was addressed to the contract ($RECV)" \
+        || fail "B7 rung 2 the transaction was addressed to '$RECV', not $CONTRACT_ID"
+    fi
+
+    # Rung 3 — the run. The link a support question actually needs: which
+    # enclave executed this, and did it finish.
+    JROW=""
+    for _ in $(seq 1 10); do
+      JROW=$(sql "SELECT job_id || '|' || COALESCE(worker_id,'') || '|' || status \
+                    FROM jobs WHERE request_id = $B_REQ AND job_type = 'execute' \
+                   ORDER BY created_at DESC LIMIT 1")
+      [[ -n "$JROW" ]] && break; sleep 3
+    done
+    if [[ -z "$JROW" ]]; then
+      fail "B7 rung 3 no execute job for request $B_REQ — the request cannot be tied to a run"
+    else
+      J_ID="${JROW%%|*}"; JR="${JROW#*|}"; J_WORKER="${JR%%|*}"; J_ST="${JR##*|}"
+      note "job $J_ID on worker '${J_WORKER:-none}' — $J_ST"
+      [[ -n "$J_WORKER" ]] \
+        && pass "B7 rung 3 the run names the worker that did it ($J_WORKER)" \
+        || fail "B7 rung 3 the job records no worker; an execution nobody can be named for cannot be attested to afterwards"
+      [[ "$J_ST" == "completed" ]] \
+        && pass "B7 rung 3 and the run finished" \
+        || fail "B7 rung 3 the job is '$J_ST'"
+    fi
+
+    # Rung 4 — the priced record of the operation, which is the row a partner's
+    # own billing reconciles against.
+    OROW=$(sql "SELECT operation || '|' || success || '|' || COALESCE(tx_hash,'') \
+                  FROM onchain_calls WHERE request_id = $B_REQ")
+    if [[ -z "$OROW" ]]; then
+      warn "B7 rung 4 no onchain_calls row for request $B_REQ — nothing priced was recorded for this operation"
+    else
+      O_OP="${OROW%%|*}"; O_TX="${OROW##*|}"
+      # The same hash, not merely A hash. A priced row carrying somebody else's
+      # transaction reconciles against the wrong operation, and every total it
+      # feeds still adds up — which is why this compares rather than checks for
+      # emptiness.
+      [[ "$O_TX" == "$TXH" ]] \
+        && pass "B7 rung 4 the priced record names the operation ($O_OP) and carries THIS transaction" \
+        || fail "B7 rung 4 the priced record for '$O_OP' carries '$O_TX', not the transaction this run came from"
+      # And the ledger row B6 read is about the same transaction too, which is
+      # what joins "who was billed" to "what happened". Only asked when B6
+      # actually found a row: an assertion that also passes on an empty value is
+      # how "" comes to be compared against "" and reported as agreement.
+      if [[ -n "${E_TX:-}" ]]; then
+        [[ "$E_TX" == "$TXH" ]] \
+          && pass "B7 rung 4 and the earnings row is about the same transaction — the money and the run are one record" \
+          || fail "B7 rung 4 the earnings row names transaction '$E_TX' while the run came from '$TXH'"
+      fi
+    fi
+
+    # Rung 5 — the enclave's own evidence, addressed by the hash the caller has
+    # rather than by any identifier we invented. Uploaded after the run, so this
+    # waits instead of reading once.
+    ACODE=""
+    for _ in 1 2 3 4 5 6 7 8; do
+      ACODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$COORDINATOR_URL/attestations/by-tx/$TXH" 2>/dev/null)
+      [[ "$ACODE" == "200" ]] && break; sleep 5
+    done
+    if [[ "$ACODE" == "200" ]]; then
+      pass "B7 rung 5 the TEE attestation is reachable from the transaction hash alone — the walk closes without a single internal identifier"
+    elif [[ "$ACODE" == "404" ]]; then
+      fail "B7 rung 5 /attestations/by-tx/$TXH is still 404 after forty seconds: the run is on file and its evidence is not addressable by the only handle the caller holds"
+    else
+      fail "B7 rung 5 the attestation address answered HTTP $ACODE"
+    fi
+  fi
 fi
 
 # ── B3: the two doors agree ──────────────────────────────────────────────────
