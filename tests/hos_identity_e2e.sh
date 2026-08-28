@@ -72,11 +72,11 @@ CLAIM=$(curl -sS -m 60 -X POST "$COORDINATOR_URL/trial-key" -H "Authorization: B
 PK=$(jq -r '.payment_key // empty' <<<"$CLAIM")
 
 # The trial quota is three keys per IP and it is not resettable from outside —
-# so the section that judges the HTTPS half of `use_bound_identity` used to be
-# lost to a counter, on a run that then reported nothing wrong. A wallet can buy
-# its own key instead. The key it gets is owned by the same implicit account the
-# trial key would have been, which is what makes I1 land on the binding lookup
-# rather than on "this key names no wallet".
+# so a spent counter would cost this suite the whole HTTPS half of
+# `use_bound_identity` — silently, on a run that then reports nothing wrong. A
+# wallet can buy its own key instead. The key it gets is owned by the same
+# implicit account the trial key would have been, which is what makes I1 land on
+# the binding lookup rather than on "this key names no wallet".
 if [[ -z "$PK" ]]; then
   note "no trial key ($(jq -r '.error // .' <<<"$CLAIM" | head -c 90)) — buying one with stablecoin instead"
   buy_payment_key "$WK" "$EXEC" && PK="$PAID_KEY"
@@ -126,10 +126,10 @@ elif [[ "$HTTP" == "200" ]]; then
   fail "I1 the job ran and the guest saw sender='$S1' with no binding in existence"
 else
   # What this alone proves: the job did NOT go ahead under the caller's own
-  # name. Deliberately narrower than it used to read ("asking to be somebody the
-  # wallet is not is an error") — that claim is what the three assertions below
-  # are for, and stating it here made a wrong-reason refusal report one pass and
-  # three failures about a single observation.
+  # name — deliberately no more. The wider claim, that asking to be somebody the
+  # wallet is not is an error, belongs to the three assertions below; making it
+  # here as well turns one wrong-reason refusal into a pass and three failures
+  # about a single observation.
   pass "I1 refused rather than run (HTTP $HTTP) — nothing executed under the wrong identity"
   note "  $(jq -r '.message // .error // .' <<<"$BODY" | head -c 160)"
   # WHICH refusal, not just any. A wallet that ran out of money, a project that

@@ -67,7 +67,12 @@ ASSET="${ASSET:-alpha.tlademo.testnet}"
 RECEIVER="${RECEIVER:-hos-e2e-receiver.testnet}"   # the ONLY granted receiver
 WNEAR="${WNEAR:-wrap.testnet}"                      # granted token, budget 5 wNEAR
 USDC="${USDC:-usdc.fakes.testnet}"                  # granted token, budget 100 USDC
-OWNER="${OWNER:-$ASSET}"                            # hos_lease PUT wants an owner; override if HoS named a distinct one
+# The registry's own answer for this account (`nft_item_info.owner_id`, read by
+# RPC 2026-08-22), not the account itself. The coordinator checks only the shape
+# of this field, so a wrong value is accepted silently and then returned to
+# clients as if it were established — which is exactly why a fixture should not
+# carry a convenient fiction.
+OWNER="${OWNER:-council.tlademo.testnet}"
 IMPL_VERSION="${IMPL_VERSION:-6}"                   # from the live hos_agent_status
 OUTSIDER="${OUTSIDER:-outsider-nobody.testnet}"    # never in the grant
 EXPECTED_EXECUTOR="${EXPECTED_EXECUTOR:-5356b2c04da3aa5f134ae59d12e72f5df6ce25db24ffa968c74c8843e325806a}"
@@ -88,6 +93,12 @@ spent_token()  { grant_field ".grant.tokens[\"$1\"].spent"; }
 
 # Poll a counter until it changes from a baseline (a spend settled) or time out.
 # The reader is a command STRING (eval'd), so `spent_token <contract>` works.
+#
+# Called only behind an explicit `HTTP == 200`, never chained off
+# `assert_status`: that assertion RETURNS SUCCESS when it steps aside for a
+# wallet that has spent its monthly allowance, so a chain would run this against
+# a send that never happened and spend thirty seconds proving a meter did not
+# move — reported as the product failing to deliver a transfer.
 wait_spend() { # <desc> <reader-cmd-string> <baseline>
   local desc=$1 reader=$2 base=$3 now i
   for i in 1 2 3 4 5 6 7 8 9 10; do
@@ -140,20 +151,20 @@ log "G3 · granted spends land and the meter moves"
 base=$(spent_native)
 q POST /wallet/v1/binding/transfer \
   "$(jq -nc --arg t "$RECEIVER" --arg a "$NEAR_SPEND" '{to:$t, amount:$a}')" >/dev/null
-assert_status "G3a · native transfer to granted receiver accepted" 200 \
-  && wait_spend "G3a · native meter" spent_native "$base"
+assert_status "G3a · native transfer to granted receiver accepted" 200
+[[ "$HTTP" == "200" ]] && wait_spend "G3a · native meter" spent_native "$base"
 
 base=$(spent_token "$USDC")
 q POST /wallet/v1/binding/transfer \
   "$(jq -nc --arg t "$RECEIVER" --arg a "$USDC_SPEND" --arg k "$USDC" '{to:$t, amount:$a, token:$k}')" >/dev/null
-assert_status "G3b · USDC ft_transfer to granted receiver accepted" 200 \
-  && wait_spend "G3b · USDC meter" "spent_token $USDC" "$base"
+assert_status "G3b · USDC ft_transfer to granted receiver accepted" 200
+[[ "$HTTP" == "200" ]] && wait_spend "G3b · USDC meter" "spent_token $USDC" "$base"
 
 base=$(spent_token "$WNEAR")
 q POST /wallet/v1/binding/transfer \
   "$(jq -nc --arg t "$RECEIVER" --arg a "$WNEAR_SPEND" --arg k "$WNEAR" '{to:$t, amount:$a, token:$k}')" >/dev/null
-assert_status "G3c · wNEAR ft_transfer to granted receiver accepted" 200 \
-  && wait_spend "G3c · wNEAR meter" "spent_token $WNEAR" "$base"
+assert_status "G3c · wNEAR ft_transfer to granted receiver accepted" 200
+[[ "$HTTP" == "200" ]] && wait_spend "G3c · wNEAR meter" "spent_token $WNEAR" "$base"
 
 # ── G7–G9: pre-flight refuses before any gas, with the contract's own class ───
 log "G7–G9 · budget and receiver walls (refused pre-flight, no spend)"

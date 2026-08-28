@@ -164,14 +164,22 @@ if [[ "$HTTP" == "402" ]]; then
   grep -qiE "costs .*NEAR" <<<"$M" \
     && pass "F2 and what the call COSTS — together, the amount to send" \
     || fail "F2 the message does not say what the call costs: $M"
-  # Reported, not asserted: the advice is wrong for this refusal, and nothing
-  # about it is unsafe. `not_enough_balance` is shared with the secret-storage
-  # path, where "have the author pay instead" is a real second option; on a
-  # bound-lane transfer there is no such route, and the endpoint it names does
-  # nothing for a caller whose executor is out of gas. A partner who follows the
-  # sentence spends their time on an endpoint about storing secrets.
-  grep -q "agent-secret/prepare" <<<"$M" \
-    && finding "F2 the underfunded message offers POST /wallet/v1/agent-secret/prepare as a way for somebody else to pay. That route exists for storing a secret; it cannot fund an executor's gas, and this refusal is about gas. The two numbers in the sentence are right — only the way out is somebody else's"
+  # WHICH account to send it to. Two numbers and no address leaves the person
+  # who actually holds the NEAR — rarely the agent — with nothing to act on, and
+  # an executor is an implicit account nobody can derive from the request they
+  # made. nearcore names the signer in its own verdict, so the only way to lose
+  # it is to throw it away.
+  grep -q "$EXECUTOR" <<<"$M" \
+    && pass "F2 and names the EXECUTOR as the account to fund — the one thing in this refusal that cannot be worked out from anywhere else" \
+    || fail "F2 the message does not name the account to send NEAR to: $M"
+  # And not the route that belongs to another feature. `not_enough_balance`
+  # classifies every broadcast the node refused for a poor signer; on this lane
+  # there is no author who can pay instead. `/wallet/v1/agent-secret/prepare`
+  # stores a secret and cannot fund gas, and the store_secrets path is where
+  # that advice belongs.
+  grep -q "agent-secret" <<<"$M" \
+    && fail "F2 the message offers /wallet/v1/agent-secret/prepare, which stores a secret and cannot fund an executor's gas — a partner following it spends their time on the wrong endpoint" \
+    || pass "F2 and offers no route that cannot fix this — the only fix is NEAR on that account, which is what it says"
 fi
 
 # ── F3 the request was settled, not abandoned ──────────────────────────────

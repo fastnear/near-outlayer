@@ -102,7 +102,12 @@ GRANT_OK=$(jq -nc --arg w "$WL" --arg t "$TOKEN" --arg c "$COLL" --arg e "$FUTUR
   '{receivers:[$w], budget_yocto:"1000000000000000000000000", spent_yocto:"0",
     tokens:{($t):{budget:"1000", spent:"0"}}, items:{($c):["1"]}, expires_at:$e}')
 
-set_item_info "$(jq -nc --arg c "$OWN_COLL" '{rotation_seq:1, collection_id:$c}')" || true
+# `rotation_seq` as a STRING, because that is what the chain sends: the partner
+# types it as near-sdk `U64`, which serializes to a decimal string. A stub that
+# answers with a JSON number tests a wire form nothing produces — and a coordinator
+# that could only read the number form would pass every case here while leaving
+# every real leased binding stuck `pending`.
+set_item_info "$(jq -nc --arg c "$OWN_COLL" '{rotation_seq:"1", collection_id:$c}')" || true
 
 log "Binding the wallet to the stub as kind=hos_lease, impl_version=6"
 api "$SEED_S" PUT /wallet/v1/binding \
@@ -385,6 +390,10 @@ fi
 if set_status "$(status_json "$GRANT_OK")"; then
   api "$SEED_S" GET /wallet/v1/binding >/dev/null
   note "status before rotation: $(jq -r '.binding_status' <<<"$BODY")"
+  # The NUMBER spelling here on purpose. The rotation must be judged by VALUE,
+  # not by the JSON type it arrived as: 1 (string) → 2 (number) is a rotation and
+  # nothing else, and a reader that compared the raw forms would call it one when
+  # the value had not moved, or miss it when it had.
   if set_item_info "$(jq -nc --arg c "$OWN_COLL" '{rotation_seq:2, collection_id:$c}')"; then
     api "$SEED_S" GET /wallet/v1/binding >/dev/null
     ST2=$(jq -r '.binding_status // ""' <<<"$BODY")

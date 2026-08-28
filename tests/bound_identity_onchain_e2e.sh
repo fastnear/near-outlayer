@@ -572,11 +572,12 @@ else
 
   # B3a — the flag ON ITS OWN, with no other header.
   #
-  # This is the probe that matters and the one that was missing. The binding
-  # used to be resolved from the same value that decides whether the job may
-  # SPEND the wallet's money, and that value is absent unless `X-Wallet-Id` was
-  # sent — so the flag did nothing here while the on-chain door substituted
-  # normally. Sending the header would have hidden it: see B3b.
+  # The probe that carries the section. The binding has to be resolved from the
+  # CREDENTIAL, not from the value that decides whether the job may SPEND the
+  # wallet's money: that one is absent unless `X-Wallet-Id` was sent, so
+  # resolving from it leaves the flag doing nothing here while the on-chain door
+  # substitutes normally. Sending the header hides exactly that — see B3b, which
+  # is why it is the control and not the test.
   HTTPS_OUT=$(https_whoami)
   HTTPS_SENDER=$(jq -r '.output.sender_id // empty' <<<"$HTTPS_OUT")
   if [[ -z "$HTTPS_SENDER" ]]; then
