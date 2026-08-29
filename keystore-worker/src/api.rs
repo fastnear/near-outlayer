@@ -387,6 +387,25 @@ pub enum ApiError {
     /// derivation. HTTP 402 — the client must top up the vault. Distinct from
     /// BadRequest so the coordinator can forward an actionable message.
     PaymentRequired(String),
+    /// The chain ANSWERED about the account, and the answer was not a value.
+    ///
+    /// `query_access_key` on an account the network cannot see returns "does
+    /// not exist while viewing" — the chain telling us something, not failing
+    /// to tell us anything. HTTP 422, which the coordinator forwards as
+    /// `chain_refused`: terminal, and no `Retry-After`, because no interval
+    /// makes an absent account present.
+    ///
+    /// Its own variant because the alternative was `InternalError` — a 500 the
+    /// coordinator forwards as a transient `503`, telling the caller our
+    /// service is down about a condition that will never clear on its own.
+    /// This is the first thing a new wallet does, so it was also the first
+    /// thing a new user saw.
+    ///
+    /// It deliberately does NOT claim the account is underfunded. The RPC
+    /// returns a byte-identical string whether the account has never been used
+    /// or exists with a different key on it (verified against testnet), so
+    /// "send NEAR and it will work" would be a remedy we cannot know applies.
+    ChainRefused(String),
     InternalError(String),
 }
 
@@ -414,6 +433,10 @@ impl IntoResponse for ApiError {
             ApiError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg),
             ApiError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg),
             ApiError::PaymentRequired(msg) => (StatusCode::PAYMENT_REQUIRED, msg),
+            // 422 and not 402: the status IS the meaning, so nothing has to
+            // read the sentence to classify it, and the vault's 402 keeps its
+            // own remedy.
+            ApiError::ChainRefused(msg) => (StatusCode::UNPROCESSABLE_ENTITY, msg),
             ApiError::InternalError(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
         };
 
@@ -1694,6 +1717,41 @@ fn accessor_to_contract_json(a: &SecretAccessor) -> serde_json::Value {
 /// `caller` arrives from the coordinator. What that means for the trust model
 /// is a question about the platform rather than about this function, and it is
 /// answered where the platform is described, not in a comment here.
+/// Whether an RPC failure is the chain telling us about the ACCOUNT rather
+/// than failing to tell us anything.
+///
+/// Mirrors the coordinator's `ACCOUNT_FACT_ERRORS` on purpose: the same
+/// distinction, in the component that is holding the error. One of these is
+/// terminal and fixable by the caller; everything else is a node that did not
+/// answer, which is transient and ours.
+///
+/// Matched on the FULL anyhow chain (`{:#}`), because the typed error's own
+/// Display is the context string and says nothing.
+fn rpc_error_is_about_the_signer(cause: &str) -> bool {
+    // Wordings that can only be about an account or a key. The first is what
+    // this RPC actually returns, captured from testnet; the other two are the
+    // typed variants.
+    const UNAMBIGUOUS: [&str; 3] = [
+        "does not exist while viewing",
+        "UNKNOWN_ACCOUNT",
+        "UNKNOWN_ACCESS_KEY",
+    ];
+    if UNAMBIGUOUS.iter().any(|marker| cause.contains(marker)) {
+        return true;
+    }
+
+    // A BARE "does not exist" is not enough, and this is the direction that
+    // matters. A node that has garbage-collected a block answers "block does
+    // not exist"; an unknown method answers that it does not exist either.
+    // Read as a fact about the account, both would tell somebody whose wallet
+    // is perfectly fine that their account is not on the network — a node's
+    // condition reported as the caller's. So the sentence has to be ABOUT an
+    // account or a key to count as one.
+    let lower = cause.to_ascii_lowercase();
+    let absent = lower.contains("does not exist") || lower.contains("doesn't exist");
+    absent && (lower.contains("account") || lower.contains("access key"))
+}
+
 fn enforce_agent_secret(caller: &str, owner: &str, profile: &str) -> Result<(), ApiError> {
     if !shared_tee_helpers::is_implicit_account(profile) {
         return Ok(());
@@ -5449,7 +5507,30 @@ where
     let (rpc_nonce, block_hash) = near_client
         .query_access_key(&signer_id_str, &public_key)
         .await
-        .map_err(|e| ApiError::InternalError(format!("Failed to query access key: {}", e)))?;
+        .map_err(|e| {
+            // `{:#}` and not `{}`. On an `anyhow::Error` the plain form prints
+            // only the outermost context — here the string "Failed to query
+            // access key" that `near.rs` attached — so the message came back as
+            // that sentence twice and named nothing at all: not the account,
+            // not that it does not exist, not what to do about it. The cause
+            // was in the source chain the whole time.
+            let cause = format!("{e:#}");
+            if rpc_error_is_about_the_signer(&cause) {
+                // Says what the chain said, and stops there. It answers
+                // identically for an account that has never been used and for
+                // one that exists carrying a different key (checked against
+                // testnet: the same bytes, both times), so naming a remedy
+                // would be naming one we cannot know applies.
+                ApiError::ChainRefused(format!(
+                    "the account {signer_id_str} is not visible on the network, so there is no \
+                     key to sign with. Most often that means it has never taken part in a \
+                     transaction. Retrying will not change it — the chain answered, and this \
+                     is its answer."
+                ))
+            } else {
+                ApiError::InternalError(format!("Failed to query access key: {cause}"))
+            }
+        })?;
     // Always rpc_nonce + 1 — the keystore keeps no idempotency state, and a caller-chosen
     // nonce would let one approved op be signed at many nonces.
     let tx_nonce = rpc_nonce + 1;
@@ -6279,6 +6360,196 @@ mod wallet_sign_tests {
     /// contract upgrade changed the shape. Absent stays false, because a policy
     /// written before the field existed was never frozen; present-and-unreadable
     /// refuses.
+    /// The JSON an `ApiError` actually serialises to.
+    fn read_json_body(response: axum::response::Response) -> serde_json::Value {
+        let bytes = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(axum::body::to_bytes(response.into_body(), 64 * 1024))
+            .expect("body");
+        serde_json::from_slice(&bytes).expect("json")
+    }
+
+    /// An account that does not exist yet is a fact, not an outage.
+    ///
+    /// A NEAR implicit account is created by its FIRST INCOMING TRANSFER. Until
+    /// then there is no account and no access key, and `query_access_key`
+    /// answers "does not exist while viewing" — the chain telling us about the
+    /// account, not failing to tell us anything.
+    ///
+    /// It used to arrive as `InternalError`, which the coordinator forwards as
+    /// `503` with a `Retry-After`: come back in five seconds, about a condition
+    /// that never clears on its own and that the caller fixes in thirty by
+    /// sending NEAR. It is also the FIRST thing a new wallet does, so it was
+    /// the first thing a new user saw.
+    #[test]
+    fn an_account_that_was_never_funded_is_not_reported_as_our_outage() {
+        // Captured from testnet RPC, `view_access_key` on a derived address
+        // nobody has funded. The chain answers inside `result`, not as a
+        // JSON-RPC error, which is why nothing above noticed it was an answer.
+        assert!(rpc_error_is_about_the_signer(
+            "Failed to query access key: access key ed25519:9dj5Xz1 does not exist while viewing"
+        ));
+        for fact in [
+            "UNKNOWN_ACCOUNT",
+            "UNKNOWN_ACCESS_KEY",
+            "account doesn't exist",
+            "account 7f7ab400 does not exist",
+            "Access key does not exist",
+        ] {
+            assert!(rpc_error_is_about_the_signer(fact), "not recognised: {fact}");
+        }
+
+        // And a bare absence that is about something ELSE is not a fact about
+        // the account. This is the direction that costs: a node which has
+        // garbage-collected a block, or a call to a method nobody implements,
+        // would otherwise tell a caller with a funded wallet that their
+        // account is not on the network — a node's condition delivered as the
+        // caller's fault, which is the mistake this whole change is about.
+        for elsewhere in [
+            "block does not exist",
+            "the requested method does not exist",
+            "shard does not exist on this node",
+            "contract method doesn't exist",
+        ] {
+            assert!(
+                !rpc_error_is_about_the_signer(elsewhere),
+                "a condition of the NODE was read as a fact about the account: {elsewhere}"
+            );
+        }
+
+        // A node that did not answer is OURS, stays a 500, and stays
+        // retryable. Reading one of these as the caller's problem would tell
+        // somebody to fund an account that is already funded.
+        for outage in [
+            "error sending request for url (https://rpc.testnet.fastnear.com/)",
+            "operation timed out",
+            "connection closed before message completed",
+            "503 Service Temporarily Unavailable",
+        ] {
+            assert!(
+                !rpc_error_is_about_the_signer(outage),
+                "an outage was read as a fact about the account: {outage}"
+            );
+        }
+    }
+
+    /// The signing path actually USES the classifier, and prints the cause.
+    ///
+    /// The two tests around this one cover a pure function and a response
+    /// shape; neither touches the call site, and both stayed green when the
+    /// branch there was deleted. What is worth pinning is the WIRING: that the
+    /// one place which queries an access key before signing asks whether the
+    /// failure is about the account, and formats the error chain rather than
+    /// its outermost context.
+    ///
+    /// Read out of the source because the alternative is a live NEAR node and
+    /// an account nobody has funded.
+    #[test]
+    fn the_signing_path_asks_whether_the_failure_is_about_the_account() {
+        let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/api.rs"))
+            .expect("cannot read api.rs");
+        let at = src
+            .find(".query_access_key(&signer_id_str, &public_key)")
+            .expect("the access-key query this guard follows is gone");
+        let end = at + src[at..].find("\n    // Always rpc_nonce").expect("unterminated arm");
+        let arm = &src[at..end];
+
+        assert!(
+            arm.contains("rpc_error_is_about_the_signer"),
+            "the signing path no longer distinguishes an account that does not exist from a \
+             node that did not answer, so a caller who has simply not funded their wallet is \
+             told our service is down and to retry: {arm}"
+        );
+        assert!(
+            arm.contains("ApiError::ChainRefused"),
+            "the terminal case no longer has its own error, so it will be forwarded as a \
+             transient 503: {arm}"
+        );
+        assert!(
+            arm.contains("{e:#}"),
+            "the error is formatted with `{{e}}` again, which prints only the outermost \
+             context — the reason this failure read as `Failed to query access key: Failed to \
+             query access key` and named nothing: {arm}"
+        );
+        assert!(
+            arm.contains("signer_id_str") && arm.contains("not visible on the network"),
+            "the refusal no longer names the account, or no longer states the chain's answer \
+             about it: {arm}"
+        );
+
+        // AND it promises nothing — checked against the sentence the code
+        // actually sends, not against a copy of it written in a test.
+        //
+        // That distinction is the whole value here: the assertion below lived
+        // in a test that built its own `ChainRefused` string, so editing the
+        // REAL message to promise a remedy changed nothing and everything
+        // stayed green. `view_access_key` answers with the same bytes for an
+        // account that has never been used and for one that exists carrying a
+        // different key, so any remedy named here is a guess presented as an
+        // instruction.
+        for promise in ["send NEAR", "top up", "fund it", "will work"] {
+            assert!(
+                !arm.contains(promise),
+                "the refusal promises `{promise}`. The chain's answer does not distinguish an \
+                 account that has never been used from one that exists with another key, so \
+                 this advice is right at most half the time: {arm}"
+            );
+        }
+        assert!(
+            arm.contains("Retrying will not"),
+            "the refusal no longer says it is terminal, so a client will treat it as worth \
+             repeating: {arm}"
+        );
+    }
+
+    /// The refusal states the chain's answer and stops there.
+    ///
+    /// It must NOT promise a remedy. `view_access_key` returns a byte-identical
+    /// "does not exist while viewing" for an account that has never been used
+    /// and for one that exists with a different key on it — verified against
+    /// testnet, both strings the same — so "send NEAR and the call will work"
+    /// would be true in one case and false in the other, and we cannot tell
+    /// which from here.
+    #[test]
+    fn the_refusal_states_the_answer_and_promises_nothing() {
+        let addr = "7f7ab40018902d4a3d07d5040bb94cbcaeac13096be3c312423e96f37108f56f";
+        let err = ApiError::ChainRefused(format!(
+            "the account {addr} is not visible on the network, so there is no key to sign \
+             with. Most often that means it has never taken part in a transaction. Retrying \
+             will not change it — the chain answered, and this is its answer."
+        ));
+        let response = axum::response::IntoResponse::into_response(err);
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            "a fact the chain stated must not be a 500 the coordinator turns into a 503"
+        );
+
+        let body = read_json_body(response);
+        let text = body["error"].as_str().unwrap_or_default().to_string();
+        assert!(text.contains(addr), "the refusal does not name the account: {body}");
+        assert!(
+            text.contains("Retrying will not"),
+            "the refusal does not say it is terminal: {text}"
+        );
+        for promise in ["send NEAR", "top up", "fund"] {
+            assert!(
+                !text.contains(promise),
+                "the refusal promises `{promise}`, which the chain's answer does not support: \
+                 the same answer comes back for an account that exists with another key"
+            );
+        }
+
+        // The vault's 402 is untouched — a different account with a different
+        // remedy, and it keeps its own status.
+        let vault = axum::response::IntoResponse::into_response(ApiError::PaymentRequired(
+            "vault is short".to_string(),
+        ));
+        assert_eq!(vault.status(), axum::http::StatusCode::PAYMENT_REQUIRED);
+    }
+
     #[test]
     fn a_freeze_we_cannot_read_is_not_read_as_unfrozen() {
         // The reading, extracted exactly as `load_wallet_policy` performs it.
