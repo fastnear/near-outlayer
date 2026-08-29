@@ -175,15 +175,25 @@ R=$(api PUT /wallet/v1/binding "$(jq -nc --arg a "$ACC" '{asset_account_id:$a, k
 HTTP=${R%% *}; BODY=${R#* }
 if [[ "$HTTP" == "200" ]]; then
   BOUND=1
-  K=$(jq -r '.kind // ""' <<<"$BODY"); OWNER=$(jq -r '.owner_account_id // ""' <<<"$BODY")
+  K=$(jq -r '.kind // ""' <<<"$BODY")
   EXECUTOR=$(jq -r '.executor_account_id // ""' <<<"$BODY")
   STATUS1=$(jq -r '.binding_status // ""' <<<"$BODY")
   IMPLV=$(jq -r 'has("impl_version")' <<<"$BODY")
-  if [[ "$K" == "personal_account" && "$OWNER" == "$ACC" ]]; then
-    pass "L1 bound as personal_account; the owner was filled in as the account itself ($OWNER), status=$STATUS1"
+  HAS_OWNER=$(jq -r 'has("owner_account_id")' <<<"$BODY")
+  if [[ "$K" == "personal_account" ]]; then
+    pass "L1 bound as personal_account, status=$STATUS1"
   else
-    fail "L1 kind='$K' owner='$OWNER' — expected personal_account owned by $ACC"
+    fail "L1 kind='$K' — expected personal_account"
   fi
+  # The response carries NO owner, by design. It used to, and the value was the
+  # caller's own input — required at PUT, checked for shape, compared against
+  # nothing, and returned in a field whose name reads as an established fact.
+  # (For this mode an omitted owner is still filled in with the asset account;
+  # that defaulting is a rule of `validate_put` and is unit-tested there, which
+  # is where a rule with no observable output belongs.)
+  [[ "$HAS_OWNER" == "false" ]] \
+    && pass "L1 the answer states no owner — a claim nobody verified is not returned as a fact" \
+    || fail "L1 the answer carries owner_account_id='$(jq -r '.owner_account_id' <<<"$BODY")', which is the caller's own unverified input"
   [[ "$IMPLV" == "false" ]] \
     && pass "L1 no impl_version in the answer — that mode has none" \
     || fail "L1 the answer carries impl_version, which personal_account does not have"

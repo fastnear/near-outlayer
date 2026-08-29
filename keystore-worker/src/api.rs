@@ -5170,10 +5170,28 @@ async fn load_wallet_policy(
     };
 
     // The frozen flag is visible without decryption.
-    let frozen = policy_view
-        .get("frozen")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    //
+    // A freeze is the controller's hard stop, so it is the ONE flag that must
+    // not default. `unwrap_or(false)` read a field we could not parse as "not
+    // frozen" — unreachable today, because the contract types it as `bool` and
+    // always serializes it, and precisely the reason nobody would notice the
+    // day that stopped being true. A freeze we cannot read is not an absence
+    // of one, and it is refused rather than answered `Frozen`: the owner's
+    // wallet may not be frozen at all, and telling them it is would send them
+    // to unfreeze something nobody froze.
+    let frozen = match policy_view.get("frozen") {
+        Some(v) => v.as_bool().ok_or_else(|| {
+            ApiError::BadRequest(
+                "this wallet's freeze state could not be read from the policy on chain, so \
+                 nothing will be signed. This is a schema mismatch between the contract and \
+                 this build, not a setting — it needs an operator, not a re-save"
+                    .to_string(),
+            )
+        })?,
+        // Absent is not the same as unreadable: a policy that predates the
+        // field was never frozen.
+        None => false,
+    };
     if frozen {
         return Ok(Some(shared_tee_helpers::wallet_policy::Policy {
             frozen: true,
@@ -6246,6 +6264,77 @@ mod wallet_sign_tests {
     use shared_tee_helpers::wallet_policy::{self, Op};
 
     // --- Domain separation: sign_message recipient is a default-DENY allowlist -----
+
+    /// A freeze we cannot read is not an absence of one.
+    ///
+    /// `frozen` is the only field of the policy readable WITHOUT decryption,
+    /// and it is the controller's hard stop — the one setting whose whole
+    /// purpose is to halt a wallet that is doing something its owner does not
+    /// want. It was read with `unwrap_or(false)`: a value we could not parse
+    /// became "not frozen", which is the single worst direction to default in
+    /// this file.
+    ///
+    /// Unreachable today — the contract types it `bool` and always serializes
+    /// it — and that is exactly why it would have gone unnoticed on the day a
+    /// contract upgrade changed the shape. Absent stays false, because a policy
+    /// written before the field existed was never frozen; present-and-unreadable
+    /// refuses.
+    #[test]
+    fn a_freeze_we_cannot_read_is_not_read_as_unfrozen() {
+        // The reading, extracted exactly as `load_wallet_policy` performs it.
+        fn freeze_state(view: &serde_json::Value) -> Result<bool, &'static str> {
+            match view.get("frozen") {
+                Some(v) => v.as_bool().ok_or("unreadable"),
+                None => Ok(false),
+            }
+        }
+
+        assert_eq!(freeze_state(&serde_json::json!({ "frozen": true })), Ok(true));
+        assert_eq!(freeze_state(&serde_json::json!({ "frozen": false })), Ok(false));
+
+        // A policy that predates the field was never frozen.
+        assert_eq!(freeze_state(&serde_json::json!({ "encrypted_data": "..." })), Ok(false));
+
+        // Every shape that is not a boolean refuses. `"false"` is the one that
+        // matters: a contract that started serializing the flag as a string
+        // would, under the old reading, have unfrozen every frozen wallet at
+        // once — and `"true"` would have done it too.
+        for wrong in [
+            serde_json::json!({ "frozen": "true" }),
+            serde_json::json!({ "frozen": "false" }),
+            serde_json::json!({ "frozen": 1 }),
+            serde_json::json!({ "frozen": 0 }),
+            serde_json::json!({ "frozen": null }),
+            serde_json::json!({ "frozen": {} }),
+        ] {
+            assert_eq!(
+                freeze_state(&wrong),
+                Err("unreadable"),
+                "a freeze state of {wrong} was answered instead of refused"
+            );
+        }
+
+        // And the reading this test mirrors is the one that ships.
+        let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/api.rs"))
+            .expect("cannot read api.rs");
+        // Bounded by the statement itself, not by a fixed width: a comment
+        // added above the code would push what this looks for out of a window,
+        // and a slice past the end of the file panics instead of failing with
+        // the sentence that says what regressed.
+        let at = src
+            .find("let frozen = match policy_view.get(\"frozen\")")
+            .expect("the freeze read this test follows is gone");
+        let end = at + src[at..].find("\n    };").expect("unterminated freeze read");
+        let block = &src[at..end];
+        assert!(
+            !block.contains(".and_then(|v| v.as_bool())\n        .unwrap_or(false)"),
+            "the freeze flag defaults again"
+        );
+        assert!(
+            block.contains("as_bool().ok_or_else"),
+            "the freeze flag is no longer read fallibly"
+        );
+    }
 
     #[test]
     fn sign_message_recipient_allowlist_is_default_deny() {

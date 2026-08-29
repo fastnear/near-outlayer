@@ -120,44 +120,44 @@ new hash restores them.
 `DELETE` narrows: with nothing recognized the coordinator stops calling anything
 foreign. Safe to do in a hurry.
 
-#### When the list is consulted
+#### What adding a hash turns on
 
-By default, **only when the status view refuses**. That leaves one thing open:
-the leased account serves `hos_agent_status` itself, so an account repointed at
-a contract which answers plausibly is believed on its own say-so — the grant it
-reports, the membership, the lease.
+Both paths at once, and there is no second switch. The list is the only control:
 
-`HOS_REQUIRE_RECOGNIZED_IMPL=true` closes it: the answer then counts only if the
-code that answered is code on this list. A deploy-time switch and not a row,
-because it is a posture decision made once, while the list changes whenever a
-partner ships — and turning enforcement on with an empty list from a single POST
-would suspend every leased binding.
+* when the status view **refuses**, an unrecognized implementation is what makes
+  that refusal readable as evidence rather than as a condition to sit out;
+* when it **answers**, the answer counts only if the code that answered is on
+  the list — otherwise the leased account, which serves `hos_agent_status`
+  itself, is believed on its own say-so about the grant, the membership and the
+  lease.
 
-`true`, `yes`, `on` and `1` all turn it on, and their opposites turn it off;
-anything else keeps the default and says so in the startup log, naming the
-variable and quoting what was set. A switch that read `yes` as "off" would hand
-a deploy the weaker behaviour with nothing anywhere to notice.
+So the first `POST` is not a preparation, it is the change. Everything running
+an implementation you did not list goes `suspended` — reversibly, and a `DELETE`
+puts it back.
 
 It cannot fail closed by accident. A mismatch has to be POSITIVE: an empty list,
 an unreadable list, an account that states no code and an unreachable node all
 mean "no basis to call anything foreign" and pass straight through. An RPC blip
-therefore cannot suspend anything.
+cannot suspend anything, and neither can a table nobody filled in — which is why
+"nobody configured this" and "this is switched off" are the same state and
+cannot drift apart.
 
-Cost, and where it lands. The list is consulted on the REFUSING path as soon as
-the table is non-empty — that is what the table is for — and on the ANSWERING
-path only under the switch. Either way the database is asked first and an empty
-table returns before any RPC, so an unused list costs one local query.
+Cost, and where it lands. The database is asked first and an empty table returns
+before any RPC, so an unused list costs one local query per observation. With a
+list, the extra work depends on the account: one that deploys its code inline
+states its hash in the view already fetched and costs nothing more; one that
+names a global contract by account id — which is what these leased accounts do —
+costs one further `view_account`. On the refusing path that lands exactly when
+the chain is already slow, which is the trade the table buys. The five-second
+observation cache absorbs bursts on the signing path; nothing caches it on the
+status path.
 
-With a list, the extra work depends on the account: one that deploys its code
-inline states its hash in the view already fetched and costs nothing more; one
-that names a global contract by account id — which is what these leased accounts
-do — costs one further `view_account`. On the refusing path that lands exactly
-when the chain is already slow, which is the trade the table buys. The
-five-second observation cache absorbs bursts on the signing path; nothing caches
-it on the status path.
-
-Setting the flag with an empty list is inert, and startup says so once in the
-log rather than letting a deploy believe it got enforcement it did not get.
+**On testnet, the list and the `hos_lease` stub suite collide.**
+`tests/hos_lease_stub_e2e.sh` binds to a stub contract we deploy, and that stub
+is by definition not a partner implementation — so the first hash added suspends
+its bindings and the suite goes red. List the stub's implementation beside the
+partner's: run the suite with `KEEP=1` and
+`POST {"from_account": "<the stub account it printed>"}` while it is up.
 
 ## Adding an admin route
 

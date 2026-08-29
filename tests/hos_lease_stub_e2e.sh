@@ -102,12 +102,73 @@ GRANT_OK=$(jq -nc --arg w "$WL" --arg t "$TOKEN" --arg c "$COLL" --arg e "$FUTUR
   '{receivers:[$w], budget_yocto:"1000000000000000000000000", spent_yocto:"0",
     tokens:{($t):{budget:"1000", spent:"0"}}, items:{($c):["1"]}, expires_at:$e}')
 
-# `rotation_seq` as a STRING, because that is what the chain sends: the partner
-# types it as near-sdk `U64`, which serializes to a decimal string. A stub that
-# answers with a JSON number tests a wire form nothing produces — and a coordinator
-# that could only read the number form would pass every case here while leaving
-# every real leased binding stuck `pending`.
-set_item_info "$(jq -nc --arg c "$OWN_COLL" '{rotation_seq:"1", collection_id:$c}')" || true
+# The registry's answer, in the shape the registry sends it. `rotation_seq` is a
+# near-sdk `U64` and arrives as a decimal STRING while `rotation_epoch` beside it
+# is a plain number, and the five fields we do not read travel too — a stub that
+# omits them is not evidence that a registry which sends them is understood.
+#
+# `owner_id` matches the binding's claim here on purpose: the divergence case is
+# its own probe, and a fixture that diverged by accident would log a warning on
+# every one of the twenty-two cases below.
+item_info_json() { # item_info_json <rotation_seq-json> [owner_id]
+  jq -nc --argjson r "$1" --arg o "${2:-$PARENT}" --arg c "$OWN_COLL" \
+    '{spec:"sharded-item-1.0.0", init:true, status:"Active", collection_id:$c,
+      token_id:"stub", owner_id:$o, rotation_seq:$r, rotation_epoch:4}'
+}
+# A stub is evidence only for the wire form it serves.
+#
+# The `rotation_seq` bug hid for weeks behind a fixture that sent a JSON number
+# where the chain sends a decimal string: fifty checks green over a shape nothing
+# produces, and every real leased binding stuck `pending`. So before any of them
+# run, the fixtures are held against the types the chain actually sends —
+# captured 2026-08-28 from `alpha.tlademo.testnet`, and pinned in Rust beside the
+# structs that read them (`hos::the_status_wire_form_the_partner_contract_sends`,
+# `near_client::the_item_info_wire_form_the_registry_sends`).
+#
+# Types only. The VALUES are what each case varies; the shapes are what no case
+# may vary by accident.
+types_of() { jq -r 'to_entries|map("\(.key):\(.value|type)")|sort|join(" ")' <<<"$1"; }
+# The GRANT is checked separately and on purpose. Measuring the status against
+# `status_json null` alone pins `grant:null` and leaves out the one nested
+# structure in this view — per-token budgets and item fences — which is also the
+# structure whose drift refuses every spend on every leased account at once
+# (`grant_unreadable`). It was written that way first.
+# Shape, not names. `tokens` and `items` are keyed by CONTRACT, and those come
+# from this suite's own environment — pinning them would make the guard fail
+# when somebody runs it against a different token. What must not drift is the
+# structure: a map to objects of two decimal strings, and a map to arrays.
+grant_types_of() {
+  jq -r '
+    def shape:
+      if type == "object" then
+        if (keys|length) == 0 then "object{}"
+        else "object{*:" + ([.[] | shape] | unique | join("|")) + "}" end
+      elif type == "array" then "array"
+      else type end;
+    .grant | to_entries | map("\(.key):\(.value | shape)") | sort | join(" ")' <<<"$1"
+}
+CHAIN_STATUS_TYPES='extension_enabled:boolean frozen:string grant:null impl_version:number lease_until_ns:string reserve_yocto:string state:string'
+CHAIN_GRANTED_TYPES='extension_enabled:boolean frozen:string grant:object impl_version:number lease_until_ns:string reserve_yocto:string state:string'
+# Captured 2026-08-28 from alpha.tlademo.testnet, asked with OUR executor: a
+# grant is issued to an extension, so any other name answers `"grant": null`.
+# Every field below matched that capture except `items`, which is empty on the
+# live grant — no item fences are configured there — so its `*:array` form comes
+# from the partner's own documented example, `{"collection.near": ["1041"]}`.
+# The fixture is deliberately the richer case: an empty map exercises nothing.
+CHAIN_GRANT_FIELDS='budget_yocto:string expires_at:string items:object{*:array} receivers:array spent_yocto:string tokens:object{*:object{*:string}}'
+CHAIN_ITEM_TYPES='collection_id:string init:boolean owner_id:string rotation_epoch:number rotation_seq:string spec:string status:string token_id:string'
+fixture_shape() { # fixture_shape <label> <expected> <got>
+  [[ "$3" == "$2" ]] && return 0
+  echo "✗ the $1 fixture no longer matches what the chain sends" >&2
+  echo "    chain: $2" >&2
+  echo "    stub:  $3" >&2
+  exit 1
+}
+fixture_shape "hos_agent_status (ungranted)" "$CHAIN_STATUS_TYPES" "$(types_of "$(status_json null)")"
+fixture_shape "hos_agent_status (granted)"   "$CHAIN_GRANTED_TYPES" "$(types_of "$(status_json "$GRANT_OK")")"
+fixture_shape "the spend grant"              "$CHAIN_GRANT_FIELDS" "$(grant_types_of "$(status_json "$GRANT_OK")")"
+fixture_shape "nft_item_info"                "$CHAIN_ITEM_TYPES" "$(types_of "$(item_info_json '"1"')")"
+set_item_info "$(item_info_json '"1"')" || true
 
 log "Binding the wallet to the stub as kind=hos_lease, impl_version=6"
 api "$SEED_S" PUT /wallet/v1/binding \
@@ -394,7 +455,7 @@ if set_status "$(status_json "$GRANT_OK")"; then
   # not by the JSON type it arrived as: 1 (string) → 2 (number) is a rotation and
   # nothing else, and a reader that compared the raw forms would call it one when
   # the value had not moved, or miss it when it had.
-  if set_item_info "$(jq -nc --arg c "$OWN_COLL" '{rotation_seq:2, collection_id:$c}')"; then
+  if set_item_info "$(item_info_json 2)"; then
     api "$SEED_S" GET /wallet/v1/binding >/dev/null
     ST2=$(jq -r '.binding_status // ""' <<<"$BODY")
     if [[ "$ST2" == "revoked" || "$HTTP" == "404" ]]; then
