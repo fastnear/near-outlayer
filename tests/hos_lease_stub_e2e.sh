@@ -210,17 +210,84 @@ ft_env() { # <token> <recipient> <amount> [deposit] [extra-arg-json]
     '{request:{external:[{receiver_id:$t, actions:[{action:"function_call",payload:{function_name:"ft_transfer",args:$a,deposit:$d,gas:"30000000000000"}}]}]}}'
 }
 
-# ── G0 the door: a granted spend is NOT refused ────────────────────────────
+# ── G0 the door, and R12: the chain behind it ──────────────────────────────
 #
-# The stub has no `w_execute_extension`, so the transaction fails on chain
-# afterwards. That is expected and is not what is being measured: the question
-# here is whether OUR pre-flight lets a legal request through, and a refusal
-# would arrive as a 403 before anything was signed.
-send "G0 control — a plain transfer to a granted receiver, inside every budget" "$(ext_transfer "$WL" "1000000000000000000000")"
+# Two questions here, and they are not the same one.
+#
+# OURS. Does the pre-flight let a legal request through? A refusal would arrive
+# as a 403 before anything was signed, and every refusal below would then be
+# unjudgeable — they would all be the same refusal, and the suite would read as
+# a wall of correct answers while enforcing nothing.
+#
+# THE CHAIN'S, which is acceptance R12. The stub answers views and nothing else:
+# it has no `w_execute_extension`. So a request the pre-flight admits is refused
+# BY THE CHAIN — and that is the one shape none of the grant walls below can
+# produce, because our pre-flight mirrors every contract-side panic and nothing
+# illegal gets that far on this lane.
+#
+# What the caller must be told is that the chain ANSWERED. A missing method is
+# a fact about the account, not a bad minute: it does not change because
+# somebody asked again. So `422` and not `503`, the class `chain_refused`, and
+# NO `Retry-After` — which is the only thing in the answer that separates the
+# two for a client that routes on headers rather than on prose.
+CHAIN_HDRS=""
+send_capturing_headers() {
+  local env=$1 hdr out
+  throttle
+  hdr=$(mktemp -t hos_hdr.XXXXXX); out=$(mktemp -t hos_body.XXXXXX)
+  HTTP=$(curl -sS -o "$out" -D "$hdr" -w '%{http_code}' -X POST "$COORDINATOR_URL/wallet/v1/call" \
+    -H "$(AUTH_FOR "$SEED_S")" -H 'Content-Type: application/json' --max-time 90 \
+    -d "$(jq -nc --arg r "$STUB" --arg a "$(b64 "$env")" \
+        '{receiver_id:$r, method_name:"w_execute_extension", args_base64:$a, deposit:"1", gas:"90000000000000"}')" 2>/dev/null)
+  BODY=$(tr -d '\n' < "$out"); CHAIN_HDRS=$(cat "$hdr")
+  rm -f "$out" "$hdr"
+}
+
+log "G0 control — a plain transfer to a granted receiver, inside every budget"
+send_capturing_headers "$(ext_transfer "$WL" "1000000000000000000000")"
 if [[ "$HTTP" == "403" ]]; then
   fail "G0 a fully granted spend was refused before signing: class '$(class_of)' — every refusal below is now unjudgeable"
 else
   pass "G0 the pre-flight let a granted spend through (HTTP $HTTP) — the refusals below are refusals of something"
+fi
+
+# R12 rides on the same answer: the request got past us, so what came back is
+# the chain speaking.
+if [[ "$HTTP" == "403" ]]; then
+  skip "R12 — the pre-flight refused first, so the chain never answered and there is nothing to judge"
+else
+  [[ "$HTTP" == "422" ]] \
+    && pass "R12 the chain's refusal arrives as 422 — an answer about the account, not an outage of ours" \
+    || fail "R12 a chain refusal arrived as HTTP $HTTP; 5xx sends the caller to escalate a state only the account owner can change, and Cloudflare replaces an origin 502/504 with a page that loses this message"
+  # TWO classes reach 422 and they are not interchangeable. `chain_refused` is
+  # the chain answering BEFORE we signed — no transaction, no gas. This one is
+  # `onchain_tx_failed`: the transaction was signed, landed and the receipt
+  # failed, so it carries a `tx_hash` and the chain's own fault object. Both are
+  # terminal; which one arrives tells the caller whether anything was spent.
+  case "$(err_of)" in
+    chain_refused|onchain_tx_failed)
+      pass "R12 and it is classed '$(err_of)' — a terminal chain fact, not an outage" ;;
+    *)
+      fail "R12 the class is '$(err_of)', expected chain_refused or onchain_tx_failed: $(msg_of | head -c 160)" ;;
+  esac
+  if [[ "$(err_of)" == "onchain_tx_failed" ]]; then
+    # R8 rides here: a failure the caller cannot locate on chain is a failure
+    # they have to take our word for.
+    [[ -n "$(jq -r '.tx_hash // ""' <<<"$BODY")" ]] \
+      && pass "R12 the failed transaction is named ($(jq -r '.tx_hash' <<<"$BODY")), so the caller can read the receipt themselves" \
+      || fail "R12 a transaction was signed and its hash is not in the answer — the caller cannot verify the refusal"
+    [[ -n "$(jq -r '.failure // "" | tostring' <<<"$BODY")" ]] \
+      && pass "R12 and the chain's own fault object is carried through rather than flattened to prose" \
+      || fail "R12 the fault object was dropped"
+  fi
+  if grep -qiE '^retry-after:' <<<"$CHAIN_HDRS"; then
+    fail "R12 the refusal carries a Retry-After — the caller is being told to retry a method that does not exist"
+  else
+    pass "R12 and it carries NO Retry-After, so a well-behaved client stops instead of spinning"
+  fi
+  grep -qiE 'try again|retry|temporar|momentarily' <<<"$(msg_of)" \
+    && finding "the chain's terminal refusal invites a retry in prose ('$(msg_of | head -c 80)…') while the headers say it is final" \
+    || pass "R12 and the sentence promises nothing a retry would change"
 fi
 
 # HERE, not at the end of the file, and that is not cosmetic: the cases below
@@ -276,6 +343,68 @@ else
 
   send "W2 a spend right after the event" "$(ext_transfer "$WL" "1000000000000000000000")"
   assert_class "W2 the lane is refused with the fault the chain reports" "account_frozen"
+
+  # ── W3 the zone fence, which nothing had ever switched on ────────────────
+  #
+  # `allowed_zones` is the union of `BINDING_WEBHOOK_SUFFIXES` and the
+  # `binding_webhook_zones` table, and an EMPTY union means NO restriction — so
+  # a deployment that configures nothing runs the endpoint wide open. Both are
+  # empty here, which is why this had to switch the fence on itself.
+  #
+  # AND THE FENCE IS SILENT BY DESIGN. An account outside the zones does not get
+  # a 4xx: it gets exactly the answer an account we do not operate would get,
+  # `200 {"binding_status":"unbound"}`, so the endpoint cannot be used to
+  # enumerate whose accounts we hold. That is also what makes it hard to test —
+  # a probe on an unbound account cannot tell the fence from the truth.
+  #
+  # So the subject is a REAL leased binding whose honest answer is not
+  # "unbound". Fenced out, that same event must come back "unbound"; with the
+  # fence removed it must come back to its real status again, which is the
+  # control that separates the zone from anything else that happened meanwhile.
+  if [[ -n "${ADMIN_TOKEN:-}" ]]; then
+    ZONE="zone-probe-$(date +%s)-$$.testnet"
+    adm() { # adm <METHOD> <path> [body] — echoes the http code
+      local m=$1 p=$2 b=${3:-}
+      local -a a=(-sS -o /dev/null -w '%{http_code}' -X "$m" "$COORDINATOR_URL$p"
+                  -H "Authorization: Bearer $ADMIN_TOKEN" --max-time 60)
+      [[ -n "$b" ]] && a+=(-H 'Content-Type: application/json' --data-binary "$b")
+      curl "${a[@]}" 2>/dev/null
+    }
+    wh_event() { # echoes the binding_status the webhook reports for the stub
+      curl -sS -m 30 -X POST "$COORDINATOR_URL/wallet/v1/binding/events" \
+        -H "X-Binding-Webhook-Secret: $WH_SECRET" -H 'Content-Type: application/json' \
+        -d "$(jq -nc --arg a "$STUB" '{asset_account_id:$a, event:"frozen"}')" 2>/dev/null \
+        | jq -r '.binding_status // ""'
+    }
+    W3_OPEN=$(wh_event)
+    if [[ -z "$W3_OPEN" || "$W3_OPEN" == "unbound" ]]; then
+      skip "W3 — with no fence the webhook already answers '${W3_OPEN:-nothing}' for this binding, so a fenced answer would be indistinguishable"
+    elif [[ "$(adm POST /admin/binding-zones "$(jq -nc --arg s "$ZONE" '{suffix:$s, note:"e2e zone probe"}')")" != 2?? ]]; then
+      skip "W3 — the probe zone could not be added, so the fence cannot be switched on from here"
+    else
+      W3_FENCED=$(wh_event)
+      if [[ "$W3_FENCED" == "unbound" ]]; then
+        pass "W3 fenced out, the same event answers 'unbound' where it answered '$W3_OPEN' — the first zone TIGHTENS the door"
+      else
+        fail "W3 with a zone that does not cover $STUB the webhook still answered '$W3_FENCED' — the fence does not fence, and an operator who adds a zone is getting a promise the code does not keep"
+      fi
+      # Indistinguishable ON PURPOSE: a 4xx here would let anyone map which
+      # accounts we operate by watching which names are refused differently.
+      [[ "$W3_FENCED" == "unbound" ]] \
+        && pass "W3 and it is the SAME answer an account we do not hold would get — the fence does not leak who we hold" \
+        || note "W3 the fenced answer was '$W3_FENCED'"
+      if [[ "$(adm DELETE "/admin/binding-zones/$ZONE")" == 2?? ]]; then
+        W3_BACK=$(wh_event)
+        [[ "$W3_BACK" == "$W3_OPEN" ]] \
+          && pass "W3 and with the zone removed it answers '$W3_BACK' again — the change was the ZONE, not the minute" \
+          || fail "W3 after removing the zone the answer is '$W3_BACK', not the '$W3_OPEN' it started at — the deployment is not as it was found"
+      else
+        fail "W3 THE PROBE ZONE '$ZONE' COULD NOT BE REMOVED — the webhook is still fenced to it; remove it by hand"
+      fi
+    fi
+  else
+    skip "W3 the zone fence — set ADMIN_TOKEN (scripts/.env → ADMIN_BEARER_TOKEN_TESTNET); it is the only way to switch the fence on, and it has never been switched on"
+  fi
 
   # RESTORE. Everything below reads the healthy grant this suite set up, and a
   # probe that leaves the stub frozen turns twenty-two later cases into
@@ -464,7 +593,25 @@ if set_status "$(status_json "$GRANT_OK")"; then
       fail "ROT rotation_seq moved 1 → 2 and the binding is still '$ST2' (HTTP $HTTP)"
     fi
     send "ROT' a spend after the rotation" "$(ext_transfer "$WL" "1000000000000000000000")"
-    assert_denied "ROT' refused after the rotation"
+    # Two questions, and only the first is a security property.
+    #
+    # SAFETY: the spend must not go through, and the refusal must be terminal —
+    # the previous owner's authorization does not survive a sale, and an agent
+    # that retries is spinning against an account that is no longer its owner's.
+    #
+    # DIAGNOSIS: the refusal should say WHY. A rotation ends a binding, and the
+    # owner needs to read that. What actually arrives is the leased-mode version
+    # gate — true (the binding that carried `impl_version` is gone) but it sends
+    # the reader to state a version when the real event was a change of owner.
+    # Reported rather than failed: nothing is unsafe, and it is the partner who
+    # will read it.
+    if assert_denied "ROT' refused after the rotation"; then
+      if grep -qiE "binding|rotat|revok|not live|no bound" <<<"$BODY"; then
+        pass "ROT' and the refusal names the BINDING — the owner is sent to the thing that changed"
+      else
+        finding "after an ownership rotation the spend is refused as '$(err_of)' with '$(msg_of | head -c 110)…' — safe, but it names the impl_version gate rather than the rotation that ended the binding, so an owner reads it as a missing field instead of a sold account"
+      fi
+    fi
   fi
 fi
 

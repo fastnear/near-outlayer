@@ -160,6 +160,16 @@ rm -f /tmp/hos_burst_*.json /tmp/hos_burst_*.code
   && pass "S6 no server error under a burst — the extra callers are told the wallet is busy, not dropped" \
   || fail "S6 $FIVEX of eight concurrent calls answered 5xx"
 
-skip "S7 AccessCondition under a dead RPC (NearBalance / NftOwned / DaoMember must fail closed) — reaching it needs a WASI run that requests a secret; the condition itself is covered by the keystore vectors in keystore-worker/src/types.rs"
+# ── S7 a chain-backed AccessCondition that cannot be answered ──────────────
+#
+# `NearBalance`, `NftOwned` and `DaoMember` are decided by asking the chain, and
+# a question the chain cannot answer must never read as a yes. That is not
+# reachable from this suite — it needs a WASI run that requests a secret, which
+# is a different stack — and it is driven live in
+# `tests/secret_access_conditions_e2e.sh` §S1/§S2, where an `NftOwned` naming a
+# contract that does not exist is refused, and a real contract the caller owns
+# nothing from is refused differently, so the first refusal is about the missing
+# answer rather than a condition that denies everybody.
+note "S7 is covered by tests/secret_access_conditions_e2e.sh §S1/§S2 (live)"
 
 verdict "§7 DoS / resources"

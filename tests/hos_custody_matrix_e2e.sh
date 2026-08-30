@@ -288,7 +288,15 @@ if [[ -n "$WID_N" ]] && store_policy "$SEED_N" "$WID_N" '{"rules":{"addresses":{
     if [[ "$FROZE" == true ]]; then
       pass "N1 a frozen wallet refuses signing, and says it is frozen: $(msg_of | head -c 110)"
       api "$SEED_N" POST /wallet/v1/transfer "$(jq -nc --arg t "$WL" --arg a "$TINY" '{chain:"near", to:$t, amount:$a}')" >/dev/null
-      assert_denied "N2 a frozen wallet refuses a transfer too — freeze outranks every capability"
+      # The CLASS, not merely a 4xx. The claim is that freeze outranks every
+      # other rule, and this wallet's policy refuses plenty of things — an
+      # address rule answering here would look identical to a freeze while
+      # proving the opposite of what the line says.
+      if assert_denied "N2 a frozen wallet refuses a transfer too — freeze outranks every capability"; then
+        grep -qi "frozen" <<<"$BODY" \
+          && pass "N2 and the refusal names the FREEZE, not some other rule that also happened to refuse" \
+          || fail "N2 the transfer was refused by something other than the freeze ($(err_of)): $(msg_of | head -c 140)"
+      fi
     else
       finding "freeze_wallet landed on chain but the wallet was still signing 60 s later (last answer HTTP $HTTP: $(msg_of | head -c 120)). The flag reaches the policy check through the worker's sync, so the delay is the sync, not the rule — worth knowing before the partner is told a freeze is immediate."
     fi
@@ -324,27 +332,26 @@ fi
 
 # Nothing to restore: this suite's wallet and account are its own and are
 # deleted on the way out.
-# ── §4.1 AccessCondition / AccountPattern — said, not silently absent ───────
+# ── §4.1 AccessCondition / AccountPattern ──────────────────────────────────
 #
 # The plan's §4.1 marks the `AccountPattern` anchoring as a fresh and critical
 # fix: a pattern `team\.near` written as an exact check must not also admit
 # `xteam.near`, `team.near.attacker.near`, or — `.` being a metacharacter —
 # `teamXnear`. That is one account's secrets handed to another.
 #
-# It is NOT probed from here, and the reason is where the rule is enforced: the
-# keystore evaluates an `AccessCondition` while decrypting a secret INSIDE a
-# WASI run, so an end-to-end probe would have to publish a module, store a
-# secret under a pattern, and run it as a matching and a non-matching caller —
-# for a property whose whole surface is a regex.
+# It is not probed from HERE because the rule lives one layer down: the keystore
+# evaluates an `AccessCondition` while decrypting a secret inside a WASI run,
+# which is a different stack from the wallet matrix above. Two things cover it,
+# and between them they answer both halves of the question:
 #
-# What stands instead: `keystore-worker/src/types.rs` compiles every pattern to
-# `\A(?:…)\z` and carries the vectors. Six of them fail the moment the
-# anchoring is removed — substring, metacharacter, empty pattern, full match,
-# top-level alternation, unescaped dot — which is checked by breaking it, not
-# by trusting it.
+#   `keystore-worker/src/types.rs` compiles every pattern to `\A(?:…)\z` and
+#   carries the vectors. Six fail the moment the anchoring is removed —
+#   substring, metacharacter, empty pattern, full match, top-level alternation,
+#   unescaped dot.
 #
-# Printed as a SKIP rather than left out, because a section with no line at all
-# reads as forgotten, and this one was decided.
-skip "§4.1 AccountPattern — enforced in the keystore at secret-decryption time, covered by its own vectors (see keystore-worker/src/types.rs, compile_anchored_account_pattern); an e2e here would prove a regex through a WASI run"
+#   `tests/secret_access_conditions_e2e.sh` drives the same rule end to end, with
+#   real sub-accounts standing in for the traps, and proves that the account the
+#   enclave measures is the one that signed the transaction.
+note "§4.1 AccountPattern is covered by tests/secret_access_conditions_e2e.sh (live) and the vectors in keystore-worker/src/types.rs"
 
 verdict "§4 custody matrix"

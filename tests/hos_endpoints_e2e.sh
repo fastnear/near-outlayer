@@ -260,6 +260,9 @@ BEFORE_ASSET=$(account_field "$ASSET" amount)
 BEFORE_EXEC=$(account_field "$EXECUTOR" amount)
 BEFORE_DEST=$(account_field "$WL" amount)
 api "$SEED" POST /wallet/v1/binding/transfer "$(jq -nc --arg t "$WL" --arg a "$AMT" '{to:$t, amount:$a}')" >/dev/null
+# Kept for E15: the only handle a client is given for this operation, and the
+# thing the status road is asked about.
+LAST_TRANSFER_REQUEST=$(jq -r '.request_id // ""' <<<"$BODY")
 if [[ "$HTTP" == "200" ]]; then
   pass "E11'''' the builder produced an envelope its own pre-flight accepts (status $(jq -r '.status' <<<"$BODY"))"
   sleep 8
@@ -317,6 +320,189 @@ if [[ "$HTTP" == "200" ]]; then
   fi
 else
   fail "E13 /balance failed on a bound wallet (HTTP $HTTP): $(msg_of)"
+fi
+
+# ── E13b the `account` parameter, which is how a caller ASKS for the other one ─
+#
+# E13 proves the default did not move. This proves the way to move it, which is
+# the other half of the method list's promise and the half a client actually
+# writes code against: `account=asset` reads the money the product is about,
+# `account=executor` reads the account that pays gas, and `account_id` in the
+# answer states which of the two was measured — so a caller can never
+# misattribute a balance it asked for by name.
+log "E13b GET /balance?account="
+api "$SEED" GET "/wallet/v1/balance?chain=near&account=asset" >/dev/null
+if [[ "$HTTP" == "200" ]]; then
+  assert_json "E13b account=asset answers about the bound account" '.account_id' "$ASSET"
+else
+  fail "E13b account=asset was refused on a bound wallet (HTTP $HTTP): $(msg_of)"
+fi
+api "$SEED" GET "/wallet/v1/balance?chain=near&account=executor" >/dev/null
+if [[ "$HTTP" == "200" ]]; then
+  assert_json "E13b account=executor answers about the signer" '.account_id' "$EXECUTOR"
+else
+  fail "E13b account=executor was refused (HTTP $HTTP): $(msg_of)"
+fi
+# A value that is neither must be named back. A door that silently fell through
+# to its default would answer about the executor while the caller believed it
+# had asked for the asset — the exact misattribution `account_id` exists to stop.
+api "$SEED" GET "/wallet/v1/balance?chain=near&account=asssett" >/dev/null
+if [[ "$HTTP" == "400" || "$HTTP" == "422" ]]; then
+  assert_msg "E13b a value that is neither is refused and the two legal ones are named" "asset.*executor|executor.*asset"
+else
+  fail "E13b a bogus account value answered HTTP $HTTP instead of refusing: $(msg_of | head -c 160)"
+fi
+# And on a wallet with no binding there is no asset account to answer about, so
+# the ask must fail rather than quietly return the executor's money under the
+# name the caller did not ask for.
+api "$SEED_B" GET "/wallet/v1/balance?chain=near&account=asset" >/dev/null
+if [[ "$HTTP" == "200" ]]; then
+  fail "E13b an UNBOUND wallet answered account=asset (HTTP 200) — the caller is reading the executor's balance believing it is the agent's"
+else
+  pass "E13b an unbound wallet refuses account=asset (HTTP $HTTP) rather than substituting"
+fi
+
+# ── E15 GET /requests/{id}: what the status road carries TODAY ──────────────
+#
+# Pinned rather than aspirational. The partner's method list asks this endpoint
+# to grow `binding_id`, `asset_account_id`, `executor_account_id`,
+# `policy_version`, `tx_hash`, a per-promise `promises[]` array and `error`. It
+# carries none of them, and that divergence is stated in the integration answer
+# rather than hidden — but the shape it DOES carry is what their client will be
+# written against in the meantime, so it is asserted here. When the fields are
+# added, this probe is where the change announces itself.
+log "E15 GET /requests/{id}"
+if [[ -n "${LAST_TRANSFER_REQUEST:-}" ]]; then
+  api "$SEED" GET "/wallet/v1/requests/$LAST_TRANSFER_REQUEST" >/dev/null
+  if [[ "$HTTP" == "200" ]]; then
+    assert_json "E15 the id echoes the one the transfer returned" '.request_id' "$LAST_TRANSFER_REQUEST"
+    if [[ -n "$(jq -r '.status // ""' <<<"$BODY")" ]]; then
+      pass "E15 it carries a status ($(jq -r '.status' <<<"$BODY"))"
+    else
+      fail "E15 no status on the request road"
+    fi
+    if [[ -n "$(jq -r '.created_at // ""' <<<"$BODY")" ]]; then
+      pass "E15 and a created_at, so an operation can be placed in time"
+    else
+      fail "E15 no created_at"
+    fi
+    MISSING=""
+    for f in binding_id asset_account_id executor_account_id policy_version promises; do
+      [[ "$(jq -r --arg f "$f" 'has($f)' <<<"$BODY")" == "true" ]] || MISSING="$MISSING $f"
+    done
+    if [[ -n "$MISSING" ]]; then
+      note "E15 the method list's additive fields are absent:$MISSING — the divergence the integration answer states, not a regression"
+    else
+      pass "E15 the method list's additive fields are all present — the divergence is closed and the answer document is out of date"
+    fi
+  else
+    fail "E15 the request road answered HTTP $HTTP for an id it had just minted: $(msg_of | head -c 160)"
+  fi
+else
+  skip "E15 — the transfer probe returned no request_id to follow, so there is nothing to read back"
+fi
+
+# ── E16 the confidential routes on testnet: OFF is not the same as BUSY ─────
+#
+# R10 is a mainnet acceptance and cannot be run here — there are no solvers on
+# testnet. Its testnet half CAN be run, and it is the half a partner's retry
+# logic depends on: a feature that is switched off must not look like a service
+# having a bad minute.
+#
+# Our taxonomy puts the whole weight of that on one header. 503 WITH a
+# `Retry-After` means "a node did not answer this second, come back". 503
+# WITHOUT one means "this deployment does not have the feature". Sending the
+# first to the second is an instruction to poll forever, and it is exactly the
+# mistake a client makes when both look alike.
+log "E16 /confidential/* is refused on testnet, and says OFF rather than BUSY"
+CONF_HDR=$(mktemp -t hos_conf.XXXXXX); CONF_BODY=$(mktemp -t hos_confb.XXXXXX)
+throttle
+CONF_HTTP=$(curl -sS -o "$CONF_BODY" -D "$CONF_HDR" -w '%{http_code}' -X GET \
+  "$COORDINATOR_URL/wallet/v1/confidential/balance" \
+  -H "$(AUTH_FOR "$SEED")" --max-time 60 2>/dev/null)
+CONF_TEXT=$(tr -d '\n' < "$CONF_BODY")
+if [[ "$CONF_HTTP" == "503" ]]; then
+  pass "E16 the route answers 503 on a deployment without confidential credentials"
+  if grep -qiE '^retry-after:' <<<"$(cat "$CONF_HDR")"; then
+    fail "E16 it carries a Retry-After — a client is being told to poll for a feature that is not coming back on this deployment"
+  else
+    pass "E16 and carries NO Retry-After, so 'off' cannot be read as 'busy'"
+  fi
+  if grep -qiE 'not configured|not enabled|not available' <<<"$CONF_TEXT"; then
+    pass "E16 and the sentence says the deployment lacks it, rather than blaming the moment"
+  else
+    fail "E16 the message does not say the feature is unconfigured: $(head -c 160 <<<"$CONF_TEXT")"
+  fi
+else
+  fail "E16 the confidential route answered HTTP $CONF_HTTP on testnet, expected 503: $(head -c 160 <<<"$CONF_TEXT")"
+fi
+rm -f "$CONF_HDR" "$CONF_BODY"
+
+# ── E17 an idempotency key does not buy a second execution ──────────────────
+#
+# The method list asks for one property: "the same idempotency key never
+# produces two independently executable requests, so a timed-out caller can
+# retry safely". A caller whose connection dropped cannot tell a lost answer
+# from a lost request, and the only safe thing they can do is send it again.
+#
+# THE REPLAY WAITS. Sent back to back, the second call is refused as
+# `wallet_busy` by the nonce holder and never reaches the idempotency check at
+# all — which passes for a reason that has nothing to do with the key, and would
+# keep passing after the key stopped being read. So the first transfer is left
+# to settle, and only then is the key replayed.
+#
+# AND IT IS CONTROLLED. "The same key returned the same id" is also what a door
+# deduplicating on the BODY would say. The control sends the identical body
+# under a DIFFERENT key: that one must mint a new id, or the probe above proves
+# nothing about keys.
+log "E17 replaying an idempotency key"
+idem_send() { # idem_send <key> — echoes the raw body
+  throttle
+  curl -sS -X POST "$COORDINATOR_URL/wallet/v1/binding/transfer" \
+    -H "$(AUTH_FOR "$SEED")" -H 'Content-Type: application/json' \
+    -H "X-Idempotency-Key: $1" --max-time 90 \
+    -d "$(jq -nc --arg t "$WL" '{to:$t, amount:"100000000000000000000"}')" 2>/dev/null
+}
+# The id this operation is known by, whichever way the door chose to answer:
+# a fresh request names it in `request_id`, and a replay the door recognised
+# names it inside the duplicate's sentence.
+idem_id() { # idem_id <body>
+  local r; r=$(jq -r '.request_id // ""' <<<"$1" 2>/dev/null)
+  [[ -n "$r" ]] && { echo "$r"; return; }
+  jq -r '.in_flight_request_id // ""' <<<"$1" 2>/dev/null | grep . && return
+  grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' <<<"$1" | head -1
+}
+
+IDEM="hos-idem-$(date +%s)-$$"
+IDEM_1=$(idem_send "$IDEM")
+RID_1=$(idem_id "$IDEM_1")
+if [[ -z "$RID_1" ]]; then
+  skip "E17 — the first send named no request ($(head -c 140 <<<"$IDEM_1")), so a replay proves nothing"
+else
+  # Settle, so the replay is judged by the key and not by the nonce holder.
+  for _ in $(seq 1 12); do
+    api "$SEED" GET "/wallet/v1/requests/$RID_1" >/dev/null
+    [[ "$(jq -r '.status // ""' <<<"$BODY")" =~ ^(success|failed|completed|error)$ ]] && break
+    sleep 3
+  done
+  IDEM_2=$(idem_send "$IDEM")
+  RID_2=$(idem_id "$IDEM_2")
+  if [[ "$RID_2" == "$RID_1" ]]; then
+    pass "E17 the replay named the FIRST request ($RID_1) — one key, one executable request"
+  else
+    fail "E17 the replay named '$RID_2' where the first was '$RID_1': $(head -c 200 <<<"$IDEM_2")"
+  fi
+  # The control. Same body, different key — it must be a different operation,
+  # or the sameness above was the body being deduplicated and not the key.
+  IDEM_3=$(idem_send "hos-idem-other-$(date +%s)-$$")
+  RID_3=$(idem_id "$IDEM_3")
+  if [[ -z "$RID_3" ]]; then
+    note "E17 the control send named no request ($(head -c 140 <<<"$IDEM_3")) — the replay above is unconfirmed as a KEY effect"
+  elif [[ "$RID_3" != "$RID_1" ]]; then
+    pass "E17 and the identical body under a different key is a NEW request ($RID_3) — the key is what was read"
+  else
+    fail "E17 a different key returned the same request ($RID_1): the door is deduplicating on the body, so the key is not what stops a double spend"
+  fi
 fi
 
 # ── E14 DoS: how much body will the door buffer ────────────────────────────

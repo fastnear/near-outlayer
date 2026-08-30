@@ -180,6 +180,12 @@ assert_class "G8 · 200 USDC over the 100 USDC token budget" "token_budget_excee
 q POST /wallet/v1/binding/transfer \
   "$(jq -nc --arg t "$RECEIVER" --arg a "6000000000000000000000000" '{to:$t, amount:$a}')" >/dev/null
 assert_class "G9 · 6 NEAR over the 5 NEAR native budget" "grant_exhausted"
+# The class alone is only half of what R12 asks for. A budget wall is TERMINAL:
+# the meter does not refill on its own, and only a fresh grant from the owner
+# moves it. An agent that reads this as transient retries until its lease runs
+# out while the one person who could fix it is never told, so the flag the
+# client routes on is asserted here rather than assumed from the class name.
+assert_json "G9 · and the refusal is terminal — only a new grant moves this wall" '.terminal' true
 
 # ── G10/G11: form rules the grant enforces — via raw /call ────────────────────
 log "G10–G11 · granted-call FORM (raw w_execute_extension)"

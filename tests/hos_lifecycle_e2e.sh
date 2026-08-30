@@ -142,9 +142,64 @@ else
 fi
 
 # ── R5f DELETE cancels what was pending ────────────────────────────────────
+#
+# The method list promises this in one line: "In-flight requests for the binding
+# are cancelled or rejected rather than completing." It is the promise that
+# makes revocation mean something. An approval raised while the lane was alive
+# and approved after it was cut would execute against an account whose owner has
+# already withdrawn the executor — the revocation would be a formality with a
+# window in it.
+#
+# So the lane is given something to lose FIRST: a threshold policy turns the
+# next spend into a held approval instead of a transfer, and the DELETE has to
+# answer for it.
+log "R5f a held approval, then DELETE"
+HELD=""
+POL_MS=$(jq -nc --arg a "$ACC" --arg w "$WL" --arg p "$PARENT" \
+  '{rules:{addresses:{mode:"whitelist",list:[$a,$w]},limits:{per_transaction:{native:"1000000000000000000000000"}}},
+    approval:{threshold:2, approvers:[{id:$p},{id:"second-approver.testnet"}]}}')
+if store_policy "$SEED_L" "$WID_L" "$POL_MS"; then
+  call_ext "$SEED_L" "$ACC" "$(ext_transfer "$WL" "$TINY")" >/dev/null
+  HELD=$(jq -r '.approval_id // .request_id // ""' <<<"$BODY")
+  if [[ -n "$HELD" && "$(jq -r '.status // ""' <<<"$BODY")" != "success" ]]; then
+    pass "R5f a spend under a 2-of-N threshold is HELD ($HELD), so there is something in flight to cancel"
+  else
+    HELD=""
+    note "R5f the threshold did not hold the spend (HTTP $HTTP, $(jq -r '.status // .error // "?"' <<<"$BODY")) — the cancellation below is judged on the DELETE's own count only"
+  fi
+else
+  note "R5f the threshold policy could not be stored — nothing is in flight"
+fi
+
 log "R5f DELETE the binding, then try to spend"
 api "$SEED_L" DELETE /wallet/v1/binding >/dev/null
 assert_status "R5f DELETE" 200
+# The DELETE must SAY what it cancelled. A revocation that silently leaves work
+# behind is indistinguishable from one that cancelled nothing, and the owner has
+# no way to tell which they got.
+CANCELLED=$(jq -r '.cancelled_approvals // ""' <<<"$BODY")
+if [[ -z "$CANCELLED" ]]; then
+  fail "R5f the DELETE answer does not say what it cancelled — the owner cannot tell a clean revocation from one with work left behind"
+elif [[ -n "$HELD" ]]; then
+  [[ "$CANCELLED" -ge 1 ]] \
+    && pass "R5f and it cancelled the $CANCELLED approval(s) that were in flight" \
+    || fail "R5f a spend was held for approval and the DELETE cancelled $CANCELLED — an approver could still sign it against a revoked lane"
+else
+  pass "R5f and it reports its count ($CANCELLED), which is the field an owner reads"
+fi
+if [[ -n "$HELD" ]]; then
+  api "$SEED_L" GET "/wallet/v1/requests/$HELD" >/dev/null
+  HELD_ST=$(jq -r '.status // ""' <<<"$BODY")
+  [[ "$HELD_ST" == "success" ]] \
+    && fail "R5f the held request reached 'success' after the binding was deleted" \
+    || pass "R5f and the held request did not complete (status '${HELD_ST:-gone}')"
+fi
+# Back to the plain policy: R5g asks whether a WIPED account is refused, and a
+# spend held for approval would answer a different question.
+store_policy "$SEED_L" "$WID_L" "$(jq -nc --arg a "$ACC" --arg w "$WL" \
+  '{rules:{addresses:{mode:"whitelist",list:[$a,$w]},limits:{per_transaction:{native:"1000000000000000000000000"}}}}')" \
+  || note "R5f the plain policy could not be restored — R5g may be judged under a threshold"
+
 call_ext "$SEED_L" "$ACC" "$(ext_transfer "$WL" "$TINY")" >/dev/null
 # With no binding the pre-flight has nothing of ours to enforce; the account's
 # own contract still refuses a stranger. What must NOT happen is the call being

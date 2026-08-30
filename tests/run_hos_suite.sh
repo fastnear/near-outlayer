@@ -37,6 +37,7 @@ SUITES=(
   "decoder|hos_decoder_policy_e2e.sh|§3 the decoder and the mode-blind core policy"
   "lease|hos_lease_stub_e2e.sh|§3.1 the hos_lease profile, through the §10 stub"
   "custody|hos_custody_matrix_e2e.sh|§4 limits, rights, capabilities, multisig, freeze"
+  "secrets|secret_access_conditions_e2e.sh|§4.1 + S7 the AccessCondition gates, on a real WASI run"
   "gas|hos_gas_floor_e2e.sh|§R6 the executor's gas floor, warning and terminal refusal"
   "identity|hos_identity_e2e.sh|§5 use_bound_identity and attribution"
   "lifecycle|hos_lifecycle_e2e.sh|§6 lifecycle and invalidation (R5)"
@@ -106,7 +107,7 @@ grep -h "SKIP:" "$LOGDIR"/*.log 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | sed 's
 # `stub`  = proved through the §10 stub: our side of the leased mode in full,
 #           the partner's on-chain panic not included.
 # `waits-TLA` / `external` = named so nobody reads a blank as "covered".
-log "§8 acceptance R0–R11"
+log "§8 acceptance R0–R12"
 cat >&2 <<'MAP'
   R0   executor→asset w_execute_extension executes and is tracked
        live   decoder §D0 (executed, tx hash), endpoints §E11'''' (the builder), lifecycle §R5a
@@ -122,7 +123,9 @@ cat >&2 <<'MAP'
   R5   the binding stops executing after transfer / recovery / revoke / expiry
        live   lifecycle §R5b–R5g (executor cut, wiped account, re-bind, DELETE)
        stub   lease §C-* (frozen, parked, suspended, lease expired) and §ROT (ownership rotation)
-       gap    the partner's revoke WEBHOOK is unconfigured on testnet — see the findings
+       live   lease §W — the revoke webhook, when `BINDING_WEBHOOK_SECRET` is exported.
+              Without it the suite says so rather than passing quietly; the secret is in
+              `prod_configs/coordinator/.env.testnet` and the coordinator must be carrying it
   R6   gas: source, submit, retry, replay specified and exercised
        live   endpoints §E12 (the balance is on /address), custody §L (one spend at a time)
        live   gas §F1/§F4 — the 0.05 NEAR warning on the binding flips both ways, and the
@@ -153,9 +156,20 @@ cat >&2 <<'MAP'
        live   endpoints §E3i (PUT refuses version 999, names the supported set, says terminal)
        stub   lease §C-version (a chain that reports version 5 → unsupported_wallet_implementation)
   R10  a confidential operation end to end
-       external mainnet only — there are no intents on testnet, and the routes 503 there by design
+       live   endpoints §E16 — the TESTNET half: the routes answer 503 with NO `Retry-After`
+              and a sentence naming the deployment, so a client cannot read "off" as "busy"
+       live   the `confidential` capability is a per-wallet policy gate like the others
+              (`Capabilities::confidential`), which is what R10 asks of the policy shape
+       external the operation itself is mainnet only — there are no solvers on testnet
   R11  sign-in / proof of ownership
        external not part of this integration: the wallet's own NEP-413 path
+  R12  a spend over the granted budget is refused, and reported as terminal
+       live   lease §G4/§G5 and live-grant §G8/§G9 — the per-token and native walls,
+              with §G9 asserting the `terminal` flag the client routes on
+       live   lease §G0/§R12 — the chain's OWN refusal: the stub answers views and has
+              no `w_execute_extension`, so a request the pre-flight admits comes back
+              422 `chain_refused` with no `Retry-After`. That shape is unreachable
+              through the grant walls above, which our pre-flight answers first
 MAP
 
 log "Verdict"
