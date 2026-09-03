@@ -652,8 +652,13 @@ if set_status "$(status_json "$GRANT_OK")"; then
     api "$SEED_S" GET /wallet/v1/binding >/dev/null
     assert_json "PAIR1 the collection names another owner → the binding is SUSPENDED, not revoked" '.binding_status' suspended
     send "PAIR1' a spend while the collection disagrees" "$(ext_transfer "$WL" "1000000000000000000000")"
-    assert_class "PAIR1' refused by the gate itself, with the pairing's own class" "registry_disagrees" \
-      && assert_json "PAIR1' and the refusal is NOT terminal — the registry may be a block behind" '.terminal' false
+    if assert_class "PAIR1' refused by the gate itself, with the pairing's own class" "registry_disagrees"; then
+      # `bool_of`, not `assert_json`: the latter reads through `// ""`, and a
+      # JSON `false` falls through that to the empty string.
+      [[ "$(bool_of terminal)" == "false" ]] \
+        && pass "PAIR1' and the refusal is NOT terminal — the registry may be a block behind" \
+        || fail "PAIR1' terminal is '$(bool_of terminal)', expected false — a lagging registry would send the agent away for good"
+    fi
   fi
   if set_nft_token null; then
     send "PAIR2 a spend while the collection has no such token (NEP-171 null)" "$(ext_transfer "$WL" "1000000000000000000000")"
