@@ -123,6 +123,11 @@ cat >&2 <<'MAP'
   R5   the binding stops executing after transfer / recovery / revoke / expiry
        live   lifecycle §R5b–R5g (executor cut, wiped account, re-bind, DELETE)
        stub   lease §C-* (frozen, parked, suspended, lease expired) and §ROT (ownership rotation)
+       stub   lease §PAIR1–3 — the collection's `nft_token` held against the account's
+              `nft_item_info`: a disagreement suspends AND the gate refuses (registry_disagrees,
+              not terminal); agreement brings the lane back without re-binding
+       live   bravo §B6 — the rotation HoS performs on request (ROTATED=1 phase):
+              transitional refusal, closure recorded, then binding_ended
        live   lease §W — the revoke webhook, when `BINDING_WEBHOOK_SECRET` is exported.
               Without it the suite says so rather than passing quietly; the secret is in
               `prod_configs/coordinator/.env.testnet` and the coordinator must be carrying it
@@ -140,6 +145,10 @@ cat >&2 <<'MAP'
   R7   reads do not mix the two identities
        live   endpoints §E10/E12/E13 (asset vs executor, intents sent to the right door, /balance unmoved)
        stub   lease reserve_yocto is read from hos_agent_status (§R1)
+       live   bravo §B3 — the floor binds on the real account (ceiling above balance),
+              §B4 — the item fence, the collection wall and the own-collection rule on
+              the real grant, §B5 — carry-forward across a refill. Run APART from this
+              runner (wk_-authenticated: `hos_lease_bravo_e2e.sh`), like the alpha suite
   R8   one operation traceable from API to inner receipts
        live   identity §I7 walks the HTTPS door from the only handle a client is given — the call id
               — through https_calls, the execution request, the job and the worker that ran it, to

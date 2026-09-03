@@ -12,12 +12,15 @@
 # AUTH. The wallet whose executor HoS whitelisted was COORDINATOR-MINTED, so it
 # authenticates with a `wk_` payment key, NOT a near:-seed. Every call here goes
 # through `api_wk "$WK"`. The key + wallet live in `keystore-worker/.env.hos`
-# (executor `5356b2c0…e325806a`, the whitelisted one).
+# (executor `5356b2c0…e325806a`, the whitelisted one); HOS_ENV points at another
+# such file. One wallet is one live binding, so each leased account has its own.
 #
-# What this covers (everything a single, un-refillable live grant CAN show):
+# What this covers (everything a live grant on alpha CAN show):
 #   G0  the wk_ resolves to the executor HoS whitelisted
 #   G1  PUT hos_lease → 200, executor echoed
-#   G2  the binding goes ACTIVE off the real hos_agent_status (grant + extension)
+#   G2  the binding goes ACTIVE off the real hos_agent_status (grant + extension),
+#       and the registry's `nft_token` agrees with the account's `nft_item_info`
+#       — the pairing the coordinator now requires before believing the account
 #   G3  happy: native / wNEAR / USDC to the granted receiver, within budget —
 #       the transfer LANDS and the on-chain grant meter increments (this is the
 #       exact path the partner ran with a throwaway extension before handover)
@@ -27,31 +30,34 @@
 #   G10 ft_transfer_call (msg forwards value) → refused, method named
 #   G11 a granted call carrying a non-1-yocto deposit → grant_call_deposit
 #
-# What it CANNOT cover, and why (all in the stub suite instead): an expired /
-# frozen / parked grant, a lease that ran out, a rotation, an unsupported
-# impl_version, any NFT case (their grant has no items), a reserve breach (the 5
-# NEAR grant cap trips before the ~0.012 NEAR floor), and carry-forward across a
-# re-grant (only HoS can re-grant).
+# What it CANNOT cover, and why: an expired / frozen / parked grant, a lease that
+# ran out, an unsupported impl_version (stub suite — a live account cannot be
+# made to report those on demand); a rotation, the NFT fences, the reserve floor
+# and carry-forward across a refill (`hos_lease_bravo_e2e.sh`, on the second
+# leased account whose grant is shaped for them — alpha's has no items and its 5
+# NEAR cap trips before the ~0.012 NEAR floor).
 #
 # ── COST WARNING ─────────────────────────────────────────────────────────────
-# G3 SPENDS the grant. The budgets (5 NEAR / 5 wNEAR / 100 USDC) do NOT refill —
-# only a fresh grant from HoS resets them — so G3 moves the SMALLEST amounts that
-# still prove a transfer, and the suite can run ~100 times before the grant is
-# dry. G7–G11 are refused by pre-flight and spend NOTHING, so they are free to
-# repeat. When G3 eventually starts failing as grant_exhausted / budget_exceeded,
-# the grant is spent, not the product broken — ask HoS to re-issue.
+# G3 SPENDS the grant. HoS refills the budgets (NATIVE_BUDGET NEAR / 5 wNEAR /
+# 100 USDC) on request — shout when a run empties it — but not on their own, so
+# G3 moves the SMALLEST amounts that still prove a transfer. G7–G11 are refused
+# by pre-flight and spend NOTHING, so they are free to repeat. When G3 starts
+# failing as grant_exhausted / budget_exceeded, the grant is spent, not the
+# product broken — ask HoS to refill.
 #
 #   ./tests/hos_lease_live_e2e.sh --apply
-#     (reads HOS_WK from keystore-worker/.env.hos by default; or pass HOS_WK=wk_…)
+#     (reads HOS_WK from keystore-worker/.env.hos by default; HOS_ENV=<file> for
+#      another wallet file, or pass HOS_WK=wk_…)
 #
-# Optional: ASSET, RECEIVER, WNEAR, USDC, OWNER, IMPL_VERSION, EXPECTED_EXECUTOR.
+# Optional: ASSET, RECEIVER, WNEAR, USDC, OWNER, IMPL_VERSION, EXPECTED_EXECUTOR,
+# NATIVE_BUDGET (yocto; G9 spends one NEAR over it).
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hos_common.sh"
 
-[[ "${1:-}" == "--apply" ]] || { sed -n '3,47p' "$0" >&2; echo "  Pass --apply to run." >&2; exit 0; }
+[[ "${1:-}" == "--apply" ]] || { sed -n '3,53p' "$0" >&2; echo "  Pass --apply to run." >&2; exit 0; }
 
 # ── credential: the wk_ of the whitelisted-executor wallet ────────────────────
-ENV_HOS="$REPO_ROOT/keystore-worker/.env.hos"
+ENV_HOS="${HOS_ENV:-$REPO_ROOT/keystore-worker/.env.hos}"
 if [[ -z "${HOS_WK:-}" && -f "$ENV_HOS" ]]; then
   HOS_WK=$(jq -r '.api_key // empty' "$ENV_HOS" 2>/dev/null)
 fi
@@ -61,6 +67,7 @@ WK="$HOS_WK"
 # This suite authenticates as a coordinator-minted wallet, so it does NOT need
 # PARENT / RECOVERY_BIN like the seed-based suites. Only jq + curl.
 command -v jq >/dev/null || { echo "✗ jq required" >&2; exit 1; }
+command -v python3 >/dev/null || { echo "✗ python3 required (yocto arithmetic)" >&2; exit 1; }
 
 # ── the live grant, exactly as HoS provisioned it (verified by RPC 2026-08-22) ─
 ASSET="${ASSET:-alpha.tlademo.testnet}"
@@ -76,6 +83,7 @@ OWNER="${OWNER:-council.tlademo.testnet}"
 IMPL_VERSION="${IMPL_VERSION:-6}"                   # from the live hos_agent_status
 OUTSIDER="${OUTSIDER:-outsider-nobody.testnet}"    # never in the grant
 EXPECTED_EXECUTOR="${EXPECTED_EXECUTOR:-5356b2c04da3aa5f134ae59d12e72f5df6ce25db24ffa968c74c8843e325806a}"
+NATIVE_BUDGET="${NATIVE_BUDGET:-5000000000000000000000000}"   # 5 NEAR on alpha
 
 # Tiny spends so the grant survives ~100 runs (see COST WARNING).
 NEAR_SPEND="${NEAR_SPEND:-50000000000000000000000}"    # 0.05 NEAR
@@ -145,6 +153,25 @@ done
 [[ "$status" == "active" ]] && pass "G2 · binding ACTIVE against the live grant" \
   || fail "G2 · binding never went active ('$status') — verify our pre-flight parses their live hos_agent_status: $(msg_of)"
 
+# The account's word and its collection's, read off the chain the way the
+# coordinator reads them. Active above already means the coordinator found them
+# in agreement; this states what it agreed on, so a registry that changes shape
+# is seen here as a shape and not as every leased binding suspending.
+ITEM=$(near_view "$ASSET" nft_item_info '{}')
+COLL=$(jq -r '.collection_id // empty' <<<"$ITEM"); TOK=$(jq -r '.token_id // empty' <<<"$ITEM")
+ITEM_OWNER=$(jq -r '.owner_id // empty' <<<"$ITEM")
+if [[ -n "$COLL" && -n "$TOK" ]]; then
+  TOKEN=$(near_view "$COLL" nft_token "$(jq -nc --arg t "$TOK" '{token_id:$t}')")
+  REG_OWNER=$(jq -r '.owner_id // empty' <<<"$TOKEN" 2>/dev/null)
+  if [[ -n "$REG_OWNER" && "$REG_OWNER" == "$ITEM_OWNER" ]]; then
+    pass "G2b · $COLL::nft_token('$TOK') confirms owner $REG_OWNER — the account and its collection agree"
+  else
+    fail "G2b · the collection's word ('$REG_OWNER') is not the account's ('$ITEM_OWNER') — the coordinator would suspend this lane as registry_disagrees"
+  fi
+else
+  fail "G2b · nft_item_info names no collection_id/token_id ($ITEM) — nothing can confirm this account"
+fi
+
 # ── G3: happy path — spends land, the on-chain meter increments ───────────────
 log "G3 · granted spends land and the meter moves"
 
@@ -177,9 +204,10 @@ q POST /wallet/v1/binding/transfer \
   "$(jq -nc --arg t "$RECEIVER" --arg a "200000000" --arg k "$USDC" '{to:$t, amount:$a, token:$k}')" >/dev/null
 assert_class "G8 · 200 USDC over the 100 USDC token budget" "token_budget_exceeded"
 
+OVER_BUDGET=$(python3 -c "print($NATIVE_BUDGET + 10**24)")
 q POST /wallet/v1/binding/transfer \
-  "$(jq -nc --arg t "$RECEIVER" --arg a "6000000000000000000000000" '{to:$t, amount:$a}')" >/dev/null
-assert_class "G9 · 6 NEAR over the 5 NEAR native budget" "grant_exhausted"
+  "$(jq -nc --arg t "$RECEIVER" --arg a "$OVER_BUDGET" '{to:$t, amount:$a}')" >/dev/null
+assert_class "G9 · one NEAR over the native budget" "grant_exhausted"
 # The class alone is only half of what R12 asks for. A budget wall is TERMINAL:
 # the meter does not refill on its own, and only a fresh grant from the owner
 # moves it. An agent that reads this as transient retries until its lease runs

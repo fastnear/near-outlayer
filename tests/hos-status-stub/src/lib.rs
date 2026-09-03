@@ -1,5 +1,8 @@
-//! A stand-in for the partner's leased-account contract — the ONE view our
-//! pre-flight reads, and nothing else.
+//! A stand-in for the partner's leased-account contract — the views our
+//! pre-flight reads, and nothing else. Deployed twice per run: once as the
+//! leased ACCOUNT (`hos_agent_status`, `nft_item_info`) and once as the
+//! COLLECTION that account says it belongs to (`nft_token`), so that the
+//! pairing of the two can be made to agree or disagree at will.
 //!
 //! Why this exists (test plan §10): every `hos_lease` rule we implement — the
 //! grant ladder, the call-form rules, the reserve floor, the lifecycle faults,
@@ -29,6 +32,10 @@ pub struct Stub {
     status_json: String,
     /// Raw JSON returned by `nft_item_info` (the own-collection rule reads it).
     item_info_json: String,
+    /// Raw JSON returned by `nft_token`, whatever `token_id` is asked —
+    /// `null` when unset, which is NEP-171 for "no such token". Lives in
+    /// the instance playing the collection.
+    nft_token_json: String,
     /// When set, `hos_agent_status` panics instead of answering — the
     /// "the view is unreachable / the account is not what we think" case.
     panic_message: Option<String>,
@@ -42,6 +49,7 @@ impl Stub {
             owner: env::predecessor_account_id(),
             status_json: "{}".to_string(),
             item_info_json: "{}".to_string(),
+            nft_token_json: "null".to_string(),
             panic_message: None,
         }
     }
@@ -72,6 +80,19 @@ impl Stub {
     pub fn set_item_info(&mut self, item_info_json: String) {
         self.assert_owner();
         self.item_info_json = item_info_json;
+    }
+
+    /// NEP-171 `nft_token`, as the collection answers it. The argument is
+    /// accepted and ignored — a mirror answers what it was told to; a case
+    /// that needs "asked about X, answered about Y" stores a Y.
+    pub fn nft_token(&self, token_id: String) -> serde_json::Value {
+        let _ = token_id;
+        serde_json::from_str(&self.nft_token_json).unwrap_or(serde_json::Value::Null)
+    }
+
+    pub fn set_nft_token(&mut self, nft_token_json: String) {
+        self.assert_owner();
+        self.nft_token_json = nft_token_json;
     }
 
     pub fn set_panic(&mut self, message: Option<String>) {

@@ -7,7 +7,10 @@
 # the real chain. What is simulated is only the PARTNER'S ANSWER: the stub
 # serves `hos_agent_status` (and `nft_item_info`) and a test sets it to
 # whatever state the case is about — no grant, an expired grant, a frozen
-# account, a lease that ran out, a version we have no decoder for.
+# account, a lease that ran out, a version we have no decoder for. A second
+# instance of the same stub plays the COLLECTION the leased account says it
+# belongs to and serves `nft_token`, so the pairing of the account's word
+# with its collection's can be made to agree or disagree.
 #
 # The boundary, stated so nobody has to infer it: this proves that OUR side
 # agrees with the shape and the rules of their view, in the order their
@@ -30,7 +33,7 @@
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hos_common.sh"
 
-[[ "${1:-}" == "--apply" ]] || { sed -n '3,29p' "$0" >&2; echo "  Pass --apply to run." >&2; exit 0; }
+[[ "${1:-}" == "--apply" ]] || { sed -n '3,32p' "$0" >&2; echo "  Pass --apply to run." >&2; exit 0; }
 hos_require
 
 STUB_WASM="$REPO_ROOT/tests/hos-status-stub/target/near/hos_status_stub.wasm"
@@ -42,10 +45,13 @@ TOKEN="${TOKEN:-usdc.fakes.testnet}"               # granted fungible
 OTHER_TOKEN="${OTHER_TOKEN:-dai.fakes.testnet}"    # never granted
 COLL="${COLL:-nft.fakes.testnet}"                  # granted collection
 OTHER_COLL="${OTHER_COLL:-other-nft.fakes.testnet}"
-# The registry this leased account's own name lives in. Deliberately NOT the
-# granted collection: the own-collection guard sits at rung 4 and would answer
-# before the item fence at rung 10, so sharing them would hide G7.
-OWN_COLL="${OWN_COLL:-own-registry.fakes.testnet}"
+# The registry this leased account's own name lives in is the SECOND stub
+# instance, deployed below. Deliberately NOT the granted collection: the
+# own-collection guard sits at rung 4 and would answer before the item fence at
+# rung 10, so sharing them would hide G7. And deliberately a real contract that
+# answers `nft_token`: the coordinator asks the collection to confirm the
+# account, and a collection that cannot be asked leaves the pairing unjudged
+# while one that answers wrongly suspends the lane (PAIR1–PAIR3).
 FUTURE_NS="4000000000000000000"                    # year 2096
 PAST_NS="1000000000000000000"                      # year 2001
 
@@ -53,26 +59,55 @@ SEED_S="hos-stub-$(date +%s)-$$"
 read -r WID_S EXEC_S < <(wallet_address "$SEED_S")
 [[ -n "$WID_S" ]] || { echo "✗ could not mint the wallet" >&2; exit 1; }
 STUB="hos-stub-$(openssl rand -hex 3).$PARENT"
-note "wallet $WID_S / executor $EXEC_S / stub $STUB"
+OWN_COLL="hos-registry-$(openssl rand -hex 3).$PARENT"
+note "wallet $WID_S / executor $EXEC_S / stub $STUB / its collection $OWN_COLL"
 
 cleanup() {
   local rc=$?
   api "$SEED_S" DELETE /wallet/v1/binding >/dev/null 2>&1 || true
-  if [[ -z "${KEEP:-}" ]] && account_exists "$STUB"; then
-    note "cleaning up $STUB"; delete_account "$STUB"
+  if [[ -z "${KEEP:-}" ]]; then
+    local a
+    for a in "$STUB" "$OWN_COLL"; do
+      account_exists "$a" && { note "cleaning up $a"; delete_account "$a"; }
+    done
   fi
   return $rc
 }
 trap cleanup EXIT
 
-# ── the stub ───────────────────────────────────────────────────────────────
-log "Deploying the stub to $STUB"
-create_subaccount "$STUB" 3 || { echo "✗ $STUB never appeared" >&2; exit 1; }
-near_tty "near contract deploy $STUB use-file $STUB_WASM \
-  with-init-call new json-args '{}' prepaid-gas '100.0 Tgas' attached-deposit '0 NEAR' \
-  network-config $NETWORK sign-with-keychain send" >/dev/null 2>&1 \
-  || { echo "✗ the stub did not deploy" >&2; exit 1; }
-pass "the stub is deployed and initialised"
+# ── the stub, twice: the leased account and the collection it names ────────
+deploy_stub() { # <account>
+  create_subaccount "$1" 3 || { echo "✗ $1 never appeared" >&2; exit 1; }
+  near_tty "near contract deploy $1 use-file $STUB_WASM \
+    with-init-call new json-args '{}' prepaid-gas '100.0 Tgas' attached-deposit '0 NEAR' \
+    network-config $NETWORK sign-with-keychain send" >/dev/null 2>&1 \
+    || { echo "✗ the stub did not deploy to $1" >&2; exit 1; }
+}
+log "Deploying the stub to $STUB (the leased account) and $OWN_COLL (its collection)"
+deploy_stub "$STUB"
+deploy_stub "$OWN_COLL"
+pass "both stub instances are deployed and initialised"
+
+# The leased mode believes only accounts running code the coordinator was TOLD
+# about (`hos_impl_code_hashes`, admin-managed, see .idea/TESTING-WITH-ADMIN.md).
+# A rebuilt stub is a new hash, and a new hash is `pending` forever with no
+# message — so register this build's hash when the token is at hand, and say
+# what to do when it is not.
+STUB_HASH=""
+for _ in 1 2 3 4 5 6; do
+  STUB_HASH=$(account_field "$STUB" code_hash)
+  [[ -n "$STUB_HASH" && "$STUB_HASH" != "null" && "$STUB_HASH" != "11111111111111111111111111111111" ]] && break
+  sleep 2   # the deploy is not final yet; a no-code hash must not reach the allowlist
+done
+if [[ -n "${ADMIN_TOKEN:-}" ]]; then
+  curl -s --max-time 30 -X POST "$COORDINATOR_URL/admin/hos-impl-code-hashes" \
+    -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+    -d "$(jq -nc --arg h "$STUB_HASH" '{code_hash:$h, note:"hos-status-stub test fixture, tests/hos-status-stub"}')" >/dev/null \
+    && note "stub code hash $STUB_HASH is on the coordinator's allowlist" \
+    || warn "could not register the stub's code hash $STUB_HASH"
+else
+  note "ADMIN_TOKEN not set — the stub's code hash $STUB_HASH must already be on the allowlist, or the binding stays pending"
+fi
 
 # set_status <json> — reconfigure the partner's answer, then outwait the 5 s
 # observation cache so the NEXT call is judged against the new state.
@@ -88,6 +123,15 @@ set_item_info() {
     json-args '$(jq -nc --arg s "$1" '{item_info_json:$s}')' prepaid-gas '30.0 Tgas' \
     attached-deposit '0 NEAR' sign-as $STUB network-config $NETWORK sign-with-keychain send" >/dev/null 2>&1 \
     || { warn "set_item_info did not land"; return 1; }
+  sleep 7
+}
+# The COLLECTION's answer — set on the second instance, which is what the
+# coordinator asks once it has read `collection_id` off the first.
+set_nft_token() {
+  near_tty "near contract call-function as-transaction $OWN_COLL set_nft_token \
+    json-args '$(jq -nc --arg s "$1" '{nft_token_json:$s}')' prepaid-gas '30.0 Tgas' \
+    attached-deposit '0 NEAR' sign-as $OWN_COLL network-config $NETWORK sign-with-keychain send" >/dev/null 2>&1 \
+    || { warn "set_nft_token did not land"; return 1; }
   sleep 7
 }
 
@@ -114,6 +158,16 @@ item_info_json() { # item_info_json <rotation_seq-json> [owner_id]
   jq -nc --argjson r "$1" --arg o "${2:-$PARENT}" --arg c "$OWN_COLL" \
     '{spec:"sharded-item-1.0.0", init:true, status:"Active", collection_id:$c,
       token_id:"stub", owner_id:$o, rotation_seq:$r, rotation_epoch:4}'
+}
+# The collection's answer, in the shape the registry sends it: NEP-171
+# `nft_token`, captured 2026-09-03 from `registry.tlademo.testnet` — `copies` a
+# number, `extra` a STRING with JSON inside, no `approved_account_ids`. The
+# owner and token agree with `item_info_json` by default; PAIR1/PAIR2 vary them.
+nft_token_json() { # nft_token_json [owner_id] [token_id]
+  jq -nc --arg o "${1:-$PARENT}" --arg t "${2:-stub}" \
+    '{token_id:$t, owner_id:$o,
+      metadata:{title:$t, copies:1,
+                extra:"{\"rented_at\":\"1787210516312653999\",\"expires_at\":\"1818746516312653999\"}"}}'
 }
 # A stub is evidence only for the wire form it serves.
 #
@@ -157,6 +211,8 @@ CHAIN_GRANTED_TYPES='extension_enabled:boolean frozen:string grant:object impl_v
 # The fixture is deliberately the richer case: an empty map exercises nothing.
 CHAIN_GRANT_FIELDS='budget_yocto:string expires_at:string items:object{*:array} receivers:array spent_yocto:string tokens:object{*:object{*:string}}'
 CHAIN_ITEM_TYPES='collection_id:string init:boolean owner_id:string rotation_epoch:number rotation_seq:string spec:string status:string token_id:string'
+CHAIN_TOKEN_TYPES='metadata:object owner_id:string token_id:string'
+CHAIN_TOKEN_META_TYPES='copies:number extra:string title:string'
 fixture_shape() { # fixture_shape <label> <expected> <got>
   [[ "$3" == "$2" ]] && return 0
   echo "✗ the $1 fixture no longer matches what the chain sends" >&2
@@ -168,7 +224,10 @@ fixture_shape "hos_agent_status (ungranted)" "$CHAIN_STATUS_TYPES" "$(types_of "
 fixture_shape "hos_agent_status (granted)"   "$CHAIN_GRANTED_TYPES" "$(types_of "$(status_json "$GRANT_OK")")"
 fixture_shape "the spend grant"              "$CHAIN_GRANT_FIELDS" "$(grant_types_of "$(status_json "$GRANT_OK")")"
 fixture_shape "nft_item_info"                "$CHAIN_ITEM_TYPES" "$(types_of "$(item_info_json '"1"')")"
+fixture_shape "nft_token"                    "$CHAIN_TOKEN_TYPES" "$(types_of "$(nft_token_json)")"
+fixture_shape "nft_token.metadata"           "$CHAIN_TOKEN_META_TYPES" "$(types_of "$(nft_token_json | jq -c .metadata)")"
 set_item_info "$(item_info_json '"1"')" || true
+set_nft_token "$(nft_token_json)" || true
 
 log "Binding the wallet to the stub as kind=hos_lease, impl_version=6"
 api "$SEED_S" PUT /wallet/v1/binding \
@@ -193,6 +252,7 @@ if [[ "$ST" == "active" ]]; then
   assert_json "the decoder version it maps to is stated" '.decoder_version' 1
 else
   fail "the leased binding never went active ('$ST'): $(msg_of)"
+  note "a stub that stays pending usually runs a code hash the coordinator was not told about ($STUB_HASH) — GET /admin/hos-impl-code-hashes, or run with ADMIN_TOKEN so the suite registers it"
   verdict "§3.1 hos_lease via stub"; exit 1
 fi
 
@@ -574,6 +634,41 @@ if set_status '{}'; then
   send "C-empty a view that answers with nothing at all" "$(ext_transfer "$WL" "1000000000000000000000")"
   assert_denied "C-empty every default is the value that FAILS verification" "agent_connect_denied"
   note "  class: $(class_of)"
+fi
+
+# ── the collection's word against the account's ───────────────────────────
+#
+# The account is the party under judgement and does not get the last word on
+# who owns it: its `nft_item_info` is held against its collection's `nft_token`.
+# Reversible on purpose — a registry can trail the account by a block, and a
+# live lane is not ended over lag — so the fault suspends, and the lane comes
+# back the moment the two agree again.
+#
+# The spend is the property, not the status. The pre-flight does not consult
+# the stored status; it re-observes the chain. A pairing that only the status
+# refresh performed would show `suspended` on GET and admit the spend anyway.
+if set_status "$(status_json "$GRANT_OK")"; then
+  if set_nft_token "$(nft_token_json somebody-else.testnet)"; then
+    api "$SEED_S" GET /wallet/v1/binding >/dev/null
+    assert_json "PAIR1 the collection names another owner → the binding is SUSPENDED, not revoked" '.binding_status' suspended
+    send "PAIR1' a spend while the collection disagrees" "$(ext_transfer "$WL" "1000000000000000000000")"
+    assert_class "PAIR1' refused by the gate itself, with the pairing's own class" "registry_disagrees" \
+      && assert_json "PAIR1' and the refusal is NOT terminal — the registry may be a block behind" '.terminal' false
+  fi
+  if set_nft_token null; then
+    send "PAIR2 a spend while the collection has no such token (NEP-171 null)" "$(ext_transfer "$WL" "1000000000000000000000")"
+    assert_class "PAIR2 a null answer is the collection speaking, not a transport problem" "registry_disagrees"
+  fi
+  if set_nft_token "$(nft_token_json)"; then
+    api "$SEED_S" GET /wallet/v1/binding >/dev/null
+    assert_json "PAIR3 the collection agrees again → the lane is back without re-binding" '.binding_status' active
+    send "PAIR3' a spend once the collection agrees" "$(ext_transfer "$WL" "1000000000000000000000")"
+    if [[ "$HTTP" == "403" ]]; then
+      fail "PAIR3' the gate still refuses after the collection agreed: class '$(class_of)'"
+    else
+      pass "PAIR3' the gate let the spend through again (HTTP $HTTP)"
+    fi
+  fi
 fi
 
 # ── ownership rotation ends the lane ──────────────────────────────────────
