@@ -49,9 +49,11 @@ OTHER_COLL="${OTHER_COLL:-other-nft.fakes.testnet}"
 # instance, deployed below. Deliberately NOT the granted collection: the
 # own-collection guard sits at rung 4 and would answer before the item fence at
 # rung 10, so sharing them would hide G7. And deliberately a real contract that
-# answers `nft_token`: the coordinator asks the collection to confirm the
-# account, and a collection that cannot be asked leaves the pairing unjudged
-# while one that answers wrongly suspends the lane (PAIR1–PAIR3).
+# answers `nft_token`: the coordinator asks the collection whether it minted the
+# token the account names — a collection that cannot be asked leaves the
+# pairing unjudged, one that has no such token suspends the lane, and one that
+# names a different owner changes nothing, ownership being the item's to state
+# (PAIR1–PAIR3).
 FUTURE_NS="4000000000000000000"                    # year 2096
 PAST_NS="1000000000000000000"                      # year 2001
 
@@ -162,7 +164,8 @@ item_info_json() { # item_info_json <rotation_seq-json> [owner_id]
 # The collection's answer, in the shape the registry sends it: NEP-171
 # `nft_token`, captured 2026-09-03 from `registry.tlademo.testnet` — `copies` a
 # number, `extra` a STRING with JSON inside, no `approved_account_ids`. The
-# owner and token agree with `item_info_json` by default; PAIR1/PAIR2 vary them.
+# owner and token agree with `item_info_json` by default; PAIR1 varies the
+# owner, PAIR2 removes the token.
 nft_token_json() { # nft_token_json [owner_id] [token_id]
   jq -nc --arg o "${1:-$PARENT}" --arg t "${2:-stub}" \
     '{token_id:$t, owner_id:$o,
@@ -252,7 +255,7 @@ if [[ "$ST" == "active" ]]; then
   assert_json "the decoder version it maps to is stated" '.decoder_version' 1
 else
   fail "the leased binding never went active ('$ST'): $(msg_of)"
-  note "a stub that stays pending usually runs a code hash the coordinator was not told about ($STUB_HASH) — GET /admin/hos-impl-code-hashes, or run with ADMIN_TOKEN so the suite registers it"
+  note "a stub that stays pending usually runs a code hash the coordinator was not told about ($STUB_HASH) — GET /admin/hos-impl-code-hashes, or run with ADMIN_TOKEN so the suite registers it; the other cause is the collection $OWN_COLL still answering null (set_nft_token did not land), which suspends the lane"
   verdict "§3.1 hos_lease via stub"; exit 1
 fi
 
@@ -638,11 +641,13 @@ fi
 
 # ── the collection's word against the account's ───────────────────────────
 #
-# The account is the party under judgement and does not get the last word on
-# who owns it: its `nft_item_info` is held against its collection's `nft_token`.
-# Reversible on purpose — a registry can trail the account by a block, and a
-# live lane is not ended over lag — so the fault suspends, and the lane comes
-# back the moment the two agree again.
+# The account's `nft_item_info` is held against its collection's `nft_token`,
+# for the one thing a collection can vouch for: that it MINTED the token the
+# account names. Ownership is not the collection's to contradict — it lives on
+# the item and moves there — so a different `owner_id` on the registry changes
+# nothing (PAIR1), while a token the registry has no record of is the hard fail
+# (PAIR2). Reversible on purpose: a registry can trail the account by a block,
+# so the fault suspends and the lane returns the moment the record is there.
 #
 # The spend is the property, not the status. The pre-flight does not consult
 # the stored status; it re-observes the chain. A pairing that only the status
@@ -650,26 +655,32 @@ fi
 if set_status "$(status_json "$GRANT_OK")"; then
   if set_nft_token "$(nft_token_json somebody-else.testnet)"; then
     api "$SEED_S" GET /wallet/v1/binding >/dev/null
-    assert_json "PAIR1 the collection names another owner → the binding is SUSPENDED, not revoked" '.binding_status' suspended
-    send "PAIR1' a spend while the collection disagrees" "$(ext_transfer "$WL" "1000000000000000000000")"
-    if assert_class "PAIR1' refused by the gate itself, with the pairing's own class" "registry_disagrees"; then
-      # `bool_of`, not `assert_json`: the latter reads through `// ""`, and a
-      # JSON `false` falls through that to the empty string.
-      [[ "$(bool_of terminal)" == "false" ]] \
-        && pass "PAIR1' and the refusal is NOT terminal — the registry may be a block behind" \
-        || fail "PAIR1' terminal is '$(bool_of terminal)', expected false — a lagging registry would send the agent away for good"
+    assert_json "PAIR1 the collection names another owner → the item wins, the binding stays ACTIVE" '.binding_status' active
+    send "PAIR1' a spend while the collection names another owner" "$(ext_transfer "$WL" "1000000000000000000000")"
+    if [[ "$HTTP" == "403" ]]; then
+      fail "PAIR1' the gate refused on the registry's owner (class '$(class_of)') — ownership is the item's, the registry only proves the mint"
+    else
+      pass "PAIR1' the gate let the spend through (HTTP $HTTP) — the registry's owner is not compared"
     fi
   fi
   if set_nft_token null; then
-    send "PAIR2 a spend while the collection has no such token (NEP-171 null)" "$(ext_transfer "$WL" "1000000000000000000000")"
-    assert_class "PAIR2 a null answer is the collection speaking, not a transport problem" "registry_disagrees"
+    api "$SEED_S" GET /wallet/v1/binding >/dev/null
+    assert_json "PAIR2 the collection has no such token → the binding is SUSPENDED, not revoked" '.binding_status' suspended
+    send "PAIR2' a spend while the collection has no such token (NEP-171 null)" "$(ext_transfer "$WL" "1000000000000000000000")"
+    if assert_class "PAIR2' refused by the gate itself — a null answer is the collection speaking, not a transport problem" "registry_disagrees"; then
+      # `bool_of`, not `assert_json`: the latter reads through `// ""`, and a
+      # JSON `false` falls through that to the empty string.
+      [[ "$(bool_of terminal)" == "false" ]] \
+        && pass "PAIR2' and the refusal is NOT terminal — the registry may be a block behind" \
+        || fail "PAIR2' terminal is '$(bool_of terminal)', expected false — a lagging registry would send the agent away for good"
+    fi
   fi
   if set_nft_token "$(nft_token_json)"; then
     api "$SEED_S" GET /wallet/v1/binding >/dev/null
-    assert_json "PAIR3 the collection agrees again → the lane is back without re-binding" '.binding_status' active
-    send "PAIR3' a spend once the collection agrees" "$(ext_transfer "$WL" "1000000000000000000000")"
+    assert_json "PAIR3 the record is back → the lane returns without re-binding" '.binding_status' active
+    send "PAIR3' a spend once the collection has the token again" "$(ext_transfer "$WL" "1000000000000000000000")"
     if [[ "$HTTP" == "403" ]]; then
-      fail "PAIR3' the gate still refuses after the collection agreed: class '$(class_of)'"
+      fail "PAIR3' the gate still refuses after the record returned: class '$(class_of)'"
     else
       pass "PAIR3' the gate let the spend through again (HTTP $HTTP)"
     fi

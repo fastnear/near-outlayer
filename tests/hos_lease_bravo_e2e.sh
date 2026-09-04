@@ -172,10 +172,19 @@ ITEM=$(near_view "$ASSET" nft_item_info '{}')
 COLL=$(jq -r '.collection_id // empty' <<<"$ITEM"); TOK=$(jq -r '.token_id // empty' <<<"$ITEM")
 ITEM_OWNER=$(jq -r '.owner_id // empty' <<<"$ITEM")
 if [[ -n "$COLL" && -n "$TOK" ]]; then
-  REG_OWNER=$(token_owner "$COLL" "$TOK")
-  [[ -n "$REG_OWNER" && "$REG_OWNER" == "$ITEM_OWNER" ]] \
-    && pass "B2b · $COLL::nft_token('$TOK') confirms owner $REG_OWNER — the account and its collection agree" \
-    || fail "B2b · the collection's word ('$REG_OWNER') is not the account's ('$ITEM_OWNER')"
+  TOKEN=$(near_view "$COLL" nft_token "$(jq -nc --arg t "$TOK" '{token_id:$t}')")
+  REG_OWNER=$(jq -r '.owner_id // empty' <<<"$TOKEN" 2>/dev/null)
+  # Existence is what the coordinator requires of the collection; ownership is
+  # the item's to state and is only noted here. A literal `null` is the
+  # collection's answer; anything unparseable is the RPC's, and says nothing.
+  if [[ -n "$REG_OWNER" ]]; then
+    pass "B2b · $COLL::nft_token('$TOK') exists — the collection minted the name the account claims"
+    [[ "$REG_OWNER" == "$ITEM_OWNER" ]] || note "B2b · registry owner $REG_OWNER differs from the item's $ITEM_OWNER — the item is authoritative, nothing to fix"
+  elif [[ "$TOKEN" == "null" ]]; then
+    fail "B2b · the collection has no token '$TOK' — the coordinator suspends this lane as registry_disagrees"
+  else
+    skip "B2b · the collection could not be asked ($TOKEN) — the coordinator leaves the pairing unjudged, and so does this"
+  fi
 else
   fail "B2b · nft_item_info names no collection_id/token_id ($ITEM)"
 fi

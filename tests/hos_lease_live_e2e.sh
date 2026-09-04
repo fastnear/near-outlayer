@@ -19,8 +19,9 @@
 #   G0  the wk_ resolves to the executor HoS whitelisted
 #   G1  PUT hos_lease → 200, executor echoed
 #   G2  the binding goes ACTIVE off the real hos_agent_status (grant + extension),
-#       and the registry's `nft_token` agrees with the account's `nft_item_info`
-#       — the pairing the coordinator now requires before believing the account
+#       and the registry's `nft_token` has the name the account claims in its
+#       `nft_item_info` — the pairing the coordinator requires (existence only;
+#       ownership is the item's and is not compared)
 #   G3  happy: native / wNEAR / USDC to the granted receiver, within budget —
 #       the transfer LANDS and the on-chain grant meter increments (this is the
 #       exact path the partner ran with a throwaway extension before handover)
@@ -163,10 +164,16 @@ ITEM_OWNER=$(jq -r '.owner_id // empty' <<<"$ITEM")
 if [[ -n "$COLL" && -n "$TOK" ]]; then
   TOKEN=$(near_view "$COLL" nft_token "$(jq -nc --arg t "$TOK" '{token_id:$t}')")
   REG_OWNER=$(jq -r '.owner_id // empty' <<<"$TOKEN" 2>/dev/null)
-  if [[ -n "$REG_OWNER" && "$REG_OWNER" == "$ITEM_OWNER" ]]; then
-    pass "G2b · $COLL::nft_token('$TOK') confirms owner $REG_OWNER — the account and its collection agree"
+  # Existence is what the coordinator requires of the collection; ownership is
+  # the item's to state and is only noted here. A literal `null` is the
+  # collection's answer; anything unparseable is the RPC's, and says nothing.
+  if [[ -n "$REG_OWNER" ]]; then
+    pass "G2b · $COLL::nft_token('$TOK') exists — the collection minted the name the account claims"
+    [[ "$REG_OWNER" == "$ITEM_OWNER" ]] || note "G2b · registry owner $REG_OWNER differs from the item's $ITEM_OWNER — the item is authoritative, nothing to fix"
+  elif [[ "$TOKEN" == "null" ]]; then
+    fail "G2b · the collection has no token '$TOK' — the coordinator suspends this lane as registry_disagrees"
   else
-    fail "G2b · the collection's word ('$REG_OWNER') is not the account's ('$ITEM_OWNER') — the coordinator would suspend this lane as registry_disagrees"
+    skip "G2b · the collection could not be asked ($TOKEN) — the coordinator leaves the pairing unjudged, and so does this"
   fi
 else
   fail "G2b · nft_item_info names no collection_id/token_id ($ITEM) — nothing can confirm this account"
