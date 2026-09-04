@@ -64,9 +64,17 @@ STUB="hos-stub-$(openssl rand -hex 3).$PARENT"
 OWN_COLL="hos-registry-$(openssl rand -hex 3).$PARENT"
 note "wallet $WID_S / executor $EXEC_S / stub $STUB / its collection $OWN_COLL"
 
+W_ZONE_ADDED=""
 cleanup() {
   local rc=$?
   api "$SEED_S" DELETE /wallet/v1/binding >/dev/null 2>&1 || true
+  # §W admits $PARENT to the webhook's zones for its own length; a run that
+  # died inside it must not leave the deployment wider than it found it.
+  if [[ -n "$W_ZONE_ADDED" ]]; then
+    [[ "$(adm DELETE "/admin/binding-zones/$PARENT")" == 2?? ]] \
+      && note "webhook zone $PARENT removed again" \
+      || warn "webhook zone $PARENT is STILL admitted — DELETE /admin/binding-zones/$PARENT by hand"
+  fi
   if [[ -z "${KEEP:-}" ]]; then
     local a
     for a in "$STUB" "$OWN_COLL"; do
@@ -95,6 +103,15 @@ pass "both stub instances are deployed and initialised"
 # A rebuilt stub is a new hash, and a new hash is `pending` forever with no
 # message — so register this build's hash when the token is at hand, and say
 # what to do when it is not.
+# adm <METHOD> <path> [body] — echoes the http code. Admin calls this suite
+# makes: the code-hash allowlist below, the webhook zone in §W.
+adm() {
+  local m=$1 p=$2 b=${3:-}
+  local -a a=(-sS -o /dev/null -w '%{http_code}' -X "$m" "$COORDINATOR_URL$p"
+              -H "Authorization: Bearer ${ADMIN_TOKEN:-}" --max-time 60)
+  [[ -n "$b" ]] && a+=(-H 'Content-Type: application/json' --data-binary "$b")
+  curl "${a[@]}" 2>/dev/null
+}
 STUB_HASH=""
 for _ in 1 2 3 4 5 6; do
   STUB_HASH=$(account_field "$STUB" code_hash)
@@ -379,94 +396,66 @@ fi
 #       body says `frozen`, and the answer must carry the status the chain
 #       actually reports, not the word in the request
 #   W2  after the event, the lane is refused with the fault the chain reports
+#   W3  the zone fence: outside the zones the same event answers `unbound`,
+#       the answer an account we do not hold would get — silent by design, so
+#       the endpoint cannot be used to map whose accounts we hold
 #
-# Neither proves the invalidation beat the TTL. Both would fail if the webhook
-# were a no-op that returned a canned answer, which is the failure this section
+# None proves the invalidation beat the TTL. W1 would fail if the webhook were
+# a no-op that returned a canned answer, which is the failure this section
 # exists to catch.
+#
+# THE FENCE COMES FIRST. `allowed_zones` (the `BINDING_WEBHOOK_SUFFIXES` env
+# plus the `binding_webhook_zones` table) is configured on this deployment, and
+# an account outside it is answered `unbound` BEFORE the chain is looked at. The
+# stub lives under $PARENT, outside every zone — so the only way to make the
+# webhook look at it is to admit $PARENT for the length of this section, and a
+# W1 that accepted `unbound` would be reading the fence and calling it the
+# chain. Removed again below and in `cleanup`.
 log "W the partner's lifecycle webhook re-reads the chain"
 WH_SECRET="${BINDING_WEBHOOK_SECRET:-}"
+wh_event() { # echoes the binding_status the webhook reports for the stub
+  curl -sS -m 30 -X POST "$COORDINATOR_URL/wallet/v1/binding/events" \
+    -H "X-Binding-Webhook-Secret: $WH_SECRET" -H 'Content-Type: application/json' \
+    -d "$(jq -nc --arg a "$STUB" '{asset_account_id:$a, event:"frozen"}')" 2>/dev/null \
+    | jq -r '.binding_status // ""'
+}
 if [[ -z "$WH_SECRET" ]]; then
   skip "W — set BINDING_WEBHOOK_SECRET (it lives in prod_configs/coordinator/.env.testnet) to judge the webhook"
-elif ! set_status "$(status_json "$GRANT_OK" Active SelfFrozen)"; then
+elif [[ -z "${ADMIN_TOKEN:-}" ]]; then
+  skip "W — the stub is outside the webhook's zones and only ADMIN_TOKEN can admit it; without it every answer is the fence's, not the chain's"
+elif [[ "$(adm POST /admin/binding-zones "$(jq -nc --arg s "$PARENT" '{suffix:$s, note:"e2e webhook probe, removed by the suite"}')")" != 2?? ]]; then
+  skip "W — could not admit $PARENT to the webhook's zones, so the webhook would never look at the stub"
+elif ! { W_ZONE_ADDED=1; set_status "$(status_json "$GRANT_OK" Active SelfFrozen)"; }; then
   skip "W — the stub would not report a frozen account, so there is nothing for the event to find"
 else
-  WH=$(curl -sS -m 30 -X POST "$COORDINATOR_URL/wallet/v1/binding/events" \
-    -H "X-Binding-Webhook-Secret: $WH_SECRET" -H 'Content-Type: application/json' \
-    -d "$(jq -nc --arg a "$STUB" '{asset_account_id:$a, event:"frozen"}')" 2>/dev/null)
-  WH_STATUS=$(jq -r '.binding_status // ""' <<<"$WH")
-  note "W the event answered: $WH"
-  # `frozen` is reversible, so the binding is suspended rather than revoked —
-  # and either way it must NOT still be `active`, which is what a webhook that
-  # answered without looking would say.
-  if [[ -n "$WH_STATUS" && "$WH_STATUS" != "active" ]]; then
-    pass "W1 the event re-read the chain and reported '$WH_STATUS' — the body was a hint, the chain was the answer"
+  WH_STATUS=$(wh_event)
+  note "W the event answered: '${WH_STATUS:-nothing}'"
+  # `frozen` is reversible, so the chain's answer for this account is exactly
+  # `suspended`. `unbound` is the fence speaking for an account we hold and
+  # just admitted — the webhook did not look; anything else is a webhook that
+  # believed its caller or answered from memory.
+  if [[ "$WH_STATUS" == "suspended" ]]; then
+    pass "W1 the event re-read the chain and reported 'suspended' — the body was a hint, the chain was the answer"
+  elif [[ "$WH_STATUS" == "unbound" ]]; then
+    fail "W1 the event answered 'unbound' for an account we hold and just admitted to the zones — the fence answered, the chain was never asked"
   else
-    fail "W1 the event answered '$WH_STATUS' for an account the chain reports as frozen: either it believed the request or it did not look"
+    fail "W1 the event answered '${WH_STATUS:-nothing}' for an account the chain reports as frozen: either it believed the request or it did not look"
   fi
 
   send "W2 a spend right after the event" "$(ext_transfer "$WL" "1000000000000000000000")"
   assert_class "W2 the lane is refused with the fault the chain reports" "account_frozen"
 
-  # ── W3 the zone fence, which nothing had ever switched on ────────────────
-  #
-  # `allowed_zones` is the union of `BINDING_WEBHOOK_SUFFIXES` and the
-  # `binding_webhook_zones` table, and an EMPTY union means NO restriction — so
-  # a deployment that configures nothing runs the endpoint wide open. Both are
-  # empty here, which is why this had to switch the fence on itself.
-  #
-  # AND THE FENCE IS SILENT BY DESIGN. An account outside the zones does not get
-  # a 4xx: it gets exactly the answer an account we do not operate would get,
-  # `200 {"binding_status":"unbound"}`, so the endpoint cannot be used to
-  # enumerate whose accounts we hold. That is also what makes it hard to test —
-  # a probe on an unbound account cannot tell the fence from the truth.
-  #
-  # So the subject is a REAL leased binding whose honest answer is not
-  # "unbound". Fenced out, that same event must come back "unbound"; with the
-  # fence removed it must come back to its real status again, which is the
-  # control that separates the zone from anything else that happened meanwhile.
-  if [[ -n "${ADMIN_TOKEN:-}" ]]; then
-    ZONE="zone-probe-$(date +%s)-$$.testnet"
-    adm() { # adm <METHOD> <path> [body] — echoes the http code
-      local m=$1 p=$2 b=${3:-}
-      local -a a=(-sS -o /dev/null -w '%{http_code}' -X "$m" "$COORDINATOR_URL$p"
-                  -H "Authorization: Bearer $ADMIN_TOKEN" --max-time 60)
-      [[ -n "$b" ]] && a+=(-H 'Content-Type: application/json' --data-binary "$b")
-      curl "${a[@]}" 2>/dev/null
-    }
-    wh_event() { # echoes the binding_status the webhook reports for the stub
-      curl -sS -m 30 -X POST "$COORDINATOR_URL/wallet/v1/binding/events" \
-        -H "X-Binding-Webhook-Secret: $WH_SECRET" -H 'Content-Type: application/json' \
-        -d "$(jq -nc --arg a "$STUB" '{asset_account_id:$a, event:"frozen"}')" 2>/dev/null \
-        | jq -r '.binding_status // ""'
-    }
-    W3_OPEN=$(wh_event)
-    if [[ -z "$W3_OPEN" || "$W3_OPEN" == "unbound" ]]; then
-      skip "W3 — with no fence the webhook already answers '${W3_OPEN:-nothing}' for this binding, so a fenced answer would be indistinguishable"
-    elif [[ "$(adm POST /admin/binding-zones "$(jq -nc --arg s "$ZONE" '{suffix:$s, note:"e2e zone probe"}')")" != 2?? ]]; then
-      skip "W3 — the probe zone could not be added, so the fence cannot be switched on from here"
+  # ── W3 the zone fence, switched back off ─────────────────────────────────
+  if [[ "$(adm DELETE "/admin/binding-zones/$PARENT")" == 2?? ]]; then
+    W_ZONE_ADDED=""
+    W3_FENCED=$(wh_event)
+    if [[ "$W3_FENCED" == "unbound" ]]; then
+      pass "W3 fenced out, the same event answers 'unbound' where it answered '$WH_STATUS' — the zone is the door, and the answer is the one an account we do not hold would get"
     else
-      W3_FENCED=$(wh_event)
-      if [[ "$W3_FENCED" == "unbound" ]]; then
-        pass "W3 fenced out, the same event answers 'unbound' where it answered '$W3_OPEN' — the first zone TIGHTENS the door"
-      else
-        fail "W3 with a zone that does not cover $STUB the webhook still answered '$W3_FENCED' — the fence does not fence, and an operator who adds a zone is getting a promise the code does not keep"
-      fi
-      # Indistinguishable ON PURPOSE: a 4xx here would let anyone map which
-      # accounts we operate by watching which names are refused differently.
-      [[ "$W3_FENCED" == "unbound" ]] \
-        && pass "W3 and it is the SAME answer an account we do not hold would get — the fence does not leak who we hold" \
-        || note "W3 the fenced answer was '$W3_FENCED'"
-      if [[ "$(adm DELETE "/admin/binding-zones/$ZONE")" == 2?? ]]; then
-        W3_BACK=$(wh_event)
-        [[ "$W3_BACK" == "$W3_OPEN" ]] \
-          && pass "W3 and with the zone removed it answers '$W3_BACK' again — the change was the ZONE, not the minute" \
-          || fail "W3 after removing the zone the answer is '$W3_BACK', not the '$W3_OPEN' it started at — the deployment is not as it was found"
-      else
-        fail "W3 THE PROBE ZONE '$ZONE' COULD NOT BE REMOVED — the webhook is still fenced to it; remove it by hand"
-      fi
+      fail "W3 with $PARENT no longer in the zones the webhook still answered '${W3_FENCED:-nothing}' — the fence does not fence, and an operator who configures a zone is getting a promise the code does not keep"
     fi
   else
-    skip "W3 the zone fence — set ADMIN_TOKEN (scripts/.env → ADMIN_BEARER_TOKEN_TESTNET); it is the only way to switch the fence on, and it has never been switched on"
+    fail "W3 THE ZONE '$PARENT' COULD NOT BE REMOVED — the webhook is still admitting it; cleanup retries, else remove it by hand"
   fi
 
   # RESTORE. Everything below reads the healthy grant this suite set up, and a
