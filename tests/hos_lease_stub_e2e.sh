@@ -173,10 +173,12 @@ GRANT_OK=$(jq -nc --arg w "$WL" --arg t "$TOKEN" --arg c "$COLL" --arg e "$FUTUR
 # `owner_id` matches the binding's claim here on purpose: the divergence case is
 # its own probe, and a fixture that diverged by accident would log a warning on
 # every one of the twenty-two cases below.
-item_info_json() { # item_info_json <rotation_seq-json> [owner_id]
-  jq -nc --argjson r "$1" --arg o "${2:-$PARENT}" --arg c "$OWN_COLL" \
+# `rotation_epoch` is a NUMBER on the wire where `rotation_seq` is a string —
+# the partner's word and the live capture — and the two are pinned as a pair.
+item_info_json() { # item_info_json <rotation_seq-json> [owner_id] [rotation_epoch]
+  jq -nc --argjson r "$1" --arg o "${2:-$PARENT}" --argjson e "${3:-4}" --arg c "$OWN_COLL" \
     '{spec:"sharded-item-1.0.0", init:true, status:"Active", collection_id:$c,
-      token_id:"stub", owner_id:$o, rotation_seq:$r, rotation_epoch:4}'
+      token_id:"stub", owner_id:$o, rotation_seq:$r, rotation_epoch:$e}'
 }
 # The collection's answer, in the shape the registry sends it: NEP-171
 # `nft_token`, captured 2026-09-03 from `registry.tlademo.testnet` — `copies` a
@@ -676,21 +678,54 @@ if set_status "$(status_json "$GRANT_OK")"; then
   fi
 fi
 
+# ── a migration renumbers the seq; only a change INSIDE an epoch is a sale ──
+#
+# The partner's rule (2026-09-04): the seq is numbered within `rotation_epoch`,
+# a migration of the implementation moves the epoch and may reset the seq, and
+# a pin that carried only the seq would read that reset as a sale and end a
+# live binding. So: same epoch, any change to seq ends the lane; epoch moves,
+# the pin is re-established at the current pair and the lane stays. Not
+# "increase only" — a reset takes the seq to 0, and a pin waiting for a larger
+# number would sit on a dead binding still live (ROT below rotates DOWN on
+# purpose for exactly that reason).
+#
+# MIG' alone proves little — the gate does not judge rotation, so the spend
+# would pass unpinned too. The PROOF that MIG re-pinned at (5, 7) is ROT: a seq
+# change inside epoch 5 must end the lane, and against a pin still at (4, 1) it
+# would read as another migration and leave it active. Keep the two in the
+# same epoch.
+if set_status "$(status_json "$GRANT_OK")"; then
+  api "$SEED_S" GET /wallet/v1/binding >/dev/null
+  note "status before the migration: $(jq -r '.binding_status' <<<"$BODY") (pinned at epoch 4, seq 1)"
+  # Epoch 4 → 5 AND the seq renumbered 1 → 7 in the same answer: the seq alone
+  # says "rotation", the pair says "migration".
+  if set_item_info "$(item_info_json '"7"' "" 5)"; then
+    api "$SEED_S" GET /wallet/v1/binding >/dev/null
+    assert_json "MIG the epoch moved and the seq was renumbered → the binding STAYS active, re-pinned at the new pair" '.binding_status' active
+    send "MIG' a spend after the migration" "$(ext_transfer "$WL" "1000000000000000000000")"
+    if [[ "$HTTP" == "403" ]]; then
+      fail "MIG' the spend was refused after a migration (class '$(class_of)') — a renumbered seq was read as a sale"
+    else
+      pass "MIG' the gate let the spend through (HTTP $HTTP) — a migration is not a sale"
+    fi
+  fi
+fi
+
 # ── ownership rotation ends the lane ──────────────────────────────────────
 if set_status "$(status_json "$GRANT_OK")"; then
   api "$SEED_S" GET /wallet/v1/binding >/dev/null
-  note "status before rotation: $(jq -r '.binding_status' <<<"$BODY")"
-  # The NUMBER spelling here on purpose. The rotation must be judged by VALUE,
-  # not by the JSON type it arrived as: 1 (string) → 2 (number) is a rotation and
-  # nothing else, and a reader that compared the raw forms would call it one when
-  # the value had not moved, or miss it when it had.
-  if set_item_info "$(item_info_json 2)"; then
+  note "status before rotation: $(jq -r '.binding_status' <<<"$BODY") (pinned at epoch 5, seq 7)"
+  # Same epoch, seq 7 → 2. DOWN on purpose: a pin that only watched for an
+  # increase would miss this. And the NUMBER spelling on purpose: the rotation
+  # must be judged by VALUE, not by the JSON type it arrived as — "7" (string)
+  # → 2 (number) is a rotation and nothing else.
+  if set_item_info "$(item_info_json 2 "" 5)"; then
     api "$SEED_S" GET /wallet/v1/binding >/dev/null
     ST2=$(jq -r '.binding_status // ""' <<<"$BODY")
     if [[ "$ST2" == "revoked" || "$HTTP" == "404" ]]; then
-      pass "ROT the account changed owners and the binding ended — the previous owner's authorization does not carry"
+      pass "ROT the account changed owners inside the epoch and the binding ended — the previous owner's authorization does not carry"
     else
-      fail "ROT rotation_seq moved 1 → 2 and the binding is still '$ST2' (HTTP $HTTP)"
+      fail "ROT rotation_seq moved 7 → 2 inside epoch 5 and the binding is still '$ST2' (HTTP $HTTP)"
     fi
     send "ROT' a spend after the rotation" "$(ext_transfer "$WL" "1000000000000000000000")"
     # Two questions, and only the first is a security property.
