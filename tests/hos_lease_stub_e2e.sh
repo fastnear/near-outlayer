@@ -174,7 +174,8 @@ GRANT_OK=$(jq -nc --arg w "$WL" --arg t "$TOKEN" --arg c "$COLL" --arg e "$FUTUR
 # its own probe, and a fixture that diverged by accident would log a warning on
 # every one of the twenty-two cases below.
 # `rotation_epoch` is a NUMBER on the wire where `rotation_seq` is a string —
-# the partner's word and the live capture — and the two are pinned as a pair.
+# the partner's word and the live capture — and the two are pinned together
+# with `owner_id` as the account's rotation identity.
 item_info_json() { # item_info_json <rotation_seq-json> [owner_id] [rotation_epoch]
   jq -nc --argjson r "$1" --arg o "${2:-$PARENT}" --argjson e "${3:-4}" --arg c "$OWN_COLL" \
     '{spec:"sharded-item-1.0.0", init:true, status:"Active", collection_id:$c,
@@ -683,11 +684,14 @@ fi
 # The partner's rule (2026-09-04): the seq is numbered within `rotation_epoch`,
 # a migration of the implementation moves the epoch and may reset the seq, and
 # a pin that carried only the seq would read that reset as a sale and end a
-# live binding. So: same epoch, any change to seq ends the lane; epoch moves,
-# the pin is re-established at the current pair and the lane stays. Not
-# "increase only" — a reset takes the seq to 0, and a pin waiting for a larger
-# number would sit on a dead binding still live (ROT below rotates DOWN on
-# purpose for exactly that reason).
+# live binding. So: same epoch, any change to seq ends the lane; epoch moves
+# under the SAME owner, the pin is re-established at the current identity and
+# the lane stays. Not "increase only" — a reset takes the seq to 0, and a pin
+# waiting for a larger number would sit on a dead binding still live (ROT below
+# rotates DOWN on purpose for exactly that reason). And the gap they named
+# after (2026-09-07): across the boundary the counters cannot tell an upgrade
+# from a sale during it — the OWNER on the item can, and OWN-MIG below is that
+# case.
 #
 # MIG' alone proves little — the gate does not judge rotation, so the spend
 # would pass unpinned too. The PROOF that MIG re-pinned at (5, 7) is ROT: a seq
@@ -746,6 +750,43 @@ if set_status "$(status_json "$GRANT_OK")"; then
       else
         finding "after an ownership rotation the spend is refused as '$(err_of)' with '$(msg_of | head -c 110)…' — safe, but it names the impl_version gate rather than the rotation that ended the binding, so an owner reads it as a missing field instead of a sold account"
       fi
+    fi
+  fi
+fi
+
+# ── a sale DURING an upgrade: the counters say "migration", the owner says "sold" ─
+#
+# ROT ended the lane, so this needs a fresh binding on the same stub: the
+# revoked row is history, a new PUT is a new authorization (lifecycle §R5 covers
+# re-binding itself). It activates at the item's current identity — epoch 5,
+# seq 2, owner $PARENT — and then the item reports epoch 6, seq 0 under ANOTHER
+# owner: exactly what a name sold inside the upgrade window looks like, and
+# exactly what MIG looked like on the counters alone. The owner is the
+# difference, and the binding must END, not re-pin.
+log "OWN-MIG · re-binding after the rotation, then an upgrade under a new owner"
+api "$SEED_S" PUT /wallet/v1/binding \
+  "$(jq -nc --arg a "$STUB" --arg o "$PARENT" '{asset_account_id:$a, owner_account_id:$o, kind:"hos_lease", impl_version:6}')" >/dev/null
+if assert_status "OWN-MIG a fresh binding after the ended one is accepted" 200; then
+  ST=""
+  for _ in 1 2 3 4 5 6 7 8; do
+    api "$SEED_S" GET /wallet/v1/binding >/dev/null
+    ST=$(jq -r '.binding_status // ""' <<<"$BODY"); [[ "$ST" == "active" ]] && break; sleep 4
+  done
+  if [[ "$ST" != "active" ]]; then
+    fail "OWN-MIG the fresh binding never went active ('$ST'): $(msg_of)"
+  else
+    pass "OWN-MIG the fresh binding is ACTIVE, pinned at epoch 5, seq 2, owner $PARENT"
+    if set_item_info "$(item_info_json '"0"' somebody-else.testnet 6)"; then
+      api "$SEED_S" GET /wallet/v1/binding >/dev/null
+      ST2=$(jq -r '.binding_status // ""' <<<"$BODY")
+      if [[ "$ST2" == "revoked" || "$HTTP" == "404" ]]; then
+        pass "OWN-MIG the epoch moved AND the owner changed → the binding ENDED — a sale inside the upgrade window is a sale"
+      else
+        fail "OWN-MIG epoch 5 → 6 with a new owner and the binding is still '$ST2' (HTTP $HTTP) — the re-pin took the new pair as given and a sold name kept its binding"
+      fi
+      send "OWN-MIG' a spend after the sale-during-upgrade" "$(ext_transfer "$WL" "1000000000000000000000")"
+      assert_class "OWN-MIG' refused as the lane having ENDED" "binding_ended" \
+        && assert_json "OWN-MIG' terminal" '.terminal' true
     fi
   fi
 fi
