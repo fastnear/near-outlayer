@@ -265,6 +265,6 @@ else
     echo "This is issue #25 Bug A: /wallet/v1/deposit-intent should return"
     echo "a deposit address on the chain matching source_asset, and the"
     echo "NEAR-refund derivation path must succeed without 500. See"
-    echo "https://github.com/fastnear/near-outlayer/issues/25 for the report."
+    echo "https://github.com/out-layer/outlayer/issues/25 for the report."
     exit 1
 fi

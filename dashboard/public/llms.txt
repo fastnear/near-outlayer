@@ -52,7 +52,7 @@ Full text of every document below is available in one fetch at https://outlayer.
 
 ## Optional
 
-- [Source repository](https://github.com/fastnear/near-outlayer): Contract, worker, keystore, dashboard, SDK and WASI examples
+- [Source repository](https://github.com/out-layer/outlayer): Contract, worker, keystore, dashboard, SDK and WASI examples
 - [Worker attestation portal](https://workers.outlayer.ai): Live Intel TDX attestation status of the production worker fleet
 - [Playground](https://outlayer.fastnear.com/playground): Run an agent from the browser without writing an integration
 - [Dashboard](https://outlayer.fastnear.com/dashboard): Projects, secrets, payment keys, executions and earnings

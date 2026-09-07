@@ -45,7 +45,7 @@ Registers wallet + approver, encrypts a policy (limits, whitelist, approval thre
 
 Full flow: register → fund → wrap → intents withdraw. Asserts the
 `result.delivered` field matches the canonical asset id (regression net
-for [issue #25](https://github.com/fastnear/near-outlayer/issues/25) where
+for [issue #25](https://github.com/out-layer/outlayer/issues/25) where
 `delivered: "wnear"` was emitted for every NEP-141, including USDC).
 
 ```bash
@@ -59,7 +59,7 @@ for [issue #25](https://github.com/fastnear/near-outlayer/issues/25) where
 
 Asserts that `POST /wallet/v1/intents/withdraw/dry-run` and the real
 `POST /wallet/v1/intents/withdraw` agree. Regression net for
-[issue #28](https://github.com/fastnear/near-outlayer/issues/28), where the
+[issue #28](https://github.com/out-layer/outlayer/issues/28), where the
 dry-run answered `would_succeed: true` for a cross-chain amount the withdraw
 then refused with `1Click: Amount is too low for bridge, try at least 303064` —
 it never asked the bridge, never checked the balance, never mirrored the input
@@ -92,7 +92,7 @@ and real quote sharing one builder is unit-tested in the coordinator
 
 Verifies that `/wallet/v1/deposit-intent` returns chain-appropriate deposit
 addresses for every supported source chain. No funding needed. Regression
-net for [issue #25 Bug A](https://github.com/fastnear/near-outlayer/issues/25)
+net for [issue #25 Bug A](https://github.com/out-layer/outlayer/issues/25)
 (the wrapper used to return Solana base58 addresses for any source chain).
 
 ```bash

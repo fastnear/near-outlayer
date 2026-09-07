@@ -16,7 +16,7 @@
 
 We propose an **alternative approach** to the RFP: instead of funding a dedicated oracle network with 5+ nodes that only push prices, we propose to **enhance the existing OutLayer platform** (live on mainnet at `outlayer.near`) to provide **TEE-secured, on-demand price feeds** as one of its workloads.
 
-**Key Innovation:** Rather than deploying dedicated oracle-only infrastructure that sits idle 95%+ of the time, we extend NEAR's existing **general-purpose off-chain computation platform** ([OutLayer](https://github.com/fastnear/near-outlayer)) with a specialized oracle WASM module ([`oracle-example`](https://github.com/out-layer/oracle-example)) that **already works in production** (see [mainnet transaction](https://nearblocks.io/txns/81EqJwxpbAdcArmjaJnaWU8VED3t8DemZ4ezr2TSPw5p)).
+**Key Innovation:** Rather than deploying dedicated oracle-only infrastructure that sits idle 95%+ of the time, we extend NEAR's existing **general-purpose off-chain computation platform** ([OutLayer](https://github.com/out-layer/outlayer)) with a specialized oracle WASM module ([`oracle-example`](https://github.com/out-layer/oracle-example)) that **already works in production** (see [mainnet transaction](https://nearblocks.io/txns/81EqJwxpbAdcArmjaJnaWU8VED3t8DemZ4ezr2TSPw5p)).
 
 **Why This Approach?**
 - 💰 **Shared infrastructure**: OutLayer nodes serve oracle + AI inference + arbitrary computation (oracle gets priority)
@@ -286,7 +286,7 @@ impl OracleWrapper {
 - ✅ **Previous NEAR Native Price Oracle** - FastNEAR team built the original NEAR native price oracle (later replaced by Pyth)
   - Deep understanding of oracle economics and DeFi protocol needs
   - Learned from operational challenges: continuous push models are expensive and wasteful for low-volume use
-- ✅ **OutLayer Platform** ([GitHub](https://github.com/fastnear/near-outlayer)) - Born from the idea of making TEE oracles economically viable
+- ✅ **OutLayer Platform** ([GitHub](https://github.com/out-layer/outlayer)) - Born from the idea of making TEE oracles economically viable
   - Originally conceived as infrastructure for cost-efficient TEE-secured price feeds
   - Evolved into general-purpose off-chain computation platform (AI inference, arbitrary computation, oracles)
   - Now live on mainnet (`outlayer.near`) serving multiple use cases
@@ -889,7 +889,7 @@ Adding support for new assets requires **zero code changes** - just specify diff
 
 | Requirement | Status | Implementation |
 |-------------|--------|----------------|
-| **Open-source code with documentation** | ✅ Ready | [OutLayer Platform](https://github.com/fastnear/near-outlayer) (contract, coordinator, workers), [oracle-example WASM](https://github.com/out-layer/oracle-example), Apache 2.0 license |
+| **Open-source code with documentation** | ✅ Ready | [OutLayer Platform](https://github.com/out-layer/outlayer) (contract, coordinator, workers), [oracle-example WASM](https://github.com/out-layer/oracle-example), Apache 2.0 license |
 | **Easy maintainer transfer** | ✅ Ready | Clear documentation, modular architecture, no vendor lock-in |
 | **Support top 30 crypto assets** | ✅ Ready | oracle-example supports any asset with ≥5 APIs, currently 10+ sources integrated |
 | **Support top 10 NEAR tokens** | ✅ Ready | CoinGecko, Binance, KuCoin, Gate.io all support NEAR ecosystem tokens |
@@ -1573,7 +1573,7 @@ OutLayer integrates with Shade Agent Framework and Dstack, supporting NEAR's AI 
 **Website:** https://fastnear.com
 **Ourlayer Dashboard:** https://app.outlayer.ai
 **GitHub:**
-- OutLayer Platform: https://github.com/fastnear/near-outlayer
+- OutLayer Platform: https://github.com/out-layer/outlayer
 - Oracle WASM Module: https://github.com/out-layer/oracle-example
 
 **For Questions:**
@@ -1978,5 +1978,5 @@ Eugene, Mike, and Vadim
 FastNEAR Team
 October 30, 2025
 
-**GitHub:** https://github.com/fastnear/near-outlayer
+**GitHub:** https://github.com/out-layer/outlayer
 **Contact:** vadim@fastnear.com | https://fastnear.com

@@ -46,7 +46,17 @@ git push origin v1.0.0
 ### Using GitHub CLI
 
 ```bash
-gh attestation verify oci://docker.io/outlayer/near-outlayer-worker:v1.0.0 -R fastnear/near-outlayer
+gh attestation verify oci://docker.io/outlayer/near-outlayer-worker:v1.0.0 -R out-layer/outlayer
+```
+
+Images up to and including `v0.1.58` are attested under the `fastnear` GitHub organization
+(the repository's former home), so `-R out-layer/outlayer` finds no attestation for them.
+Verify those with the owner flag instead:
+
+```bash
+gh attestation verify oci://docker.io/outlayer/near-outlayer-worker:v0.1.58 --owner fastnear
+# or without the GitHub API, from the attestation pushed to the registry:
+gh attestation verify oci://docker.io/outlayer/near-outlayer-worker:v0.1.58 --bundle-from-oci --owner fastnear
 ```
 
 ### Using Sigstore web

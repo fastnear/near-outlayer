@@ -98,7 +98,7 @@ jobs:
 
             ### Verification
             ```bash
-            gh attestation verify oci://docker.io/${{ vars.DOCKERHUB_USERNAME }}/near-outlayer-worker@${{ needs.build-worker.outputs.digest }} -R fastnear/near-outlayer
+            gh attestation verify oci://docker.io/${{ vars.DOCKERHUB_USERNAME }}/near-outlayer-worker@${{ needs.build-worker.outputs.digest }} -R ${{ github.repository }}
             ```
 
             ### Usage in docker-compose

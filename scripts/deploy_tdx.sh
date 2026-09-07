@@ -105,14 +105,18 @@ echo "== deploy_tdx: $COMPONENT $NETWORK  vm-label=$NAME  version=v$VER  node=$N
 # body lists one row per component: `| worker | sha256:... |`, `| keystore | sha256:... |`.
 if [ -z "$DIGEST" ]; then
   echo "[1] Resolve $COMPONENT digest for v$VER (gh, local)..."
-  DIGEST=$(gh release view "v$VER" --repo fastnear/near-outlayer --json body -q '.body' 2>/dev/null \
+  DIGEST=$(gh release view "v$VER" --repo out-layer/outlayer --json body -q '.body' 2>/dev/null \
     | grep -iE "\\| *$COMPONENT *\\|" | grep -oE 'sha256:[a-f0-9]{64}' | head -1) || true
   [ -n "$DIGEST" ] || { echo "  Could not resolve digest via gh — pass --digest sha256:..." >&2; exit 1; }
 fi
 echo "  digest: $DIGEST"
 if command -v gh >/dev/null 2>&1; then
-  if gh attestation verify "oci://docker.io/$IMAGE@$DIGEST" -R fastnear/near-outlayer >/dev/null 2>&1; then
-    echo "  Sigstore attestation: verified"
+  # Releases up to v0.1.58 are attested under the fastnear GitHub organization (the
+  # repository former home), so fall back to --owner fastnear when the repo lookup fails.
+  if gh attestation verify "oci://docker.io/$IMAGE@$DIGEST" -R out-layer/outlayer >/dev/null 2>&1; then
+    echo "  Sigstore attestation: verified (out-layer/outlayer)"
+  elif gh attestation verify "oci://docker.io/$IMAGE@$DIGEST" --owner fastnear >/dev/null 2>&1; then
+    echo "  Sigstore attestation: verified (owner fastnear, pre-v0.1.59 release)"
   else
     echo "  Sigstore attestation: NOT verified (continuing — verify manually before trusting)"
   fi

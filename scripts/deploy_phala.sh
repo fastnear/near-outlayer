@@ -99,7 +99,7 @@ if [ -z "$DEPLOY_VERSION" ]; then
     echo -e "${RED}Error: --version is required (e.g. --version 0.1.42)${NC}"
     echo "  The digest is resolved from the GitHub release and verified via Sigstore."
     echo "  Verify independently with:"
-    echo "    gh attestation verify oci://docker.io/${DOCKERHUB_ORG}/near-outlayer-${COMPONENT}@<digest> -R fastnear/near-outlayer"
+    echo "    gh attestation verify oci://docker.io/${DOCKERHUB_ORG}/near-outlayer-${COMPONENT}@<digest> -R out-layer/outlayer   (releases <= v0.1.58: --owner fastnear)"
     exit 1
 fi
 
@@ -167,11 +167,11 @@ if [ -n "$DEPLOY_VERSION" ]; then
     fi
 
     # Get digest from GitHub release body (format: "| worker | `sha256:...` |" or "| keystore | `sha256:...` |")
-    RELEASE_BODY=$(gh release view "$VERSION_TAG" --repo fastnear/near-outlayer --json body -q '.body' 2>/dev/null || echo "")
+    RELEASE_BODY=$(gh release view "$VERSION_TAG" --repo out-layer/outlayer --json body -q '.body' 2>/dev/null || echo "")
 
     if [ -z "$RELEASE_BODY" ]; then
         echo -e "${RED}Error: Could not fetch GitHub release $VERSION_TAG${NC}"
-        echo "Make sure the release exists: https://github.com/fastnear/near-outlayer/releases/tag/$VERSION_TAG"
+        echo "Make sure the release exists: https://github.com/out-layer/outlayer/releases/tag/$VERSION_TAG"
         exit 1
     fi
 
@@ -190,7 +190,7 @@ if [ -n "$DEPLOY_VERSION" ]; then
     # Show attestation verification command
     echo ""
     echo -e "${BLUE}Verify attestation with:${NC}"
-    echo "  gh attestation verify oci://docker.io/${IMAGE_NAME}@${DIGEST} -R fastnear/near-outlayer"
+    echo "  gh attestation verify oci://docker.io/${IMAGE_NAME}@${DIGEST} -R out-layer/outlayer   (releases <= v0.1.58: --owner fastnear)"
     echo ""
     echo -e "${BLUE}Docker image reference:${NC}"
     echo "  docker.io/${IMAGE_NAME}@${DIGEST}"

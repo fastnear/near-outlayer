@@ -233,8 +233,8 @@ include = ["src/**/*", "wit/**/*", "Cargo.toml", "README.md", "LICENSE*"]
 
 - [OutLayer Docs](https://app.outlayer.ai/docs) - Full documentation
 - [Storage Guide](https://app.outlayer.ai/docs/storage) - Persistent storage
-- [WASI Tutorial](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/WASI_TUTORIAL.md) - Building WASM apps
-- [Examples](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples) - Working examples
+- [WASI Tutorial](https://github.com/out-layer/outlayer/blob/main/wasi-examples/WASI_TUTORIAL.md) - Building WASM apps
+- [Examples](https://github.com/out-layer/outlayer/tree/main/wasi-examples) - Working examples
 
 ## License
 

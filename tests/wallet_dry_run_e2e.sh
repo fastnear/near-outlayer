@@ -2,7 +2,7 @@
 # ============================================================================
 # Wallet Integration Tests — withdraw dry-run (pre-flight fidelity)
 #
-# Regression net for https://github.com/fastnear/near-outlayer/issues/28:
+# Regression net for https://github.com/out-layer/outlayer/issues/28:
 # `POST /wallet/v1/intents/withdraw/dry-run` answered `would_succeed: true` for
 # a USDC→ethereum amount the real withdraw then refused with
 # `1Click: Amount is too low for bridge, try at least 303064`. The dry-run never

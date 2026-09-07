@@ -480,7 +480,7 @@ cmd_withdraw() {
         #   delivered == "nep141:<contract>"     for NEP-141 transfer
         # See api-spec WithdrawResult schema. Historical bug emitted the legacy
         # short symbol "wnear" for every NEP-141 withdraw including USDC.
-        # https://github.com/fastnear/near-outlayer/issues/25
+        # https://github.com/out-layer/outlayer/issues/25
         case "${WITHDRAW_TOKEN:-}" in
             ""|"near"|"native")
                 EXPECTED_DELIVERED="native_near" ;;

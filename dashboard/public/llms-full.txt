@@ -42,7 +42,7 @@ For a link index instead, fetch https://outlayer.fastnear.com/llms.txt.
 ---
 
 <!-- source: README.md -->
-> Source: https://github.com/fastnear/near-outlayer/blob/main/README.md
+> Source: https://github.com/out-layer/outlayer/blob/main/README.md
 
 # NEAR OutLayer
 
@@ -56,7 +56,7 @@ OutLayer lets smart contracts execute arbitrary code off-chain and receive verif
 - **HTTPS API (mainnet)**: `https://api.outlayer.ai` → `/call/{owner}/{project}`
 - **HTTPS API (testnet)**: `https://testnet-api.outlayer.ai` → `/call/{owner}/{project}`
 - **Contract**: `outlayer.near` (mainnet) / `outlayer.testnet` (testnet)
-- **API reference**: [API.md](https://github.com/fastnear/near-outlayer/blob/main/API.md) — endpoints, base URLs, and source-availability notes
+- **API reference**: [API.md](https://github.com/out-layer/outlayer/blob/main/API.md) — endpoints, base URLs, and source-availability notes
 - **For AI coding assistants**: [llms.txt](https://outlayer.fastnear.com/llms.txt) — link index, or [llms-full.txt](https://outlayer.fastnear.com/llms-full.txt) for every doc in a single fetch
 - **Production App**: [near.email](https://near.email) — blockchain-native email built on OutLayer
 
@@ -69,7 +69,7 @@ OutLayer lets smart contracts execute arbitrary code off-chain and receive verif
 ## Project Structure
 
 ```
-near-outlayer/
+outlayer/
 ├── contract/              # Main NEAR contract (outlayer.near)
 ├── register-contract/     # TEE worker registration contract (5-measurement TDX verification)
 ├── keystore-dao-contract/ # DAO governance for keystore worker registration
@@ -152,22 +152,22 @@ cd keystore-worker && cargo run
 cd dashboard && npm install && npm run dev
 ```
 
-See [QUICK_START.md](https://github.com/fastnear/near-outlayer/blob/main/QUICK_START.md) for full setup instructions including database initialization and Docker services.
+See [QUICK_START.md](https://github.com/out-layer/outlayer/blob/main/QUICK_START.md) for full setup instructions including database initialization and Docker services.
 
 ## Documentation
 
 | Document | Description |
 |----------|-------------|
-| [PROJECT.md](https://github.com/fastnear/near-outlayer/blob/main/PROJECT.md) | Complete technical specification |
-| [QUICK_START.md](https://github.com/fastnear/near-outlayer/blob/main/QUICK_START.md) | Setup and deployment guide |
-| [WORKER_ATTESTATION.md](https://github.com/fastnear/near-outlayer/blob/main/WORKER_ATTESTATION.md) | TEE attestation deep dive |
-| [AUTHENTICATION.md](https://github.com/fastnear/near-outlayer/blob/main/AUTHENTICATION.md) | Authentication configuration |
-| [Onepager.md](https://github.com/fastnear/near-outlayer/blob/main/Onepager.md) | Project overview one-pager |
-| [contract/README.md](https://github.com/fastnear/near-outlayer/blob/main/contract/README.md) | Contract API reference |
-| [worker/README.md](https://github.com/fastnear/near-outlayer/blob/main/worker/README.md) | Worker configuration |
-| [wasi-examples/WASI_TUTORIAL.md](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/WASI_TUTORIAL.md) | WASI development tutorial |
-| [wasi-examples/BEST_PRACTICES_OUTLAYER_NEAR.md](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/BEST_PRACTICES_OUTLAYER_NEAR.md) | Best practices guide |
-| [dashboard/DOCS_INDEX.md](https://github.com/fastnear/near-outlayer/blob/main/dashboard/DOCS_INDEX.md) | Dashboard documentation index |
+| [PROJECT.md](https://github.com/out-layer/outlayer/blob/main/PROJECT.md) | Complete technical specification |
+| [QUICK_START.md](https://github.com/out-layer/outlayer/blob/main/QUICK_START.md) | Setup and deployment guide |
+| [WORKER_ATTESTATION.md](https://github.com/out-layer/outlayer/blob/main/WORKER_ATTESTATION.md) | TEE attestation deep dive |
+| [AUTHENTICATION.md](https://github.com/out-layer/outlayer/blob/main/AUTHENTICATION.md) | Authentication configuration |
+| [Onepager.md](https://github.com/out-layer/outlayer/blob/main/Onepager.md) | Project overview one-pager |
+| [contract/README.md](https://github.com/out-layer/outlayer/blob/main/contract/README.md) | Contract API reference |
+| [worker/README.md](https://github.com/out-layer/outlayer/blob/main/worker/README.md) | Worker configuration |
+| [wasi-examples/WASI_TUTORIAL.md](https://github.com/out-layer/outlayer/blob/main/wasi-examples/WASI_TUTORIAL.md) | WASI development tutorial |
+| [wasi-examples/BEST_PRACTICES_OUTLAYER_NEAR.md](https://github.com/out-layer/outlayer/blob/main/wasi-examples/BEST_PRACTICES_OUTLAYER_NEAR.md) | Best practices guide |
+| [dashboard/DOCS_INDEX.md](https://github.com/out-layer/outlayer/blob/main/dashboard/DOCS_INDEX.md) | Dashboard documentation index |
 
 ### Using OutLayer with an AI coding assistant
 
@@ -180,7 +180,7 @@ Point the assistant at one of these instead of pasting files by hand:
 | [OpenAPI spec](https://api.outlayer.ai/openapi.json) | Machine-readable HTTPS API schema |
 | [Agent Custody skill](https://skills.outlayer.ai/agent-custody/SKILL.md) | Drop-in skill file for agent frameworks |
 
-Both `llms` files are generated from [dashboard/scripts/llms-manifest.mjs](https://github.com/fastnear/near-outlayer/blob/main/dashboard/scripts/llms-manifest.mjs) by `npm run llms` in `dashboard/`, and regenerate automatically on `npm run build`.
+Both `llms` files are generated from [dashboard/scripts/llms-manifest.mjs](https://github.com/out-layer/outlayer/blob/main/dashboard/scripts/llms-manifest.mjs) by `npm run llms` in `dashboard/`, and regenerate automatically on `npm run build`.
 
 ## Default Ports
 
@@ -199,7 +199,7 @@ MIT
 ---
 
 <!-- source: QUICK_START.md -->
-> Source: https://github.com/fastnear/near-outlayer/blob/main/QUICK_START.md
+> Source: https://github.com/out-layer/outlayer/blob/main/QUICK_START.md
 
 # NEAR OutLayer - Quick Start
 
@@ -370,15 +370,15 @@ Network switcher available on **Playground** page.
 
 ## Documentation
 
-- [AUTHENTICATION.md](https://github.com/fastnear/near-outlayer/blob/main/AUTHENTICATION.md) - Authentication setup (production mode)
-- [CLAUDE.md](https://github.com/fastnear/near-outlayer/blob/main/CLAUDE.md) - Complete project documentation
-- [contract/README.md](https://github.com/fastnear/near-outlayer/blob/main/contract/README.md) - Contract API
-- [worker/README.md](https://github.com/fastnear/near-outlayer/blob/main/worker/README.md) - Worker configuration
+- [AUTHENTICATION.md](https://github.com/out-layer/outlayer/blob/main/AUTHENTICATION.md) - Authentication setup (production mode)
+- [CLAUDE.md](https://github.com/out-layer/outlayer/blob/main/CLAUDE.md) - Complete project documentation
+- [contract/README.md](https://github.com/out-layer/outlayer/blob/main/contract/README.md) - Contract API
+- [worker/README.md](https://github.com/out-layer/outlayer/blob/main/worker/README.md) - Worker configuration
 
 ---
 
 <!-- source: API.md -->
-> Source: https://github.com/fastnear/near-outlayer/blob/main/API.md
+> Source: https://github.com/out-layer/outlayer/blob/main/API.md
 
 # OutLayer API
 
@@ -474,7 +474,7 @@ All endpoints require `Authorization: Bearer wk_...`.
 ### Payment Checks (gasless agent-to-agent payments)
 
 `/wallet/v1/payment-check/{create,batch-create,claim,reclaim,peek,status,list}`
-— see [docs/PAYMENT_CHECKS.md](https://github.com/fastnear/near-outlayer/blob/main/docs/PAYMENT_CHECKS.md).
+— see [docs/PAYMENT_CHECKS.md](https://github.com/out-layer/outlayer/blob/main/docs/PAYMENT_CHECKS.md).
 
 ## Public (read-only, no auth)
 
@@ -499,12 +499,12 @@ attestations, and cannot tamper with execution results.
 
 **Every component that requires verification is open source:**
 
-- **Workers** — execute WASI modules inside Intel TDX TEEs ([worker/](https://github.com/fastnear/near-outlayer/tree/main/worker/))
-- **Contracts** — `outlayer.near` and friends ([contract/](https://github.com/fastnear/near-outlayer/tree/main/contract/),
-  [register-contract/](https://github.com/fastnear/near-outlayer/tree/main/register-contract/),
-  [keystore-dao-contract/](https://github.com/fastnear/near-outlayer/tree/main/keystore-dao-contract/), [vault-contract/](https://github.com/fastnear/near-outlayer/tree/main/vault-contract/))
-- **Keystore worker** — secrets decryption inside the TEE ([keystore-worker/](https://github.com/fastnear/near-outlayer/tree/main/keystore-worker/))
-- **Libraries / SDKs** — [sdk/](https://github.com/fastnear/near-outlayer/tree/main/sdk/) (Rust, on crates.io as
+- **Workers** — execute WASI modules inside Intel TDX TEEs ([worker/](https://github.com/out-layer/outlayer/tree/main/worker/))
+- **Contracts** — `outlayer.near` and friends ([contract/](https://github.com/out-layer/outlayer/tree/main/contract/),
+  [register-contract/](https://github.com/out-layer/outlayer/tree/main/register-contract/),
+  [keystore-dao-contract/](https://github.com/out-layer/outlayer/tree/main/keystore-dao-contract/), [vault-contract/](https://github.com/out-layer/outlayer/tree/main/vault-contract/))
+- **Keystore worker** — secrets decryption inside the TEE ([keystore-worker/](https://github.com/out-layer/outlayer/tree/main/keystore-worker/))
+- **Libraries / SDKs** — [sdk/](https://github.com/out-layer/outlayer/tree/main/sdk/) (Rust, on crates.io as
   [`outlayer`](https://crates.io/crates/outlayer)),
   [`@outlayer/sdk`](https://github.com/out-layer/sdk-js) (TypeScript),
   [shared-tee-helpers](https://github.com/out-layer/shared-tee-helpers)
@@ -515,13 +515,13 @@ from the on-chain contracts — not from trusting the coordinator. The
 coordinator being closed source does not widen the trust boundary: a malicious
 coordinator can withhold or misroute a request, but it cannot produce a result
 that passes attestation without the genuine open-source worker having computed
-it. See [README.md](https://github.com/fastnear/near-outlayer/blob/main/README.md#security-model) and
-[WORKER_ATTESTATION.md](https://github.com/fastnear/near-outlayer/blob/main/WORKER_ATTESTATION.md).
+it. See [README.md](https://github.com/out-layer/outlayer/blob/main/README.md#security-model) and
+[WORKER_ATTESTATION.md](https://github.com/out-layer/outlayer/blob/main/WORKER_ATTESTATION.md).
 
 ---
 
 <!-- source: AUTHENTICATION.md -->
-> Source: https://github.com/fastnear/near-outlayer/blob/main/AUTHENTICATION.md
+> Source: https://github.com/out-layer/outlayer/blob/main/AUTHENTICATION.md
 
 # Authentication Configuration
 
@@ -936,14 +936,14 @@ docker-compose restart coordinator
 
 ## Additional Resources
 
-- [QUICK_START.md](https://github.com/fastnear/near-outlayer/blob/main/QUICK_START.md) - Quick start guide
+- [QUICK_START.md](https://github.com/out-layer/outlayer/blob/main/QUICK_START.md) - Quick start guide
 - [coordinator/README.md](coordinator/README.md) - Coordinator API documentation
-- [worker/README.md](https://github.com/fastnear/near-outlayer/blob/main/worker/README.md) - Worker configuration guide
+- [worker/README.md](https://github.com/out-layer/outlayer/blob/main/worker/README.md) - Worker configuration guide
 
 ---
 
 <!-- source: docs/CLI.md -->
-> Source: https://github.com/fastnear/near-outlayer/blob/main/docs/CLI.md
+> Source: https://github.com/out-layer/outlayer/blob/main/docs/CLI.md
 
 # OutLayer CLI
 
@@ -1223,7 +1223,7 @@ Both include: Cargo.toml, src/main.rs, build.sh, .gitignore
 ---
 
 <!-- source: wasi-examples/README.md -->
-> Source: https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/README.md
+> Source: https://github.com/out-layer/outlayer/blob/main/wasi-examples/README.md
 
 # WASI Examples for NEAR OutLayer
 
@@ -1231,7 +1231,7 @@ Collection of examples and tools for developing WASM modules for NEAR OutLayer p
 
 ## 📚 Documentation
 
-### [WASI Tutorial](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/WASI_TUTORIAL.md) - **START HERE**
+### [WASI Tutorial](https://github.com/out-layer/outlayer/blob/main/wasi-examples/WASI_TUTORIAL.md) - **START HERE**
 Complete guide for developing WASI modules:
 - WASI Preview 1 vs Preview 2
 - Quick start templates
@@ -1239,7 +1239,7 @@ Complete guide for developing WASI modules:
 - Requirements and best practices
 - Common pitfalls and solutions
 
-### [Test Runner](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/wasi-test-runner/) - **VALIDATE YOUR MODULE**
+### [Test Runner](https://github.com/out-layer/outlayer/tree/main/wasi-examples/wasi-test-runner/) - **VALIDATE YOUR MODULE**
 Universal tool to test WASM modules for compatibility:
 ```bash
 cd wasi-test-runner
@@ -1368,7 +1368,7 @@ Before deploying to NEAR OutLayer, ensure:
 - ✅ JSON input/output format
 - ✅ Output ≤ 900 bytes
 - ✅ Built with wasm32-wasip1 or wasm32-wasip2
-- ✅ Tested with [test runner](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/wasi-test-runner/)
+- ✅ Tested with [test runner](https://github.com/out-layer/outlayer/tree/main/wasi-examples/wasi-test-runner/)
 
 ## 🛠️ Cargo.toml Template
 
@@ -1417,7 +1417,7 @@ wasm-tools component wit your-app.wasm
 
 ## 📖 Additional Resources
 
-- [NEAR OutLayer Project](https://github.com/fastnear/near-outlayer/tree/main/./) - Main project documentation
+- [NEAR OutLayer Project](https://github.com/out-layer/outlayer/tree/main/./) - Main project documentation
 - [wasmtime Book](https://docs.wasmtime.dev/) - Runtime documentation
 - [WASI Specification](https://github.com/WebAssembly/WASI) - Official WASI docs
 - [Component Model](https://github.com/WebAssembly/component-model) - WASI P2 spec
@@ -1434,7 +1434,7 @@ wasm-tools component wit your-app.wasm
 | "Not a valid WASI P1/P2" | Check build target |
 | Output truncated | Reduce output to ≤900 bytes |
 
-See [WASI_TUTORIAL.md](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/WASI_TUTORIAL.md#common-pitfalls) for detailed solutions.
+See [WASI_TUTORIAL.md](https://github.com/out-layer/outlayer/blob/main/wasi-examples/WASI_TUTORIAL.md#common-pitfalls) for detailed solutions.
 
 ## 🎯 Example Use Cases
 
@@ -1460,7 +1460,7 @@ To add your own example:
 
 1. Create new directory in `wasi-examples/`
 2. Follow the patterns in existing examples
-3. Test with [test runner](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples/wasi-test-runner/)
+3. Test with [test runner](https://github.com/out-layer/outlayer/tree/main/wasi-examples/wasi-test-runner/)
 4. Add README with usage instructions
 5. Update this file with link to your example
 
@@ -1480,7 +1480,7 @@ and are governed by the `LICENSE` in those repositories rather than by these fil
 `near-email` is Apache-2.0 rather than dual-licensed: it is a finished product built on
 OutLayer, not an example to copy from.
 
-See [LICENSING.md](https://github.com/fastnear/near-outlayer/blob/main/LICENSING.md) for the full component map.
+See [LICENSING.md](https://github.com/out-layer/outlayer/blob/main/LICENSING.md) for the full component map.
 
 ---
 
@@ -1490,7 +1490,7 @@ See [LICENSING.md](https://github.com/fastnear/near-outlayer/blob/main/LICENSING
 ---
 
 <!-- source: wasi-examples/WASI_TUTORIAL.md -->
-> Source: https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/WASI_TUTORIAL.md
+> Source: https://github.com/out-layer/outlayer/blob/main/wasi-examples/WASI_TUTORIAL.md
 
 # WASI Development Tutorial for NEAR OutLayer
 
@@ -2337,7 +2337,7 @@ async function handleUserClick() {
 
 **Best practice**: Cache signatures on frontend (50-60 min) to avoid repeated popups.
 
-See [BEST_PRACTICES_OUTLAYER_NEAR.md](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/BEST_PRACTICES_OUTLAYER_NEAR.md) for signature caching pattern.
+See [BEST_PRACTICES_OUTLAYER_NEAR.md](https://github.com/out-layer/outlayer/blob/main/wasi-examples/BEST_PRACTICES_OUTLAYER_NEAR.md) for signature caching pattern.
 
 ### 8. Frontend transaction errors with wallet-selector
 
@@ -2478,7 +2478,7 @@ pub fn on_outlayer_callback(
    - External HTTP API (db-api) integration
    - Next.js frontend with wallet-selector
    - NEP-413 signature verification
-   - See [BEST_PRACTICES_OUTLAYER_NEAR.md](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/BEST_PRACTICES_OUTLAYER_NEAR.md) for patterns
+   - See [BEST_PRACTICES_OUTLAYER_NEAR.md](https://github.com/out-layer/outlayer/blob/main/wasi-examples/BEST_PRACTICES_OUTLAYER_NEAR.md) for patterns
 
 ### Minimal Example (Copy-Paste Ready)
 
@@ -2595,7 +2595,7 @@ curl -X POST https://api.outlayer.ai/call/your-account.near/your-project \
 
 ### Frontend Integration
 
-See [BEST_PRACTICES_OUTLAYER_NEAR.md](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/BEST_PRACTICES_OUTLAYER_NEAR.md) for:
+See [BEST_PRACTICES_OUTLAYER_NEAR.md](https://github.com/out-layer/outlayer/blob/main/wasi-examples/BEST_PRACTICES_OUTLAYER_NEAR.md) for:
 - Wallet-selector setup (avoid popup blocking)
 - Payment Key integration
 - NEP-413 signature authentication
@@ -2865,7 +2865,7 @@ cargo near --version
 - Check [examples](https://github.com/out-layer/random-example) for working code
 - Use [test runner](./WASI_TEST_RUNNER.md) to validate your module
 - Review [common pitfalls](#common-pitfalls) section
-- Read [BEST_PRACTICES_OUTLAYER_NEAR.md](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/BEST_PRACTICES_OUTLAYER_NEAR.md) for frontend patterns
+- Read [BEST_PRACTICES_OUTLAYER_NEAR.md](https://github.com/out-layer/outlayer/blob/main/wasi-examples/BEST_PRACTICES_OUTLAYER_NEAR.md) for frontend patterns
 - Test locally with wasmtime before deploying
 
 ---
@@ -2876,13 +2876,13 @@ cargo near --version
 ---
 
 <!-- source: wasi-examples/WASM_ENV_VARS.md -->
-> Source: https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/WASM_ENV_VARS.md
+> Source: https://github.com/out-layer/outlayer/blob/main/wasi-examples/WASM_ENV_VARS.md
 
 # WASM Environment Variables
 
 Environment variables available to your WASM code during execution.
 
-> **Note**: For WASI P2 modules, consider using the [OutLayer SDK](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/WASI_TUTORIAL.md#outlayer-sdk) instead of raw env vars. The SDK provides type-safe access via `outlayer::env::signer_account_id()` and persistent storage via `outlayer::storage`.
+> **Note**: For WASI P2 modules, consider using the [OutLayer SDK](https://github.com/out-layer/outlayer/blob/main/wasi-examples/WASI_TUTORIAL.md#outlayer-sdk) instead of raw env vars. The SDK provides type-safe access via `outlayer::env::signer_account_id()` and persistent storage via `outlayer::storage`.
 
 ## Safe Access Pattern
 
@@ -2942,7 +2942,7 @@ use outlayer::env;
 let signer = env::signer_account_id();
 ```
 
-See [OutLayer SDK](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/WASI_TUTORIAL.md#outlayer-sdk) for details.
+See [OutLayer SDK](https://github.com/out-layer/outlayer/blob/main/wasi-examples/WASI_TUTORIAL.md#outlayer-sdk) for details.
 
 ## Project Variables
 
@@ -3109,14 +3109,14 @@ fn main() {
 
 ## See Also
 
-- [WASI Tutorial](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/WASI_TUTORIAL.md) - Complete guide to WASI development
-- [OutLayer SDK](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/WASI_TUTORIAL.md#outlayer-sdk) - Type-safe access to env vars and storage
-- [Best Practices](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/BEST_PRACTICES_OUTLAYER_NEAR.md) - Frontend integration patterns
+- [WASI Tutorial](https://github.com/out-layer/outlayer/blob/main/wasi-examples/WASI_TUTORIAL.md) - Complete guide to WASI development
+- [OutLayer SDK](https://github.com/out-layer/outlayer/blob/main/wasi-examples/WASI_TUTORIAL.md#outlayer-sdk) - Type-safe access to env vars and storage
+- [Best Practices](https://github.com/out-layer/outlayer/blob/main/wasi-examples/BEST_PRACTICES_OUTLAYER_NEAR.md) - Frontend integration patterns
 
 ---
 
 <!-- source: wasi-examples/BEST_PRACTICES_OUTLAYER_NEAR.md -->
-> Source: https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/BEST_PRACTICES_OUTLAYER_NEAR.md
+> Source: https://github.com/out-layer/outlayer/blob/main/wasi-examples/BEST_PRACTICES_OUTLAYER_NEAR.md
 
 # Best Practices: OutLayer + NEAR Integration
 
@@ -3812,7 +3812,7 @@ export async function signOut(): Promise<void> {
 ---
 
 <!-- source: wasi-examples/PROXY_CONTRACTS_TUTORIAL.md -->
-> Source: https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/PROXY_CONTRACTS_TUTORIAL.md
+> Source: https://github.com/out-layer/outlayer/blob/main/wasi-examples/PROXY_CONTRACTS_TUTORIAL.md
 
 # Proxy Contracts for OutLayer
 
@@ -4306,8 +4306,8 @@ cargo near build
 
 ## See Also
 
-- [WASI Tutorial](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/WASI_TUTORIAL.md) - Building WASM modules for OutLayer
-- [WASM Environment Variables](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/WASM_ENV_VARS.md) - Env vars available in WASM
+- [WASI Tutorial](https://github.com/out-layer/outlayer/blob/main/wasi-examples/WASI_TUTORIAL.md) - Building WASM modules for OutLayer
+- [WASM Environment Variables](https://github.com/out-layer/outlayer/blob/main/wasi-examples/WASM_ENV_VARS.md) - Env vars available in WASM
 - [random-example](https://github.com/out-layer/random-example) - Simple coin flip example
 - [private-dao-example](https://github.com/out-layer/private-dao-example) - Complex DAO with voting
 
@@ -4321,7 +4321,7 @@ cargo near build
 ---
 
 <!-- source: contract/README.md -->
-> Source: https://github.com/fastnear/near-outlayer/blob/main/contract/README.md
+> Source: https://github.com/out-layer/outlayer/blob/main/contract/README.md
 
 # OutLayer Smart Contract
 
@@ -4690,7 +4690,7 @@ MIT
 ---
 
 <!-- source: sdk/outlayer/README.md -->
-> Source: https://github.com/fastnear/near-outlayer/blob/main/sdk/outlayer/README.md
+> Source: https://github.com/out-layer/outlayer/blob/main/sdk/outlayer/README.md
 
 # OutLayer SDK
 
@@ -4927,8 +4927,8 @@ include = ["src/**/*", "wit/**/*", "Cargo.toml", "README.md", "LICENSE*"]
 
 - [OutLayer Docs](https://outlayer.fastnear.com/docs) - Full documentation
 - [Storage Guide](https://outlayer.fastnear.com/docs/storage) - Persistent storage
-- [WASI Tutorial](https://github.com/fastnear/near-outlayer/blob/main/wasi-examples/WASI_TUTORIAL.md) - Building WASM apps
-- [Examples](https://github.com/fastnear/near-outlayer/tree/main/wasi-examples) - Working examples
+- [WASI Tutorial](https://github.com/out-layer/outlayer/blob/main/wasi-examples/WASI_TUTORIAL.md) - Building WASM apps
+- [Examples](https://github.com/out-layer/outlayer/tree/main/wasi-examples) - Working examples
 
 ## License
 
@@ -4937,7 +4937,7 @@ MIT OR Apache-2.0
 ---
 
 <!-- source: CUSTODY.md -->
-> Source: https://github.com/fastnear/near-outlayer/blob/main/CUSTODY.md
+> Source: https://github.com/out-layer/outlayer/blob/main/CUSTODY.md
 
 # Agent Custody — Developer Reference
 
@@ -5085,12 +5085,12 @@ Runs inside Intel TDX. Holds master secret from NEAR MPC. All crypto happens her
 
 | File | Key area | Description |
 |------|----------|-------------|
-| [api.rs](https://github.com/fastnear/near-outlayer/blob/main/keystore-worker/src/api.rs) | Wallet routes | Router for `/wallet/*` (coordinator-token-only) endpoints |
-| [api.rs](https://github.com/fastnear/near-outlayer/blob/main/keystore-worker/src/api.rs) | `wallet_derive_address_handler` | Derive pubkey from seed `"wallet:{wallet_id}:{chain}"` |
-| [api.rs](https://github.com/fastnear/near-outlayer/blob/main/keystore-worker/src/api.rs) | `wallet_sign_handler` | **Single** signing entry point. Takes a canonical `op` (+ optional `approval_info`, `artifact` carrying `bytes_base64`/`message`/`nonce_base64`/`recipient`, and `usage`); derives `request_hash = sha256(canonical_json(op))`, evaluates the on-chain policy, verifies approver signatures when required, then produces the artifact per the op's bind mode (Built / Hash-pinned / Trusted). Replaces the old per-flow sign endpoints (transaction / nep413 / near-call / near-transfer). |
-| [api.rs](https://github.com/fastnear/near-outlayer/blob/main/keystore-worker/src/api.rs) | `wallet_sign_policy_handler` | Sign an encrypted policy blob: decrypt-validates the ciphertext, then signs `sha256(encrypted_data)` (rejects a caller-supplied raw hash — not a signing oracle) |
-| [api.rs](https://github.com/fastnear/near-outlayer/blob/main/keystore-worker/src/api.rs) | `wallet_check_policy_handler` | Pre-flight: decrypt policy from chain → `evaluate(policy, op, usage, now)` → return `{allowed, frozen, requires_approval, required_approvals, reason, request_hash}` (the decrypted policy never leaves the TEE) |
-| [crypto.rs](https://github.com/fastnear/near-outlayer/blob/main/keystore-worker/src/crypto.rs) | `derive_keypair()` | `HMAC-SHA256(master_secret, seed)` → Ed25519 keypair |
+| [api.rs](https://github.com/out-layer/outlayer/blob/main/keystore-worker/src/api.rs) | Wallet routes | Router for `/wallet/*` (coordinator-token-only) endpoints |
+| [api.rs](https://github.com/out-layer/outlayer/blob/main/keystore-worker/src/api.rs) | `wallet_derive_address_handler` | Derive pubkey from seed `"wallet:{wallet_id}:{chain}"` |
+| [api.rs](https://github.com/out-layer/outlayer/blob/main/keystore-worker/src/api.rs) | `wallet_sign_handler` | **Single** signing entry point. Takes a canonical `op` (+ optional `approval_info`, `artifact` carrying `bytes_base64`/`message`/`nonce_base64`/`recipient`, and `usage`); derives `request_hash = sha256(canonical_json(op))`, evaluates the on-chain policy, verifies approver signatures when required, then produces the artifact per the op's bind mode (Built / Hash-pinned / Trusted). Replaces the old per-flow sign endpoints (transaction / nep413 / near-call / near-transfer). |
+| [api.rs](https://github.com/out-layer/outlayer/blob/main/keystore-worker/src/api.rs) | `wallet_sign_policy_handler` | Sign an encrypted policy blob: decrypt-validates the ciphertext, then signs `sha256(encrypted_data)` (rejects a caller-supplied raw hash — not a signing oracle) |
+| [api.rs](https://github.com/out-layer/outlayer/blob/main/keystore-worker/src/api.rs) | `wallet_check_policy_handler` | Pre-flight: decrypt policy from chain → `evaluate(policy, op, usage, now)` → return `{allowed, frozen, requires_approval, required_approvals, reason, request_hash}` (the decrypted policy never leaves the TEE) |
+| [crypto.rs](https://github.com/out-layer/outlayer/blob/main/keystore-worker/src/crypto.rs) | `derive_keypair()` | `HMAC-SHA256(master_secret, seed)` → Ed25519 keypair |
 
 The keystore exposes exactly one signing endpoint, `POST /wallet/sign`. The OLD five separate
 sign endpoints (`/wallet/sign-transaction`, `/wallet/sign-nep413`, `/wallet/sign-near-call`,
@@ -5199,9 +5199,9 @@ WASI containers can call wallet functions via WIT interface.
 
 | File | Description |
 |------|-------------|
-| [host_functions.rs](https://github.com/fastnear/near-outlayer/blob/main/worker/src/outlayer_wallet/host_functions.rs) | WIT interface implementation (9,316 lines) |
-| [mod.rs](https://github.com/fastnear/near-outlayer/blob/main/worker/src/outlayer_wallet/mod.rs) | Module setup & linker bindings |
-| [wallet.wit](https://github.com/fastnear/near-outlayer/blob/main/worker/wit/deps/wallet.wit) | WIT interface definition |
+| [host_functions.rs](https://github.com/out-layer/outlayer/blob/main/worker/src/outlayer_wallet/host_functions.rs) | WIT interface implementation (9,316 lines) |
+| [mod.rs](https://github.com/out-layer/outlayer/blob/main/worker/src/outlayer_wallet/mod.rs) | Module setup & linker bindings |
+| [wallet.wit](https://github.com/out-layer/outlayer/blob/main/worker/wit/deps/wallet.wit) | WIT interface definition |
 
 **WIT interface** (`outlayer:wallet/api@0.1.0`):
 
@@ -5224,18 +5224,18 @@ Available only when `WALLET_ID` env var is set (coordinator passes it when `X-Wa
 
 | Page | File | Description |
 |------|------|-------------|
-| Handoff/setup | [page.tsx](https://github.com/fastnear/near-outlayer/blob/main/dashboard/app/wallet/page.tsx) | Receive API key, connect NEAR wallet, set initial policy |
-| Policy management | [manage/page.tsx](https://github.com/fastnear/near-outlayer/blob/main/dashboard/app/wallet/manage/page.tsx) | Edit policy, manage approvers, freeze/unfreeze |
-| Approvals list | [approvals/page.tsx](https://github.com/fastnear/near-outlayer/blob/main/dashboard/app/wallet/approvals/page.tsx) | List pending multisig approvals |
-| Approval detail | [approvals/[id]/page.tsx](https://github.com/fastnear/near-outlayer/blob/main/dashboard/app/wallet/approvals/[id]/page.tsx) | View & sign specific approval |
-| Audit log | [audit/page.tsx](https://github.com/fastnear/near-outlayer/blob/main/dashboard/app/wallet/audit/page.tsx) | Full transaction and event history |
-| Fund request | [fund/page.tsx](https://github.com/fastnear/near-outlayer/blob/main/dashboard/app/wallet/fund/page.tsx) | User funds agent via link (?to, ?amount, ?token) |
+| Handoff/setup | [page.tsx](https://github.com/out-layer/outlayer/blob/main/dashboard/app/wallet/page.tsx) | Receive API key, connect NEAR wallet, set initial policy |
+| Policy management | [manage/page.tsx](https://github.com/out-layer/outlayer/blob/main/dashboard/app/wallet/manage/page.tsx) | Edit policy, manage approvers, freeze/unfreeze |
+| Approvals list | [approvals/page.tsx](https://github.com/out-layer/outlayer/blob/main/dashboard/app/wallet/approvals/page.tsx) | List pending multisig approvals |
+| Approval detail | [approvals/[id]/page.tsx](https://github.com/out-layer/outlayer/blob/main/dashboard/app/wallet/approvals/[id]/page.tsx) | View & sign specific approval |
+| Audit log | [audit/page.tsx](https://github.com/out-layer/outlayer/blob/main/dashboard/app/wallet/audit/page.tsx) | Full transaction and event history |
+| Fund request | [fund/page.tsx](https://github.com/out-layer/outlayer/blob/main/dashboard/app/wallet/fund/page.tsx) | User funds agent via link (?to, ?amount, ?token) |
 
 ### Documentation page
 
 | File | Description |
 |------|-------------|
-| [docs/agent-custody/page.tsx](https://github.com/fastnear/near-outlayer/blob/main/dashboard/app/docs/agent-custody/page.tsx) | User-facing docs page |
+| [docs/agent-custody/page.tsx](https://github.com/out-layer/outlayer/blob/main/dashboard/app/docs/agent-custody/page.tsx) | User-facing docs page |
 
 ---
 
@@ -5738,7 +5738,7 @@ Parent → vault.unlocked_add_key(...)
 ```
 
 For the architectural reference (two-layer key derivation, race-attack
-mitigation, governance fixes), see [VAULTS.md](https://github.com/fastnear/near-outlayer/blob/main/VAULTS.md). For the
+mitigation, governance fixes), see [VAULTS.md](https://github.com/out-layer/outlayer/blob/main/VAULTS.md). For the
 customer-facing how-to, see `dashboard/app/docs/vaults/page.tsx`.
 
 ---
@@ -5760,7 +5760,7 @@ customer-facing how-to, see `dashboard/app/docs/vaults/page.tsx`.
 ---
 
 <!-- source: docs/MULTI_CHAIN.md -->
-> Source: https://github.com/fastnear/near-outlayer/blob/main/docs/MULTI_CHAIN.md
+> Source: https://github.com/out-layer/outlayer/blob/main/docs/MULTI_CHAIN.md
 
 # Multi-Chain Support for Agent Custody Wallets
 
@@ -5866,7 +5866,7 @@ Same model as `evm_sign`, evaluated by the shared `solana_sign_decision` in `sha
 ---
 
 <!-- source: docs/DETERMINISTIC_WALLETS.md -->
-> Source: https://github.com/fastnear/near-outlayer/blob/main/docs/DETERMINISTIC_WALLETS.md
+> Source: https://github.com/out-layer/outlayer/blob/main/docs/DETERMINISTIC_WALLETS.md
 
 # Deterministic Wallets via NEAR Signature Auth
 
@@ -6632,7 +6632,7 @@ Policy is enforced at coordinator level, inside TEE. Sub-agent cannot bypass it 
 ---
 
 <!-- source: docs/PAYMENT_CHECKS.md -->
-> Source: https://github.com/fastnear/near-outlayer/blob/main/docs/PAYMENT_CHECKS.md
+> Source: https://github.com/out-layer/outlayer/blob/main/docs/PAYMENT_CHECKS.md
 
 # Payment Checks
 
@@ -6940,7 +6940,7 @@ Check a payment check's balance using the `check_key`. Use to verify before clai
 ---
 
 <!-- source: docs/outlayer-custody-advantages.md -->
-> Source: https://github.com/fastnear/near-outlayer/blob/main/docs/outlayer-custody-advantages.md
+> Source: https://github.com/out-layer/outlayer/blob/main/docs/outlayer-custody-advantages.md
 
 # Agent Custody: Outlayer (TEE) vs. TLA active-signer (on-chain MPC)
 
@@ -7083,7 +7083,7 @@ composing above it.
 ---
 
 <!-- source: VAULTS.md -->
-> Source: https://github.com/fastnear/near-outlayer/blob/main/VAULTS.md
+> Source: https://github.com/out-layer/outlayer/blob/main/VAULTS.md
 
 # Sovereign Vaults — Architecture & Recovery Procedure
 
@@ -7450,7 +7450,7 @@ remaining.
 ---
 
 <!-- source: docs/LEAVING_OUTLAYER.md -->
-> Source: https://github.com/fastnear/near-outlayer/blob/main/docs/LEAVING_OUTLAYER.md
+> Source: https://github.com/out-layer/outlayer/blob/main/docs/LEAVING_OUTLAYER.md
 
 # Leaving OutLayer (Sovereign Exit)
 
@@ -7470,7 +7470,7 @@ It targets two audiences:
 
 For the architectural rationale of MPC vaults (why they exist, what
 guarantees the design provides), see
-[`dashboard/app/docs/vaults/page.tsx`](https://github.com/fastnear/near-outlayer/blob/main/dashboard/app/docs/vaults/page.tsx)
+[`dashboard/app/docs/vaults/page.tsx`](https://github.com/out-layer/outlayer/blob/main/dashboard/app/docs/vaults/page.tsx)
 (rendered at https://outlayer.fastnear.com/docs/vaults).
 
 ---
@@ -7552,7 +7552,7 @@ MPC_PUBLIC_KEY='bls12381g2:...' \
 
 That's the on-chain half. The rest (re-deriving wallets, decrypting
 secrets) is local and doesn't touch the network. The walkthrough
-script [`scripts/customer-recovery/walkthrough.sh`](https://github.com/fastnear/near-outlayer/blob/main/scripts/customer-recovery/walkthrough.sh)
+script [`scripts/customer-recovery/walkthrough.sh`](https://github.com/out-layer/outlayer/blob/main/scripts/customer-recovery/walkthrough.sh)
 runs all of steps 1-4 with idempotency, pre-flight checks, and
 exit-window introspection — recommended over the inline form above.
 
@@ -7900,18 +7900,18 @@ locally-derived wallet key.
 
 | Path | Purpose |
 |---|---|
-| [`scripts/customer-recovery/`](https://github.com/fastnear/near-outlayer/tree/main/scripts/customer-recovery/) | Standalone MPC CKD + key derivation + secret decrypt tool |
-| [`scripts/customer-recovery/walkthrough.sh`](https://github.com/fastnear/near-outlayer/blob/main/scripts/customer-recovery/walkthrough.sh) | One-shot interactive runbook (recommended) |
-| [`scripts/customer-recovery/README.md`](https://github.com/fastnear/near-outlayer/blob/main/scripts/customer-recovery/README.md) | Detailed CLI reference for the binary |
+| [`scripts/customer-recovery/`](https://github.com/out-layer/outlayer/tree/main/scripts/customer-recovery/) | Standalone MPC CKD + key derivation + secret decrypt tool |
+| [`scripts/customer-recovery/walkthrough.sh`](https://github.com/out-layer/outlayer/blob/main/scripts/customer-recovery/walkthrough.sh) | One-shot interactive runbook (recommended) |
+| [`scripts/customer-recovery/README.md`](https://github.com/out-layer/outlayer/blob/main/scripts/customer-recovery/README.md) | Detailed CLI reference for the binary |
 | [`tests/sovereignty_e2e.sh`](../tests/sovereignty_e2e.sh) | End-to-end test of this whole procedure |
 | [`tests/vault_detach_test.sh`](../tests/vault_detach_test.sh) | Run the detach half against an existing vault+secret |
-| [`vault-contract/src/lib.rs`](https://github.com/fastnear/near-outlayer/blob/main/vault-contract/src/lib.rs) | Contract source — search `finalize_recovery`, `dispatch_swap`, `callback_after_swap` |
+| [`vault-contract/src/lib.rs`](https://github.com/out-layer/outlayer/blob/main/vault-contract/src/lib.rs) | Contract source — search `finalize_recovery`, `dispatch_swap`, `callback_after_swap` |
 | [`outlayer-coordinator/src/handlers/call.rs`](https://github.com/out-layer/outlayer-coordinator) | Coordinator-side vault-unlock fast-fail (separate repo) |
 
 ---
 
 <!-- source: VRF.md -->
-> Source: https://github.com/fastnear/near-outlayer/blob/main/VRF.md
+> Source: https://github.com/out-layer/outlayer/blob/main/VRF.md
 
 # OutLayer VRF — Verifiable Random Function
 
@@ -8253,17 +8253,17 @@ SDK functions:
 
 ## Source code
 
-- Crypto: [keystore-worker/src/crypto.rs](https://github.com/fastnear/near-outlayer/blob/main/keystore-worker/src/crypto.rs) — `vrf_generate`, `vrf_public_key_hex`
-- Host functions: [worker/src/outlayer_vrf/host_functions.rs](https://github.com/fastnear/near-outlayer/blob/main/worker/src/outlayer_vrf/host_functions.rs)
-- SDK: [sdk/outlayer/src/vrf.rs](https://github.com/fastnear/near-outlayer/blob/main/sdk/outlayer/src/vrf.rs)
-- WIT interface: [sdk/outlayer/wit/deps/vrf.wit](https://github.com/fastnear/near-outlayer/blob/main/sdk/outlayer/wit/deps/vrf.wit)
+- Crypto: [keystore-worker/src/crypto.rs](https://github.com/out-layer/outlayer/blob/main/keystore-worker/src/crypto.rs) — `vrf_generate`, `vrf_public_key_hex`
+- Host functions: [worker/src/outlayer_vrf/host_functions.rs](https://github.com/out-layer/outlayer/blob/main/worker/src/outlayer_vrf/host_functions.rs)
+- SDK: [sdk/outlayer/src/vrf.rs](https://github.com/out-layer/outlayer/blob/main/sdk/outlayer/src/vrf.rs)
+- WIT interface: [sdk/outlayer/wit/deps/vrf.wit](https://github.com/out-layer/outlayer/blob/main/sdk/outlayer/wit/deps/vrf.wit)
 - Example WASI: [wasi-examples/vrf-example/](https://github.com/out-layer/vrf-example/)
 - Example contract: [wasi-examples/vrf-example/vrf-contract/](https://github.com/out-layer/vrf-example/tree/main/vrf-contract/)
 
 ---
 
 <!-- source: WORKER_ATTESTATION.md -->
-> Source: https://github.com/fastnear/near-outlayer/blob/main/WORKER_ATTESTATION.md
+> Source: https://github.com/out-layer/outlayer/blob/main/WORKER_ATTESTATION.md
 
 # Worker Attestation
 

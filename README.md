@@ -25,7 +25,7 @@ The same compute layer is callable directly: a NEAR smart contract can request a
 ## Project Structure
 
 ```
-near-outlayer/
+outlayer/
 ├── contract/              # Main NEAR contract (outlayer.near)
 ├── register-contract/     # TEE worker registration contract (5-measurement TDX verification)
 ├── keystore-dao-contract/ # DAO governance for keystore worker registration

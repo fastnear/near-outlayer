@@ -203,7 +203,7 @@ We would rather state this than have it discovered.
 | Contracts | `outlayer.near` · `outlayer.testnet` |
 | Attestation portal | [workers.outlayer.ai](https://workers.outlayer.ai) |
 | Agent skill file | [skills.outlayer.ai/agent-custody/SKILL.md](https://skills.outlayer.ai/agent-custody/SKILL.md) |
-| Source | [github.com/fastnear/near-outlayer](https://github.com/fastnear/near-outlayer) |
+| Source | [github.com/out-layer/outlayer](https://github.com/out-layer/outlayer) |
 | X | [@out_layer](https://x.com/out_layer) |
 
 ---

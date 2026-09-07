@@ -4,7 +4,7 @@ version = "0.1.1"
 edition = "2021"
 description = "SDK for OutLayer off-chain WASM execution on NEAR"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/fastnear/near-outlayer"
+repository = "https://github.com/out-layer/outlayer"
 keywords = ["near", "wasm", "wasi", "storage", "blockchain"]
 categories = ["wasm", "api-bindings"]
 
