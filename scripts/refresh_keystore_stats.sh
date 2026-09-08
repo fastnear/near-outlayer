@@ -68,9 +68,9 @@ if not v:
     print("keystore_vaults: absent — the keystore did not answer, or KEYSTORE_BASE_URLS is unset.")
     print("                 checks.keystore says:", d.get("checks", {}).get("keystore", {}).get("status"))
     sys.exit(1)
-print(f"loaded vault masters : {v[\"vaults\"]}")
-print(f"live TEE sessions    : {v[\"tee_sessions\"]}")
-print(f"read                 : {v[\"age_seconds\"]}s ago")
+print("loaded vault masters :", v["vaults"])
+print("live TEE sessions    :", v["tee_sessions"])
+print("read                 :", str(v["age_seconds"]) + "s ago")
 '
 echo
 echo "Grafana picks this up on the collector's next poll (~30s)."
