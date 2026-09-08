@@ -313,7 +313,7 @@ GAS_ACCOUNT_ID=worker1.outlayer.near
 GAS_ACCOUNT_PRIVATE_KEY=ed25519:5J... # From ~/.near-credentials
 
 # Keystore
-KEYSTORE_BASE_URL=http://host.docker.internal:8081
+KEYSTORE_BASE_URLS=http://host.docker.internal:8081
 ```
 
 **3. Deploy worker** to Phala Cloud:

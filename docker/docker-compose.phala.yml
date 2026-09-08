@@ -47,7 +47,7 @@ services:
       INIT_ACCOUNT_PRIVATE_KEY: ${INIT_ACCOUNT_PRIVATE_KEY:-}
 
       # Keystore (optional - for encrypted secrets)
-      KEYSTORE_BASE_URL: ${KEYSTORE_BASE_URL:-http://keystore:8081}
+      KEYSTORE_BASE_URLS: ${KEYSTORE_BASE_URLS:-http://keystore:8081}
       KEYSTORE_AUTH_TOKEN: ${KEYSTORE_AUTH_TOKEN:-}
 
       # Logging

@@ -405,7 +405,7 @@ pub async fn execute(
             \n\
             Possible causes:\n\
             1. WASM is running standalone (not as part of a project)\n\
-            2. Keystore is not configured (KEYSTORE_BASE_URL/KEYSTORE_AUTH_TOKEN)\n\
+            2. Keystore is not configured (KEYSTORE_BASE_URLS/KEYSTORE_AUTH_TOKEN)\n\
             3. Project UUID is missing from execution request\n\
             \n\
             To fix:\n\

@@ -53,8 +53,10 @@ pub struct Config {
     /// Extra time budget for RPC calls, WASM download, result upload etc. (seconds)
     pub iteration_overhead_seconds: u64,
 
-    // Keystore worker (optional - for secret decryption)
-    pub keystore_base_url: Option<String>,
+    // Keystore instances in preference order (KEYSTORE_BASE_URLS). Optional outside TEE
+    // registration mode; required in it, since a TEE worker without a keystore fails every
+    // secrets job with a message blaming the user's configuration.
+    pub keystore_base_urls: Option<Vec<String>>,
     pub keystore_auth_token: Option<String>,
     pub tee_mode: String,
 
@@ -328,9 +330,16 @@ impl Config {
             .parse::<u64>()
             .context("ITERATION_OVERHEAD_SECONDS must be a valid number")?;
 
-        // Keystore configuration (optional)
-        let keystore_base_url = env::var("KEYSTORE_BASE_URL").ok();
-        let keystore_auth_token = env::var("KEYSTORE_AUTH_TOKEN").ok();
+        // Keystore configuration. An unset or blank KEYSTORE_BASE_URLS means "no keystore"
+        // (compose files pass the variable through with an empty default); a non-empty value
+        // must parse, so a typo fails the start instead of every secrets job.
+        let keystore_base_urls = match env::var("KEYSTORE_BASE_URLS") {
+            Ok(raw) if !raw.trim().is_empty() => Some(crate::keystore_client::parse_base_urls(&raw)?),
+            _ => None,
+        };
+        let keystore_auth_token = env::var("KEYSTORE_AUTH_TOKEN")
+            .ok()
+            .filter(|t| !t.trim().is_empty());
 
         let tee_mode_raw = env::var("TEE_MODE")
             .unwrap_or_else(|_| "none".to_string());
@@ -501,7 +510,7 @@ impl Config {
             default_max_execution_seconds,
             max_execution_seconds_cap,
             iteration_overhead_seconds,
-            keystore_base_url,
+            keystore_base_urls,
             keystore_auth_token,
             tee_mode,
             use_tee_registration,
@@ -588,6 +597,17 @@ impl Config {
             anyhow::bail!("API base URL cannot be empty");
         }
 
+        // A TEE executor registers a session with the keystore at startup and decrypts through
+        // it; without one it would come up and fail every job that carries secrets.
+        if self.use_tee_registration && self.capabilities.execution {
+            if self.keystore_base_urls.is_none() {
+                anyhow::bail!("KEYSTORE_BASE_URLS is required when USE_TEE_REGISTRATION=true and EXECUTION_ENABLED=true");
+            }
+            if self.keystore_auth_token.is_none() {
+                anyhow::bail!("KEYSTORE_AUTH_TOKEN is required when USE_TEE_REGISTRATION=true and EXECUTION_ENABLED=true");
+            }
+        }
+
         if self.api_auth_token.is_empty() {
             anyhow::bail!("API auth token cannot be empty");
         }
@@ -667,6 +687,35 @@ mod tests {
         assert!(config.validate().is_err());
     }
 
+    /// A TEE executor without a keystore would boot and then fail every secrets job, so the
+    /// start is refused; a compile-only TEE worker and a non-TEE worker need no keystore.
+    #[test]
+    fn tee_executor_must_have_a_keystore() {
+        let mut config = create_test_config();
+        config.use_tee_registration = true;
+        config.capabilities.execution = true;
+        config.keystore_base_urls = None;
+        config.keystore_auth_token = None;
+        assert!(format!("{:#}", config.validate().unwrap_err()).contains("KEYSTORE_BASE_URLS"));
+
+        config.keystore_base_urls = Some(vec!["https://a.example".to_string()]);
+        assert!(format!("{:#}", config.validate().unwrap_err()).contains("KEYSTORE_AUTH_TOKEN"));
+
+        config.keystore_auth_token = Some("token".to_string());
+        assert!(config.validate().is_ok());
+
+        let mut compile_only = create_test_config();
+        compile_only.use_tee_registration = true;
+        compile_only.capabilities.execution = false;
+        compile_only.capabilities.compilation = true;
+        assert!(compile_only.validate().is_ok());
+
+        let mut legacy = create_test_config();
+        legacy.use_tee_registration = false;
+        legacy.capabilities.execution = true;
+        assert!(legacy.validate().is_ok());
+    }
+
     fn create_test_config() -> Config {
         Config {
             api_base_url: "http://localhost:8080".to_string(),
@@ -702,7 +751,7 @@ mod tests {
             default_max_execution_seconds: 60,
             max_execution_seconds_cap: 180,
             iteration_overhead_seconds: 60,
-            keystore_base_url: None,
+            keystore_base_urls: None,
             keystore_auth_token: None,
             tee_mode: "none".to_string(),
             use_tee_registration: false, // Test mode: use legacy with OPERATOR_PRIVATE_KEY

@@ -4,6 +4,9 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// Response with decrypted secrets
 #[derive(Debug, Deserialize)]
@@ -70,94 +73,330 @@ impl SecretsNotFound {
     }
 }
 
+/// How long an instance that refused a connection is skipped when the worker chooses where to
+/// move next. There is no prober: the next request that would otherwise land on the instance is
+/// the probe, and one connect timeout per window is the whole cost of a wrong guess.
+const DOWN_WINDOW: Duration = Duration::from_secs(60);
+
+/// Parse `KEYSTORE_BASE_URLS`: a comma-separated list of `http(s)://` origins, in preference
+/// order. Blank entries and duplicates are dropped; an empty result is an error, because a
+/// worker that silently ran without a keystore would fail every secrets job with a message
+/// blaming the user's configuration.
+pub fn parse_base_urls(raw: &str) -> Result<Vec<String>> {
+    let mut urls: Vec<String> = Vec::new();
+    for entry in raw.split(',') {
+        let entry = entry.trim().trim_end_matches('/');
+        if entry.is_empty() {
+            continue;
+        }
+        if !(entry.starts_with("https://") || entry.starts_with("http://")) {
+            anyhow::bail!(
+                "KEYSTORE_BASE_URLS entry '{}' is not an http(s):// URL",
+                entry
+            );
+        }
+        if !urls.iter().any(|u| u == entry) {
+            urls.push(entry.to_string());
+        }
+    }
+    if urls.is_empty() {
+        anyhow::bail!("KEYSTORE_BASE_URLS is empty: at least one keystore URL is required");
+    }
+    Ok(urls)
+}
+
+/// One keystore instance and the TEE session the worker holds THERE.
+///
+/// Sessions live in a keystore's memory, so a session made on one instance means nothing to
+/// another: every instance carries its own, established the first time the worker talks to it.
+struct Instance {
+    url: String,
+    session_id: Mutex<Option<String>>,
+    down_until: Mutex<Option<Instant>>,
+}
+
+impl Instance {
+    fn new(url: String) -> Self {
+        Self {
+            url,
+            session_id: Mutex::new(None),
+            down_until: Mutex::new(None),
+        }
+    }
+
+    fn session(&self) -> Option<String> {
+        self.session_id.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    fn set_session(&self, id: Option<String>) {
+        *self.session_id.lock().unwrap_or_else(|p| p.into_inner()) = id;
+    }
+
+    fn is_down(&self, now: Instant) -> bool {
+        self.down_until
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .map_or(false, |until| until > now)
+    }
+
+    fn mark_down(&self) {
+        *self.down_until.lock().unwrap_or_else(|p| p.into_inner()) = Some(Instant::now() + DOWN_WINDOW);
+    }
+
+    fn mark_up(&self) {
+        *self.down_until.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    }
+}
+
+/// Why a call to one instance ended, as far as choosing the next instance is concerned.
+enum CallError {
+    /// The instance never answered: connection refused, DNS failure, connection dropped before a
+    /// response. The request can be repeated on another instance.
+    Unreachable(anyhow::Error),
+    /// The instance answered, or the failure is not about reaching it (a timeout included), so
+    /// moving elsewhere would not help and could double the work.
+    Final(anyhow::Error),
+}
+
+/// Whether a `send()` failure means "this instance is unreachable".
+///
+/// Every keystore endpoint the worker calls is pure computation on the request, so a request
+/// that never produced a response is safe to repeat elsewhere. A request timeout is the one
+/// exception: the instance may well be working on it, and moving the same work to a second
+/// instance is how a slow dependency turns into a doubled load.
+///
+/// A connect failure is always a move, including a connect TIMEOUT: a host that is powered off
+/// or frozen drops the SYN and reqwest reports that as both `is_connect()` and `is_timeout()`.
+/// Nothing was sent, so nothing can be doubled — and this is the dead-server case failover
+/// exists for.
+fn should_failover(e: &reqwest::Error) -> bool {
+    e.is_connect() || !e.is_timeout()
+}
+
+/// Status and body of a keystore reply, read in full so the session-expiry check and the caller's
+/// own status mapping can both look at it.
+struct Reply {
+    status: reqwest::StatusCode,
+    body: Vec<u8>,
+}
+
+impl Reply {
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.body).into_owned()
+    }
+}
+
 /// Client for keystore worker API
+///
+/// Holds every keystore instance the worker may use, in preference order. Requests go to the
+/// current instance until it becomes unreachable; then the next reachable one becomes current
+/// and stays current. Sticky on purpose: an instance that died is not tried again unless the one
+/// serving now dies too, so a dead instance costs one connect timeout, not one per request.
 #[derive(Clone)]
 pub struct KeystoreClient {
-    base_url: String,
+    instances: Arc<Vec<Instance>>,
+    /// Index of the instance requests go to first.
+    current: Arc<AtomicUsize>,
     auth_token: String,
     http_client: reqwest::Client,
-    /// TEE session ID (set after successful challenge-response registration)
-    tee_session_id: std::sync::Arc<std::sync::Mutex<Option<String>>>,
-    /// TEE signing info for auto-reconnect (public key bytes + signing key)
-    tee_signing_info: Option<std::sync::Arc<near_crypto::SecretKey>>,
+    /// TEE signing key: with it the worker establishes a session on an instance it has not
+    /// talked to yet, and re-establishes one the keystore has forgotten.
+    tee_signing_info: Option<Arc<near_crypto::SecretKey>>,
 }
 
 impl KeystoreClient {
-    /// Create new keystore client
-    pub fn new(base_url: String, auth_token: String) -> Self {
-        Self {
-            base_url,
-            auth_token,
-            http_client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .connect_timeout(std::time::Duration::from_secs(10))
-                .build()
-                .expect("Failed to build keystore HTTP client"),
-            tee_session_id: std::sync::Arc::new(std::sync::Mutex::new(None)),
-            tee_signing_info: None,
+    /// Create new keystore client over one or more instances (see [`parse_base_urls`]).
+    pub fn new(base_urls: Vec<String>, auth_token: String) -> Result<Self> {
+        if base_urls.is_empty() {
+            anyhow::bail!("KEYSTORE_BASE_URLS is empty: at least one keystore URL is required");
         }
+        Ok(Self {
+            instances: Arc::new(base_urls.into_iter().map(Instance::new).collect()),
+            current: Arc::new(AtomicUsize::new(0)),
+            auth_token,
+            http_client: Self::http_client(Duration::from_secs(30)),
+            tee_signing_info: None,
+        })
+    }
+
+    fn http_client(timeout: Duration) -> reqwest::Client {
+        reqwest::Client::builder()
+            .timeout(timeout)
+            .connect_timeout(Duration::from_secs(10))
+            .build()
+            .expect("Failed to build keystore HTTP client")
     }
 
     /// Set TEE signing info for auto-reconnect on session expiry
     pub fn set_tee_signing_info(&mut self, secret_key: near_crypto::SecretKey) {
-        self.tee_signing_info = Some(std::sync::Arc::new(secret_key));
+        self.tee_signing_info = Some(Arc::new(secret_key));
     }
 
-    /// Set TEE session ID (called after successful challenge-response registration)
-    pub fn set_tee_session_id(&self, session_id: String) {
-        *self.tee_session_id.lock().unwrap() = Some(session_id);
+    /// The instance requests currently go to, with the TEE session held on it.
+    ///
+    /// For clients that are handed a fixed endpoint at job start (storage, VRF): they keep talking
+    /// to this instance for the job's lifetime, so a failover mid-job fails that job — the same
+    /// accepted behaviour as a keystore restart mid-job.
+    pub fn current_endpoint(&self) -> (String, Option<String>) {
+        let inst = &self.instances[self.current.load(Ordering::Relaxed)];
+        (inst.url.clone(), inst.session())
     }
 
-    /// Get TEE session ID (for passing to StorageClient)
-    pub fn get_tee_session_id(&self) -> Option<String> {
-        self.tee_session_id.lock().unwrap().clone()
+    /// Test hook: pretend a session already exists on instance `i`.
+    #[cfg(test)]
+    fn set_session_for_test(&self, i: usize, session_id: &str) {
+        self.instances[i].set_session(Some(session_id.to_string()));
     }
 
-    /// Register TEE session directly with keystore via challenge-response.
+    /// Test hook: a short request timeout, so a silent instance fails in test time.
+    #[cfg(test)]
+    fn with_request_timeout(mut self, timeout: Duration) -> Self {
+        self.http_client = Self::http_client(timeout);
+        self
+    }
+
+    /// Test hook: a short connect timeout, so a black-holed instance fails in test time.
+    #[cfg(test)]
+    fn with_connect_timeout(mut self, timeout: Duration) -> Self {
+        self.http_client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .connect_timeout(timeout)
+            .build()
+            .expect("Failed to build keystore HTTP client");
+        self
+    }
+
+    /// Instances in the order a request should try them: the current one first, then the rest in
+    /// list order, skipping instances marked down. When every instance is marked down the marks
+    /// are ignored — a request must go somewhere, and the failure it gets is the honest answer.
+    fn candidates(&self) -> Vec<usize> {
+        let n = self.instances.len();
+        let start = self.current.load(Ordering::Relaxed) % n;
+        let order: Vec<usize> = (0..n).map(|k| (start + k) % n).collect();
+        let now = Instant::now();
+        let up: Vec<usize> = order
+            .iter()
+            .copied()
+            .filter(|&i| !self.instances[i].is_down(now))
+            .collect();
+        if up.is_empty() {
+            order
+        } else {
+            up
+        }
+    }
+
+    /// Record that instance `i` answered: it becomes current and loses any down mark.
+    fn settle_on(&self, i: usize) {
+        self.instances[i].mark_up();
+        self.current.store(i, Ordering::Relaxed);
+    }
+
+    /// Record that instance `i` did not answer, and say so once per event.
+    fn leave(&self, i: usize, what: &str, error: &anyhow::Error) {
+        self.instances[i].mark_down();
+        tracing::warn!(
+            keystore = %self.instances[i].url,
+            error = %format!("{error:#}"),
+            "keystore instance unreachable during {}; moving to the next one",
+            what
+        );
+    }
+
+    /// The error a caller gets when no instance answered. It carries the transport reasons but
+    /// not the instance hostnames: job errors reach the user, the hostnames belong in the worker
+    /// log, which `leave` writes per instance.
+    fn all_unreachable(what: &str, errors: Vec<anyhow::Error>) -> anyhow::Error {
+        let detail: Vec<String> = errors.iter().map(|e| format!("{e:#}")).collect();
+        anyhow::anyhow!(
+            "{} failed: every keystore instance is unreachable ({} tried: {})",
+            what,
+            errors.len(),
+            detail.join("; ")
+        )
+    }
+
+    /// Register a TEE session with the keystore via challenge-response.
     ///
     /// 1. POST {keystore}/tee-challenge → get challenge
-    /// 2. Sign challenge with ed25519 key
+    /// 2. Sign challenge with the worker's key
     /// 3. POST {keystore}/register-tee → get session_id
     ///
-    /// This bypasses the coordinator proxy, ensuring the session is registered
-    /// on the same keystore instance that handles /decrypt requests.
+    /// Direct, not via the coordinator proxy, so the session lands on the instance that will
+    /// handle the worker's requests. Tries the instances in preference order and settles on the
+    /// first one that answers; an instance that rejects the handshake (an HTTP error) stops the
+    /// attempt, since the next instance would reject the same key for the same reason.
     pub async fn register_tee_session(
         &self,
         secret_key: &near_crypto::SecretKey,
     ) -> Result<String> {
+        let mut unreachable = Vec::new();
+        for i in self.candidates() {
+            match self.register_session_on(i, secret_key).await {
+                Ok(session_id) => {
+                    self.settle_on(i);
+                    return Ok(session_id);
+                }
+                Err(CallError::Unreachable(e)) => {
+                    self.leave(i, "TEE session registration", &e);
+                    unreachable.push(e);
+                }
+                Err(CallError::Final(e)) => return Err(e),
+            }
+        }
+        Err(Self::all_unreachable("TEE session registration", unreachable))
+    }
+
+    /// The challenge-response handshake against instance `i`; stores the session on it.
+    async fn register_session_on(
+        &self,
+        i: usize,
+        secret_key: &near_crypto::SecretKey,
+    ) -> std::result::Result<String, CallError> {
+        let inst = &self.instances[i];
         // NEAR canonical form carries the scheme (ed25519 / ml-dsa-65) in its prefix.
         let near_public_key = secret_key.public_key().to_string();
 
         // 1. Request challenge
-        let url = format!("{}/tee-challenge", self.base_url);
-        let response = self.http_client
+        let url = format!("{}/tee-challenge", inst.url);
+        let response = self
+            .http_client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.auth_token))
             .send()
             .await
-            .context("Failed to request TEE challenge from keystore")?;
+            .map_err(|e| Self::send_error(e, "Failed to request TEE challenge from keystore"))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
-            anyhow::bail!("Keystore TEE challenge failed ({}): {}", status, text);
+            return Err(CallError::Final(anyhow::anyhow!(
+                "Keystore TEE challenge failed ({}): {}",
+                status,
+                text
+            )));
         }
 
         #[derive(serde::Deserialize)]
         struct ChallengeResponse {
             challenge: String,
         }
-        let challenge_resp: ChallengeResponse = response.json().await
-            .context("Failed to parse keystore TEE challenge")?;
+        let challenge_resp: ChallengeResponse = response
+            .json()
+            .await
+            .context("Failed to parse keystore TEE challenge")
+            .map_err(CallError::Final)?;
 
         // 2. Sign challenge (ed25519 or ml-dsa-65), send signature in NEAR form.
         let challenge_bytes = hex::decode(&challenge_resp.challenge)
-            .context("Invalid challenge hex")?;
+            .context("Invalid challenge hex")
+            .map_err(CallError::Final)?;
         let signature = secret_key.sign(&challenge_bytes).to_string();
 
         // 3. Register with signed challenge
-        let url = format!("{}/register-tee", self.base_url);
-        let response = self.http_client
+        let url = format!("{}/register-tee", inst.url);
+        let response = self
+            .http_client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.auth_token))
             .json(&serde_json::json!({
@@ -167,28 +406,49 @@ impl KeystoreClient {
             }))
             .send()
             .await
-            .context("Failed to submit keystore TEE registration")?;
+            .map_err(|e| Self::send_error(e, "Failed to submit keystore TEE registration"))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
-            anyhow::bail!("Keystore TEE registration failed ({}): {}", status, text);
+            return Err(CallError::Final(anyhow::anyhow!(
+                "Keystore TEE registration failed ({}): {}",
+                status,
+                text
+            )));
         }
 
         #[derive(serde::Deserialize)]
         struct RegisterResponse {
             session_id: String,
         }
-        let register_resp: RegisterResponse = response.json().await
-            .context("Failed to parse keystore TEE registration response")?;
+        let register_resp: RegisterResponse = response
+            .json()
+            .await
+            .context("Failed to parse keystore TEE registration response")
+            .map_err(CallError::Final)?;
 
-        self.set_tee_session_id(register_resp.session_id.clone());
+        inst.set_session(Some(register_resp.session_id.clone()));
         tracing::info!(
+            keystore = %inst.url,
             session_id = %register_resp.session_id,
             "TEE session registered directly with keystore"
         );
 
         Ok(register_resp.session_id)
+    }
+
+    /// Classify a `send()` failure for the failover loop. The URL is stripped from the reqwest
+    /// error: the instance is named in the worker log by `leave`, and the error text may end up in
+    /// a job's user-facing failure.
+    fn send_error(e: reqwest::Error, what: &str) -> CallError {
+        let failover = should_failover(&e);
+        let err = anyhow::Error::new(e.without_url()).context(what.to_string());
+        if failover {
+            CallError::Unreachable(err)
+        } else {
+            CallError::Final(err)
+        }
     }
 
     /// Check if an HTTP error response indicates TEE session expiry.
@@ -206,85 +466,158 @@ impl KeystoreClient {
         body.contains("session not found")
     }
 
-    /// Try to re-register TEE session if signing info is available.
-    /// Returns Ok(()) on success, Err if reconnect failed or no signing info.
-    async fn try_reconnect_tee_session(&self) -> Result<()> {
-        let secret_key = self.tee_signing_info.as_ref()
-            .context("No TEE signing info for reconnect")?
-            .clone();
-        tracing::warn!("TEE session expired on keystore, re-registering...");
-        let session_id = self.register_tee_session(&secret_key).await?;
-        tracing::info!(session_id = %session_id, "TEE session re-registered");
-        Ok(())
+    /// (Re-)establish the TEE session on instance `i`, if there is a key to do it with.
+    ///
+    /// The "no key" case is a `Final` error on purpose: a worker without signing info cannot
+    /// make a session anywhere, so the next instance would fail identically.
+    async fn establish_session_on(&self, i: usize) -> std::result::Result<(), CallError> {
+        let secret_key = match self.tee_signing_info.as_ref() {
+            Some(key) => key.clone(),
+            None => {
+                return Err(CallError::Final(anyhow::anyhow!(
+                    "No TEE signing info for reconnect"
+                )))
+            }
+        };
+        self.register_session_on(i, &secret_key).await.map(|_| ())
     }
 
-    /// POST a JSON body, re-establishing the TEE session and retrying once when the keystore
-    /// rejects the request because the session is gone.
+    /// POST a JSON body to the keystore and read the whole reply.
     ///
-    /// Only `/decrypt` used to recover this way; `/encrypt` and `/decrypt-raw` failed hard until
-    /// the worker was restarted by hand. One keystore restart invalidates every session at once
-    /// (they live in its memory), so these paths recover on their own now.
+    /// Three recoveries live here, in this order, so every business endpoint gets all of them:
+    ///
+    /// 1. **No session yet on this instance** (first contact after a failover): establish one
+    ///    before sending, when the worker has a signing key. Without one the request goes out
+    ///    with the bearer token only, as it always did outside TEE mode.
+    /// 2. **Instance unreachable** (connection refused, DNS, connect timeout, dropped before a
+    ///    reply): mark it down and repeat the request on the next candidate. A slow reply is NOT
+    ///    this case, see [`should_failover`].
+    /// 3. **Session expired** (the keystore's own 403): the keystore restarted and forgot every
+    ///    session at once. Re-handshake on the same instance and repeat the request there once.
     ///
     /// Deliberately NOT covering `/storage/*` and `/vrf/generate`: those run inside a WASI
-    /// execution on blocking clients that were handed a session id by value at job start, so a
-    /// keystore restart mid-job fails that job — accepted behaviour, not an oversight.
+    /// execution on blocking clients that were handed an endpoint by value at job start, so a
+    /// keystore restart or failover mid-job fails that job — accepted behaviour, not an oversight.
     ///
-    /// `build_body` is a closure so the retry re-serializes from scratch rather than reusing a
-    /// half-consumed request.
-    async fn post_with_session_retry_scoped<T: Serialize>(
+    /// `build_body` is a closure so every attempt re-serializes from scratch rather than reusing
+    /// a half-consumed request. A non-success status other than session expiry is returned as a
+    /// reply, not an error: `/decrypt` maps keystore statuses into user-facing messages itself.
+    async fn post_json<T: Serialize>(
         &self,
-        url: &str,
+        path: &str,
         build_body: impl Fn() -> Result<T>,
         what: &str,
         vault_id: Option<&str>,
-    ) -> Result<reqwest::Response> {
-        let response = Self::add_vault_header(self.add_auth_headers(self.http_client.post(url)), vault_id)
-            .json(&build_body()?)
+    ) -> Result<Reply> {
+        let mut unreachable = Vec::new();
+        for i in self.candidates() {
+            let inst = &self.instances[i];
+
+            if self.tee_signing_info.is_some() && inst.session().is_none() {
+                match self.establish_session_on(i).await {
+                    Ok(()) => {}
+                    Err(CallError::Unreachable(e)) => {
+                        self.leave(i, what, &e);
+                        unreachable.push(e);
+                        continue;
+                    }
+                    Err(CallError::Final(e)) => {
+                        tracing::error!(keystore = %inst.url, error = %format!("{e:#}"), "TEE session could not be made");
+                        return Err(e.context(format!(
+                            "{} needs a TEE session and none could be made",
+                            what
+                        )))
+                    }
+                }
+            }
+
+            let reply = match self.post_once(i, path, &build_body, what, vault_id).await {
+                Ok(reply) => reply,
+                Err(CallError::Unreachable(e)) => {
+                    self.leave(i, what, &e);
+                    unreachable.push(e);
+                    continue;
+                }
+                Err(CallError::Final(e)) => return Err(e),
+            };
+
+            let expired = reply.status == reqwest::StatusCode::FORBIDDEN
+                && Self::is_tee_session_expired(reply.status, &reply.text());
+            if !expired {
+                self.settle_on(i);
+                return Ok(reply);
+            }
+
+            // The keystore answered, so it is up; it just no longer knows us. Unlike the first
+            // handshake above, a reconnect that cannot happen is surfaced with the keystore's
+            // status attached: "we got a 403 and could not re-handshake" names both halves.
+            let status = reply.status;
+            match self.establish_session_on(i).await {
+                Ok(()) => {}
+                Err(CallError::Unreachable(e)) => {
+                    self.leave(i, what, &e);
+                    unreachable.push(e);
+                    continue;
+                }
+                Err(CallError::Final(e)) => {
+                    return Err(e.context(format!(
+                        "{} got {} and the TEE session reconnect failed",
+                        what, status
+                    )))
+                }
+            }
+
+            // The retry carries the SAME scope. Dropping it here would silently reach for the
+            // default master on the second attempt, which reads a vault customer's blob with the
+            // wrong key and fails in a way that looks like corruption rather than a missing header.
+            let retry = match self.post_once(i, path, &build_body, what, vault_id).await {
+                Ok(reply) => reply,
+                Err(CallError::Unreachable(e)) => {
+                    self.leave(i, what, &e);
+                    unreachable.push(e);
+                    continue;
+                }
+                Err(CallError::Final(e)) => return Err(e),
+            };
+            if !retry.status.is_success() {
+                anyhow::bail!(
+                    "{} failed again after session reconnect ({}): {}",
+                    what,
+                    retry.status,
+                    retry.text()
+                );
+            }
+            self.settle_on(i);
+            return Ok(retry);
+        }
+        Err(Self::all_unreachable(what, unreachable))
+    }
+
+    /// One POST to instance `i`, with the bearer token, the instance's session and the vault
+    /// scope, read to the end.
+    async fn post_once<T: Serialize>(
+        &self,
+        i: usize,
+        path: &str,
+        build_body: &impl Fn() -> Result<T>,
+        what: &str,
+        vault_id: Option<&str>,
+    ) -> std::result::Result<Reply, CallError> {
+        let inst = &self.instances[i];
+        let url = format!("{}{}", inst.url, path);
+        let body = build_body().map_err(CallError::Final)?;
+        let response = Self::add_vault_header(self.add_auth_headers(i, self.http_client.post(&url)), vault_id)
+            .json(&body)
             .send()
             .await
-            .with_context(|| format!("Failed to send {} request", what))?;
-
-        if response.status().is_success() {
-            return Ok(response);
-        }
-
+            .map_err(|e| Self::send_error(e, &format!("Failed to send {} request", what)))?;
         let status = response.status();
-        let error_text = response.text().await.unwrap_or_default();
-        if !Self::is_tee_session_expired(status, &error_text) {
-            anyhow::bail!("{} request failed ({}): {}", what, status, error_text);
-        }
-
-        // Unlike `/decrypt`, which keeps its own inline retry so it can map keystore 4xx into
-        // user-facing messages, these endpoints have no such mapping — so the reconnect
-        // failure is surfaced as the error itself rather than logged and swallowed.
-        self.try_reconnect_tee_session()
+        let body = response
+            .bytes()
             .await
-            .with_context(|| format!("{} got {} and the TEE session reconnect failed", what, status))?;
-
-        // The retry carries the SAME scope. Dropping it here would silently
-        // reach for the default master on the second attempt, which reads a
-        // vault customer's blob with the wrong key and fails in a way that
-        // looks like corruption rather than a missing header.
-        let retry = Self::add_vault_header(
-            self.add_auth_headers(self.http_client.post(url)),
-            vault_id,
-        )
-        .json(&build_body()?)
-        .send()
-        .await
-        .with_context(|| format!("Failed to send {} retry request", what))?;
-
-        if !retry.status().is_success() {
-            let retry_status = retry.status();
-            let retry_body = retry.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "{} failed again after session reconnect ({}): {}",
-                what,
-                retry_status,
-                retry_body
-            );
-        }
-        Ok(retry)
+            .map(|b| b.to_vec())
+            .map_err(|e| Self::send_error(e, &format!("Failed to read {} response", what)))?;
+        Ok(Reply { status, body })
     }
 
     /// Parse a successful decrypt response into a HashMap of env vars.
@@ -315,20 +648,20 @@ impl KeystoreClient {
         }
     }
 
-    /// Add auth headers: Bearer token + optional X-TEE-Session
-    fn add_auth_headers(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    /// Add auth headers: Bearer token + the session held on instance `i`, if any
+    fn add_auth_headers(&self, i: usize, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         let builder = builder.header("Authorization", format!("Bearer {}", self.auth_token));
-        if let Some(session_id) = self.tee_session_id.lock().unwrap().as_ref() {
-            builder.header("X-TEE-Session", session_id.as_str())
-        } else {
-            builder
+        match self.instances[i].session() {
+            Some(session_id) => builder.header("X-TEE-Session", session_id),
+            None => builder,
         }
     }
 
     /// Get keystore public key (for testing/verification)
     #[allow(dead_code)]
     pub async fn get_public_key(&self) -> Result<String> {
-        let url = format!("{}/pubkey", self.base_url);
+        let (base_url, _) = self.current_endpoint();
+        let url = format!("{}/pubkey", base_url);
 
         let response = self
             .http_client
@@ -386,7 +719,7 @@ impl KeystoreClient {
         );
 
         // Prepare request with accessor
-        #[derive(Debug, Serialize)]
+        #[derive(Debug, Clone, Serialize)]
         struct DecryptRequest {
             accessor: SecretAccessor,
             profile: String,
@@ -403,86 +736,31 @@ impl KeystoreClient {
             task_id: task_id.map(|s| s.to_string()),
         };
 
-        // Send request to keystore
-        let url = format!("{}/decrypt", self.base_url);
-
-        tracing::debug!(
-            url = %url,
+        let (keystore, tee_session) = self.current_endpoint();
+        tracing::info!(
+            keystore = %keystore,
+            tee_session_id = ?tee_session,
             accessor = %accessor_desc,
             profile = %profile,
             owner = %owner,
             task_id = ?task_id,
-            "Requesting secret decryption via keystore"
-        );
-
-        // Log TEE session info for debugging
-        let tee_session = self.tee_session_id.lock().unwrap().clone();
-        tracing::info!(
-            tee_session_id = ?tee_session,
-            url = %url,
             "🔑 Sending decrypt request to keystore"
         );
 
-        let response = self.add_auth_headers(self.http_client.post(&url))
-            .json(&request)
-            .send()
-            .await
-            .context("Failed to send decrypt request")?;
+        // Session establishment, failover and the expired-session re-handshake all happen inside.
+        let reply = self
+            .post_json("/decrypt", || Ok(request.clone()), "Decrypt", None)
+            .await?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
-
-            // Auto-reconnect: if 403 with session expired, re-register and retry once
-            if Self::is_tee_session_expired(status, &error_text) {
-                // Log why a reconnect failed before falling through. Discarding it (the old
-                // `if let Ok(())`) left only the original 403 in the logs, which reads as
-                // "the keystore rejected us" even when the real cause is on our side — e.g.
-                // no signing key to re-handshake with.
-                let reconnected = self.try_reconnect_tee_session().await;
-                if let Err(ref e) = reconnected {
-                    tracing::error!(error = %e, "TEE session reconnect failed; reporting the original error");
-                }
-                if reconnected.is_ok() {
-                    // Retry the request with new session
-                    let retry_request = DecryptRequest {
-                        accessor: accessor.clone(),
-                        profile: profile.to_string(),
-                        owner: owner.to_string(),
-                        user_account_id: user_account_id.to_string(),
-                        task_id: task_id.map(|s| s.to_string()),
-                    };
-                    let retry_response = self.add_auth_headers(self.http_client.post(&url))
-                        .json(&retry_request)
-                        .send()
-                        .await
-                        .context("Failed to send retry decrypt request")?;
-
-                    if retry_response.status().is_success() {
-                        let body = retry_response.bytes().await
-                            .context("Failed to read retry decrypt response")?;
-                        let env_vars = Self::parse_decrypt_response(&body)?;
-                        tracing::info!(
-                            accessor = %accessor_desc,
-                            profile = %profile,
-                            env_count = env_vars.len(),
-                            "Successfully decrypted secrets (after reconnect)"
-                        );
-                        return Ok(env_vars);
-                    }
-                    let retry_status = retry_response.status();
-                    let retry_error = retry_response.text().await.unwrap_or_default();
-                    tracing::error!(status = %retry_status, "Decrypt retry also failed after reconnect");
-                    anyhow::bail!("Failed to decrypt secrets after TEE session reconnect ({}): {}", retry_status, retry_error);
-                }
-                // Reconnect failed — fall through to normal error handling
-            }
+        if !reply.status.is_success() {
+            let status = reply.status;
+            let error_text = reply.text();
 
             let truncated_body: String = error_text.chars().take(500).collect();
             tracing::error!(
                 status = %status,
                 error_body = %truncated_body,
-                tee_session_id = ?tee_session,
+                keystore = %self.current_endpoint().0,
                 "🔒 Keystore /decrypt failed"
             );
 
@@ -531,9 +809,7 @@ impl KeystoreClient {
             anyhow::bail!("{}", user_message);
         }
 
-        let body = response.bytes().await
-            .context("Failed to read decrypt response")?;
-        let env_vars = Self::parse_decrypt_response(&body)?;
+        let env_vars = Self::parse_decrypt_response(&reply.body)?;
 
         tracing::info!(
             accessor = %accessor_desc,
@@ -635,12 +911,9 @@ impl KeystoreClient {
 
         let plaintext_base64 = base64::encode(plaintext);
 
-        // Send request to keystore
-        let url = format!("{}/encrypt", self.base_url);
-
-        let response = self
-            .post_with_session_retry_scoped(
-                &url,
+        let reply = self
+            .post_json(
+                "/encrypt",
                 || {
                     Ok(EncryptRequest {
                         seed: seed.to_string(),
@@ -651,10 +924,11 @@ impl KeystoreClient {
                 vault_id,
             )
             .await?;
+        if !reply.status.is_success() {
+            anyhow::bail!("Encrypt request failed ({}): {}", reply.status, reply.text());
+        }
 
-        let encrypt_response: EncryptResponse = response
-            .json()
-            .await
+        let encrypt_response: EncryptResponse = serde_json::from_slice(&reply.body)
             .context("Failed to parse encrypt response")?;
 
         tracing::info!(
@@ -705,12 +979,9 @@ impl KeystoreClient {
             plaintext_base64: String,
         }
 
-        // Send request to keystore (using /decrypt-raw endpoint for direct decryption)
-        let url = format!("{}/decrypt-raw", self.base_url);
-
-        let response = self
-            .post_with_session_retry_scoped(
-                &url,
+        let reply = self
+            .post_json(
+                "/decrypt-raw",
                 || {
                     Ok(DecryptRawRequest {
                         seed: seed.to_string(),
@@ -721,10 +992,11 @@ impl KeystoreClient {
                 vault_id,
             )
             .await?;
+        if !reply.status.is_success() {
+            anyhow::bail!("Decrypt-raw request failed ({}): {}", reply.status, reply.text());
+        }
 
-        let decrypt_response: DecryptRawResponse = response
-            .json()
-            .await
+        let decrypt_response: DecryptRawResponse = serde_json::from_slice(&reply.body)
             .context("Failed to parse decrypt-raw response")?;
 
         let plaintext = base64::decode(&decrypt_response.plaintext_base64)
@@ -765,6 +1037,14 @@ mod tests {
     ///
     /// Every response closes the connection so the client's pool cannot outlive a step.
     fn fake_keystore(reject_first: bool) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        fake_keystore_serving(reject_first, if reject_first { 4 } else { 1 })
+    }
+
+    /// Same, serving exactly `connections` requests before the listener goes away.
+    fn fake_keystore_serving(
+        reject_first: bool,
+        connections: usize,
+    ) -> (String, std::thread::JoinHandle<Vec<String>>) {
         use std::io::{Read, Write};
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -772,7 +1052,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             let mut seen = Vec::new();
             let mut business_calls = 0;
-            for stream in listener.incoming().take(if reject_first { 4 } else { 1 }) {
+            for stream in listener.incoming().take(connections) {
                 let mut stream = match stream {
                     Ok(s) => s,
                     Err(_) => break,
@@ -815,12 +1095,36 @@ mod tests {
     }
 
     fn client_with_signing_key(base_url: String) -> KeystoreClient {
-        let mut client = KeystoreClient::new(base_url, "test-token".to_string());
+        let mut client = KeystoreClient::new(vec![base_url], "test-token".to_string()).expect("one url");
         client.set_tee_signing_info(near_crypto::SecretKey::from_random(
             near_crypto::KeyType::ED25519,
         ));
-        client.set_tee_session_id("stale-session".to_string());
+        client.set_session_for_test(0, "stale-session");
         client
+    }
+
+    /// A client over several instances, in order, with a signing key and no session anywhere.
+    fn client_over(urls: Vec<String>) -> KeystoreClient {
+        let mut client = KeystoreClient::new(urls, "test-token".to_string()).expect("urls");
+        client.set_tee_signing_info(near_crypto::SecretKey::from_random(
+            near_crypto::KeyType::ED25519,
+        ));
+        client
+    }
+
+    /// A URL nothing listens on: bound, then released.
+    fn dead_url() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        drop(listener);
+        format!("http://{}", addr)
+    }
+
+    /// A URL that accepts the connection and never answers.
+    fn silent_url() -> (String, std::net::TcpListener) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        (format!("http://{}", addr), listener)
     }
 
     /// The keystore restarted and forgot every session. The worker must re-handshake and finish
@@ -854,7 +1158,8 @@ mod tests {
     async fn encrypt_reports_why_a_reconnect_could_not_happen() {
         let (url, server) = fake_keystore(true);
         // No `set_tee_signing_info` — this is a worker that never got its key.
-        let client = KeystoreClient::new(url, "test-token".to_string());
+        let client = KeystoreClient::new(vec![url], "test-token".to_string()).expect("one url");
+        client.set_session_for_test(0, "stale-session");
 
         let err = client
             .encrypt("seed", b"plaintext", None)
@@ -894,7 +1199,8 @@ mod tests {
     }
 
     async fn decrypt_against(code: u16, body: &'static str) -> anyhow::Error {
-        let client = KeystoreClient::new(fake_keystore_answering(code, body), "t".to_string());
+        let client = KeystoreClient::new(vec![fake_keystore_answering(code, body)], "t".to_string())
+            .expect("one url");
         client
             .decrypt_secrets_by_project("a.near/p", "prod", "a.near", "a.near", None)
             .await
@@ -939,6 +1245,173 @@ mod tests {
     }
 
     /// Test SecretAccessor::Repo serialization (with branch)
+    // ===== failover across keystore instances =====
+
+    /// The first instance refuses connections. The request must land on the second one, after
+    /// a fresh handshake THERE (sessions do not travel between instances), and the second
+    /// instance must stay current afterwards.
+    #[tokio::test]
+    async fn a_refusing_instance_is_skipped_and_the_session_is_made_on_the_next_one() {
+        let dead = dead_url();
+        let (live, server) = fake_keystore_serving(false, 3);
+        let client = client_over(vec![dead.clone(), live.clone()]);
+
+        let out = client.encrypt("seed", b"plaintext", None).await;
+
+        let seen = server.join().expect("server thread");
+        assert!(out.is_ok(), "expected the second instance to serve, got {out:?}");
+        assert_eq!(
+            seen,
+            vec![
+                "/tee-challenge".to_string(),
+                "/register-tee".to_string(),
+                "/encrypt".to_string(),
+            ],
+            "expected a handshake on the new instance, then the call"
+        );
+        assert_eq!(client.current_endpoint().0, live, "the live instance must become current");
+        assert!(client.current_endpoint().1.is_some(), "and hold the session made there");
+    }
+
+    /// Startup registration walks the list the same way: the first reachable instance gets the
+    /// session and becomes current.
+    #[tokio::test]
+    async fn startup_registration_settles_on_the_first_reachable_instance() {
+        let dead = dead_url();
+        let (live, server) = fake_keystore_serving(false, 2);
+        let client = client_over(vec![dead, live.clone()]);
+        let key = near_crypto::SecretKey::from_random(near_crypto::KeyType::ED25519);
+
+        let session = client.register_tee_session(&key).await.expect("registration");
+
+        let seen = server.join().expect("server thread");
+        assert_eq!(seen, vec!["/tee-challenge".to_string(), "/register-tee".to_string()]);
+        assert_eq!(client.current_endpoint(), (live, Some(session)));
+    }
+
+    /// A host that swallows the SYN (powered off, frozen, firewalled) is a connect timeout.
+    /// reqwest reports it as a timeout too, and it must still be a move: nothing was sent, and
+    /// this is the dead-server case failover exists for. 192.0.2.0/24 (TEST-NET-1) never routes.
+    #[tokio::test]
+    async fn a_black_holed_instance_is_left_on_connect_timeout() {
+        let (live, server) = fake_keystore_serving(false, 3);
+        let client = client_over(vec!["http://192.0.2.1:8081".to_string(), live.clone()])
+            .with_connect_timeout(Duration::from_millis(300));
+
+        let out = client.encrypt("seed", b"plaintext", None).await;
+
+        let seen = server.join().expect("server thread");
+        assert!(out.is_ok(), "expected the live instance to serve, got {out:?}");
+        assert_eq!(
+            seen,
+            vec![
+                "/tee-challenge".to_string(),
+                "/register-tee".to_string(),
+                "/encrypt".to_string(),
+            ]
+        );
+        assert_eq!(client.current_endpoint().0, live);
+    }
+
+    /// A request timeout is not a reason to move: the instance may be working on the request, and
+    /// the second instance must not receive a copy of it.
+    #[tokio::test]
+    async fn a_timeout_does_not_move_the_request_to_another_instance() {
+        let (silent, _hold) = silent_url();
+        let (live, server) = fake_keystore_serving(false, 1);
+        let client = client_over(vec![silent, live.clone()])
+            .with_request_timeout(Duration::from_millis(300));
+        client.set_session_for_test(0, "session-on-silent");
+
+        let err = client
+            .encrypt("seed", b"plaintext", None)
+            .await
+            .expect_err("a silent instance must fail the call");
+        let chain = format!("{err:#}");
+        assert!(
+            !chain.contains("every keystore instance is unreachable"),
+            "a timeout must not be reported as a failover exhaustion, got: {chain}"
+        );
+
+        // Prove the live instance saw nothing from the client: the one request it serves is ours.
+        {
+            use std::io::{Read, Write};
+            let addr = live.trim_start_matches("http://");
+            let mut probe = std::net::TcpStream::connect(addr).expect("probe connect");
+            probe
+                .write_all(b"GET /probe HTTP/1.1\r\nHost: x\r\n\r\n")
+                .expect("probe write");
+            let mut sink = Vec::new();
+            let _ = probe.read_to_end(&mut sink);
+        }
+        let seen = server.join().expect("server thread");
+        assert_eq!(seen, vec!["/probe".to_string()], "the live instance must not have been asked");
+    }
+
+    /// With nobody reachable the error names the operation and how many instances were tried,
+    /// without their hostnames.
+    #[tokio::test]
+    async fn all_instances_unreachable_is_one_error_naming_them_all() {
+        let (a, b) = (dead_url(), dead_url());
+        let client = client_over(vec![a.clone(), b.clone()]);
+
+        let err = client
+            .encrypt("seed", b"plaintext", None)
+            .await
+            .expect_err("nothing to talk to");
+        let chain = format!("{err:#}");
+        assert!(chain.contains("Encrypt failed: every keystore instance is unreachable (2 tried"), "{chain}");
+        // Hostnames stay in the worker log; a job error that reaches the user must not carry them.
+        assert!(!chain.contains(&a) && !chain.contains(&b), "instance URLs must not leak: {chain}");
+    }
+
+    /// An instance that answers "session expired" is up; the re-handshake happens on it, not on
+    /// a neighbour, and the neighbour is never contacted.
+    #[tokio::test]
+    async fn an_expired_session_is_renewed_on_the_same_instance() {
+        let (first, server) = fake_keystore(true);
+        let dead = dead_url();
+        let client = client_over(vec![first.clone(), dead]);
+        client.set_session_for_test(0, "stale-session");
+
+        let out = client.encrypt("seed", b"plaintext", None).await;
+
+        let seen = server.join().expect("server thread");
+        assert!(out.is_ok(), "{out:?}");
+        assert_eq!(
+            seen,
+            vec![
+                "/encrypt".to_string(),
+                "/tee-challenge".to_string(),
+                "/register-tee".to_string(),
+                "/encrypt".to_string(),
+            ]
+        );
+        assert_eq!(client.current_endpoint().0, first);
+    }
+
+    // ===== KEYSTORE_BASE_URLS parsing =====
+
+    #[test]
+    fn base_urls_are_trimmed_deduplicated_and_kept_in_order() {
+        let urls = parse_base_urls(" https://a.example/ ,https://b.example,, https://a.example ")
+            .expect("valid list");
+        assert_eq!(urls, vec!["https://a.example".to_string(), "https://b.example".to_string()]);
+    }
+
+    #[test]
+    fn base_urls_reject_empty_and_non_http_entries() {
+        assert!(parse_base_urls("").is_err());
+        assert!(parse_base_urls(" , ").is_err());
+        let err = parse_base_urls("keystore.internal:8081").expect_err("scheme required");
+        assert!(format!("{err:#}").contains("not an http(s):// URL"));
+    }
+
+    #[test]
+    fn a_client_needs_at_least_one_instance() {
+        assert!(KeystoreClient::new(vec![], "t".to_string()).is_err());
+    }
+
     #[test]
     fn test_secret_accessor_repo_with_branch() {
         let accessor = SecretAccessor::Repo {

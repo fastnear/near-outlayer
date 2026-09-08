@@ -191,16 +191,16 @@ async fn main() -> Result<()> {
     // NOTE: Executor creation moved to after registration (needs secret key for compiled cache)
 
     // Initialize keystore client (optional)
-    let mut keystore_client = if let (Some(keystore_url), Some(keystore_token)) = (
-        &config.keystore_base_url,
+    let mut keystore_client = if let (Some(keystore_urls), Some(keystore_token)) = (
+        &config.keystore_base_urls,
         &config.keystore_auth_token,
     ) {
-        info!("Keystore configured at: {}", keystore_url);
+        info!("Keystore instances (in preference order): {}", keystore_urls.join(", "));
         info!("TEE mode: {}", config.tee_mode);
         Some(KeystoreClient::new(
-            keystore_url.clone(),
+            keystore_urls.clone(),
             keystore_token.clone(),
-        ))
+        )?)
     } else {
         info!("Keystore not configured - encrypted secrets will not be supported");
         None
@@ -2422,8 +2422,10 @@ async fn handle_execute_job(
 
     // Create storage config if keystore is configured AND project_uuid exists
     // Storage requires both: keystore for encryption/decryption AND project for data organization
-    let storage_config = match (&config.keystore_base_url, &config.keystore_auth_token, &project_uuid) {
-        (Some(keystore_url), Some(keystore_token), Some(uuid)) => {
+    let storage_config = match (keystore_client, &config.keystore_auth_token, &project_uuid) {
+        (Some(kc), Some(keystore_token), Some(uuid)) => {
+            // The instance serving now and the session held on it, fixed for this job.
+            let (keystore_url, keystore_tee_session_id) = kc.current_endpoint();
             // Determine account_id for storage (user who triggered execution)
             let storage_account_id = user_account_id
                 .cloned()
@@ -2437,13 +2439,12 @@ async fn handle_execute_job(
             Some(StorageConfig {
                 coordinator_url: config.api_base_url.clone(),
                 coordinator_token: config.api_auth_token.clone(),
-                keystore_url: keystore_url.clone(),
+                keystore_url,
                 keystore_token: keystore_token.clone(),
                 project_uuid: uuid.clone(),
                 wasm_hash: wasm_checksum.clone(),
                 account_id: storage_account_id,
-                keystore_tee_session_id: keystore_client
-                    .and_then(|kc| kc.get_tee_session_id()),
+                keystore_tee_session_id,
             })
         }
         (None, _, _) | (_, None, _) => {
@@ -2457,8 +2458,9 @@ async fn handle_execute_job(
     };
 
     // Create VRF config if keystore is configured (VRF requires keystore + request_id)
-    let vrf_config = match (&config.keystore_base_url, &config.keystore_auth_token) {
-        (Some(keystore_url), Some(keystore_token)) => {
+    let vrf_config = match (keystore_client, &config.keystore_auth_token) {
+        (Some(kc), Some(keystore_token)) => {
+            let (keystore_url, tee_session_id) = kc.current_endpoint();
             let sender_id: String = vrf_domain_identity(
                 payment_key_owner,
                 user_account_id,
@@ -2468,10 +2470,9 @@ async fn handle_execute_job(
                     panic!("VRF requires sender_id but neither payment_key_owner nor user_account_id nor context.sender_id is set (request_id={})", request_id);
                 });
             Some(executor::VrfConfig {
-                keystore_url: keystore_url.clone(),
+                keystore_url,
                 keystore_auth_token: keystore_token.clone(),
-                tee_session_id: keystore_client
-                    .and_then(|kc| kc.get_tee_session_id()),
+                tee_session_id,
                 request_id,
                 sender_id,
             })

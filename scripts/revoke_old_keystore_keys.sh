@@ -13,6 +13,11 @@
 #     measurements, so it stays in the current group instead of looking "newer";
 #   * keys whose proposal is unreadable (they pre-date the current proposal format) are old by
 #     construction — those proposals are the oldest ones on the contract.
+#   * gateway-mode instances carry their instance-id in RTMR3, so two instances of ONE version
+#     register with the same MRTD/RTMR0-2 and different RTMR3 — exactly what a version bump on
+#     the same dstack image looks like. The chain cannot tell the two apart, so the script does
+#     not guess: when such keys exist and no live key was named (KEEP_* / --keep), the run aborts
+#     before printing a plan; once live keys are named, every other key is retired.
 #
 # What it retires, in one run:
 #   1. the OLD keys    — `propose_revoke_keystore_keys` (one proposal per <=16 keys, signed by
@@ -28,11 +33,18 @@
 # A retired instance keeps answering from RAM for vaults it already loaded, but cannot derive a
 # master for a NEW vault and cannot survive a restart. Shut it down afterwards.
 #
+# Which keys are live is taken from the nodes, not guessed. On every TDX node
+#   outlayer keystore-keys <testnet|mainnet>
+# prints `export KEEP_<SITE>="<key> <key>"` (KEEP_DAL on dal, KEEP_AMS on ams) with the registration
+# key of each running keystore CVM there (read from its log). Paste both lines into the shell here
+# and run the script: every key in them is kept, everything else is retired — one command per
+# network after a release. BOTH variables must be set (empty is fine for a node without keystores);
+# a missing one means a node was skipped, and its live instance would be revoked.
+#
 # Usage:
 #   ./scripts/revoke_old_keystore_keys.sh <testnet|mainnet> [--keep ed25519:KEY]... [--send]
 #
-#   --keep   force a key into the CURRENT group (a live instance whose proposal is unreadable,
-#            or an instance you are deliberately keeping on an older image)
+#   --keep   the same as a key in a KEEP_* variable: a live instance (or one deliberately kept)
 #   --send   execute here after a confirmation prompt; without it the script only prints the
 #            report and ready-to-run commands (mainnet keys usually live on another machine)
 set -euo pipefail
@@ -40,12 +52,31 @@ set -euo pipefail
 NETWORK="${1:-}"
 shift || true
 case "$NETWORK" in
-  testnet) DAO="dao.outlayer.testnet"; SIGNER="zavodil.testnet"; OWNER="owner.outlayer.testnet"; RPC="https://rpc.testnet.fastnear.com" ;;
-  mainnet) DAO="dao.outlayer.near";    SIGNER="zavodil.near";    OWNER="owner.outlayer.near";    RPC="https://rpc.mainnet.fastnear.com" ;;
+  testnet) DAO="dao.outlayer.testnet"; SIGNER="zavodil.testnet"; OWNER="owner.outlayer.testnet"; RPC="https://rpc.testnet.fastnear.com"; RPC_VAR=TESTNET_NEAR_RPC_URL ;;
+  mainnet) DAO="dao.outlayer.near";    SIGNER="zavodil.near";    OWNER="owner.outlayer.near";    RPC="https://rpc.mainnet.fastnear.com"; RPC_VAR=MAINNET_NEAR_RPC_URL ;;
   *) echo "Usage: $0 <testnet|mainnet> [--keep ed25519:KEY]... [--send]" >&2; exit 1 ;;
 esac
+# The keyed RPC from the repo .env when present: the script reads every proposal on the DAO, and
+# the public host rate-limits that mid-run.
+HERE="$(cd "$(dirname "$0")" && pwd)"
+if [ -f "$HERE/../.env" ]; then
+  keyed="$(grep -E "^${RPC_VAR}=" "$HERE/../.env" | tail -1 | cut -d= -f2- | tr -d '"' | tr -d "'")"
+  [ -z "$keyed" ] || RPC="$keyed"
+fi
 
 KEEP=()
+# Keys from the nodes, one variable per TDX node as printed by `outlayer keystore-keys`. All of
+# them must be set (empty allowed): an unset one is a node that was not asked.
+KEEP_VARS="KEEP_DAL KEEP_AMS"
+missing=""
+for var in $KEEP_VARS; do
+  if [ -z "${!var+x}" ]; then missing="$missing $var"; continue; fi
+  for k in ${!var}; do KEEP+=("$k"); done
+done
+if [ -n "$missing" ]; then
+  echo "not set:$missing — run 'outlayer keystore-keys' on that node and paste its export line (an empty value is fine)" >&2
+  exit 1
+fi
 SEND=false
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -63,12 +94,13 @@ PLAN="$(mktemp -t revoke_plan.XXXXXX)"
 trap 'rm -f "$PLAN"' EXIT
 
 export DAO RPC BATCH SIGNER OWNER NETWORK
+echo "keeping ${#KEEP[@]} live key(s): $(for var in $KEEP_VARS; do printf '%s="%s" ' "$var" "${!var}"; done)" >&2
 KEEP_ARGS="${KEEP[*]:-}" python3 - <<'PY' > "$PLAN"
 import base64, datetime, json, os, sys, urllib.request
 
 RPC, DAO, BATCH = os.environ['RPC'], os.environ['DAO'], int(os.environ['BATCH'])
 SIGNER, OWNER, NETWORK = os.environ['SIGNER'], os.environ['OWNER'], os.environ['NETWORK']
-forced_keep = [k for k in os.environ.get('KEEP_ARGS', '').split() if k]
+forced_keep = sorted({k for k in os.environ.get('KEEP_ARGS', '').split() if k})
 w = sys.stderr.write
 
 
@@ -158,7 +190,32 @@ current_img = max(known, key=lambda img: known[img]["latest"])
 
 unknown_forced = [k for k in forced_keep if k not in approved]
 if unknown_forced:
-    raise SystemExit("--keep key(s) not in approved_keystores: " + ", ".join(unknown_forced))
+    raise SystemExit("KEEP_*/--keep key(s) not in approved_keystores: " + ", ".join(unknown_forced))
+
+# Images that equal the current one except for RTMR3 are ambiguous: a live sibling instance of
+# the current version (gateway mode puts the instance-id into RTMR3) looks exactly like an old
+# version on the same dstack image. Without any named live key the script refuses to decide;
+# with live keys named (KEEP_* from the nodes), every other key is old.
+def os_image(img):
+    m = json.loads(img)
+    return tuple(m[k] for k in ('mrtd', 'rtmr0', 'rtmr1', 'rtmr2'))
+
+ambiguous = [k for img, g in known.items() if img != current_img
+             and os_image(img) == os_image(current_img)
+             for k in g["keys"] if k not in forced_keep]
+if ambiguous and not forced_keep:
+    cur = groups[current_img]
+    lines = [f"    {k}   proposal #{by_key[k]['id']}, registered "
+             f"{datetime.datetime.fromtimestamp(by_key[k]['created_at'] / 1e9, datetime.timezone.utc):%Y-%m-%d %H:%M}"
+             for k in sorted(ambiguous, key=lambda k: -by_key[k]['created_at'])]
+    raise SystemExit(
+        f"Cannot tell these key(s) apart from the current version (registered "
+        f"{datetime.datetime.fromtimestamp(cur['latest'] / 1e9, datetime.timezone.utc):%Y-%m-%d %H:%M}, "
+        f"{len(cur['keys'])} key(s)): same MRTD/RTMR0-2, different RTMR3 — a live sibling instance "
+        "(gateway mode) and an old version on the same dstack image look identical on chain.\n"
+        "  Name the live instances first: run `outlayer keystore-keys` on every node and paste its "
+        "`export KEEP_<SITE>=...` line here (or --keep KEY); everything else is then retired.\n"
+        + "\n".join(lines))
 
 keep_keys = set(groups[current_img]["keys"]) | set(forced_keep)
 old_keys = [k for k in approved if k not in keep_keys]

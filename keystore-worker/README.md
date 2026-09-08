@@ -229,15 +229,17 @@ INFO  Ready to serve decryption requests from executor workers
 
 ## Deploying
 
-**Keystore first, then the workers for it.** A worker has its keystore's address baked in
-(`KEYSTORE_BASE_URL`), so it only ever talks to the keystore it was deployed for — the new
-worker needs that keystore to already exist. The same pinning is why the two can change their
-shared request shape in a single release with no deprecation window: a worker never meets a
-keystore of a different version.
+**Keystore first, then the workers for it.** A worker has its keystore instances baked in
+(`KEYSTORE_BASE_URLS`, all of one version), so it only ever talks to keystores it was deployed
+for — the new worker needs those keystores to already exist. The same pinning is why the two can
+change their shared request shape in a single release with no deprecation window: a worker never
+meets a keystore of a different version. With several instances listed the worker holds a TEE
+session on the one serving it and moves to the next only when that one becomes unreachable.
 
 Restarting the keystore mints a fresh ephemeral registration key and needs a DAO vote within
 ~30 minutes, so schedule the release when a voter is on hand. Retire the previous version's
-keys afterwards with `scripts/revoke_old_keystore_keys.sh <network>`.
+keys afterwards: paste the `export KEEP_DAL=…` / `export KEEP_AMS=…` lines that
+`outlayer keystore-keys <net>` prints on the nodes, then run `scripts/revoke_old_keystore_keys.sh <network>`.
 
 ## Testing
 

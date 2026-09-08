@@ -11,7 +11,7 @@ phala deploy --name outlayer-testnet-keystore --compose docker-compose.keystore-
 
 phala cvms create --name outlayer-testnet-keystore --compose ./docker-compose.keystore-phala.yml --env-file ./.env.testnet-keystore-phala  --vcpu 1 --memory 1G --disk-size 1G
 
-# set KEYSTORE_BASE_URL based on keystore deployment
+# set KEYSTORE_BASE_URLS based on keystore deployment
 /docker/.env.testnet-worker-phala
 
 # build worker-only

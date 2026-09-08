@@ -207,10 +207,10 @@ else
   echo "           For a public TEE-terminated endpoint, pass: --gateway-url https://gateway.<domain>:9202"
 fi
 # Capture the node deploy output (tee'd so the operator still sees it) to recover the gateway-mode
-# KEYSTORE_BASE_URL=... line that 40-deploy-keystore.sh prints (app-id is computed node-side from
+# KEYSTORE_URL=... line that 40-deploy-keystore.sh prints (app-id is computed node-side from
 # the final app-compose). Empty in plain mode.
 DEPLOY_LOG=$(node_run "GATEWAY_URL='$GATEWAY_URL' WORKER_DIGEST=$DIGEST ./deploy_tdx.sh keystore $NETWORK $NAME --version $VER" 2>&1 | tee /dev/stderr) || true
-KEYSTORE_BASE_URL=$(printf '%s' "$DEPLOY_LOG" | grep -oE 'KEYSTORE_BASE_URL=https://[^[:space:]]+' | tail -1 | sed 's/^KEYSTORE_BASE_URL=//' || true)
+KEYSTORE_URL=$(printf '%s' "$DEPLOY_LOG" | grep -oE 'KEYSTORE_URL=https://[^[:space:]]+' | tail -1 | sed 's/^KEYSTORE_URL=//' || true)
 
 # [3/6] read the 5 TEE measurements from the keystore's logs.
 # The keystore logs them as a single DEBUG line: "TDX Measurements: MRTD=<hex>, RTMR0=<hex>, ..."
@@ -294,10 +294,11 @@ if [ "$NETWORK" = mainnet ]; then
   echo ""
   echo "  After the vote lands, the keystore pulls its MPC-CKD master and becomes ready."
   echo "  Check: NAME=$NAME CONTAINER=$KS_CONTAINER worker-ctl.sh follow (on the node)"
-  if [ -n "$KEYSTORE_BASE_URL" ]; then
+  if [ -n "$KEYSTORE_URL" ]; then
     echo ""
     echo "  Once READY, the public endpoint (via dstack-gateway) is:"
-    echo "    KEYSTORE_BASE_URL=$KEYSTORE_BASE_URL"
+    echo "    $KEYSTORE_URL"
+    echo "  Add it to the comma-separated KEYSTORE_BASE_URLS in the worker env and the coordinator env."
   fi
   exit 0
 fi
@@ -325,11 +326,11 @@ for i in $(seq 1 25); do
     echo "  READY: keystore completed TEE registration + pulled its MPC-CKD master."
     [ -n "$HEALTH" ] && echo "  /health (loopback): $HEALTH"
     echo "Done. Manage: ssh $NODE -> su - $REMOTE_USER -> cd $REMOTE_DIR -> NAME=$NAME CONTAINER=$KS_CONTAINER ./worker-ctl.sh follow"
-    if [ -n "$KEYSTORE_BASE_URL" ]; then
+    if [ -n "$KEYSTORE_URL" ]; then
       echo ""
-      echo "  PUBLIC ENDPOINT (via dstack-gateway, TLS terminates in the TEE) — wire this into"
-      echo "  workers/coordinator as the keystore base URL:"
-      echo "    KEYSTORE_BASE_URL=$KEYSTORE_BASE_URL"
+      echo "  PUBLIC ENDPOINT (via dstack-gateway, TLS terminates in the TEE):"
+      echo "    $KEYSTORE_URL"
+      echo "  Add it to the comma-separated KEYSTORE_BASE_URLS in the worker env and the coordinator env."
     else
       echo "NOTE: this exposes only a LOOPBACK port on the node. Public ingress (TLS-in-TEE gateway)"
       echo "needs gateway mode — re-run with --gateway-url <https://gateway.<domain>:9202> to get a"

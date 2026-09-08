@@ -71,8 +71,8 @@ struct Cli {
     #[arg(long, env = "OUTLAYER_MONITOR_WINDOW_BLOCKS", default_value = "600")]
     window_blocks: u64,
 
-    /// Internal URL of the keystore-worker. Same address the
-    /// coordinator uses (KEYSTORE_BASE_URL env on coordinator).
+    /// Internal URL of one keystore-worker instance: one of the
+    /// addresses in the coordinator's KEYSTORE_BASE_URLS.
     #[arg(long, env = "OUTLAYER_MONITOR_KEYSTORE_URL")]
     keystore_url: String,
 

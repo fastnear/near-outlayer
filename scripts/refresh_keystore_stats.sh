@@ -65,7 +65,7 @@ import json, sys
 d = json.load(sys.stdin)
 v = d.get("checks", {}).get("keystore_vaults")
 if not v:
-    print("keystore_vaults: absent — the keystore did not answer, or KEYSTORE_BASE_URL is unset.")
+    print("keystore_vaults: absent — the keystore did not answer, or KEYSTORE_BASE_URLS is unset.")
     print("                 checks.keystore says:", d.get("checks", {}).get("keystore", {}).get("status"))
     sys.exit(1)
 print(f"loaded vault masters : {v[\"vaults\"]}")
