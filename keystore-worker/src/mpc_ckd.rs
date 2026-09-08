@@ -175,6 +175,33 @@ fn is_not_enough_balance(
     )
 }
 
+/// A pre-inclusion `InvalidNonce` reject: the nonce we read was consumed between our read and our
+/// broadcast — with several keystore instances this is another instance cold-loading the same vault
+/// (it signs `vault.request_master` with the same vault key). CKD is deterministic, so a fresh nonce
+/// and a second broadcast yield the same master.
+fn is_invalid_nonce(
+    e: &near_jsonrpc_client::errors::JsonRpcError<
+        near_jsonrpc_primitives::types::transactions::RpcTransactionError,
+    >,
+) -> bool {
+    use near_jsonrpc_client::errors::{JsonRpcError, JsonRpcServerError};
+    use near_jsonrpc_primitives::types::transactions::RpcTransactionError;
+    use near_primitives::errors::InvalidTxError;
+
+    matches!(
+        e,
+        JsonRpcError::ServerError(JsonRpcServerError::HandlerError(
+            RpcTransactionError::InvalidTransaction {
+                context: InvalidTxError::InvalidNonce { .. },
+            },
+        ))
+    )
+}
+
+/// How many times a CKD broadcast is re-submitted after an `InvalidNonce` reject. One: the only
+/// legitimate cause is one concurrent submitter per vault, and every retry costs a CKD fee.
+const CKD_INVALID_NONCE_RETRIES: u32 = 1;
+
 /// MPC CKD configuration from environment
 #[derive(Debug, Clone)]
 pub struct MpcCkdConfig {
@@ -533,6 +560,8 @@ impl MpcCkdClient {
         // Serialize request to JSON
         let args = serde_json::to_vec(&request)?;
 
+        let mut invalid_nonce_retries = 0u32;
+        let outcome = loop {
         // Get access key information for nonce.
         // Retry: a freshly-added access key may not be visible to the RPC node yet
         // (DAO approval for default-master path, atomic-deploy for vault path).
@@ -587,7 +616,7 @@ impl MpcCkdClient {
             block_hash: block.header.hash,
             actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
                 method_name: method_name.to_string(),
-                args,
+                args: args.clone(),
                 gas: Gas::from_gas(300_000_000_000_000), // 300 TGas
                 // FC access keys can't attach deposit. Boot CKD signs as
                 // dao.outlayer.testnet (FullAccess elsewhere but no
@@ -611,8 +640,25 @@ impl MpcCkdClient {
             ),
         };
 
-        let outcome = match self.rpc_client_tx.call(request).await {
-            Ok(o) => o,
+        match self.rpc_client_tx.call(request).await {
+            Ok(o) => break o,
+            Err(e) if is_invalid_nonce(&e) && invalid_nonce_retries < CKD_INVALID_NONCE_RETRIES => {
+                invalid_nonce_retries += 1;
+                // Short jittered pause so two instances that collided do not re-read the nonce in
+                // lockstep and collide again.
+                let pause_ms = 200 + (rand::random::<u64>() % 500);
+                tracing::warn!(
+                    signer = %signer.account_id,
+                    receiver = %receiver_id,
+                    method = method_name,
+                    nonce,
+                    pause_ms,
+                    "CKD tx rejected with InvalidNonce (concurrent submitter on this account); \
+                     re-reading the nonce and re-submitting once"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(pause_ms)).await;
+                continue;
+            }
             Err(e) => {
                 // Surface the exact RPC/broadcast error. Without this the
                 // whole failure is swallowed: the only thing that reaches
@@ -642,6 +688,7 @@ impl MpcCkdClient {
                 }
                 return Err(anyhow::Error::new(e).context("Failed to call MPC contract"));
             }
+        }
         };
 
         // Check transaction status and extract result
@@ -1320,6 +1367,40 @@ async fn assert_serving_allowed(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod invalid_nonce_tests {
+    use super::*;
+    use near_jsonrpc_client::errors::{JsonRpcError, JsonRpcServerError};
+    use near_jsonrpc_primitives::types::transactions::RpcTransactionError;
+    use near_primitives::errors::InvalidTxError;
+
+    fn handler(context: InvalidTxError) -> JsonRpcError<RpcTransactionError> {
+        JsonRpcError::ServerError(JsonRpcServerError::HandlerError(
+            RpcTransactionError::InvalidTransaction { context },
+        ))
+    }
+
+    #[test]
+    fn invalid_nonce_is_recognised() {
+        assert!(is_invalid_nonce(&handler(InvalidTxError::InvalidNonce { tx_nonce: 7, ak_nonce: 7 })));
+    }
+
+    #[test]
+    fn other_rejects_are_not_retried() {
+        assert!(!is_invalid_nonce(&handler(InvalidTxError::Expired)));
+        assert!(!is_invalid_nonce(&handler(InvalidTxError::NotEnoughBalance {
+            signer_id: "v.near".parse().unwrap(),
+            balance: near_primitives::types::Balance::from_yoctonear(0),
+            cost: near_primitives::types::Balance::from_yoctonear(1),
+        })));
+    }
+
+    #[test]
+    fn one_retry_only() {
+        assert_eq!(CKD_INVALID_NONCE_RETRIES, 1);
+    }
 }
 
 #[cfg(test)]

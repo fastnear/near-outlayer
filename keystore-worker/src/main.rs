@@ -113,13 +113,18 @@ async fn main() -> Result<()> {
         .parse::<bool>()
         .unwrap_or(false);
 
-    // Validate configuration: KEYSTORE_MASTER_SECRET is incompatible with TEE registration
-    if use_tee_registration && std::env::var("KEYSTORE_MASTER_SECRET").is_ok() {
-        tracing::error!("❌ Configuration error: KEYSTORE_MASTER_SECRET cannot be used with USE_TEE_REGISTRATION=true");
-        tracing::error!("   When using TEE registration, the master secret comes from MPC CKD after DAO approval");
-        tracing::error!("   Please remove KEYSTORE_MASTER_SECRET from your .env file");
-        return Err(anyhow::anyhow!("Incompatible configuration: KEYSTORE_MASTER_SECRET with USE_TEE_REGISTRATION=true"));
-    }
+    // Inside a TEE the master can only come from MPC CKD after the DAO vote; every env knob of the
+    // non-TEE path (a provided master, the master dump file) is refused before anything else runs.
+    validate_master_source(&MasterSourceEnv {
+        tee_mode_is_outlayer: config.tee_mode == TeeMode::OutlayerTee,
+        use_tee_registration,
+        has_master_secret: std::env::var_os("KEYSTORE_MASTER_SECRET").is_some(),
+        has_dump_path: std::env::var_os(MASTER_DUMP_PATH_VAR).is_some(),
+    })
+    .map_err(|e| {
+        tracing::error!("❌ Configuration error: {e}");
+        e
+    })?;
 
     // Initialize keystore (temporary if TEE mode)
     let initial_keystore = if use_tee_registration {
@@ -137,62 +142,45 @@ async fn main() -> Result<()> {
     // Create API server
     let app_state = api::AppState::new(initial_keystore, config.clone(), near_client);
 
-    // If in TEE mode, spawn task to handle registration and MPC key retrieval
+    // The public listener is bound only once the instance can serve. The dstack gateway balances a
+    // version's hostname across every instance of that app-id by first successful TCP connect, so
+    // an instance that accepted connections while waiting for its DAO vote would draw traffic it
+    // can only answer with 503. Registration therefore runs to completion here, in the foreground;
+    // an instance that fails it stays alive without a listener (readable logs, no traffic, no
+    // restart loop — a restart would mint a new registration key and a new proposal).
     if use_tee_registration {
-        let state_clone = app_state.clone();
-        let config_clone = config.clone();
-
-        tokio::spawn(async move {
-            tracing::info!("🔐 Starting TEE registration process in background");
-
-            match perform_tee_registration(&config_clone).await {
-                Ok(result) => {
-                    // Order matters: install the real keystore FIRST,
-                    // then publish the MPC context, then flip is_ready.
-                    //
-                    // Why this ordering matters:
-                    //   * Until is_ready, no handler is allowed to run
-                    //     (handler middleware checks the flag).
-                    //   * If we set MPC context before swapping the
-                    //     keystore, any code path that ignored is_ready
-                    //     (or any future bug that did) would see MPC
-                    //     context populated AND the temporary boot
-                    //     keystore still in place — derive_secret_string
-                    //     would HMAC against the wrong master, the
-                    //     resulting per-vault master would be unique to
-                    //     this worker boot, and recovery would break.
-                    //   * Setting context AFTER swap means anyone
-                    //     observing `mpc_ckd_config.get().is_some()` is
-                    //     guaranteed to also see the real default master.
-                    state_clone.replace_keystore(result.keystore).await;
-                    state_clone.set_mpc_context(
-                        result.mpc_ckd_config,
-                        result.keystore_dao_signer,
-                    );
-                    state_clone.mark_ready();
-                    tracing::info!("✅ TEE registration complete! Keystore is now ready to serve requests");
-                }
-                Err(e) => {
-                    tracing::error!("❌ TEE registration failed: {}", e);
-
-                    // Enhanced error debugging when LOG_MASTER_KEY_HASH is set
-                    if std::env::var("LOG_MASTER_KEY_HASH").unwrap_or_default() == "true" {
-                        tracing::error!("🔍 DEBUG: Full error chain:");
-                        let mut source = e.source();
-                        let mut level = 1;
-                        while let Some(err) = source {
-                            tracing::error!("   Level {}: {}", level, err);
-                            source = err.source();
-                            level += 1;
-                        }
-                        tracing::error!("🔍 DEBUG: Error Debug format: {:?}", e);
-                    }
-
-                    tracing::error!("   Keystore will remain in not-ready state");
-                    tracing::error!("   Fix the issue and restart the service");
-                }
+        tracing::info!("🔐 Starting TEE registration process (public port stays closed until ready)");
+        match perform_tee_registration(&config).await {
+            Ok(result) => {
+                // Order matters: install the real keystore FIRST, then publish the MPC context,
+                // then flip is_ready. Anyone observing `mpc_ckd_config.get().is_some()` is thereby
+                // guaranteed to also see the real default master — a per-vault master derived
+                // against the temporary boot keystore would be unique to this boot and unrecoverable.
+                app_state.replace_keystore(result.keystore).await;
+                app_state.set_mpc_context(result.mpc_ckd_config, result.keystore_dao_signer);
+                app_state.mark_ready();
+                tracing::info!("✅ TEE registration complete! Keystore is now ready to serve requests");
             }
-        });
+            Err(e) => {
+                tracing::error!("❌ TEE registration failed: {}", e);
+                if std::env::var("LOG_MASTER_KEY_HASH").unwrap_or_default() == "true" {
+                    tracing::error!("🔍 DEBUG: Full error chain:");
+                    let mut source = e.source();
+                    let mut level = 1;
+                    while let Some(err) = source {
+                        tracing::error!("   Level {}: {}", level, err);
+                        source = err.source();
+                        level += 1;
+                    }
+                    tracing::error!("🔍 DEBUG: Error Debug format: {:?}", e);
+                }
+                tracing::error!(
+                    addr = %config.server_addr,
+                    "   Keystore stays not-ready and the public port is NOT opened; fix the issue and restart the service"
+                );
+                std::future::pending::<()>().await;
+            }
+        }
     }
 
     let router = api::create_router(app_state);
@@ -426,6 +414,91 @@ async fn perform_tee_registration(config: &Config) -> Result<TeeRegistrationResu
     })
 }
 
+/// Non-TEE development only: where `initialize_keystore` writes a freshly generated master so the
+/// developer can carry it into `.env`. The name says so because the value is the raw master; inside
+/// a TEE (`TEE_MODE=outlayer_tee` or `USE_TEE_REGISTRATION=true`) its presence aborts startup.
+const MASTER_DUMP_PATH_VAR: &str = "KEYSTORE_MASTER_SECRET_OUT_PATH_NON_TEE";
+
+/// The env facts that decide where the master may come from.
+struct MasterSourceEnv {
+    tee_mode_is_outlayer: bool,
+    use_tee_registration: bool,
+    has_master_secret: bool,
+    has_dump_path: bool,
+}
+
+/// Refuse every configuration in which a TEE keystore could end up with a master that did not come
+/// from MPC CKD, or could write one to disk. Pure so it can be tested without an environment.
+fn validate_master_source(e: &MasterSourceEnv) -> Result<()> {
+    let in_tee = e.tee_mode_is_outlayer || e.use_tee_registration;
+    if e.tee_mode_is_outlayer && !e.use_tee_registration {
+        anyhow::bail!(
+            "TEE_MODE=outlayer_tee requires USE_TEE_REGISTRATION=true: inside a TEE the master is \
+             derived from MPC CKD after the DAO vote; a locally generated or env-provided master is \
+             never valid there"
+        );
+    }
+    if in_tee && e.has_master_secret {
+        anyhow::bail!(
+            "KEYSTORE_MASTER_SECRET cannot be set in TEE mode (USE_TEE_REGISTRATION=true / \
+             TEE_MODE=outlayer_tee): the master comes from MPC CKD after DAO approval; remove it \
+             from the env"
+        );
+    }
+    if in_tee && e.has_dump_path {
+        anyhow::bail!(
+            "{MASTER_DUMP_PATH_VAR} cannot be set in TEE mode: it exists only for non-TEE \
+             development and writes the raw master secret to a file; remove it from the env"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod master_source_tests {
+    use super::*;
+
+    fn env(tee: bool, reg: bool, secret: bool, dump: bool) -> MasterSourceEnv {
+        MasterSourceEnv {
+            tee_mode_is_outlayer: tee,
+            use_tee_registration: reg,
+            has_master_secret: secret,
+            has_dump_path: dump,
+        }
+    }
+
+    #[test]
+    fn production_tee_config_is_accepted() {
+        assert!(validate_master_source(&env(true, true, false, false)).is_ok());
+    }
+
+    #[test]
+    fn non_tee_dev_may_provide_or_dump_the_master() {
+        assert!(validate_master_source(&env(false, false, true, false)).is_ok());
+        assert!(validate_master_source(&env(false, false, false, true)).is_ok());
+        assert!(validate_master_source(&env(false, false, false, false)).is_ok());
+    }
+
+    #[test]
+    fn tee_mode_without_tee_registration_is_refused() {
+        let err = validate_master_source(&env(true, false, false, false)).unwrap_err();
+        assert!(err.to_string().contains("USE_TEE_REGISTRATION=true"));
+    }
+
+    #[test]
+    fn master_secret_is_refused_in_either_tee_flag() {
+        assert!(validate_master_source(&env(true, true, true, false)).is_err());
+        assert!(validate_master_source(&env(false, true, true, false)).is_err());
+    }
+
+    #[test]
+    fn dump_path_is_refused_in_either_tee_flag() {
+        let err = validate_master_source(&env(true, true, false, true)).unwrap_err();
+        assert!(err.to_string().contains(MASTER_DUMP_PATH_VAR));
+        assert!(validate_master_source(&env(false, true, false, true)).is_err());
+    }
+}
+
 /// Initialize keystore from environment or generate new one
 ///
 /// For non-TEE mode only:
@@ -481,7 +554,7 @@ async fn initialize_keystore(_config: &Config) -> Result<Keystore> {
         // pickup-able by the operator's deploy automation) or, as a
         // last resort, to stderr — bypassing `tracing` entirely so
         // it doesn't reach structured-log destinations.
-        if let Ok(out_path) = std::env::var("KEYSTORE_MASTER_SECRET_OUT_PATH") {
+        if let Ok(out_path) = std::env::var(MASTER_DUMP_PATH_VAR) {
             use std::io::Write as _;
             let mut opts = std::fs::OpenOptions::new();
             opts.write(true).create(true).truncate(true);
@@ -495,14 +568,14 @@ async fn initialize_keystore(_config: &Config) -> Result<Keystore> {
                     let _ = writeln!(f, "KEYSTORE_MASTER_SECRET={master_hex}");
                     tracing::warn!(
                         "Wrote new master to {out_path} (mode 0600). Move it into your .env \
-                         and `unset KEYSTORE_MASTER_SECRET_OUT_PATH` before next start."
+                         and `unset {MASTER_DUMP_PATH_VAR}` before next start."
                     );
                 }
                 Err(e) => {
                     // Fall back to stderr if the file can't be created
                     // — better than losing the secret silently.
                     eprintln!(
-                        "WARN: KEYSTORE_MASTER_SECRET_OUT_PATH={out_path} could not be written ({e}); \
+                        "WARN: {MASTER_DUMP_PATH_VAR}={out_path} could not be written ({e}); \
                          emitting master to stderr instead."
                     );
                     eprintln!("KEYSTORE_MASTER_SECRET={master_hex}");
@@ -521,7 +594,7 @@ async fn initialize_keystore(_config: &Config) -> Result<Keystore> {
             eprintln!();
             eprintln!("Add it to your .env to persist the keystore. Restarting without it");
             eprintln!("regenerates a new master and invalidates every encrypted secret.");
-            eprintln!("Set KEYSTORE_MASTER_SECRET_OUT_PATH=<file> on next start to receive");
+            eprintln!("Set {MASTER_DUMP_PATH_VAR}=<file> on next start to receive");
             eprintln!("the secret in a 0o600 file instead of stderr.");
             eprintln!("=================================================================");
             eprintln!();

@@ -61,6 +61,11 @@ When users want to execute code that requires secrets (API keys, credentials, et
 ## API Endpoints
 
 ### `GET /health`
+
+In TEE mode (`USE_TEE_REGISTRATION=true`) the HTTP port is bound only after the instance is ready
+(DAO approval + MPC-derived master); until then connections are refused. This is what lets the
+dstack gateway balance one hostname across several instances of a version: an instance that is
+still waiting for its vote is simply not connectable.
 Liveness only, no auth. Deliberately carries nothing about fleet state — see
 `/admin/loaded-vaults` for that.
 
@@ -141,6 +146,8 @@ NEAR_CONTRACT_ID=outlayer.testnet
 # Master Secret for Key Derivation
 # Generate: openssl rand -hex 32
 KEYSTORE_MASTER_SECRET=your_master_secret_hex_64_chars
+# optional, non-TEE only: where a generated master is written instead of stderr
+KEYSTORE_MASTER_SECRET_OUT_PATH_NON_TEE=/path/to/master.env
 
 # Worker authentication (SHA256 hashes of bearer tokens)
 ALLOWED_WORKER_TOKEN_HASHES=hash1,hash2,hash3
