@@ -153,8 +153,14 @@ enum CallError {
     /// The instance never answered: connection refused, DNS failure, connection dropped before a
     /// response. The request can be repeated on another instance.
     Unreachable(anyhow::Error),
-    /// The instance answered, or the failure is not about reaching it (a timeout included), so
-    /// moving elsewhere would not help and could double the work.
+    /// The instance took the request and did not answer in time. It may still be working on it,
+    /// so THIS request is not repeated elsewhere — but the instance is marked down, so the next
+    /// request goes to the next one. Without that an instance that accepts connections and never
+    /// answers (a wedged process, a frozen CVM behind a live gateway) would hold every worker on
+    /// it forever, while the other instance idles.
+    Stalled(anyhow::Error),
+    /// The instance answered, or the failure is not about reaching it, so moving elsewhere would
+    /// not help.
     Final(anyhow::Error),
 }
 
@@ -163,7 +169,7 @@ enum CallError {
 /// Every keystore endpoint the worker calls is pure computation on the request, so a request
 /// that never produced a response is safe to repeat elsewhere. A request timeout is the one
 /// exception: the instance may well be working on it, and moving the same work to a second
-/// instance is how a slow dependency turns into a doubled load.
+/// instance is how a slow dependency turns into a doubled load (see [`is_stall`]).
 ///
 /// A connect failure is always a move, including a connect TIMEOUT: a host that is powered off
 /// or frozen drops the SYN and reqwest reports that as both `is_connect()` and `is_timeout()`.
@@ -171,6 +177,11 @@ enum CallError {
 /// exists for.
 fn should_failover(e: &reqwest::Error) -> bool {
     e.is_connect() || !e.is_timeout()
+}
+
+/// A timeout after the connection was made: the request was sent, the answer never came.
+fn is_stall(e: &reqwest::Error) -> bool {
+    e.is_timeout() && !e.is_connect()
 }
 
 /// Status and body of a keystore reply, read in full so the session-expiry check and the caller's
@@ -189,9 +200,10 @@ impl Reply {
 /// Client for keystore worker API
 ///
 /// Holds every keystore instance the worker may use, in preference order. Requests go to the
-/// current instance until it becomes unreachable; then the next reachable one becomes current
-/// and stays current. Sticky on purpose: an instance that died is not tried again unless the one
-/// serving now dies too, so a dead instance costs one connect timeout, not one per request.
+/// current instance until it becomes unreachable or stops answering; then the next reachable one
+/// becomes current and stays current. Sticky on purpose: an instance that died is not tried again
+/// unless the one serving now dies too, so a dead instance costs one connect timeout, not one per
+/// request, and a wedged one costs one request timeout.
 #[derive(Clone)]
 pub struct KeystoreClient {
     instances: Arc<Vec<Instance>>,
@@ -298,7 +310,19 @@ impl KeystoreClient {
         tracing::warn!(
             keystore = %self.instances[i].url,
             error = %format!("{error:#}"),
-            "keystore instance unreachable during {}; moving to the next one",
+            "keystore instance did not answer during {}; moving to the next one",
+            what
+        );
+    }
+
+    /// Record that instance `i` took a request and never answered it: this request fails, the
+    /// next one goes elsewhere.
+    fn stall(&self, i: usize, what: &str, error: &anyhow::Error) {
+        self.instances[i].mark_down();
+        tracing::warn!(
+            keystore = %self.instances[i].url,
+            error = %format!("{error:#}"),
+            "keystore instance did not answer {} in time; this request fails, the next one goes to the next instance",
             what
         );
     }
@@ -325,7 +349,10 @@ impl KeystoreClient {
     /// Direct, not via the coordinator proxy, so the session lands on the instance that will
     /// handle the worker's requests. Tries the instances in preference order and settles on the
     /// first one that answers; an instance that rejects the handshake (an HTTP error) stops the
-    /// attempt, since the next instance would reject the same key for the same reason.
+    /// attempt, since the next instance would reject the same key for the same reason. One that
+    /// does not answer at all — unreachable or silent — is left for the next: a handshake has
+    /// nothing to double, an unused challenge is harmless, and a worker must not fail to start
+    /// because the first instance in its list is wedged.
     pub async fn register_tee_session(
         &self,
         secret_key: &near_crypto::SecretKey,
@@ -337,7 +364,7 @@ impl KeystoreClient {
                     self.settle_on(i);
                     return Ok(session_id);
                 }
-                Err(CallError::Unreachable(e)) => {
+                Err(CallError::Unreachable(e)) | Err(CallError::Stalled(e)) => {
                     self.leave(i, "TEE session registration", &e);
                     unreachable.push(e);
                 }
@@ -442,9 +469,12 @@ impl KeystoreClient {
     /// error: the instance is named in the worker log by `leave`, and the error text may end up in
     /// a job's user-facing failure.
     fn send_error(e: reqwest::Error, what: &str) -> CallError {
+        let stalled = is_stall(&e);
         let failover = should_failover(&e);
         let err = anyhow::Error::new(e.without_url()).context(what.to_string());
-        if failover {
+        if stalled {
+            CallError::Stalled(err)
+        } else if failover {
             CallError::Unreachable(err)
         } else {
             CallError::Final(err)
@@ -490,8 +520,11 @@ impl KeystoreClient {
     ///    before sending, when the worker has a signing key. Without one the request goes out
     ///    with the bearer token only, as it always did outside TEE mode.
     /// 2. **Instance unreachable** (connection refused, DNS, connect timeout, dropped before a
-    ///    reply): mark it down and repeat the request on the next candidate. A slow reply is NOT
-    ///    this case, see [`should_failover`].
+    ///    reply): mark it down and repeat the request on the next candidate. A request that was
+    ///    sent and timed out is NOT repeated (the instance may be working on it) but marks the
+    ///    instance down all the same, so the NEXT request goes to the next candidate; see
+    ///    [`should_failover`] and [`is_stall`]. The handshake in step 1 is repeated on a timeout
+    ///    too — it has nothing to double.
     /// 3. **Session expired** (the keystore's own 403): the keystore restarted and forgot every
     ///    session at once. Re-handshake on the same instance and repeat the request there once.
     ///
@@ -516,7 +549,7 @@ impl KeystoreClient {
             if self.tee_signing_info.is_some() && inst.session().is_none() {
                 match self.establish_session_on(i).await {
                     Ok(()) => {}
-                    Err(CallError::Unreachable(e)) => {
+                    Err(CallError::Unreachable(e)) | Err(CallError::Stalled(e)) => {
                         self.leave(i, what, &e);
                         unreachable.push(e);
                         continue;
@@ -538,6 +571,10 @@ impl KeystoreClient {
                     unreachable.push(e);
                     continue;
                 }
+                Err(CallError::Stalled(e)) => {
+                    self.stall(i, what, &e);
+                    return Err(e);
+                }
                 Err(CallError::Final(e)) => return Err(e),
             };
 
@@ -554,7 +591,7 @@ impl KeystoreClient {
             let status = reply.status;
             match self.establish_session_on(i).await {
                 Ok(()) => {}
-                Err(CallError::Unreachable(e)) => {
+                Err(CallError::Unreachable(e)) | Err(CallError::Stalled(e)) => {
                     self.leave(i, what, &e);
                     unreachable.push(e);
                     continue;
@@ -576,6 +613,10 @@ impl KeystoreClient {
                     self.leave(i, what, &e);
                     unreachable.push(e);
                     continue;
+                }
+                Err(CallError::Stalled(e)) => {
+                    self.stall(i, what, &e);
+                    return Err(e);
                 }
                 Err(CallError::Final(e)) => return Err(e),
             };
@@ -1313,13 +1354,14 @@ mod tests {
         assert_eq!(client.current_endpoint().0, live);
     }
 
-    /// A request timeout is not a reason to move: the instance may be working on the request, and
-    /// the second instance must not receive a copy of it.
+    /// A request timeout is not a reason to repeat the request: the instance may be working on
+    /// it, and the second instance must not receive a copy. But it IS a reason to leave: the
+    /// next request goes to the next instance, or a wedged instance would hold the worker forever.
     #[tokio::test]
-    async fn a_timeout_does_not_move_the_request_to_another_instance() {
+    async fn a_timeout_fails_the_request_and_moves_the_next_one() {
         let (silent, _hold) = silent_url();
-        let (live, server) = fake_keystore_serving(false, 1);
-        let client = client_over(vec![silent, live.clone()])
+        let (live, server) = fake_keystore_serving(false, 3);
+        let client = client_over(vec![silent.clone(), live.clone()])
             .with_request_timeout(Duration::from_millis(300));
         client.set_session_for_test(0, "session-on-silent");
 
@@ -1332,20 +1374,43 @@ mod tests {
             !chain.contains("every keystore instance is unreachable"),
             "a timeout must not be reported as a failover exhaustion, got: {chain}"
         );
+        assert_eq!(
+            client.candidates()[0], 1,
+            "the silent instance must be marked down so the next request goes elsewhere"
+        );
 
-        // Prove the live instance saw nothing from the client: the one request it serves is ours.
-        {
-            use std::io::{Read, Write};
-            let addr = live.trim_start_matches("http://");
-            let mut probe = std::net::TcpStream::connect(addr).expect("probe connect");
-            probe
-                .write_all(b"GET /probe HTTP/1.1\r\nHost: x\r\n\r\n")
-                .expect("probe write");
-            let mut sink = Vec::new();
-            let _ = probe.read_to_end(&mut sink);
-        }
+        let out = client.encrypt("seed", b"plaintext", None).await;
+        assert!(out.is_ok(), "the next request must be served by the live instance, got {out:?}");
+        assert_eq!(client.current_endpoint().0, live);
+
+        // The live instance saw exactly the second request (with its handshake): nothing from
+        // the first one was moved to it.
         let seen = server.join().expect("server thread");
-        assert_eq!(seen, vec!["/probe".to_string()], "the live instance must not have been asked");
+        assert_eq!(
+            seen,
+            vec![
+                "/tee-challenge".to_string(),
+                "/register-tee".to_string(),
+                "/encrypt".to_string(),
+            ]
+        );
+    }
+
+    /// A worker must not fail to start because the first instance in its list accepts the
+    /// connection and never answers the handshake.
+    #[tokio::test]
+    async fn startup_registration_moves_past_a_silent_instance() {
+        let (silent, _hold) = silent_url();
+        let (live, server) = fake_keystore_serving(false, 2);
+        let client = client_over(vec![silent, live.clone()])
+            .with_request_timeout(Duration::from_millis(300));
+        let key = near_crypto::SecretKey::from_random(near_crypto::KeyType::ED25519);
+
+        let session = client.register_tee_session(&key).await.expect("registration");
+
+        let seen = server.join().expect("server thread");
+        assert_eq!(seen, vec!["/tee-challenge".to_string(), "/register-tee".to_string()]);
+        assert_eq!(client.current_endpoint(), (live, Some(session)));
     }
 
     /// With nobody reachable the error names the operation and how many instances were tried,

@@ -17,15 +17,19 @@
 #     register with the same MRTD/RTMR0-2 and different RTMR3 — exactly what a version bump on
 #     the same dstack image looks like. The chain cannot tell the two apart, so the script does
 #     not guess: when such keys exist and no live key was named (KEEP_* / --keep), the run aborts
-#     before printing a plan; once live keys are named, every other key is retired.
+#     before printing a plan; once live keys are named, they are the WHOLE keep set and every
+#     other key is retired — including the stale key an instance left behind when it restarted
+#     (same measurements, new ephemeral key; only the node knows which one is alive).
 #
 # What it retires, in one run:
 #   1. the OLD keys    — `propose_revoke_keystore_keys` (one proposal per <=16 keys, signed by
 #                        zavodil.*). With a single DAO member the proposal executes in the same
 #                        call; with more members the others just vote by id, with the same
 #                        `vote {"proposal_id":N,"approve":true}` used for registrations
-#   2. the OLD images  — allowlist rebuilt to the current image(s), so a retired image can
-#                        never register again (owner-signed, one atomic call)
+#   2. the OLD images  — each removed with `remove_approved_measurements` (owner-signed), so a
+#                        retired image can never register again. The kept images are never
+#                        touched: there is no moment in which the allowlist is empty or partial,
+#                        so an instance that happens to boot mid-run still registers.
 # Both belong here rather than at deploy time: while an old instance is still serving, removing
 # its key or its image breaks it — its registration key is ephemeral, so it cannot re-register
 # after a restart.
@@ -217,14 +221,22 @@ if ambiguous and not forced_keep:
         "`export KEEP_<SITE>=...` line here (or --keep KEY); everything else is then retired.\n"
         + "\n".join(lines))
 
-keep_keys = set(groups[current_img]["keys"]) | set(forced_keep)
+if forced_keep:
+    # Live keys were named: they ARE the keep set. Everything else is retired — an old version,
+    # and also the stale key of a CURRENT-version instance that has restarted since (its new
+    # registration has the same measurements incl. RTMR3, so grouping by image cannot see that
+    # the earlier key died with the earlier boot). The kept images are those the live keys
+    # registered under.
+    keep_keys = set(forced_keep)
+    keep_images = []
+    for k in forced_keep:
+        p = by_key.get(k)
+        if p and p['measurements'] not in keep_images:
+            keep_images.append(p['measurements'])
+else:
+    keep_keys = set(groups[current_img]["keys"])
+    keep_images = [json.loads(current_img)]
 old_keys = [k for k in approved if k not in keep_keys]
-
-keep_images = [json.loads(current_img)]
-for k in forced_keep:
-    p = by_key.get(k)
-    if p and p['measurements'] not in keep_images:
-        keep_images.append(p['measurements'])
 forced_unknown_image = [k for k in forced_keep if k not in by_key]
 
 
@@ -240,8 +252,8 @@ def show(img, g, label):
     w(f"\n{label}  {head}   last registered {stamp(g['latest'])}   {len(g['keys'])} key(s)\n")
     for k in sorted(g['keys']):
         missing = "" if k in account_fc else "  (not on the account)"
-        forced = "  [--keep]" if k in forced_keep and img != current_img else ""
-        w(f"    {k}{missing}{forced}\n")
+        tag = "  [keep]" if k in keep_keys else "  [revoke]"
+        w(f"    {k}{missing}{tag}\n")
 
 
 w(f"\nDAO {DAO}  —  {len(approved)} approved key(s) in {len(groups)} image group(s), "
@@ -276,14 +288,14 @@ for n in range(0, len(old_keys), BATCH):
           f"sign-as {SIGNER} network-config {NETWORK} sign-with-legacy-keychain send")
 
 if forced_unknown_image:
-    w("\nImage cleanup SKIPPED: a --keep key has no readable proposal, so its image cannot be "
-      "re-added and rebuilding the allowlist could strand it.\n")
+    w("\nImage cleanup SKIPPED: a kept key has no readable proposal, so its image is unknown and "
+      "any approved image could be the one it runs on.\n")
 elif stale_images:
-    # clear_others=true on the first call replaces the whole list atomically — the kept images
-    # go back in the same transaction, so there is never a moment without them.
-    for idx, m in enumerate(keep_images):
-        args = json.dumps({"measurements": m, "clear_others": idx == 0})
-        print(f"near contract call-function as-transaction {DAO} add_approved_measurements "
+    # One removal per stale image, never a rebuild: the kept images stay on the list throughout,
+    # so a keystore booting between two of these calls still finds its measurements approved.
+    for m in stale_images:
+        args = json.dumps({"measurements": m})
+        print(f"near contract call-function as-transaction {DAO} remove_approved_measurements "
               f"json-args '{args}' prepaid-gas '30.0 Tgas' attached-deposit '0 NEAR' "
               f"sign-as {OWNER} network-config {NETWORK} sign-with-legacy-keychain send")
 
