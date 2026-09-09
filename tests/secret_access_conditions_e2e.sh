@@ -138,14 +138,29 @@ CANARY="canary-$(openssl rand -hex 6)"
 # a different gate, and the ciphertext stays valid. That is what lets this suite
 # set conditions the CLI has no flag for.
 store_profile() { # store_profile <profile> <access-json>
-  local profile=$1 access=$2 blob
+  local profile=$1 access=$2 blob view_args before after record
+  view_args=$(jq -nc --arg p "$PROJECT" --arg pr "$profile" --arg o "$PARENT" \
+    '{accessor:{Project:{project_id:$p}}, profile:$pr, owner:$o}')
+  # `updated_at` of whatever is on chain now (0 when the profile does not exist yet), so the
+  # wait below can tell THIS run's write from the previous run's record.
+  before=$(near_view "$CONTRACT_ID" get_secrets "$view_args" | jq -r '.updated_at // 0')
   OUTLAYER_NETWORK="$NETWORK" outlayer secrets set --project "$PROJECT" --profile "$profile" \
     "$(jq -nc --arg c "$CANARY" '{SECRET:$c}')" >/dev/null 2>&1 \
     || { echo "✗ could not store profile $profile" >&2; exit 1; }
-  blob=$(near_view "$CONTRACT_ID" get_secrets \
-        "$(jq -nc --arg p "$PROJECT" --arg pr "$profile" --arg o "$PARENT" \
-           '{accessor:{Project:{project_id:$p}}, profile:$pr, owner:$o}')" \
-        | jq -r '.encrypted_secrets // empty')
+  # `secrets set` returns once the transaction is EXECUTED (optimistic); `near_view` reads with
+  # finality "final". Read too early and the view still shows the PREVIOUS run's blob, and the
+  # re-store below would carry that old ciphertext under the new gate — the module then reads a
+  # canary from a run that is not this one. So wait for the write to become final.
+  after=$before
+  for _ in $(seq 1 15); do
+    record=$(near_view "$CONTRACT_ID" get_secrets "$view_args")
+    after=$(jq -r '.updated_at // 0' <<<"$record")
+    [[ "$after" != "$before" ]] && break
+    sleep 2
+  done
+  [[ "$after" != "$before" ]] \
+    || { echo "✗ $profile: the stored secret never became final (updated_at still $before)" >&2; exit 1; }
+  blob=$(jq -r '.encrypted_secrets // empty' <<<"$record")
   [[ -n "$blob" ]] || { echo "✗ $profile stored nothing readable" >&2; exit 1; }
   near --quiet contract call-function as-transaction "$CONTRACT_ID" store_secrets \
     json-args "$(jq -nc --arg p "$PROJECT" --arg pr "$profile" --arg b "$blob" --argjson a "$access" \
