@@ -747,49 +747,75 @@ async fn worker_iteration(
 
     // Resolve code_source: either from request directly, or from project_id via contract
     // Also resolve project_uuid if resolving from project
-    // Always normalize to ensure repo URL has https:// prefix
-    // Code is resolved from the CHAIN. An HTTPS job may not name its own (§C3).
-    if refuses_own_code_source(is_https_call, execution_request.code_source.is_some()) {
-        anyhow::bail!(
-            "Refusing an HTTPS job that names its own code_source. Code is resolved \
-from the contract on this path, so a job carrying one did not come from the \
-coordinator's own flow."
-        );
-    }
+    // Code is resolved from the CHAIN (§C3). An HTTPS job's own `code_source` is
+    // never taken on trust: it is accepted only when it is exactly what the chain
+    // names for the project — the compile-queue task the coordinator builds for
+    // an HTTPS call carries the chain's answer as a copy, and that is the one
+    // legitimate case. Anything else is somebody naming code for a project.
+    let provided_source = execution_request.code_source.clone().map(|cs| cs.normalize());
+    let (code_source, resolved_project_uuid): (api_client::CodeSource, Option<String>) = match provided_source {
+        // Blockchain requests arrive from the contract with their source and run as given.
+        Some(cs) if !is_https_call => (cs, None),
+        provided => {
+            let project_id = match execution_request.project_id.as_ref() {
+                Some(p) => p,
+                None => {
+                    let msg = "No code_source and no project_id in request";
+                    if refuse_https_call(api_client, is_https_call, call_id.as_deref(), msg).await {
+                        return Ok(true);
+                    }
+                    anyhow::bail!(msg);
+                }
+            };
 
-    let (code_source, resolved_project_uuid): (api_client::CodeSource, Option<String>) = match execution_request.code_source.clone() {
-        Some(cs) => (cs.normalize(), None), // code_source provided directly, no uuid from resolution
-        None => {
-            // No code_source - resolve from project_id (HTTPS API flow)
-            let project_id = execution_request.project_id.as_ref()
-                .ok_or_else(|| anyhow::anyhow!("No code_source and no project_id in request"))?;
-
-            match resolve_code_source_from_project(near_client, project_id, execution_request.version_key.as_deref()).await {
+            let resolved = match resolve_code_source_from_project(near_client, project_id, execution_request.version_key.as_deref()).await {
                 Ok(resolved) => {
                     info!("✅ Resolved project_uuid={} from project_id={}", resolved.project_uuid, project_id);
-                    (resolved.code_source.normalize(), Some(resolved.project_uuid))
+                    resolved
                 }
                 Err(e) => {
-                    // If this is an HTTPS call, report the error back to coordinator
-                    if is_https_call {
-                        if let Some(ref cid) = call_id {
-                            error!("❌ Failed to resolve project for HTTPS call {}: {}", cid, e);
-                            if let Err(report_err) = api_client.complete_https_call(
-                                cid,
-                                false,
-                                None,
-                                Some(format!("Failed to resolve project: {}", e)),
-                                0,
-                                0,
-                                None, // No job_id yet - early error
-                            ).await {
-                                error!("❌ Failed to report HTTPS call error: {}", report_err);
-                            }
-                        }
+                    if refuse_https_call(api_client, is_https_call, call_id.as_deref(), &format!("Failed to resolve project: {}", e)).await {
+                        return Ok(true);
                     }
                     return Err(e);
                 }
+            };
+            let chain_source = resolved.code_source.normalize();
+
+            if refuses_own_code_source(is_https_call, provided.as_ref(), &chain_source)
+                && !config.capabilities.can_execute()
+            {
+                // A compile-only worker never runs anything: its whole job is
+                // to cache what the chain names, and the executor resolves and
+                // checks the chain again on its own. So a task whose copy has
+                // gone stale (a version published between the coordinator's
+                // resolution and this one) is not refused here — the chain's
+                // answer is cached instead, which is what the executor will
+                // ask for. Refusing would also go unreported: the call
+                // completion endpoint needs a TEE session, which a
+                // compile-only worker does not hold.
+                warn!(
+                    "compile task names a code_source other than the contract's; caching the contract's. contract={:?} task={:?}",
+                    chain_source, provided
+                );
+            } else if refuses_own_code_source(is_https_call, provided.as_ref(), &chain_source) {
+                // Both sources are named so a mismatch can be told apart from an
+                // attack: a version published between the coordinator's
+                // resolution and this one looks exactly like a forged task, and
+                // only the two values say which it was.
+                let msg = format!(
+                    "Refusing an HTTPS job whose code_source is not what the contract names for \
+this project. Code is resolved from the chain on this path, so a job naming other code did not \
+come from the coordinator's own flow. contract={:?} task={:?}",
+                    chain_source, provided
+                );
+                if refuse_https_call(api_client, is_https_call, call_id.as_deref(), &msg).await {
+                    return Ok(true);
+                }
+                anyhow::bail!(msg);
             }
+
+            (chain_source, Some(resolved.project_uuid))
         }
     };
 
@@ -3482,16 +3508,61 @@ async fn run_contract_system_callbacks_handler(
 /// for any connector published under the curated namespace, which is the shape
 /// we would move to.
 ///
-/// On the HTTPS path the coordinator builds the job and never sets the field, so
-/// a job that arrives with one did not come from the flow we built. Nothing
-/// legitimate is refused today; the property now holds by construction rather
-/// than by the coordinator continuing to choose not to.
+/// On the HTTPS path the code is whatever the CONTRACT names for the project, and
+/// the worker resolves it itself. The one HTTPS task that legitimately carries a
+/// `code_source` is the coordinator's compile-queue task for an uncached version
+/// — a copy of the chain's answer so the compile worker can download without
+/// resolving — and it is accepted only because the resolution here finds it
+/// identical. The execute task the coordinator re-queues after that download
+/// carries none (`requeued_code_source` in the coordinator). A job naming
+/// anything else is refused, and the refusal is reported back on the call so it
+/// fails now rather than waiting for the stale sweeper.
 ///
 /// A function rather than an inline condition so the test can exercise the rule
 /// that actually runs. Written inline, the rule could be deleted from the job
 /// path and a test asserting the same expression would keep passing.
-fn refuses_own_code_source(is_https_call: bool, has_code_source: bool) -> bool {
-    is_https_call && has_code_source
+/// Refuse an HTTPS job before it is claimed, and SAY SO on the call.
+///
+/// Refused before the claim, nothing downstream would ever settle the call:
+/// without this report it sits `pending` until the stale sweeper bills it as a
+/// timeout an hour later. A refusal is an answer, and the caller gets it now.
+/// Blockchain jobs have no call to answer on and are left to the contract.
+/// Returns whether the call was answered. `true` means the task is DONE — the
+/// caller has its refusal — and the iteration should end as handled rather
+/// than as a failure, which would park the whole executor for the error
+/// back-off. `false` (not an HTTPS job, no call_id, or the report itself
+/// failed) leaves the caller to fail the iteration as before.
+async fn refuse_https_call(api_client: &ApiClient, is_https_call: bool, call_id: Option<&str>, msg: &str) -> bool {
+    if !is_https_call {
+        return false;
+    }
+    match call_id {
+        Some(cid) => match api_client
+            .complete_https_call(cid, false, None, Some(msg.to_string()), 0, 0, None)
+            .await
+        {
+            Ok(()) => true,
+            Err(e) => {
+                error!("❌ Failed to report the refused HTTPS call {}: {}", cid, e);
+                false
+            }
+        },
+        None => {
+            error!("❌ HTTPS job refused with no call_id to report on: {}", msg);
+            false
+        }
+    }
+}
+
+fn refuses_own_code_source(
+    is_https_call: bool,
+    provided: Option<&api_client::CodeSource>,
+    chain: &api_client::CodeSource,
+) -> bool {
+    match provided {
+        Some(named) if is_https_call => named != chain,
+        _ => false,
+    }
 }
 
 /// The curated connector namespace for the network this worker serves (§14.1).
@@ -4154,20 +4225,35 @@ mod verified_sender_tests {
     /// On the HTTPS path the coordinator builds the job and never sets the
     /// field, so anything that arrives with one came from somewhere else.
     #[test]
-    fn only_an_https_job_is_refused_its_own_code_source() {
+    fn only_an_https_job_naming_other_code_is_refused() {
+        use api_client::CodeSource;
+        let chain = CodeSource::WasmUrl {
+            url: "https://test.fastfs.io/a.wasm".into(),
+            hash: "aa".into(),
+            build_target: "wasm32-wasip2".into(),
+        };
+        let other = CodeSource::WasmUrl {
+            url: "https://evil.example/b.wasm".into(),
+            hash: "bb".into(),
+            build_target: "wasm32-wasip2".into(),
+        };
         let refuses = refuses_own_code_source;
 
         assert!(
-            refuses(true, true),
-            "an HTTPS job may not name its own code: the coordinator never sets one"
+            refuses(true, Some(&other), &chain),
+            "an HTTPS job may not name code other than what the contract names for the project"
         );
-        assert!(!refuses(true, false), "the ordinary HTTPS job is untouched");
         assert!(
-            !refuses(false, true),
+            !refuses(true, Some(&chain), &chain),
+            "the coordinator's compile-queue task carries the chain's own answer and runs"
+        );
+        assert!(!refuses(true, None, &chain), "the ordinary HTTPS job is untouched");
+        assert!(
+            !refuses(false, Some(&other), &chain),
             "on chain the contract fills this field — refusing it would refuse every \
              legitimate project execution, connectors included"
         );
-        assert!(!refuses(false, false));
+        assert!(!refuses(false, None, &chain));
     }
 
     /// §14.1: the connector namespace is per-network, and picking the wrong one

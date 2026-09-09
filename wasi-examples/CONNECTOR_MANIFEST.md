@@ -202,9 +202,12 @@ wasm-tools print target/wasm32-wasip2/release/your-connector.wasm \
 ## After publishing
 
 The version's wasm hash is what the contract stores, so a manifest change is a
-new version. Users on the old one keep the old allowlist until they move —
-which is the point (§4.3): code that reaches new places is not something that
-should arrive without anyone agreeing to it.
+new version. On an ordinary project a caller may keep pinning the old one with
+`version_key` and keeps its old allowlist with it. A **connector** is different:
+it always runs its active version and a pin is refused (`invalid_version_key`),
+so a new active version — and its allowlist and declared limits — applies to
+every caller at once. To take a version out of service entirely, switch the
+active version and `remove_version` it on chain.
 
 ## Getting listed as a connector
 

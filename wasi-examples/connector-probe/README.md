@@ -3,11 +3,12 @@
 A connector that does nothing useful, so that everything **around** a connector
 can be tested.
 
-near.email is the only real connector and it is mainnet-only, which leaves the
-whole connector path unexercisable on testnet: pricing, the fixed fee per
-firing, the per-operation caps, the owner's secret, the outbound allowlist. This
-one is published like a connector, priced like a connector and metered like a
-connector — and reports back what it saw.
+The real connectors need something outside the platform to answer — near.email
+is mainnet-only, Mercury needs a bank account — which leaves the connector path
+itself unexercisable by them alone: pricing, the fixed fee per firing, the
+per-operation caps, the owner's secret, the outbound allowlist. This one is
+published like a connector, priced like a connector and metered like a
+connector — and reports back what it saw, with nothing external in the way.
 
 **Testnet only.** The registry lists it on testnet and nowhere else
 (`ConnectorProbe::networks` in the coordinator), so on mainnet nothing at

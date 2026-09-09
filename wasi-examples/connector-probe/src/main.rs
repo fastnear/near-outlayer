@@ -1,11 +1,12 @@
 //! A connector that does nothing useful, so that everything AROUND a connector
 //! can be tested.
 //!
-//! near.email is the only real connector, and it is mainnet-only — which leaves
-//! the whole connector path untestable on testnet. This one exists to fill that
-//! gap: it is published like a connector, priced like a connector, metered like
-//! a connector, and it carries a manifest with a real outbound allowlist. What
-//! it does with all that is report back.
+//! The real connectors need something outside the platform to answer (near.email
+//! is mainnet-only, Mercury needs a bank account), so none of them can test the
+//! connector path by itself. This one exists to fill that gap: it is published
+//! like a connector, priced like a connector, metered like a connector, and it
+//! carries a manifest with a real outbound allowlist. What it does with all
+//! that is report back.
 //!
 //! ## What each operation is for
 //!

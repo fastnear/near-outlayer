@@ -129,7 +129,7 @@ pub struct ExecutionRequest {
     pub wallet_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum CodeSource {
     GitHub {

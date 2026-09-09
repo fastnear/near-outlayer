@@ -74,6 +74,16 @@ is a defaulted price and the cheapest one is what an attacker would pick.
 
 An operation with no on-chain price is refused too. Unpriced is not free.
 
+**A connector runs its active version, and only that.** The `version_key` a
+call may otherwise use to pin a published version is refused on a connector
+project (`invalid_version_key`, 400). An older version would run an older
+manifest — its network allowlist and its declared limits — and older code
+under the curated name, and its manifest report would replace the connector's
+declared limits for every caller until the active version ran again. To take a
+version out of service, switch the active version and `remove_version` it on
+chain; publishing a fix alone leaves the old one callable on ordinary projects,
+and never callable on a connector.
+
 Two constraints come with the format: a priced project's request must be a JSON
 object, and on chain it must be at most **10 KB** — the contract parses it, and
 the caller's gas pays for that. A connector that moves more than that takes a
