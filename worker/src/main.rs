@@ -942,14 +942,23 @@ coordinator's own flow."
                         StatusQuery::ExtensionAndCodeHash => {
                             let code = near_client.fetch_code_hash(claimed).await;
                             let enabled = near_client.fetch_extension_enabled(claimed, payer).await;
-                            match (code, enabled) {
-                                (Ok(code_hash), Ok(extension_enabled)) => {
+                            // Whether the build is recognized is the
+                            // coordinator's list, not this binary's; a list
+                            // that cannot be fetched recognizes nothing and
+                            // the verdict is the reversible `CodeHashUnknown`.
+                            let recognized = api_client.wallet_code_hashes().await;
+                            match (code, enabled, recognized) {
+                                (Ok(code_hash), Ok(extension_enabled), Ok(recognized)) => {
+                                    let code_recognized = recognized
+                                        .iter()
+                                        .any(|h| h == &bs58::encode(code_hash).into_string());
                                     Ok(ChainObservation::PersonalAccount(PlainStatus {
                                         extension_enabled,
                                         code_hash,
+                                        code_recognized,
                                     }))
                                 }
-                                (Err(e), _) | (_, Err(e)) => Err(format!(
+                                (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => Err(format!(
                                     "Refusing to run as '{}': cannot verify the binding on chain ({})",
                                     claimed, e
                                 )),

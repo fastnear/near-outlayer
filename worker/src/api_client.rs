@@ -1906,6 +1906,38 @@ impl ApiClient {
         Ok(())
     }
 
+    /// The wallet builds the coordinator recognizes for `personal_account`
+    /// bindings, base58 code hashes. The crate's verdict on a bound account
+    /// needs the deployment's answer to "is this build recognized?", and that
+    /// list is data in the coordinator's database — not a constant in this
+    /// binary, so a new wallet build costs a row there rather than a worker
+    /// release. Read per bound run; the path is rare and the answer small.
+    pub async fn wallet_code_hashes(&self) -> Result<Vec<String>> {
+        let url = format!("{}/internal/wallet-code-hashes", self.base_url);
+        let response = self
+            .add_wallet_internal_auth(self.client.get(&url))
+            .send()
+            .await
+            .context("Failed to fetch the recognized wallet code hashes")?;
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            anyhow::bail!("Fetching wallet code hashes failed: {}", error_text);
+        }
+        #[derive(serde::Deserialize)]
+        struct Row {
+            code_hash: String,
+        }
+        #[derive(serde::Deserialize)]
+        struct Body {
+            code_hashes: Vec<Row>,
+        }
+        let body: Body = response
+            .json()
+            .await
+            .context("Failed to parse the recognized wallet code hashes")?;
+        Ok(body.code_hashes.into_iter().map(|r| r.code_hash).collect())
+    }
+
     /// Notify coordinator that a wallet policy was deleted on-chain.
     pub async fn notify_wallet_policy_deleted(
         &self,

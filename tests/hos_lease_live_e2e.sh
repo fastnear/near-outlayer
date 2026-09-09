@@ -81,7 +81,7 @@ USDC="${USDC:-usdc.fakes.testnet}"                  # granted token, budget 100 
 # clients as if it were established — which is exactly why a fixture should not
 # carry a convenient fiction.
 OWNER="${OWNER:-council.tlademo.testnet}"
-IMPL_VERSION="${IMPL_VERSION:-6}"                   # from the live hos_agent_status
+IMPL_VERSION="${IMPL_VERSION:-7}"                   # from the live hos_agent_status (impl v7 since 2026-09-09)
 OUTSIDER="${OUTSIDER:-outsider-nobody.testnet}"    # never in the grant
 EXPECTED_EXECUTOR="${EXPECTED_EXECUTOR:-5356b2c04da3aa5f134ae59d12e72f5df6ce25db24ffa968c74c8843e325806a}"
 NATIVE_BUDGET="${NATIVE_BUDGET:-5000000000000000000000000}"   # 5 NEAR on alpha

@@ -45,16 +45,31 @@ Ordered by what it costs, not by how it reads.
 |---|---|
 | **Spends our money** | `POST /admin/grant-payment-key` — funds an existing key from our balance. It cannot CREATE a key and a grant cannot be withdrawn or forwarded to a developer (`is_grant`), so the loss is bounded by compute the attacker can burn. |
 | **Breaks operations** | `DELETE /admin/workers/{worker_id}`, `DELETE /admin/grant-keys/{owner}/{nonce}` — remove records other things rely on. |
-| **Widens what the coordinator concludes** | `POST /admin/binding-zones`, `POST /admin/hos-impl-code-hashes` — see below; both are lists whose growth relaxes a check. |
+| **Widens what the coordinator concludes** | `POST /admin/binding-zones`, `POST /admin/hos-impl-code-hashes`, `POST /admin/hos-impl-versions`, `POST /admin/wallet-code-hashes` — see below; all are lists whose growth relaxes a check. |
 | **Reads customer data** | `GET /admin/earnings`, `/admin/connector-calls`, `/admin/egress-audit`, `/admin/compile-logs/{job_id}`, `/admin/health/detailed`. Egress audit is every outbound attempt every guest made. |
-| **Harmless to repeat** | `POST /admin/collateral/check`, `GET /admin/collateral/status`, `POST /admin/keystore-stats/refresh`, `POST /admin/connector-prices/refresh` — refreshes and reads, idempotent by construction. |
+| **Harmless to repeat** | `POST /admin/collateral/check`, `GET /admin/collateral/status`, `GET /admin/binding-implementations`, `POST /admin/keystore-stats/refresh`, `POST /admin/connector-prices/refresh` — refreshes and reads, idempotent by construction. |
 
-## The two allowlists
+## The allowlists
 
-Both are live tables rather than environment variables, because both change when
-a partner ships something and a coordinator restart is a worse thing to need
-than a row. They move in **opposite safety directions**, which is the only thing
-worth memorising about them.
+All of them are live tables rather than environment variables or constants,
+because all of them change when a partner ships something, and a coordinator
+restart — let alone a keystore or worker release — is a worse thing to need than
+a row. The rule that put them here: the enclave carries only what it *does*
+(decoders, verification logic); who the counterparties *are* (which code, which
+version, which zone) is data with an audit trail. They move in **opposite
+safety directions**, which is the only thing worth memorising about them.
+
+Four lists, one question each:
+
+| List | Mode | Question it answers |
+|---|---|---|
+| `/admin/binding-zones` | both | which account names the lifecycle webhook may speak about |
+| `/admin/hos-impl-code-hashes` | `hos_lease` | which implementation code we recognize on a leased account |
+| `/admin/hos-impl-versions` | `hos_lease` | which nested-request decoder reads each partner `impl_version` |
+| `/admin/wallet-code-hashes` | `personal_account` | which wallet builds we recognize on an owner's own account |
+
+`GET /admin/binding-implementations` reads what every live binding runs right
+now and holds it against the lists — the operator's early warning.
 
 ### `/admin/binding-zones` — where a revoke webhook may point
 
@@ -158,6 +173,76 @@ is by definition not a partner implementation — so the first hash added suspen
 its bindings and the suite goes red. List the stub's implementation beside the
 partner's: run the suite with `KEEP=1` and
 `POST {"from_account": "<the stub account it printed>"}` while it is up.
+
+### `/admin/hos-impl-versions` — which decoder reads each partner version
+
+A decoder is CODE: the frozen wire structs of one `w_execute_extension` request
+schema, compiled into the shared crate and therefore into the keystore's
+measured image (`hos::DECODERS`, today `[1]`). Which partner `impl_version` a
+decoder reads is DATA, and it lives here — the partner renumbers on every
+redeploy of their implementation whether or not the wire changed, and a mapping
+compiled into the enclave made each of their releases a release of ours.
+
+```
+GET    /admin/hos-impl-versions
+POST   /admin/hos-impl-versions      {"impl_version": 7, "decoder_version": 1, "note": "..."}
+DELETE /admin/hos-impl-versions/{impl_version}
+```
+
+The listing carries `decoders`: the decoder numbers the running build carries. A
+`POST` naming any other decoder is refused — a row like that would let PUTs
+through and have every signature refused at the enclave, the same lock one step
+later and harder to read.
+
+**A row is added on the partner's word, never on the chain's.** The chain
+reporting a new number says nothing about the schema behind it; a schema read by
+the previous decoder parses and means something else, which is exactly the
+failure the version gate exists to refuse. Ask, then add.
+
+What a missing row does: every binding whose account reports that version goes
+`suspended` (`unsupported_wallet_implementation`, reversible), and a `PUT`
+stating it is refused with the supported set named. Adding the row brings the
+lanes back with nothing rebuilt. `DELETE` narrows — safe in a hurry.
+
+### `/admin/wallet-code-hashes` — wallet builds we recognize
+
+The `personal_account` analogue of the leased hash list: the wasm code hashes
+of the upstream wallet contract an owner installs on their own account. A build
+the owner installs that is not listed fails verification with the reversible
+`unrecognized_wallet_code`; adding the row — or the owner restoring a listed
+build — brings the binding back.
+
+```
+GET    /admin/wallet-code-hashes
+POST   /admin/wallet-code-hashes     {"from_account": "...", "note": "..."}
+                                     {"code_hash": "...",    "note": "..."}
+DELETE /admin/wallet-code-hashes/{code_hash}
+```
+
+Same request shape as the leased list (`from_account` follows a global-contract
+reference, the no-code sentinel is refused). One difference in the empty case:
+**an empty table recognizes nothing.** The personal mode has no other evidence of
+what an account runs, so it cannot fall back to "conclude nothing" the way the
+leased list does; the migration seeds the build the profile was written against.
+
+The worker reads this list too (`GET /internal/wallet-code-hashes`,
+worker-token authenticated): it verifies a bound account on chain with the same
+crate verdict before running as it, and that verdict needs the deployment's
+answer to "is this build recognized?".
+
+### `GET /admin/binding-implementations` — what the live bindings run
+
+On demand, like the collateral check: one or two view calls per live binding,
+nothing cached, nothing changed. For each binding: the code hash the account
+actually runs (through the global-contract reference where there is one) and
+whether the relevant list has it; for leased accounts also the `impl_version`
+the account reports now, the one recorded at PUT, and whether a row maps it.
+
+Three counts at the top — `unrecognized_code`, `unmapped_versions`,
+`unreadable` — are the numbers to alarm on. The first two mean a partner
+shipped: every lane behind them is, or is about to be, suspended by a fact one
+`POST` above fixes. Poll it from the status page rather than waiting for a
+binding to read `pending` with no reason on it.
 
 ## Adding an admin route
 

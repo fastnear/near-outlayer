@@ -71,7 +71,7 @@ command -v python3 >/dev/null || { echo "✗ python3 required (yocto arithmetic)
 ASSET="${ASSET:-bravo.tlademo.testnet}"
 RECEIVER="${RECEIVER:-hos-e2e-receiver.testnet}"
 OWNER="${OWNER:-council.tlademo.testnet}"          # nft_item_info.owner_id, read by RPC 2026-09-03
-IMPL_VERSION="${IMPL_VERSION:-6}"
+IMPL_VERSION="${IMPL_VERSION:-7}"                    # from the live hos_agent_status (impl v7 since 2026-09-09)
 EXPECTED_EXECUTOR="${EXPECTED_EXECUTOR:-68f651d8d40d75c75e3831f2bde3a13155261d6d466b47ecc25dd86e00f47f41}"
 NATIVE_BUDGET="${NATIVE_BUDGET:-20000000000000000000000000}"  # 20 NEAR, as HoS announced
 OTHER_COLL="${OTHER_COLL:-nft.fakes.testnet}"      # never in the grant

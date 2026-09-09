@@ -1195,14 +1195,17 @@ pub struct WalletSignRequest {
     #[serde(default)]
     pub usage: Option<serde_json::Value>,
     /// Agent Connect: which binding mode the coordinator believes this wallet
-    /// operates in, and — for the leased mode — the wallet implementation
-    /// version the bound account runs. Both are CLAIMS: the enclave has no
-    /// chain access, so it cannot check them, only refuse what it cannot
-    /// evaluate. See `binding::signing_version_gate` for what that buys.
+    /// operates in, and — for the leased mode — the DECODER the coordinator
+    /// resolved for the bound account's implementation version through its
+    /// `hos_impl_versions` table. Both are CLAIMS: the enclave has no chain
+    /// access, so it cannot check them, only refuse what it cannot evaluate —
+    /// and it evaluates by decoder, not by partner version, so a partner
+    /// release that changes nothing on the wire never reaches this image. See
+    /// `binding::signing_version_gate` for what that buys.
     #[serde(default)]
     pub binding_kind: Option<String>,
     #[serde(default)]
-    pub impl_version: Option<u32>,
+    pub decoder_version: Option<u32>,
 }
 
 /// Supplementary signing material — see `WalletSignRequest::artifact`.
@@ -1300,7 +1303,7 @@ pub struct WalletCheckPolicyRequest {
     #[serde(default)]
     pub binding_kind: Option<String>,
     #[serde(default)]
-    pub impl_version: Option<u32>,
+    pub decoder_version: Option<u32>,
 }
 
 /// Response from policy check. The decrypted policy is NEVER returned — it does not
@@ -5596,7 +5599,7 @@ async fn wallet_sign_handler(
         if let Err(reason) = shared_tee_helpers::binding::signing_version_gate(
             method,
             req.binding_kind.as_deref(),
-            req.impl_version,
+            req.decoder_version,
         ) {
             return Err(ApiError::Forbidden(reason));
         }
@@ -6211,7 +6214,7 @@ async fn wallet_check_policy_handler(
         if let Err(reason) = shared_tee_helpers::binding::signing_version_gate(
             method,
             req.binding_kind.as_deref(),
-            req.impl_version,
+            req.decoder_version,
         ) {
             return Ok(Json(WalletCheckPolicyResponse {
                 allowed: false,
