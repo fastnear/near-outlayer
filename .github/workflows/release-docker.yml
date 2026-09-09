@@ -5,6 +5,13 @@ on:
     tags:
       - 'v*'
 
+# One run per ref, ever. GitHub occasionally delivers a tag push twice; two
+# builds then race for the same image tags and attest two different digests,
+# and the release body names only one of them.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   attestations: write
   id-token: write
