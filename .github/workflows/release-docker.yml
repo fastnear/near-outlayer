@@ -15,17 +15,17 @@ jobs:
   build-worker:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - id: build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/Dockerfile.worker-phala
@@ -35,7 +35,7 @@ jobs:
             ${{ vars.DOCKERHUB_USERNAME }}/near-outlayer-worker:latest
           platforms: linux/amd64
 
-      - uses: actions/attest-build-provenance@v1
+      - uses: actions/attest-build-provenance@v4
         with:
           subject-name: "docker.io/${{ vars.DOCKERHUB_USERNAME }}/near-outlayer-worker"
           subject-digest: ${{ steps.build.outputs.digest }}
@@ -50,17 +50,17 @@ jobs:
   build-keystore:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - id: build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/Dockerfile.keystore-phala
@@ -70,7 +70,7 @@ jobs:
             ${{ vars.DOCKERHUB_USERNAME }}/near-outlayer-keystore:latest
           platforms: linux/amd64
 
-      - uses: actions/attest-build-provenance@v1
+      - uses: actions/attest-build-provenance@v4
         with:
           subject-name: "docker.io/${{ vars.DOCKERHUB_USERNAME }}/near-outlayer-keystore"
           subject-digest: ${{ steps.build.outputs.digest }}
@@ -86,7 +86,7 @@ jobs:
     needs: [build-worker, build-keystore]
     runs-on: ubuntu-latest
     steps:
-      - uses: softprops/action-gh-release@v1
+      - uses: softprops/action-gh-release@v3
         with:
           body: |
             ## Docker Images with Sigstore Attestation
