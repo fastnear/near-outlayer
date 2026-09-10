@@ -84,6 +84,7 @@ async fn derive_ephemeral_key_handler(
         return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
     }
 
+    crate::api::validate_wallet_id(&req.wallet_id)?;
     if req.sub_path.is_empty() {
         return Err(ApiError::BadRequest(
             "sub_path must not be empty — use derive-address for main wallet keys".to_string(),

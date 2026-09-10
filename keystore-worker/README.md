@@ -381,6 +381,42 @@ Production-ready security features:
 - Audit logging for all decrypt operations
 - Monitoring and alerting via coordinator
 
+### Adding a key family
+
+Every key this keystore holds is `HMAC-SHA256(master, seed)` over a seed
+STRING, and the two curves — ed25519 (`derive_keypair`) and secp256k1
+(`derive_secp256k1_keypair`) — feed the seed into the HMAC without a curve tag.
+So two seeds that are the same string are the same key, whatever curve or
+endpoint asked for it. The seed namespace is flat, and what keeps families of
+keys apart is only the shape of their strings. Three consequences for anyone
+adding a family:
+
+1. **Know which endpoints hand out private material.** Today exactly one does:
+   `/wallet/derive-ephemeral-key` (payment checks). It builds
+   `wallet:{id}:{chain}:{sub_path}` from two request strings and returns the
+   private key. Any signing key whose seed that endpoint could spell is a
+   signing key it can export. The families it cannot reach are: two-segment
+   seeds under `wallet:` (it always appends a non-empty third segment), and
+   anything under a different root.
+
+2. **Give a new signing family its own root, not a level under `wallet:`.**
+   EVM sub-keys are `subkey:{id}:evm:{sub_path}` for this reason alone — under
+   `wallet:{id}:evm:{sub_path}` they would be reachable through the exporter
+   with `chain=evm`. A root is separation by construction; a validation rule on
+   the exporter is separation by a check somebody has to remember. Prefer the
+   root. (Separating at the HMAC level with a domain tag, as `secret-path:` and
+   `ecies:` do, is stronger still, but rotates every existing key of the family
+   it is applied to — fine for a new family, never for an old one.)
+
+3. **Keep `:` out of caller-supplied path segments.** `:` is the segment
+   separator of every seed; a path that may contain it can spell a deeper level
+   (`validate_sub_path` refuses it). Validate the shape, do not normalise it: two
+   spellings that derive one key, or one that derives a different key than the
+   caller wrote, are both silent.
+
+`no_exportable_seed_can_name_a_signing_key` in `api.rs` encodes the invariant:
+add the new family's seed to that test before adding the family.
+
 ## Troubleshooting
 
 ### "Public key mismatch" error on startup
