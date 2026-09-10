@@ -2273,6 +2273,14 @@ async fn handle_execute_job(
         hex::encode(Sha256::digest(&wasm_bytes))
     };
 
+    // The manifest of what actually ran: read once, from the bytes that run,
+    // and used for the author's secrets, the network policy, the sub-key
+    // gate and the report below.
+    let declared_manifest = connector_manifest::manifest_from_wasm(&wasm_bytes);
+    if declared_manifest.is_some() {
+        debug!("📄 Manifest read from the wasm's own custom section");
+    }
+
     info!("🔍 DEBUG secrets_ref: {:?}", secrets_ref);
     info!("🔍 DEBUG keystore_client: {}", if keystore_client.is_some() { "Some" } else { "None" });
 
@@ -2347,67 +2355,38 @@ async fn handle_execute_job(
                     Some(std::collections::HashMap::new())
                 } else {
                     error!("❌ Secrets decryption failed: {}", error_msg);
-
-                    // Determine error category based on error message
-                    let error_category = if error_msg.contains("Access") && error_msg.contains("denied") {
-                        api_client::JobStatus::AccessDenied
-                    } else if error_msg.contains("Invalid secrets format") {
-                        api_client::JobStatus::Custom // Invalid format - user configuration issue
-                    } else {
-                        api_client::JobStatus::Failed // Generic secret error - infrastructure issue
-                    };
-
-                // Send error to NEAR contract
-                let error_result = ExecutionResult {
-                    success: false,
-                    output: None,
-                    error: Some(error_msg.clone()),
-                    execution_time_ms: 0,
-                    instructions: 0,
-                    compile_time_ms: None,
-                    compilation_note: None,
-                    refund_usd: None,
-                };
-
-                // Extract actual cost from contract logs (base_fee on failure)
-                let actual_cost = match near_client.submit_execution_result(request_id, &error_result).await {
-                    Ok((tx_hash, outcome)) => {
-                        info!("✅ Failure reported to NEAR contract (contract panicked as expected): tx_hash={}", tx_hash);
-                        let cost = NearClient::extract_payment_from_logs(&outcome);
-                        if cost > 0 {
-                            info!("💰 Extracted cost from contract: {} yoctoNEAR ({:.6} NEAR)",
-                                cost, cost as f64 / 1e24);
-                        }
-                        cost
-                    }
-                    Err(e) => {
-                        error!("❌ Failed to report failure to NEAR: {}", e);
-                        0
-                    }
-                };
-
-                // Fail the job in coordinator with actual cost
-                api_client
-                    .complete_job(
-                        job.job_id,
-                        false,
-                        None,
-                        Some(error_msg),
-                        0,
-                        0,
-                        None,
-                        if actual_cost > 0 { Some(actual_cost.to_string()) } else { None },
-                        None,
-                        Some(error_category),
-                        None, // No compile_result
-                    )
-                    .await?;
+                    let error_category = secrets_failure_category(&error_msg);
+                    report_secrets_failure(api_client, near_client, job, request_id, is_https_call, error_msg, error_category).await?;
                     return Ok(());
                 }
             }
         }
     } else {
         None
+    };
+
+    // The author's credential, named by the artefact rather than by the call
+    // (`author_secrets` in the manifest), decrypted into the same environment
+    // as the caller's. A connector whose manifest asks for it and cannot get
+    // it does not run: it was written on the assumption the credential is
+    // there, and running it without one is running it against the wrong
+    // upstream.
+    let user_secrets = match author_secrets_for_run(
+        declared_manifest.as_ref(),
+        job.project_id.as_deref(),
+        keystore_client,
+        user_account_id.map(|s| s.as_str()),
+        &data_id,
+        user_secrets,
+    )
+    .await
+    {
+        Ok(secrets) => secrets,
+        Err((msg, category)) => {
+            error!("❌ Author secrets: {}", msg);
+            report_secrets_failure(api_client, near_client, job, request_id, is_https_call, msg, category).await?;
+            return Ok(());
+        }
     };
 
     // Merge environment variables
@@ -2503,9 +2482,6 @@ async fn handle_execute_job(
         _ => None,
     };
 
-    // The manifest of what actually ran, kept for the report below.
-    let declared_manifest: Option<connector_manifest::ProjectManifest>;
-
     // Outbound-domain allowlist (§C3).
     //
     // The manifest comes from the ARTEFACT, never from the coordinator — an
@@ -2552,10 +2528,7 @@ async fn handle_execute_job(
     }
 
     let network_config = {
-        let manifest = connector_manifest::manifest_from_wasm(&wasm_bytes);
-        if manifest.is_some() {
-            debug!("📄 Manifest read from the wasm's own custom section");
-        }
+        let manifest = declared_manifest.clone();
 
         // What the artefact CLAIMS about its own rate limits. Enforcement is the
         // coordinator's, since a limit has to be counted across calls and a
@@ -2571,7 +2544,6 @@ async fn handle_execute_job(
             );
         }
 
-        declared_manifest = manifest.clone();
         let policy = connector_manifest::resolve_network_policy(in_namespace, manifest.as_ref());
         if policy.is_enforced() {
             info!(
@@ -3551,6 +3523,147 @@ async fn refuse_https_call(api_client: &ApiClient, is_https_call: bool, call_id:
             false
         }
     }
+}
+
+/// Which job status a failed secrets decryption maps to.
+fn secrets_failure_category(error_msg: &str) -> api_client::JobStatus {
+    if error_msg.contains("Access") && error_msg.contains("denied") {
+        api_client::JobStatus::AccessDenied
+    } else if error_msg.contains("Invalid secrets format") {
+        api_client::JobStatus::Custom // Invalid format - user configuration issue
+    } else {
+        api_client::JobStatus::Failed // Generic secret error - infrastructure issue
+    }
+}
+
+/// Report a run that could not start because its secrets could not be
+/// obtained: for an on-chain request the contract hears of the failure (and
+/// prices it), then the job is completed with the message and the category.
+/// An HTTPS call has no request on chain to answer — the coordinator settles
+/// it from the completed job.
+async fn report_secrets_failure(
+    api_client: &ApiClient,
+    near_client: &NearClient,
+    job: &JobInfo,
+    request_id: u64,
+    is_https_call: bool,
+    error_msg: String,
+    error_category: api_client::JobStatus,
+) -> Result<()> {
+    let error_result = ExecutionResult {
+        success: false,
+        output: None,
+        error: Some(error_msg.clone()),
+        execution_time_ms: 0,
+        instructions: 0,
+        compile_time_ms: None,
+        compilation_note: None,
+        refund_usd: None,
+    };
+
+    let actual_cost = if is_https_call {
+        0
+    } else {
+        match near_client.submit_execution_result(request_id, &error_result).await {
+            Ok((tx_hash, outcome)) => {
+                info!("✅ Failure reported to NEAR contract (contract panicked as expected): tx_hash={}", tx_hash);
+                let cost = NearClient::extract_payment_from_logs(&outcome);
+                if cost > 0 {
+                    info!("💰 Extracted cost from contract: {} yoctoNEAR ({:.6} NEAR)", cost, cost as f64 / 1e24);
+                }
+                cost
+            }
+            Err(e) => {
+                error!("❌ Failed to report failure to NEAR: {}", e);
+                0
+            }
+        }
+    };
+
+    api_client
+        .complete_job(
+            job.job_id,
+            false,
+            None,
+            Some(error_msg),
+            0,
+            0,
+            None,
+            if actual_cost > 0 { Some(actual_cost.to_string()) } else { None },
+            None,
+            Some(error_category),
+            None, // No compile_result
+        )
+        .await
+}
+
+/// The environment a run gets: the caller's secrets plus, when the manifest
+/// names them, the author's — decrypted under the accessor of the project
+/// being run, for the owner and profile the manifest names, with the access
+/// condition evaluated against the caller. A name on both sides refuses the
+/// run; so does a manifest that asks for secrets nobody stored.
+///
+/// The error carries the job status it is reported under: what the manifest
+/// or the stored secrets got wrong is `Custom` (a configuration the author
+/// can fix), a keystore that could not answer is whatever
+/// `secrets_failure_category` makes of it, as for the caller's own secrets.
+async fn author_secrets_for_run(
+    manifest: Option<&connector_manifest::ProjectManifest>,
+    project_id: Option<&str>,
+    keystore_client: Option<&KeystoreClient>,
+    caller: Option<&str>,
+    data_id: &str,
+    agent_secrets: Option<std::collections::HashMap<String, String>>,
+) -> std::result::Result<Option<std::collections::HashMap<String, String>>, (String, api_client::JobStatus)> {
+    use api_client::JobStatus;
+    if manifest.and_then(|m| m.author_secrets.as_ref()).is_none() {
+        return Ok(agent_secrets);
+    }
+    let Some(project_id) = project_id else {
+        return Err((
+            "the manifest names author_secrets, but this run has no project to store them under".to_string(),
+            JobStatus::Custom,
+        ));
+    };
+    let Some(author) = connector_manifest::author_secrets_ref(project_id, manifest).map_err(|m| (m, JobStatus::Custom))? else {
+        return Ok(agent_secrets);
+    };
+    let Some(keystore) = keystore_client else {
+        return Err((
+            "the manifest names author_secrets, but this worker has no keystore to decrypt them with".to_string(),
+            JobStatus::Failed,
+        ));
+    };
+
+    info!(
+        "🔐 Decrypting the author's secrets: project={}, owner={}, profile={}",
+        project_id, author.owner, author.profile
+    );
+    let caller = caller.unwrap_or(author.owner.as_str());
+    let decrypted = keystore
+        .decrypt_secrets_by_project(project_id, &author.profile, &author.owner, caller, Some(data_id))
+        .await
+        .map_err(|e| {
+            if keystore_client::SecretsNotFound::is_missing(&e) {
+                (
+                    format!(
+                        "the manifest names author secrets owner={} profile={} for project {}, but none are stored — \
+                         store them with accessor Project({}) or drop author_secrets from the manifest",
+                        author.owner, author.profile, project_id, project_id
+                    ),
+                    JobStatus::Custom,
+                )
+            } else {
+                let msg = format!("the author's secrets could not be decrypted: {}", e);
+                let category = secrets_failure_category(&msg);
+                (msg, category)
+            }
+        })?;
+    info!("✅ Author secrets decrypted: {} environment variables", decrypted.len());
+
+    connector_manifest::merge_secret_maps(decrypted, agent_secrets.unwrap_or_default())
+        .map(Some)
+        .map_err(|m| (m, JobStatus::Custom))
 }
 
 fn refuses_own_code_source(

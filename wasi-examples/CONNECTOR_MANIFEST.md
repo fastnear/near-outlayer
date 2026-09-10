@@ -42,7 +42,8 @@ so the embedded section is the only option there.
   "operations": ["send", "send_with_attachment", "list", "read"],
   "capabilities": {
     "network": ["mail.near.email"]
-  }
+  },
+  "author_secrets": { "owner": "zavodil.near", "profile": "prod" }
 }
 ```
 
@@ -55,6 +56,7 @@ and exactly the ones priced on chain — see the next section.
 | `capabilities.network` | **yes** | The outbound allowlist. Exact hostnames, case-insensitive, **no implicit subdomain wildcard**: `example.com` does not permit `evil.example.com`. List every host you need. |
 | `operations` | no | Documentation, and a cross-check against the price list. |
 | `limits` | **yes** | Caps this connector declares about itself. Unioned with the coordinator's own rules — every applicable one must pass — so a declaration can only ever tighten. |
+| `author_secrets` | **yes** | The author's own credential: the secrets `owner` stored under the accessor `Project(<this project id>)` and `profile`, decrypted into the environment on every run next to the caller's. `owner` defaults to the publishing account. A name on both sides, or a profile nobody stored, refuses the run. See `docs/CONNECTORS.md` §4.1. |
 | `display` | no | For the dashboard. |
 
 ### The words `limits` may use

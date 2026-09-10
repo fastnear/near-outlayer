@@ -279,6 +279,8 @@ get-request-status(request-id) → (string, string)
 list-tokens() → (string, string)
 transfer(chain, to, amount) → (string, string)                # chain-specific (currently: near)
 get-balance(chain, token) → (string, string)                  # chain-specific (currently: near)
+get-intents-balance(token) → (string, string)                 # the wallet's balance INSIDE intents.near, per asset
+deposit-intent(chain, token, amount) → (string, string)       # 1Click deposit address to bring funds from another chain into intents
 intents-deposit(token, amount) → (string, string)             # deposit FT to intents.near
 swap(token-in, token-out, amount-in, min-amount-out) → (string, string)  # swap via Intents
 ```

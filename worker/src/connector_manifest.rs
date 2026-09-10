@@ -64,6 +64,91 @@ pub struct ProjectManifest {
     /// which it does not do today.
     #[serde(default)]
     pub limits: Option<Vec<ManifestLimit>>,
+    /// The author's own credential, named by the artefact instead of by the
+    /// call. `{ "owner": "author.near", "profile": "prod" }` — the secrets
+    /// stored by `owner` under the accessor `Project(<this project id>)` and
+    /// that profile are decrypted into the guest's environment on EVERY run,
+    /// alongside whatever the call itself names (an agent's own secrets, over
+    /// `X-Use-Owner-Secret`). `owner` defaults to the account the project is
+    /// published under. Nothing here grants anything: the secret exists only
+    /// because `owner` stored it for this project, and its access condition
+    /// is still evaluated against the caller.
+    #[serde(default)]
+    pub author_secrets: Option<AuthorSecrets>,
+}
+
+/// `author_secrets` in the manifest — see [`ProjectManifest::author_secrets`].
+#[derive(Debug, Clone, Deserialize)]
+pub struct AuthorSecrets {
+    #[serde(default)]
+    pub owner: Option<String>,
+    /// Optional at the parse so that a block missing it does not make the
+    /// WHOLE manifest unparseable — which would run the connector with an
+    /// empty allowlist and no credential instead of refusing it with a
+    /// reason. `author_secrets_ref` refuses a blank or absent profile.
+    #[serde(default)]
+    pub profile: Option<String>,
+}
+
+/// Where a manifest's author secrets are stored: the resolved `(owner, profile)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorSecretsRef {
+    pub owner: String,
+    pub profile: String,
+}
+
+/// The author secrets a manifest asks for, resolved against the project the
+/// artefact is published under; `None` when the manifest names none.
+///
+/// A blank profile, or a project id with no owner half to default to, is a
+/// refusal rather than a guess: a defaulted profile would decrypt SOMEBODY's
+/// secrets into a guest that never asked for them.
+pub fn author_secrets_ref(
+    project_id: &str,
+    manifest: Option<&ProjectManifest>,
+) -> Result<Option<AuthorSecretsRef>, String> {
+    let Some(declared) = manifest.and_then(|m| m.author_secrets.as_ref()) else {
+        return Ok(None);
+    };
+    let profile = declared.profile.as_deref().map(str::trim).unwrap_or_default();
+    if profile.is_empty() {
+        return Err("the manifest's author_secrets.profile must be a non-empty string".to_string());
+    }
+    let owner = match declared.owner.as_deref().map(str::trim).filter(|o| !o.is_empty()) {
+        Some(o) => o.to_string(),
+        None => match project_id.split_once('/') {
+            Some((owner, _)) if !owner.is_empty() => owner.to_string(),
+            _ => {
+                return Err(format!(
+                    "the manifest's author_secrets names no owner and the project id '{}' has none to default to",
+                    project_id
+                ))
+            }
+        },
+    };
+    Ok(Some(AuthorSecretsRef { owner, profile: profile.to_string() }))
+}
+
+/// The author's secrets and the caller's, as one environment.
+///
+/// A name in both is refused, never resolved: whichever side won, the other's
+/// value would be silently missing from a run that then does something with
+/// the wrong credential.
+pub fn merge_secret_maps(
+    author: std::collections::HashMap<String, String>,
+    agent: std::collections::HashMap<String, String>,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let mut clashes: Vec<&String> = agent.keys().filter(|k| author.contains_key(*k)).collect();
+    if !clashes.is_empty() {
+        clashes.sort();
+        return Err(format!(
+            "the author's secrets and the caller's both define {}; rename one side",
+            clashes.iter().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ")
+        ));
+    }
+    let mut merged = author;
+    merged.extend(agent);
+    Ok(merged)
 }
 
 impl ProjectManifest {
@@ -478,6 +563,59 @@ pub fn decide_egress(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn author_secrets_are_resolved_against_the_publishing_account() {
+        let m: ProjectManifest =
+            serde_json::from_str(r#"{"connector_id":"pm","author_secrets":{"profile":"prod"}}"#).unwrap();
+        assert_eq!(
+            author_secrets_ref("connectors.outlayer.near/pm", Some(&m)).unwrap(),
+            Some(AuthorSecretsRef { owner: "connectors.outlayer.near".into(), profile: "prod".into() })
+        );
+        let explicit: ProjectManifest = serde_json::from_str(
+            r#"{"connector_id":"pm","author_secrets":{"owner":" author.near ","profile":" prod "}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            author_secrets_ref("connectors.outlayer.near/pm", Some(&explicit)).unwrap(),
+            Some(AuthorSecretsRef { owner: "author.near".into(), profile: "prod".into() })
+        );
+        // None declared: nothing to decrypt, not an error.
+        let plain = manifest_with_id("pm");
+        assert_eq!(author_secrets_ref("connectors.outlayer.near/pm", Some(&plain)).unwrap(), None);
+        assert_eq!(author_secrets_ref("x/y", None).unwrap(), None);
+        // A blank profile and an owner-less project id are refusals, not guesses.
+        let blank: ProjectManifest =
+            serde_json::from_str(r#"{"author_secrets":{"profile":"  "}}"#).unwrap();
+        assert!(author_secrets_ref("a/b", Some(&blank)).is_err());
+        // A block with no profile at all still PARSES — the rest of the
+        // manifest (allowlist, connector id) stays in force — and is refused
+        // here with a reason, not run with an empty allowlist.
+        let absent: ProjectManifest = serde_json::from_str(
+            r#"{"connector_id":"pm","capabilities":{"network":["api.example"]},"author_secrets":{"owner":"a.near"}}"#,
+        )
+        .unwrap();
+        assert_eq!(absent.connector_id.as_deref(), Some("pm"));
+        assert!(author_secrets_ref("a/b", Some(&absent)).unwrap_err().contains("profile"));
+        assert!(author_secrets_ref("no-slash", Some(&m)).is_err());
+    }
+
+    #[test]
+    fn a_name_defined_on_both_sides_is_refused_not_resolved() {
+        let author = std::collections::HashMap::from([("BUILDER_KEY".to_string(), "a".to_string())]);
+        let agent = std::collections::HashMap::from([("MERCURY_TOKEN".to_string(), "b".to_string())]);
+        let merged = merge_secret_maps(author.clone(), agent).unwrap();
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged["BUILDER_KEY"], "a");
+        let clash = std::collections::HashMap::from([
+            ("BUILDER_KEY".to_string(), "x".to_string()),
+            ("API_URL".to_string(), "y".to_string()),
+        ]);
+        let mut both = author.clone();
+        both.insert("API_URL".into(), "z".into());
+        let err = merge_secret_maps(both, clash).unwrap_err();
+        assert!(err.contains("`API_URL`, `BUILDER_KEY`"), "{err}");
+    }
 
     fn manifest_with_id(id: &str) -> ProjectManifest {
         serde_json::from_str(&format!(r#"{{"connector_id":"{id}"}}"#)).expect("manifest")

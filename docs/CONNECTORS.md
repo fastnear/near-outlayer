@@ -132,6 +132,13 @@ There are no raw sockets: the guest's only network path is `wasi:http`. TCP,
 UDP and name lookups are refused by the worker, so nothing can go around the
 allowlist or the audit trail.
 
+**Report an error by answering, not by exiting.** A run that ends with a
+non-zero exit code or a trap is a failed run: its output is discarded, the
+caller sees a bare trap message, and the operation fee is refunded. An
+operation that could not do what was asked answers `ok: false` with a reason
+and exits 0 — the caller gets the reason, and the operation is paid for,
+because it ran.
+
 ---
 
 ## 4. Secrets
@@ -144,15 +151,28 @@ different secrets involved and they belong to different people.
 Your SMTP password, your upstream API key — a credential that belongs to **you**
 and is the same for every caller.
 
-Store it with `store_secrets` under your own account and point calls at it with
-`secrets_ref`:
+Store it under your own account with the accessor of the project the
+connector is published as, and name it in the manifest:
 
-```json
-{
-  "input": { "operation": "send", … },
-  "secrets_ref": { "account_id": "you.near", "profile": "prod" }
-}
+```bash
+outlayer secrets set --project connectors.outlayer.near/<id> --profile prod '{"BUILDER_KEY":"…"}'
 ```
+
+```jsonc
+// outlayer.manifest
+{ "connector_id": "<id>", "author_secrets": { "owner": "you.near", "profile": "prod" } }
+```
+
+The worker decrypts that profile into the environment on **every** run of the
+connector, next to whatever the call itself names (an agent's own secrets,
+§4.2); the call carries nothing. `owner` defaults to the account the project
+is published under. A name defined on both sides refuses the run rather than
+picking a winner, and so does a manifest that names a profile nobody stored —
+a connector written around a credential does not run without it.
+
+A caller may still point a call at a credential of theirs through the body's
+`secrets_ref` on an ordinary project; on a connector the coordinator sets that
+field itself (§4.2), which is why the author's goes in the manifest.
 
 Access to a stored secret is governed on chain by an `AccessCondition`, which is
 richer than a list: `AllowAll`, `Whitelist`, `AccountPattern`, `NearBalance`,

@@ -824,6 +824,13 @@ Signatures are gated by the wallet's `evm_sign` capability (`raw_tx` for
 forwards everything as-is and hashes nothing — the digest is the keystore's.
 See `docs/CONNECTORS.md` §4.5 for what a sub-key is and is not.
 
+The way funds travel between a venue and the wallet: `deposit-intent(chain,
+token, amount)` returns a 1Click deposit address that brings funds from
+another chain INTO the wallet's intents balance, `get-intents-balance(token)`
+reads that balance per asset, and `withdraw`/`swap` draw from it. A connector
+that must hold its author's credential on every run names it in the manifest
+(`author_secrets`, see `CONNECTOR_MANIFEST.md`) instead of in the call.
+
 ### 4. Output Size
 
 ```rust

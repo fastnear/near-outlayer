@@ -222,6 +222,35 @@ interface api {
     /// - error: empty on success
     intents-deposit: func(token: string, amount: string) -> tuple<string, string>;
 
+    /// Balance held in NEAR Intents (intents.near) — what `swap`, `withdraw`
+    /// and a cross-chain `deposit-intent` draw from and land in. Distinct from
+    /// `get-balance`, which reads the wallet's NEAR account.
+    ///
+    /// token: the asset, required — intents balances are per asset. A NEAR
+    ///   contract id ("wrap.near", "usdc…") or a defuse asset id
+    ///   ("nep141:wrap.near").
+    ///
+    /// Returns (result_json, error):
+    /// - result_json: {"balance": "...", "token": "...", "source": "intents", ...}
+    /// - error: empty on success
+    get-intents-balance: func(token: string) -> tuple<string, string>;
+
+    /// A deposit address for bringing funds from another chain INTO the
+    /// wallet's intents balance (1Click). Send the source tokens to
+    /// `deposit_address` before `expires_at`; the bridged amount lands in
+    /// intents and shows in `get-intents-balance`.
+    ///
+    /// chain: the source chain ("ethereum", "base", "arbitrum", "solana", …)
+    /// token: the source token symbol on that chain; empty = "USDC"
+    /// amount: in the source token's minimal units
+    ///
+    /// Returns (result_json, error):
+    /// - result_json: {"intent_id": "...", "deposit_address": "...", "amount": "...",
+    ///                 "amount_out": "...", "min_amount_out": "...", "expires_at": "...",
+    ///                 "estimated_time_secs": N}
+    /// - error: empty on success
+    deposit-intent: func(chain: string, token: string, amount: string) -> tuple<string, string>;
+
     /// Swap tokens via NEAR Intents protocol
     ///
     /// Full atomic flow: quote → deposit to intents → token_diff → settle → withdraw.

@@ -230,6 +230,25 @@ impl WalletHostState {
         body
     }
 
+    /// `/wallet/v1/balance` for the wallet's intents balance of `token`.
+    fn intents_balance_path(token: &str) -> String {
+        format!(
+            "/wallet/v1/balance?chain=near&source=intents&token={}",
+            urlencoding::encode(token)
+        )
+    }
+
+    /// `/wallet/v1/intents/deposit/cross-chain` body: `{chain, amount, token?}` — the
+    /// coordinator fills in the destination (NEAR USDC on intents) and the
+    /// refund address (the wallet's own on `chain`).
+    fn deposit_intent_body(chain: &str, token: &str, amount: &str) -> serde_json::Value {
+        let mut body = serde_json::json!({ "chain": chain, "amount": amount });
+        if !token.is_empty() {
+            body["token"] = serde_json::Value::String(token.to_string());
+        }
+        body
+    }
+
     /// Check rate limit, returns error string if exceeded
     fn check_rate_limit(&mut self) -> Option<String> {
         if self.call_count >= self.max_calls {
@@ -511,6 +530,35 @@ impl outlayer::wallet::api::Host for WalletHostState {
         self.call_coordinator("GET", &path, None)
     }
 
+    fn get_intents_balance(&mut self, token: String) -> WalletResult {
+        debug!("wallet::get_intents_balance token={}, wallet_id={}", token, self.wallet_id);
+
+        if let Some(err) = self.check_rate_limit() {
+            return (String::new(), err);
+        }
+        if token.is_empty() {
+            return (String::new(), "token parameter is required: intents balances are per asset (e.g. \"nep141:wrap.near\")".to_string());
+        }
+        let path = Self::intents_balance_path(&token);
+        self.call_coordinator("GET", &path, None)
+    }
+
+    fn deposit_intent(&mut self, chain: String, token: String, amount: String) -> WalletResult {
+        debug!("wallet::deposit_intent chain={}, token={}, amount={}, wallet_id={}", chain, token, amount, self.wallet_id);
+
+        if let Some(err) = self.check_rate_limit() {
+            return (String::new(), err);
+        }
+        if chain.is_empty() {
+            return (String::new(), "chain parameter is required".to_string());
+        }
+        if amount.is_empty() {
+            return (String::new(), "amount parameter is required".to_string());
+        }
+        let body = Self::deposit_intent_body(&chain, &token, &amount);
+        self.call_coordinator("POST", "/wallet/v1/intents/deposit/cross-chain", Some(&body))
+    }
+
     fn intents_deposit(&mut self, token: String, amount: String) -> WalletResult {
         debug!(
             "wallet::intents_deposit token={}, amount={}, wallet_id={}",
@@ -701,6 +749,42 @@ mod tests {
         let tx = WalletHostState::evm_body("base", "connector.mercury.default".into(), serde_json::json!({ "unsigned_tx": "0x02" }));
         assert_eq!(tx["sub_path"], "connector.mercury.default");
         assert_eq!(tx["unsigned_tx"], "0x02");
+    }
+
+    #[test]
+    fn the_intents_balance_path_names_the_source_and_the_asset() {
+        assert_eq!(
+            WalletHostState::intents_balance_path("nep141:wrap.near"),
+            "/wallet/v1/balance?chain=near&source=intents&token=nep141%3Awrap.near"
+        );
+        // A bare contract id is passed as-is; the coordinator prefixes `nep141:`.
+        assert_eq!(
+            WalletHostState::intents_balance_path("wrap.near"),
+            "/wallet/v1/balance?chain=near&source=intents&token=wrap.near"
+        );
+    }
+
+    #[test]
+    fn a_deposit_intent_body_carries_the_token_only_when_given() {
+        let with = WalletHostState::deposit_intent_body("base", "USDC", "1000000");
+        assert_eq!(with["chain"], "base");
+        assert_eq!(with["token"], "USDC");
+        assert_eq!(with["amount"], "1000000");
+        let without = WalletHostState::deposit_intent_body("arbitrum", "", "5");
+        assert!(without.get("token").is_none());
+        assert_eq!(without["amount"], "5");
+    }
+
+    #[test]
+    fn an_intents_balance_needs_an_asset_and_a_deposit_intent_needs_chain_and_amount() {
+        use outlayer::wallet::api::Host;
+        let mut s = state_for(Some("mercury"));
+        let (_, err) = s.get_intents_balance(String::new());
+        assert!(err.starts_with("token parameter is required"), "{err}");
+        let (_, err) = s.deposit_intent(String::new(), "USDC".into(), "1".into());
+        assert!(err.starts_with("chain parameter is required"), "{err}");
+        let (_, err) = s.deposit_intent("base".into(), "USDC".into(), String::new());
+        assert!(err.starts_with("amount parameter is required"), "{err}");
     }
 
     #[test]
