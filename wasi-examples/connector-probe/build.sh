@@ -105,6 +105,39 @@ if bad:
 print("Manifest vocabulary: ok")
 PY
 
+# The variables this probe reports on are the ones the worker injects. A
+# variable the worker gained and this list lacks is reported by `env` as
+# "unknown" — which is fine at runtime — but a list that drifted is a probe
+# that no longer knows what it is checking, so the drift is caught here.
+WORKER_MAIN="../../worker/src/main.rs"
+WORKER_P2="../../worker/src/executor/wasi_p2.rs"
+if [ -f "$WORKER_MAIN" ] && [ -f "$WORKER_P2" ]; then
+    python3 - src/main.rs "$WORKER_MAIN" "$WORKER_P2" <<'PY'
+import re, sys
+probe, worker_main, worker_p2 = (open(p).read() for p in sys.argv[1:4])
+def block(name):
+    m = re.search(r'const %s: &\[&str\] = &\[(.*?)\];' % name, probe, re.S)
+    return set(re.findall(r'"([A-Z_]+)"', m.group(1))) if m else set()
+known = block("SYSTEM_VARS") | block("CONDITIONAL_VARS")
+injected = set(re.findall(r'env_vars\.insert\(\s*"([A-Z_]+)"', worker_main))
+injected |= set(re.findall(r'"([A-Z_]+)"\.to_string\(\),', worker_main))
+injected |= set(re.findall(r'wasi_builder\.env\("([A-Z_]+)"', worker_p2))
+injected.discard("_")
+missing = sorted(injected - known)
+stale = sorted(known - injected)
+if missing or stale:
+    if missing:
+        print("ERROR: the worker injects variables this probe does not list:", ", ".join(missing))
+    if stale:
+        print("ERROR: this probe lists variables the worker does not inject:", ", ".join(stale))
+    print("Update SYSTEM_VARS / CONDITIONAL_VARS in src/main.rs.")
+    sys.exit(1)
+print("System variables: probe list matches the worker's")
+PY
+else
+    echo "WARNING: worker sources not found — skipping the system-variable drift check"
+fi
+
 # Show SHA256 hash (for FastFS/contract)
 HASH=$(shasum -a 256 "$WASM_FILE" | cut -d' ' -f1)
 echo "SHA256: $HASH"

@@ -1,0 +1,30 @@
+[package]
+name = "subkey-probe"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "A connector whose only job is exercising EVM sub-keys through the outlayer:wallet host functions"
+
+[[bin]]
+name = "subkey-probe"
+path = "src/main.rs"
+
+[dependencies]
+# Bindings are generated from `wit/wallet.wit`, a copy of the worker's own
+# `worker/wit/deps/wallet.wit`. The `outlayer` SDK crate is not a dependency:
+# its generated `outlayer` module collides by name with the one generated from
+# the WIT package `outlayer:wallet` (the same reason `wallet-probe` leaves it out).
+wit-bindgen = "0.36"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# To check a signature the way a venue would: recover the signer from the
+# EIP-191 digest and compare with the address the host reported.
+k256 = { version = "0.13", features = ["ecdsa"] }
+tiny-keccak = { version = "2.0", features = ["keccak"] }
+hex = "0.4"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1

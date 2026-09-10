@@ -227,6 +227,10 @@ struct Input {
     /// units. Absent means all of it.
     #[serde(default)]
     refund_usd: Option<u64>,
+    /// `sleep` only: how long to sleep, in seconds. Capped below; the point is
+    /// to outlive the execution limit, which is the worker's to enforce.
+    #[serde(default)]
+    seconds: Option<u64>,
 }
 
 /// One system variable, as the guest actually received it.
@@ -334,6 +338,16 @@ struct Output {
     refund_error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     attached_usd: Option<String>,
+    // ---- sockets ----
+    /// What the host said to a raw TCP connect and to a name lookup. Both must
+    /// be errors: the allowlist and the egress audit cover `wasi:http` only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tcp_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lookup_error: Option<String>,
+    // ---- sleep ----
+    #[serde(skip_serializing_if = "Option::is_none")]
+    slept_ms: Option<u64>,
 }
 
 /// Verifiable randomness, and — the reason this exists — the ALPHA it was
@@ -421,6 +435,7 @@ fn main() {
             rounds: None,
             seed: None,
             refund_usd: None,
+            seconds: None,
         },
         Err(e) => {
             let _ = env::output_json(&Output {
@@ -458,6 +473,10 @@ fn run(input: &Input) -> Output {
             UNDECLARED_HOST,
             "an undeclared host must be refused by the worker, not by this module",
         ),
+        "sockets" => sockets(op),
+        "trap" => trap(),
+        "fail" => fail(op),
+        "sleep" => sleep(op, input.seconds.unwrap_or(1)),
         "" => Output {
             ok: false,
             operation: op.into(),
@@ -679,6 +698,77 @@ fn burn(op: &str, rounds: u32) -> Output {
         detail: format!("burned {rounds} round(s) of a thousand hashes"),
         rounds_done: Some(rounds),
         checksum: Some(checksum),
+        ..Default::default()
+    }
+}
+
+/// Try the network the way the allowlist does NOT see it: a raw TCP connect and
+/// a DNS lookup through `wasi:sockets`, which Rust's `std::net` uses on
+/// `wasm32-wasip2`.
+///
+/// `ok` is true only when BOTH are refused. A success on either means a guest
+/// inside a TEE that holds keys has a network path around the outbound
+/// allowlist and the egress audit, which cover `wasi:http` alone.
+fn sockets(op: &str) -> Output {
+    use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+    use std::time::Duration;
+
+    let addr: SocketAddr = "1.1.1.1:80".parse().expect("literal address");
+    let tcp_error = TcpStream::connect_timeout(&addr, Duration::from_secs(3))
+        .err()
+        .map(|e| e.to_string());
+    let lookup_error = "example.com:80".to_socket_addrs().err().map(|e| e.to_string());
+
+    let ok = tcp_error.is_some() && lookup_error.is_some();
+    Output {
+        ok,
+        operation: op.into(),
+        detail: if ok {
+            "raw TCP and name lookup are both refused; wasi:http is the only way out".into()
+        } else {
+            "a raw socket path is OPEN — the allowlist and the egress audit can be bypassed".into()
+        },
+        tcp_error: tcp_error.or_else(|| Some("connected".into())),
+        lookup_error: lookup_error.or_else(|| Some("resolved".into())),
+        ..Default::default()
+    }
+}
+
+/// Answer, then exit non-zero. The other way a run ends badly: not a trap, a
+/// module that ran to completion and said so with its exit code. Exists so the
+/// platform's treatment of a non-zero exit — how the call is reported, and
+/// whether the fee stands (the module RAN) — can be checked from outside.
+fn fail(op: &str) -> ! {
+    let _ = env::output_json(&Output {
+        ok: false,
+        operation: op.into(),
+        detail: "exiting with status 1 on purpose".into(),
+        ..Default::default()
+    });
+    std::process::exit(1)
+}
+
+/// Die without answering. Exists so the platform's own rule can be checked
+/// from outside: an execution that trapped never happened, its operation fee
+/// comes back, and the call is reported as a failure — not a success with an
+/// empty body.
+fn trap() -> Output {
+    panic!("connector-probe: trap requested");
+}
+
+/// Sleep past the execution limit, which is the worker's to enforce; this
+/// module only makes the run long. Capped so a mistyped number cannot pin a
+/// worker for an hour.
+fn sleep(op: &str, seconds: u64) -> Output {
+    const MAX_SECONDS: u64 = 600;
+    let seconds = seconds.min(MAX_SECONDS);
+    let started = std::time::Instant::now();
+    std::thread::sleep(std::time::Duration::from_secs(seconds));
+    Output {
+        ok: true,
+        operation: op.into(),
+        detail: format!("slept {seconds}s and was still alive to say so"),
+        slept_ms: Some(started.elapsed().as_millis() as u64),
         ..Default::default()
     }
 }

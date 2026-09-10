@@ -798,6 +798,30 @@ also serves payment-key or on-chain calls. `wasi-examples/wallet-probe` is the
 smallest working example of that shape, and its README covers the calling
 conventions.
 
+### 3b. EVM signing and sub-keys (connectors)
+
+`outlayer:wallet/api` signs on EVM chains too: `evm-sign-typed-data`,
+`evm-sign-message`, `evm-sign-transaction`, each taking a `label` as its last
+argument, and `get-sub-key-address(chain, label)`. An empty label is the
+wallet's own key. A non-empty label names a **sub-key** — a distinct address of
+the same wallet, under the keystore path `connector.{connector_id}.{label}`
+that the worker builds from the connector's verified manifest. Only a connector
+(a project whose manifest carries `connector_id`) has sub-keys; elsewhere a
+label answers `sub_key_unavailable`. Labels are `[a-z0-9][a-z0-9_-]{0,31}`;
+anything else is `invalid_label`.
+
+```rust
+// The connector's trading address on Base — stable for this connector + label.
+let (addr, err) = wallet::get_sub_key_address("base", "trading");
+// Sign a CLOB order with the trading key; the keystore computes the digest.
+let (sig, err) = wallet::evm_sign_typed_data("base", &typed_data_json, "trading");
+```
+
+Signatures are gated by the wallet's `evm_sign` capability (`raw_tx` for
+`evm-sign-transaction`); a refusal comes back as `policy_denied`. The worker
+forwards everything as-is and hashes nothing — the digest is the keystore's.
+See `docs/CONNECTORS.md` §4.5 for what a sub-key is and is not.
+
 ### 4. Output Size
 
 ```rust

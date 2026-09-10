@@ -45,6 +45,10 @@ with no price and no fee.
 | `burn` | $0.01 | compute costs something: `{"operation":"burn","rounds":50}` burns instructions on demand |
 | `fetch` | $0.015 | the declared host (`rpc.testnet.fastnear.com`) is reachable |
 | `forbidden_fetch` | $0.015 | an undeclared host (`example.com`) is NOT |
+| `sockets` | free | raw TCP (`1.1.1.1:80`) and a DNS lookup are refused — `wasi:http` is the only way out |
+| `trap` | $0.01 | the module panics: the call fails, the fee is refunded, the author is paid nothing |
+| `fail` | $0.01 | the module answers `ok: false` and exits 1 — shows how a non-zero exit is reported and billed |
+| `sleep` | $0.01 | sleeps `seconds` (≤ 600) so the execution limit, not the module, ends the run |
 | `unpriced` | — | absent from the price table AND unimplemented here: must be refused before anything runs |
 
 `forbidden_fetch` **passes when it fails**: `ok: false` with an `http_error` is

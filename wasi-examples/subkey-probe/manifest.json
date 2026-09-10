@@ -1,0 +1,15 @@
+{
+  "connector_id": "subkey-probe",
+  "display": {
+    "name": "Sub-key probe",
+    "author": "zavodil.testnet"
+  },
+  "operations": [
+    "address",
+    "sign",
+    "foreign_label"
+  ],
+  "capabilities": {
+    "network": []
+  }
+}
