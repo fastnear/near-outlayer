@@ -99,7 +99,7 @@ all. Nobody noticed, because nothing failed.
 Being read strictly cannot hurt anybody but this connector's own callers — a
 declaration is unioned with the coordinator's rules and every applicable rule
 must pass, so there is no value here that could widen a limit. Check your own
-manifest at build time; `wasi-examples/connector-probe/build.sh` shows how.
+manifest at build time; `connectors/connector-probe/build.sh` shows how.
 
 ## How a request names its operation
 

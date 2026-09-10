@@ -111,7 +111,7 @@ near_call() {
 # the probe would then "test" a refusal it never meant to. Checked BEFORE any
 # price is written, from this file's own text against the manifests.
 # ---------------------------------------------------------------------------
-python3 - "$0" "$(dirname "$0")/../wasi-examples" <<'PY'
+python3 - "$0" "$(dirname "$0")/../connectors" <<'PY'
 import json, re, sys
 script = open(sys.argv[1]).read()
 examples = sys.argv[2]
@@ -141,6 +141,7 @@ near_call set_project_pricing "$(cat <<EOF
       {"operation": "env",             "price_usd": "0",     "developer_share_bp": 0},
       {"operation": "whoami",          "price_usd": "10000", "developer_share_bp": 0},
       {"operation": "secret",          "price_usd": "10000", "developer_share_bp": 7000},
+      {"operation": "author_secret",   "price_usd": "0",     "developer_share_bp": 0},
       {"operation": "burn",            "price_usd": "10000", "developer_share_bp": 3333},
       {"operation": "fetch",           "price_usd": "15000", "developer_share_bp": 10000},
       {"operation": "forbidden_fetch", "price_usd": "15000", "developer_share_bp": 3333},

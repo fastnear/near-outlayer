@@ -20,6 +20,7 @@
 //! Note `whoami` is listed there at $0.01, not 0 — the table row is stale and
 //! the script is what the coordinator actually charges.)
 //! | `secret` | $0.01 | the owner's secret arrived, WITHOUT printing it: presence, length, and a hash prefix |
+//! | `author_secret` | free | the author's secret, named by the manifest, arrived the same way — with nothing asked for in the call |
 //! | `burn` | $0.01 | compute actually costs something: burns instructions on demand, so a charge can be watched |
 //! | `fetch` | $0.015 | the declared host is reachable |
 //! | `forbidden_fetch` | $0.015 | an undeclared host is NOT, and the refusal comes from the worker rather than from politeness here |
@@ -198,6 +199,11 @@ const UNDECLARED_HOST: &str = "https://example.com";
 /// Ordinary names, not `PROTECTED_` ones: the point is to prove the OWNER's
 /// secret reached the guest, and these are what an author would store.
 const SECRET_KEYS: [&str; 2] = ["PROBE_TOKEN", "PROBE_SECOND"];
+
+/// The AUTHOR's secret: named by the manifest (`author_secrets`), stored by
+/// the publishing account under this project's accessor, and expected in the
+/// environment of EVERY run — no header, no `secrets_ref` in the call.
+const AUTHOR_SECRET_KEYS: [&str; 1] = ["PROBE_AUTHOR_SECRET"];
 
 #[derive(Debug, Deserialize)]
 struct Input {
@@ -464,6 +470,7 @@ fn run(input: &Input) -> Output {
         "whoami" => whoami(op),
         "env" => env_report(op),
         "secret" => secret(op),
+        "author_secret" => author_secret(op),
         "burn" => burn(op, input.rounds.unwrap_or(1)),
         "vrf" => vrf_report(op, input.seed.as_deref().unwrap_or("probe")),
         "refund" => refund(op, input.refund_usd),
@@ -666,6 +673,43 @@ fn secret(op: &str) -> Output {
         } else {
             "no secret reached the guest. Either none was stored for this agent, \
              or the call did not ask for one (X-Use-Owner-Secret)."
+                .into()
+        },
+        secrets,
+        ..Default::default()
+    }
+}
+
+/// Did the AUTHOR's secret arrive — the one the manifest names, without the
+/// call asking for anything?
+fn author_secret(op: &str) -> Output {
+    let secrets: Vec<SecretSeen> = AUTHOR_SECRET_KEYS
+        .iter()
+        .map(|key| match env::var(key) {
+            Some(value) => SecretSeen {
+                key: (*key).into(),
+                found: true,
+                len: Some(value.len()),
+                sha256_prefix: Some(hex::encode(Sha256::digest(value.as_bytes()))[..8].to_string()),
+            },
+            None => SecretSeen {
+                key: (*key).into(),
+                found: false,
+                len: None,
+                sha256_prefix: None,
+            },
+        })
+        .collect();
+    let found = secrets.iter().filter(|s| s.found).count();
+    Output {
+        ok: found == AUTHOR_SECRET_KEYS.len(),
+        operation: op.into(),
+        detail: if found == AUTHOR_SECRET_KEYS.len() {
+            "the author's secret reached the guest from the manifest alone".into()
+        } else {
+            "the author's secret did NOT reach the guest: either the worker predates \
+             manifest author_secrets, or nothing is stored under the publishing \
+             account's `author` profile for this project"
                 .into()
         },
         secrets,

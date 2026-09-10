@@ -396,7 +396,7 @@ Independent of anything you declare:
 
 ## 6. Testing before you ship
 
-`wasi-examples/connector-probe` exists for exactly this. It is published,
+`connectors/connector-probe` exists for exactly this. It is published,
 priced, metered and manifested like a real connector, and every operation
 reports one fact about the platform rather than doing work:
 
@@ -437,4 +437,4 @@ access; one that echoed secrets would make every test run a leak.
 * [`wasi-examples/CONNECTOR_MANIFEST.md`](../wasi-examples/CONNECTOR_MANIFEST.md) — manifest reference
 * [`wasi-examples/WASI_TUTORIAL.md`](../wasi-examples/WASI_TUTORIAL.md) — writing and building a WASI guest
 * [`wasi-examples/WASM_ENV_VARS.md`](../wasi-examples/WASM_ENV_VARS.md) — every injected variable
-* [`wasi-examples/connector-probe/`](../wasi-examples/connector-probe/) — a working connector to copy
+* [`connectors/connector-probe/`](../connectors/connector-probe/) — a working connector to copy

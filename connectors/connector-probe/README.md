@@ -42,6 +42,7 @@ with no price and no fee.
 | `ping` | free | a free operation is still a REAL price: it runs only on a key that can pay, and is refused when the key cannot |
 | `whoami` | $0.01, share 0 | what the guest was TOLD about its caller — injected by the worker, not taken from the request. Priced with the whole fee staying with the platform, which is the shape of every connector we own ourselves |
 | `secret` | $0.01 | the owner's secret reached the guest, without printing it |
+| `author_secret` | free | the AUTHOR's secret (`PROBE_AUTHOR_SECRET`, manifest `author_secrets.profile = author`, stored by the publishing account) is in the environment of every run, with no header and no `secrets_ref` |
 | `burn` | $0.01 | compute costs something: `{"operation":"burn","rounds":50}` burns instructions on demand |
 | `fetch` | $0.015 | the declared host (`rpc.testnet.fastnear.com`) is reachable |
 | `forbidden_fetch` | $0.015 | an undeclared host (`example.com`) is NOT |

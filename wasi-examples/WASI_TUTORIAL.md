@@ -827,7 +827,13 @@ See `docs/CONNECTORS.md` §4.5 for what a sub-key is and is not.
 The way funds travel between a venue and the wallet: `deposit-intent(chain,
 token, amount)` returns a 1Click deposit address that brings funds from
 another chain INTO the wallet's intents balance, `get-intents-balance(token)`
-reads that balance per asset, and `withdraw`/`swap` draw from it. A connector
+reads that balance per asset, and `withdraw`/`swap` draw from it. The same
+three exist for the wallet's CONFIDENTIAL balance
+(`confidential-deposit-intent`, `get-confidential-balance`,
+`confidential-withdraw`): same policy, but a movement out of it does not name
+the wallet's NEAR account on chain. A connector that funds a venue lets the
+caller choose the source (`intents` or `confidential`) and pays into the
+same address either way. A connector
 that must hold its author's credential on every run names it in the manifest
 (`author_secrets`, see `CONNECTOR_MANIFEST.md`) instead of in the call.
 

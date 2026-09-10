@@ -238,6 +238,15 @@ impl WalletHostState {
         )
     }
 
+    /// `/wallet/v1/confidential/balance`, for one asset or all of them.
+    fn confidential_balance_path(token: &str) -> String {
+        if token.is_empty() {
+            "/wallet/v1/confidential/balance".to_string()
+        } else {
+            format!("/wallet/v1/confidential/balance?token={}", urlencoding::encode(token))
+        }
+    }
+
     /// `/wallet/v1/intents/deposit/cross-chain` body: `{chain, amount, token?}` — the
     /// coordinator fills in the destination (NEAR USDC on intents) and the
     /// refund address (the wallet's own on `chain`).
@@ -559,6 +568,53 @@ impl outlayer::wallet::api::Host for WalletHostState {
         self.call_coordinator("POST", "/wallet/v1/intents/deposit/cross-chain", Some(&body))
     }
 
+    fn get_confidential_balance(&mut self, token: String) -> WalletResult {
+        debug!("wallet::get_confidential_balance token={}, wallet_id={}", token, self.wallet_id);
+
+        if let Some(err) = self.check_rate_limit() {
+            return (String::new(), err);
+        }
+        let path = Self::confidential_balance_path(&token);
+        self.call_coordinator("GET", &path, None)
+    }
+
+    fn confidential_withdraw(&mut self, chain: String, to: String, amount: String, token: String) -> WalletResult {
+        debug!(
+            "wallet::confidential_withdraw chain={}, to={}, amount={}, token={}, wallet_id={}",
+            chain, to, amount, token, self.wallet_id
+        );
+
+        if let Some(err) = self.check_rate_limit() {
+            return (String::new(), err);
+        }
+        if chain.is_empty() || to.is_empty() || amount.is_empty() {
+            return (String::new(), "chain, to, and amount are required".to_string());
+        }
+        let body = serde_json::json!({
+            "chain": chain,
+            "to": to,
+            "amount": amount,
+            "token": if token.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(token) },
+        });
+        self.call_coordinator("POST", "/wallet/v1/confidential/withdraw", Some(&body))
+    }
+
+    fn confidential_deposit_intent(&mut self, chain: String, token: String, amount: String) -> WalletResult {
+        debug!("wallet::confidential_deposit_intent chain={}, token={}, amount={}, wallet_id={}", chain, token, amount, self.wallet_id);
+
+        if let Some(err) = self.check_rate_limit() {
+            return (String::new(), err);
+        }
+        if chain.is_empty() {
+            return (String::new(), "chain parameter is required".to_string());
+        }
+        if amount.is_empty() {
+            return (String::new(), "amount parameter is required".to_string());
+        }
+        let body = Self::deposit_intent_body(&chain, &token, &amount);
+        self.call_coordinator("POST", "/wallet/v1/confidential/deposit/cross-chain", Some(&body))
+    }
+
     fn intents_deposit(&mut self, token: String, amount: String) -> WalletResult {
         debug!(
             "wallet::intents_deposit token={}, amount={}, wallet_id={}",
@@ -784,6 +840,27 @@ mod tests {
         let (_, err) = s.deposit_intent(String::new(), "USDC".into(), "1".into());
         assert!(err.starts_with("chain parameter is required"), "{err}");
         let (_, err) = s.deposit_intent("base".into(), "USDC".into(), String::new());
+        assert!(err.starts_with("amount parameter is required"), "{err}");
+    }
+
+    #[test]
+    fn the_confidential_balance_path_is_all_or_one_asset() {
+        assert_eq!(WalletHostState::confidential_balance_path(""), "/wallet/v1/confidential/balance");
+        assert_eq!(
+            WalletHostState::confidential_balance_path("nep141:usdc.near"),
+            "/wallet/v1/confidential/balance?token=nep141%3Ausdc.near"
+        );
+    }
+
+    #[test]
+    fn confidential_moves_need_the_same_arguments_as_plain_ones() {
+        use outlayer::wallet::api::Host;
+        let mut s = state_for(Some("hyperliquid"));
+        let (_, err) = s.confidential_withdraw("base".into(), String::new(), "1".into(), String::new());
+        assert!(err.starts_with("chain, to, and amount are required"), "{err}");
+        let (_, err) = s.confidential_deposit_intent(String::new(), "USDC".into(), "1".into());
+        assert!(err.starts_with("chain parameter is required"), "{err}");
+        let (_, err) = s.confidential_deposit_intent("base".into(), String::new(), String::new());
         assert!(err.starts_with("amount parameter is required"), "{err}");
     }
 

@@ -552,7 +552,7 @@ pub fn decide_egress(
 /// nothing on chain changes. Anything fetched at execution time has the same
 /// problem — whoever serves it decides what a published version may reach.
 ///
-/// Embedding is not a burden either: `wasi-examples/connector-probe/build.sh`
+/// Embedding is not a burden either: `connectors/connector-probe/build.sh`
 /// fails the build when the custom section is missing, which is the right place
 /// to catch it — at the author's desk rather than in a TEE holding somebody's
 /// keys.

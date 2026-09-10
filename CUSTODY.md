@@ -281,6 +281,9 @@ transfer(chain, to, amount) → (string, string)                # chain-specific
 get-balance(chain, token) → (string, string)                  # chain-specific (currently: near)
 get-intents-balance(token) → (string, string)                 # the wallet's balance INSIDE intents.near, per asset
 deposit-intent(chain, token, amount) → (string, string)       # 1Click deposit address to bring funds from another chain into intents
+get-confidential-balance(token) → (string, string)            # the wallet's CONFIDENTIAL (shielded) intents balance; empty token = all
+confidential-withdraw(chain, to, amount, token) → (string, string)   # shielded balance → an address on another chain; policy-gated like withdraw
+confidential-deposit-intent(chain, token, amount) → (string, string) # 1Click deposit address landing in the shielded balance
 intents-deposit(token, amount) → (string, string)             # deposit FT to intents.near
 swap(token-in, token-out, amount-in, min-amount-out) → (string, string)  # swap via Intents
 ```

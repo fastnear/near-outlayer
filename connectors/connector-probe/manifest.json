@@ -9,6 +9,7 @@
     "whoami",
     "env",
     "secret",
+    "author_secret",
     "burn",
     "fetch",
     "forbidden_fetch",
@@ -24,6 +25,7 @@
       "rpc.testnet.fastnear.com"
     ]
   },
+  "author_secrets": { "profile": "author" },
   "limits": [
     {
       "operation": "burn",
