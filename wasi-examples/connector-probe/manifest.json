@@ -11,7 +11,13 @@
     "secret",
     "burn",
     "fetch",
-    "forbidden_fetch"
+    "forbidden_fetch",
+    "vrf",
+    "refund",
+    "sockets",
+    "trap",
+    "fail",
+    "sleep"
   ],
   "capabilities": {
     "network": [

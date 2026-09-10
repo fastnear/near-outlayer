@@ -76,6 +76,13 @@ near_call() {
 #                                          not tell a working refund from a
 #                                          dropped one
 #   fetch              15000, 100%       — the whole fee to the author
+#   sockets            0                 — raw TCP and DNS must be refused;
+#                                          free, it moves nothing
+#   trap / sleep       10000, 70%        — the run never completes: a trap and
+#                                          a timeout must REFUND the fee and
+#                                          pay the author nothing
+#   fail               10000, 70%        — the module RAN and exited 1: what a
+#                                          non-zero exit is billed as
 #   forbidden_fetch    15000, 33.33%     — 4999.5 floored to 4999. The ONLY
 #                                          combination on the probe that
 #                                          produces a fraction, and the floor is
@@ -97,6 +104,33 @@ near_call() {
 # by the rule in CONNECTORS.md a module that ran and returned an error is
 # charged and its author is paid. One row, two things checked.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# The price list below must name exactly the operations each probe's manifest
+# declares. An operation priced here but absent from the manifest is dead
+# money; one declared there but unpriced here is refused before it runs — and
+# the probe would then "test" a refusal it never meant to. Checked BEFORE any
+# price is written, from this file's own text against the manifests.
+# ---------------------------------------------------------------------------
+python3 - "$0" "$(dirname "$0")/../wasi-examples" <<'PY'
+import json, re, sys
+script = open(sys.argv[1]).read()
+examples = sys.argv[2]
+drift = False
+for probe in ("connector-probe", "subkey-probe"):
+    block = re.search(r'"project_id": "\$NAMESPACE/%s".*?\n\s*\]' % re.escape(probe), script, re.S)
+    if not block:
+        print(f"ERROR: no pricing block for {probe} in this script"); sys.exit(1)
+    priced = set(re.findall(r'\{"operation": "([a-z_]+)"', block.group(0)))
+    declared = set(json.load(open(f"{examples}/{probe}/manifest.json"))["operations"])
+    if priced != declared:
+        drift = True
+        print(f"ERROR: {probe}: priced {sorted(priced)} vs manifest {sorted(declared)}")
+if drift:
+    print("Fix the manifest or this script; the two must agree before prices go on chain.")
+    sys.exit(1)
+print("Manifest operations agree with the price list for both probes")
+PY
+
 near_call set_project_pricing "$(cat <<EOF
 {
   "project_id": "$NAMESPACE/connector-probe",
@@ -111,7 +145,32 @@ near_call set_project_pricing "$(cat <<EOF
       {"operation": "fetch",           "price_usd": "15000", "developer_share_bp": 10000},
       {"operation": "forbidden_fetch", "price_usd": "15000", "developer_share_bp": 3333},
       {"operation": "vrf",             "price_usd": "10000", "developer_share_bp": 0},
-      {"operation": "refund",          "price_usd": "10000", "developer_share_bp": 7000}
+      {"operation": "refund",          "price_usd": "10000", "developer_share_bp": 7000},
+      {"operation": "sockets",         "price_usd": "0",     "developer_share_bp": 0},
+      {"operation": "trap",            "price_usd": "10000", "developer_share_bp": 7000},
+      {"operation": "fail",            "price_usd": "10000", "developer_share_bp": 7000},
+      {"operation": "sleep",           "price_usd": "10000", "developer_share_bp": 7000}
+    ]
+  }
+}
+EOF
+)"
+
+# ---------------------------------------------------------------------------
+# subkey-probe — the wallet-importing connector: EVM sub-keys end to end.
+#
+# `address` and `foreign_label` are free (derivations and refusals, no
+# signature); `sign` is priced so a paid signing operation is on the ledger.
+# ---------------------------------------------------------------------------
+near_call set_project_pricing "$(cat <<EOF
+{
+  "project_id": "$NAMESPACE/subkey-probe",
+  "pricing": {
+    "author_account_id": "$PROBE_AUTHOR",
+    "operations": [
+      {"operation": "address",       "price_usd": "0",     "developer_share_bp": 0},
+      {"operation": "sign",          "price_usd": "10000", "developer_share_bp": 0},
+      {"operation": "foreign_label", "price_usd": "0",     "developer_share_bp": 0}
     ]
   }
 }

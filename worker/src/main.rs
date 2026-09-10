@@ -595,7 +595,6 @@ async fn main() -> Result<()> {
                 &tdx_client,
                 &config,
                 wasm_cache.as_ref(),
-                compiled_cache.as_ref(),
             ),
         )
         .await
@@ -640,7 +639,6 @@ async fn worker_iteration(
     tdx_client: &tdx_attestation::TdxClient,
     config: &Config,
     wasm_cache: Option<&Arc<Mutex<WasmCache>>>,
-    compiled_cache: Option<&Arc<Mutex<CompiledCache>>>,
 ) -> Result<bool> {
     // Poll for a task (with long-polling) - specify capabilities to poll correct queue
     let capabilities = config.capabilities.to_array();
@@ -1121,7 +1119,6 @@ come from the coordinator's own flow. contract={:?} task={:?}",
                     usd_payment.as_ref(),
                     wallet_id.as_ref(),
                     wasm_cache,
-                    compiled_cache,
                 )
                 .await?;
             }
@@ -1453,15 +1450,20 @@ async fn fetch_wasm_bytes(
     wasm_checksum: &str,
     wasm_cache: Option<&Arc<Mutex<WasmCache>>>,
     is_p2: bool,
-    created_at: &Option<String>,
+    meta: &Option<api_client::WasmMeta>,
 ) -> Result<Vec<u8>> {
-    // P1: try WasmCache first (raw bytes cache)
-    if !is_p2 {
-        if let Some(cache) = wasm_cache {
-            if let Some(cached_bytes) = cache.lock().ok().and_then(|mut c| c.get(wasm_checksum)) {
-                info!("✅ WASM LRU cache hit (P1): {} ({}KB)", wasm_checksum, cached_bytes.len() / 1024);
-                return Ok(cached_bytes);
-            }
+    // The raw-bytes LRU serves both targets. `get()` re-hashes the file
+    // against the hash it recorded in memory when the bytes were stored, so a
+    // P2 guest that reached the cache directory through its `/tmp` preopen
+    // (the fallback location) could corrupt an entry, never substitute one;
+    // and a coordinates-keyed entry (a GitHub build) is served only while the
+    // coordinator still holds those same bytes under the key.
+    let created_at = meta.as_ref().and_then(|m| m.created_at.clone());
+    let current_content_hash = meta.as_ref().and_then(|m| m.content_hash.as_deref());
+    if let Some(cache) = wasm_cache {
+        if let Some(cached_bytes) = cache.lock().ok().and_then(|mut c| c.get(wasm_checksum, current_content_hash)) {
+            info!("✅ WASM LRU cache hit: {} ({}KB) is_p2={}", wasm_checksum, cached_bytes.len() / 1024, is_p2);
+            return Ok(cached_bytes);
         }
     }
 
@@ -1912,8 +1914,7 @@ async fn handle_execute_job(
     payment_key_nonce: Option<i32>, // Payment Key nonce for HTTPS calls
     usd_payment: Option<&String>, // USD payment amount for HTTPS calls
     wallet_id: Option<&String>, // Wallet ID for wallet-enabled WASM executions
-    wasm_cache: Option<&Arc<Mutex<WasmCache>>>, // Local WASM LRU cache (P1 only)
-    compiled_cache: Option<&Arc<Mutex<CompiledCache>>>, // Compiled component cache (P2 only)
+    wasm_cache: Option<&Arc<Mutex<WasmCache>>>, // Local raw-bytes LRU cache (both targets)
 ) -> Result<()> {
     info!("⚙️ Starting execution job_id={}", job.job_id);
 
@@ -2206,23 +2207,12 @@ async fn handle_execute_job(
     };
     let is_p2 = build_target == "wasm32-wasip2";
 
-    // For P2: validate CompiledCache entry BEFORE downloading raw bytes
-    // validate_entry() checks: files exist + signature valid
-    // If valid, skip download - executor will load from compiled cache
-    // If invalid (missing files, bad signature), entry is removed - must download WASM
-    let compiled_cache_valid = if is_p2 {
-        compiled_cache
-            .and_then(|c| c.lock().ok())
-            .map(|mut c| c.validate_entry(wasm_checksum))
-            .unwrap_or(false)
-    } else {
-        false
-    };
-
-    // Get WASM bytes, compile time, creation timestamp, published URL
-    // P2 + valid compiled cache: skip download (executor loads from cache)
-    // P2 + invalid/no cache: download from coordinator
-    // P1: use WasmCache (raw bytes LRU)
+    // The raw bytes are ALWAYS fetched, even when the executor will load a
+    // compiled component from its cache: the manifest (allowlist, connector
+    // identity, declared limits) and the attested `executed_wasm_sha256` are
+    // read from these bytes, and a run that skipped them would resolve an
+    // empty allowlist and attest the hash of nothing. The compiled cache only
+    // saves the compilation; the raw LRU (`WasmCache`) saves the download.
     let (wasm_bytes, compile_time_ms, created_at, published_url) = if let Some((cached_checksum, cached_bytes, cached_compile_time, cached_created_at, cached_published_url)) = compiled_wasm {
         // Local compile cache from same execution (freshly compiled)
         if cached_checksum == wasm_checksum {
@@ -2230,8 +2220,9 @@ async fn handle_execute_job(
             (cached_bytes.clone(), Some(*cached_compile_time), cached_created_at.map(|s| s.to_string()), cached_published_url.map(|s| s.to_string()))
         } else {
             warn!("⚠️ Checksum mismatch - need to fetch WASM");
-            let created_at = api_client.wasm_exists(wasm_checksum).await.ok().and_then(|(_, ca)| ca);
-            match fetch_wasm_bytes(api_client, wasm_checksum, wasm_cache, is_p2, &created_at).await {
+            let meta = api_client.wasm_meta(wasm_checksum).await.ok();
+            let created_at = meta.as_ref().and_then(|m| m.created_at.clone());
+            match fetch_wasm_bytes(api_client, wasm_checksum, wasm_cache, is_p2, &meta).await {
                 Ok(bytes) => (bytes, job.compile_time_ms, created_at, None),
                 Err(e) => {
                     let error_msg = format!("Failed to download WASM: {}", e);
@@ -2241,15 +2232,12 @@ async fn handle_execute_job(
                 }
             }
         }
-    } else if compiled_cache_valid {
-        // P2 compiled cache is valid - skip download
-        info!("⚡ CompiledCache valid for {} - skipping WASM download", wasm_checksum);
-        let created_at = api_client.wasm_exists(wasm_checksum).await.ok().and_then(|(_, ca)| ca);
-        (Vec::new(), job.compile_time_ms, created_at, None)
     } else {
-        // Need to fetch WASM bytes (P1, or P2 with no/invalid cache)
-        let created_at = api_client.wasm_exists(wasm_checksum).await.ok().and_then(|(_, ca)| ca);
-        match fetch_wasm_bytes(api_client, wasm_checksum, wasm_cache, is_p2, &created_at).await {
+        // Fetch the bytes: the raw LRU when it has them, otherwise the
+        // coordinator
+        let meta = api_client.wasm_meta(wasm_checksum).await.ok();
+        let created_at = meta.as_ref().and_then(|m| m.created_at.clone());
+        match fetch_wasm_bytes(api_client, wasm_checksum, wasm_cache, is_p2, &meta).await {
             Ok(bytes) => (bytes, job.compile_time_ms, created_at, None),
             Err(e) => {
                 let error_msg = format!("Failed to download WASM: {}", e);
@@ -2515,16 +2503,6 @@ async fn handle_execute_job(
         _ => None,
     };
 
-    // Create wallet config if wallet_id is present in execution request
-    let wallet_config = wallet_id.map(|wid| {
-        debug!("Wallet enabled for execution: wallet_id={}", wid);
-        executor::WalletConfig {
-            wallet_id: wid.clone(),
-            coordinator_url: config.api_base_url.clone(),
-            wallet_auth_token: config.api_auth_token.clone(),
-        }
-    });
-
     // The manifest of what actually ran, kept for the report below.
     let declared_manifest: Option<connector_manifest::ProjectManifest>;
 
@@ -2609,6 +2587,24 @@ async fn handle_execute_job(
     };
     let egress_log = network_config.egress_log.clone();
 
+    // Wallet config, once the manifest is known: the guest may name sub-keys
+    // only of the connector this execution IS — decided from the verified
+    // manifest and the project it is published under, never from the task.
+    let sub_key_connector = connector_manifest::sub_key_connector_id(
+        in_namespace,
+        job.project_id.as_deref(),
+        declared_manifest.as_ref(),
+    );
+    let wallet_config = wallet_id.map(|wid| {
+        debug!("Wallet enabled for execution: wallet_id={}", wid);
+        executor::WalletConfig {
+            wallet_id: wid.to_string(),
+            coordinator_url: config.api_base_url.clone(),
+            wallet_auth_token: config.api_auth_token.clone(),
+            connector_id: sub_key_connector.clone(),
+        }
+    });
+
     // Execute WASM
     info!("🚀 Executing WASM...");
     let exec_result = executor
@@ -2661,9 +2657,12 @@ async fn handle_execute_job(
         }
     }
 
-    // Cache raw WASM after execution - only for P1 (P2 uses CompiledCache for native code)
-    // This is a security measure: WASI P2 has access to /tmp, so we cache only after WASI exits
-    if !is_p2 && !wasm_bytes.is_empty() {
+    // Cache the raw bytes only after the guest has exited: a P2 guest has a
+    // `/tmp` preopen, and when the cache lives there (the fallback location) a
+    // write during the run would race the guest. `get()` verifies every read
+    // against the hash recorded here, so a tampered entry is detected, never
+    // served.
+    if !wasm_bytes.is_empty() {
         if let Some(cache) = wasm_cache {
             if let Ok(mut c) = cache.lock() {
                 if let Err(e) = c.put(wasm_checksum, &wasm_bytes) {

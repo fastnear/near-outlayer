@@ -359,61 +359,6 @@ impl CompiledCache {
         }
     }
 
-    /// Validate compiled cache entry: check files exist and signature is valid
-    ///
-    /// Use this to check before downloading raw WASM bytes.
-    /// If returns true, you can skip downloading and call get() directly.
-    /// If returns false, entry was invalid and has been removed - download WASM.
-    pub fn validate_entry(&mut self, wasm_checksum: &str) -> bool {
-        // Check if in memory index
-        if !self.entries.contains_key(wasm_checksum) {
-            return false;
-        }
-
-        let compiled_path = self.dir.join(format!("{}.compiled", wasm_checksum));
-        let sig_path = self.dir.join(format!("{}.sig", wasm_checksum));
-
-        // Check files exist
-        if !compiled_path.exists() || !sig_path.exists() {
-            warn!("Compiled cache files missing for {}, removing entry", wasm_checksum);
-            self.remove_entry(wasm_checksum);
-            return false;
-        }
-
-        // Read and verify signature
-        let compiled_bytes = match fs::read(&compiled_path) {
-            Ok(b) => b,
-            Err(e) => {
-                warn!("Failed to read compiled file {}: {}", wasm_checksum, e);
-                self.remove_entry(wasm_checksum);
-                let _ = fs::remove_file(&compiled_path);
-                let _ = fs::remove_file(&sig_path);
-                return false;
-            }
-        };
-        let sig_bytes = match fs::read(&sig_path) {
-            Ok(b) => b,
-            Err(e) => {
-                warn!("Failed to read signature file {}: {}", wasm_checksum, e);
-                self.remove_entry(wasm_checksum);
-                let _ = fs::remove_file(&compiled_path);
-                let _ = fs::remove_file(&sig_path);
-                return false;
-            }
-        };
-
-        // Verify signature
-        if !self.verify_signature(wasm_checksum, &compiled_bytes, &sig_bytes) {
-            warn!("⚠️ Invalid signature for compiled cache: {}, removing", wasm_checksum);
-            self.remove_entry(wasm_checksum);
-            let _ = fs::remove_file(&compiled_path);
-            let _ = fs::remove_file(&sig_path);
-            return false;
-        }
-
-        true
-    }
-
     /// Get cache statistics: (entries, total_size_bytes, max_size_bytes)
     #[allow(dead_code)]
     pub fn stats(&self) -> (usize, u64, u64) {
@@ -479,57 +424,4 @@ mod tests {
         assert!(result.is_none());
     }
 
-    #[test]
-    fn test_validate_entry_nonexistent() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut cache =
-            CompiledCache::new(temp_dir.path().to_path_buf(), 100, &create_test_key()).unwrap();
-
-        // Entry doesn't exist
-        assert!(!cache.validate_entry("nonexistent"));
-    }
-
-    #[test]
-    fn test_validate_entry_missing_files() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut cache =
-            CompiledCache::new(temp_dir.path().to_path_buf(), 100, &create_test_key()).unwrap();
-
-        // Manually add entry without files
-        cache.entries.insert("test123".to_string(), CacheEntry {
-            compiled_size: 100,
-            last_used: std::time::Instant::now(),
-        });
-
-        // validate_entry should detect missing files and remove entry
-        assert!(!cache.validate_entry("test123"));
-        assert!(!cache.entries.contains_key("test123"));
-    }
-
-    #[test]
-    fn test_validate_entry_invalid_signature() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut cache =
-            CompiledCache::new(temp_dir.path().to_path_buf(), 100, &create_test_key()).unwrap();
-
-        let checksum = "badtest";
-        let compiled_path = temp_dir.path().join(format!("{}.compiled", checksum));
-        let sig_path = temp_dir.path().join(format!("{}.sig", checksum));
-
-        // Write files with invalid signature
-        fs::write(&compiled_path, b"some compiled data").unwrap();
-        fs::write(&sig_path, [0u8; 64]).unwrap(); // Invalid signature
-
-        // Manually add entry
-        cache.entries.insert(checksum.to_string(), CacheEntry {
-            compiled_size: 18,
-            last_used: std::time::Instant::now(),
-        });
-
-        // validate_entry should detect bad signature and clean up
-        assert!(!cache.validate_entry(checksum));
-        assert!(!cache.entries.contains_key(checksum));
-        assert!(!compiled_path.exists());
-        assert!(!sig_path.exists());
-    }
 }

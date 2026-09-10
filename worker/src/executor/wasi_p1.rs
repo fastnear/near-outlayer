@@ -95,6 +95,13 @@ pub async fn execute(
     wasi_builder.stdout(stdout_pipe.clone());
     wasi_builder.stderr(stderr_pipe.clone());
 
+    // No raw sockets (same rule as the P2 path): the allowlist and the egress
+    // audit cover HTTP only, so nothing else may reach the network.
+    wasi_builder.allow_tcp(false);
+    wasi_builder.allow_udp(false);
+    wasi_builder.allow_ip_name_lookup(false);
+    wasi_builder.socket_addr_check(|_, _| Box::pin(async { false }));
+
     // Add environment variables (from encrypted secrets)
     if let Some(env_map) = env_vars {
         for (key, value) in env_map {
@@ -138,7 +145,23 @@ pub async fn execute(
              Make sure you're using [[bin]] format with fn main(), not [lib] with cdylib",
         )?;
 
-    let call_result = start.call_async(&mut store, ()).await;
+    // Wall-clock bound on the run itself: the epoch deadline traps only when
+    // wasm code executes, and a guest suspended in a host await (`poll_oneoff`
+    // on a clock) never returns to wasm. Dropping the future cancels the run;
+    // the store is read afterwards as after any trap. Two seconds past the
+    // epoch deadline, so this fires only where the epoch could not.
+    let call_result = match tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs + 2),
+        start.call_async(&mut store, ()),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(anyhow::anyhow!(
+            "interrupt: wall-clock limit of {}s reached while the guest waited in a host call",
+            timeout_secs
+        )),
+    };
     epoch_handle.abort();
 
     if let Err(e) = &call_result {

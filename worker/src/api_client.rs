@@ -418,6 +418,16 @@ impl TerminalRelay {
     }
 }
 
+/// `GET /wasm/exists/{checksum}`: whether the coordinator has the artefact,
+/// when it was first stored, and the sha256 of the bytes it holds now.
+#[derive(Debug, Clone, Deserialize)]
+pub struct WasmMeta {
+    pub exists: bool,
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub content_hash: Option<String>,
+}
+
 /// API client for communicating with Coordinator API
 #[derive(Clone)]
 pub struct ApiClient {
@@ -1184,6 +1194,18 @@ impl ApiClient {
     /// # Returns
     /// * `Ok((exists, created_at))` - Whether file exists and optional creation timestamp
     pub async fn wasm_exists(&self, checksum: &str) -> Result<(bool, Option<String>)> {
+        let meta = self.wasm_meta(checksum).await?;
+        Ok((meta.exists, meta.created_at))
+    }
+
+    /// What the coordinator holds under `checksum` right now.
+    ///
+    /// `content_hash` is the sha256 of the stored bytes. The checksum is a
+    /// cache key — for a GitHub build a hash of the source coordinates, kept
+    /// across rebuilds of the same commit — so this hash, not the checksum,
+    /// is what identifies the current build. Absent when the coordinator does
+    /// not report one.
+    pub async fn wasm_meta(&self, checksum: &str) -> Result<WasmMeta> {
         let url = format!("{}/wasm/exists/{}", self.base_url, checksum);
 
         let response = self.add_auth_headers(self.client.get(&url))
@@ -1195,18 +1217,10 @@ impl ApiClient {
             anyhow::bail!("Check failed with status: {}", response.status())
         }
 
-        #[derive(Deserialize)]
-        struct ExistsResponse {
-            exists: bool,
-            created_at: Option<String>,
-        }
-
-        let result = response
-            .json::<ExistsResponse>()
+        response
+            .json::<WasmMeta>()
             .await
-            .context("Failed to parse exists response")?;
-
-        Ok((result.exists, result.created_at))
+            .context("Failed to parse exists response")
     }
 
     /// Acquire a distributed lock

@@ -950,6 +950,10 @@ pub struct EncryptResponse {
 pub struct WalletDeriveAddressRequest {
     pub wallet_id: String,
     pub chain: String,
+    /// Optional sub-key under the wallet's EVM key — see [`validate_sub_path`].
+    /// Absent or empty: the wallet's own key.
+    #[serde(default)]
+    pub sub_path: Option<String>,
 }
 
 /// Response with derived address and public key
@@ -966,6 +970,10 @@ pub struct WalletEvmSignTypedDataRequest {
     pub chain: String,
     /// Full `eth_signTypedData_v4` object: `{ domain, types, primaryType, message }`.
     pub typed_data: serde_json::Value,
+    /// Sign with this sub-key of the wallet's EVM key instead of the key
+    /// itself — see [`validate_sub_path`].
+    #[serde(default)]
+    pub sub_path: Option<String>,
 }
 
 /// Request to sign an EIP-191 `personal_sign` message with the wallet's EVM key.
@@ -979,6 +987,9 @@ pub struct WalletEvmSignMessageRequest {
     /// `message` as hex and signs the decoded bytes. No content sniffing.
     #[serde(default)]
     pub encoding: Option<String>,
+    /// Sign with this sub-key of the wallet's EVM key — see [`validate_sub_path`].
+    #[serde(default)]
+    pub sub_path: Option<String>,
 }
 
 /// Request to sign a raw EVM transaction with the wallet's EVM key.
@@ -993,6 +1004,9 @@ pub struct WalletEvmSignTransactionRequest {
     pub chain: String,
     /// Serialized unsigned transaction, `0x`-hex.
     pub unsigned_tx: String,
+    /// Sign with this sub-key of the wallet's EVM key — see [`validate_sub_path`].
+    #[serde(default)]
+    pub sub_path: Option<String>,
 }
 
 /// A 65-byte recoverable EVM signature, `0x`-hex (`r‖s‖v`, `v ∈ {27,28}`).
@@ -4038,6 +4052,69 @@ fn wallet_seed_impl(wallet_id: &str, chain: &str) -> String {
     }
 }
 
+/// A wallet id may not contain `:`.
+///
+/// Every seed is `root:{wallet_id}:…` with `:` as the segment separator, so a
+/// wallet id carrying one would shift every segment after it: wallet `a:evm`'s
+/// NEAR key (`wallet:a:evm:near`) would be the string the ephemeral exporter
+/// builds for `(a, evm, near)`. The coordinator only ever sends UUIDs; this is
+/// the keystore's own refusal, so the invariant does not rest on a caller.
+/// Applied at the top of every handler that takes a `wallet_id`, signing and
+/// exporting alike, so no seed of any family is ever built from an id that
+/// could shift it.
+pub(crate) fn validate_wallet_id(wallet_id: &str) -> Result<(), ApiError> {
+    if wallet_id.is_empty() || wallet_id.contains(':') {
+        return Err(ApiError::BadRequest(
+            "wallet_id must be non-empty and must not contain ':'".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Seed of a wallet's EVM **sub-key**: `subkey:{id}:evm:{sub_path}`.
+///
+/// A sub-key is a distinct secp256k1 key, and so a distinct address, under the
+/// same wallet's ONE authority: the wallet's policy governs every sub-key, and
+/// whoever holds the wallet's authority can sign for any path. What a path
+/// buys is separation of balances — a connector's trading key and its bridge
+/// key are different addresses, and neither is the wallet's own
+/// (`wallet:{id}:evm`). Which path an integration may use is decided by
+/// whoever forwards it (an API-key holder for their own wallet; for a
+/// connector, the worker, from the connector's verified manifest); the
+/// keystore guarantees only that different paths are different keys.
+///
+/// Its own root, `subkey:`, rather than a level under `wallet:`, is the whole
+/// security argument. Every seed this keystore will hand a PRIVATE key for
+/// (`/wallet/derive-ephemeral-key`, payment checks) has the shape
+/// `wallet:{id}:{chain}:{sub_path}` built from request strings; a sub-key seed
+/// under `wallet:` would be one of the strings that endpoint can spell, and
+/// with `derive_keypair` and `derive_secp256k1_keypair` feeding the same HMAC
+/// input, the bytes it returned WOULD BE the sub-key's scalar. A different root
+/// makes that impossible by construction instead of by a check — see
+/// `README.md` § "Adding a key family".
+pub(crate) fn subkey_seed(wallet_id: &str, sub_path: &str) -> String {
+    format!("subkey:{}:evm:{}", wallet_id, sub_path)
+}
+
+/// The one shape a `sub_path` may have — `shared_tee_helpers::is_valid_sub_path`,
+/// shared with the coordinator so the two cannot drift.
+///
+/// Absent or empty means "the wallet's own key" and comes back as `None`.
+/// Anything else is refused rather than normalised: a path is part of a key's
+/// identity, and two spellings that derived the same key — or a spelling that
+/// derived a different one than the caller wrote — would both be silent.
+pub(crate) fn validate_sub_path(raw: Option<&str>) -> Result<Option<&str>, ApiError> {
+    let Some(p) = raw.filter(|p| !p.is_empty()) else {
+        return Ok(None);
+    };
+    if !shared_tee_helpers::is_valid_sub_path(p) {
+        return Err(ApiError::BadRequest(
+            "sub_path must match [a-z0-9][a-z0-9._-]{0,63}".to_string(),
+        ));
+    }
+    Ok(Some(p))
+}
+
 /// Derive a wallet address for a specific chain
 ///
 /// Seed format: see [`wallet_seed`] — EVM chains collapse to one
@@ -4064,8 +4141,18 @@ async fn wallet_derive_address_handler(
         // else → 400 carrying the full anyhow chain (real `InvalidTxError`).
         .map_err(ApiError::from_customer_load)?;
 
+    validate_wallet_id(&req.wallet_id)?;
     let chain = req.chain.to_lowercase();
-    let seed = wallet_seed_impl(&req.wallet_id, &chain);
+    let sub_path = validate_sub_path(req.sub_path.as_deref())?;
+    if sub_path.is_some() && !is_evm_chain(&chain) {
+        return Err(ApiError::BadRequest(
+            "sub_path is supported for EVM chains only".to_string(),
+        ));
+    }
+    let seed = match sub_path {
+        Some(p) => subkey_seed(&req.wallet_id, p),
+        None => wallet_seed_impl(&req.wallet_id, &chain),
+    };
 
     let keystore = state.keystore.read().await;
 
@@ -4116,7 +4203,7 @@ async fn wallet_derive_address_handler(
             }))
         }
         _ => Err(ApiError::BadRequest(format!(
-            "Unsupported chain: {}. Supported: near, solana, and EVM (ethereum, polygon, base, arbitrum, optimism, bsc, avalanche)",
+            "Unsupported chain: {}. Supported: near, solana, and EVM (ethereum, polygon, base, arbitrum, optimism, bsc, avalanche, hyperevm)",
             chain
         ))),
     }
@@ -4124,22 +4211,27 @@ async fn wallet_derive_address_handler(
 
 /// Shared EVM-signing path: validate the chain, gate on the `evm_sign`
 /// capability, then sign an **already-computed 32-byte keccak digest** with the
-/// wallet's canonical EVM key. `want_raw_tx` is `false` here — typed-data and
-/// personal_sign ride the base `evm_sign` capability; raw-transaction signing
-/// (the deferred §4.4 path) is what would pass `true` (gated by `evm_sign.raw_tx`).
+/// wallet's canonical EVM key — or, given a `sub_path`, with that sub-key of
+/// it (see [`subkey_seed`]). The policy decision is the wallet's and does
+/// not depend on the path: a sub-key is the same wallet's authority over a
+/// separate balance, not a separate authority. `want_raw_tx` is `false` for
+/// typed-data and personal_sign, which ride the base `evm_sign` capability;
+/// raw-transaction signing passes `true` (gated by `evm_sign.raw_tx`).
 async fn evm_sign_digest(
     state: &AppState,
     customer: Option<&near_primitives::types::AccountId>,
     wallet_id: &str,
     chain: &str,
+    sub_path: Option<&str>,
     digest: &[u8; 32],
     want_raw_tx: bool,
 ) -> Result<String, ApiError> {
     use shared_tee_helpers::wallet_policy::{evm_sign_decision, Decision};
 
+    validate_wallet_id(wallet_id)?;
     if !is_evm_chain(chain) {
         return Err(ApiError::BadRequest(format!(
-            "'{}' is not an EVM chain (supported: ethereum, polygon, base, arbitrum, optimism, bsc, avalanche)",
+            "'{}' is not an EVM chain (supported: ethereum, polygon, base, arbitrum, optimism, bsc, avalanche, hyperevm)",
             chain
         )));
     }
@@ -4160,7 +4252,10 @@ async fn evm_sign_digest(
         }
     }
 
-    let seed = wallet_seed_impl(wallet_id, chain);
+    let seed = match sub_path {
+        Some(p) => subkey_seed(wallet_id, p),
+        None => wallet_seed_impl(wallet_id, chain),
+    };
     let keystore = state.keystore.read().await;
     let sig = keystore
         .sign_secp256k1_prehash(customer, &seed, digest)
@@ -4172,7 +4267,7 @@ async fn evm_sign_digest(
 ///
 /// The digest is computed server-side from the full typed-data object (we do
 /// NOT trust a client-supplied hash). `ecrecover` over it returns the address
-/// from `/wallet/derive-address` for the same `(wallet_id, evm)` seed.
+/// from `/wallet/derive-address` for the same `(wallet_id, evm, sub_path)`.
 async fn wallet_evm_sign_typed_data_handler(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -4187,6 +4282,7 @@ async fn wallet_evm_sign_typed_data_handler(
         .await
         .map_err(ApiError::from_customer_load)?;
 
+    let sub_path = validate_sub_path(req.sub_path.as_deref())?;
     let digest = crate::eip712::eip712_digest(&req.typed_data)
         .map_err(|e| ApiError::BadRequest(format!("Invalid EIP-712 typed data: {:#}", e)))?;
 
@@ -4195,6 +4291,7 @@ async fn wallet_evm_sign_typed_data_handler(
         customer.as_ref(),
         &req.wallet_id,
         &req.chain.to_lowercase(),
+        sub_path,
         &digest,
         false,
     )
@@ -4229,6 +4326,7 @@ async fn wallet_evm_sign_message_handler(
             )))
         }
     };
+    let sub_path = validate_sub_path(req.sub_path.as_deref())?;
     let digest = crate::eip712::eip191_digest_for(&req.message, hex)
         .map_err(|e| ApiError::BadRequest(format!("Invalid message: {:#}", e)))?;
 
@@ -4237,6 +4335,7 @@ async fn wallet_evm_sign_message_handler(
         customer.as_ref(),
         &req.wallet_id,
         &req.chain.to_lowercase(),
+        sub_path,
         &digest,
         false,
     )
@@ -4284,11 +4383,13 @@ async fn wallet_evm_sign_transaction_handler(
         d
     };
 
+    let sub_path = validate_sub_path(req.sub_path.as_deref())?;
     let signature = evm_sign_digest(
         &state,
         customer.as_ref(),
         &req.wallet_id,
         &req.chain.to_lowercase(),
+        sub_path,
         &digest,
         true,
     )
@@ -4318,6 +4419,7 @@ async fn solana_sign_bytes(
 ) -> Result<String, ApiError> {
     use shared_tee_helpers::wallet_policy::{solana_sign_decision, Decision};
 
+    validate_wallet_id(wallet_id)?;
     if !is_solana_chain(chain) {
         return Err(ApiError::BadRequest(format!(
             "'{}' is not a Solana chain (supported: solana)",
@@ -4706,6 +4808,7 @@ async fn wallet_sign_secret_store_handler(
         return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
     }
 
+    validate_wallet_id(&req.wallet_id)?;
     let customer = extract_customer_from_header(&headers)?;
     state
         .ensure_customer_loaded(customer.as_ref())
@@ -4733,7 +4836,7 @@ async fn wallet_sign_secret_store_handler(
     // wallet's own key, as 64 hex characters.
 
     let keystore = state.keystore.read().await;
-    let wallet_seed = format!("wallet:{}:near", req.wallet_id);
+    let wallet_seed = wallet_seed(&req.wallet_id, "near");
     let verifying_key = keystore
         .get_public_key_for_seed(customer.as_ref(), &wallet_seed)
         .map_err(|e| ApiError::InternalError(format!("Failed to derive public key: {}", e)))?;
@@ -4834,6 +4937,7 @@ async fn wallet_sign_secret_delete_handler(
         return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
     }
 
+    validate_wallet_id(&req.wallet_id)?;
     let customer = extract_customer_from_header(&headers)?;
     state
         .ensure_customer_loaded(customer.as_ref())
@@ -4853,7 +4957,7 @@ async fn wallet_sign_secret_delete_handler(
     }
 
     let keystore = state.keystore.read().await;
-    let wallet_seed = format!("wallet:{}:near", req.wallet_id);
+    let wallet_seed = wallet_seed(&req.wallet_id, "near");
     let verifying_key = keystore
         .get_public_key_for_seed(customer.as_ref(), &wallet_seed)
         .map_err(|e| ApiError::InternalError(format!("Failed to derive public key: {}", e)))?;
@@ -4906,6 +5010,7 @@ async fn wallet_sign_policy_handler(
         return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
     }
 
+    validate_wallet_id(&req.wallet_id)?;
     let customer = extract_customer_from_header(&headers)?;
     state
         .ensure_customer_loaded(customer.as_ref())
@@ -4973,7 +5078,7 @@ async fn wallet_sign_policy_handler(
     //    so any signature from any verb could be filed here as a policy. The
     //    domain stops that; the caller stops the resulting signature being
     //    usable by anyone but the account it was made for.
-    let seed = format!("wallet:{}:near", req.wallet_id);
+    let seed = wallet_seed(&req.wallet_id, "near");
     let policy_pubkey = {
         let vk = keystore
             .get_public_key_for_seed(customer.as_ref(), &seed)
@@ -5202,7 +5307,7 @@ async fn derive_wallet_ed25519_pubkey(
     customer: Option<&near_primitives::types::AccountId>,
     wallet_id: &str,
 ) -> Result<String, ApiError> {
-    let near_seed = format!("wallet:{}:near", wallet_id);
+    let near_seed = wallet_seed(&wallet_id, "near");
     let keystore = state.keystore.read().await;
     let ed25519_vk = keystore
         .get_public_key_for_seed(customer, &near_seed)
@@ -5285,7 +5390,7 @@ async fn wallet_implicit_account(
     customer: Option<&near_primitives::types::AccountId>,
     wallet_id: &str,
 ) -> Result<String, ApiError> {
-    let seed = format!("wallet:{}:near", wallet_id);
+    let seed = wallet_seed(&wallet_id, "near");
     let keystore = state.keystore.read().await;
     let vk = keystore
         .get_public_key_for_seed(customer, &seed)
@@ -5432,7 +5537,7 @@ async fn sign_nep413(
     use ed25519_dalek::Signer;
     use sha2::{Digest, Sha256};
 
-    let seed = wallet_seed_impl(wallet_id, "near");
+    let seed = wallet_seed(wallet_id, "near");
     let keystore = state.keystore.read().await;
     let (signing_key, verifying_key) = keystore
         .derive_keypair(customer, &seed)
@@ -5488,7 +5593,7 @@ where
         ApiError::InternalError("NEAR client not configured".to_string())
     })?;
 
-    let seed = wallet_seed_impl(wallet_id, "near");
+    let seed = wallet_seed(wallet_id, "near");
     let (signing_key, verifying_key) = {
         let keystore = state.keystore.read().await;
         keystore
@@ -5580,6 +5685,7 @@ async fn wallet_sign_handler(
     if !state.is_ready() {
         return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
     }
+    validate_wallet_id(&req.wallet_id)?;
     let customer = extract_customer_from_header(&headers)?;
     state
         .ensure_customer_loaded(customer.as_ref())
@@ -5913,7 +6019,7 @@ async fn sign_built(
             .map_err(ApiError::BadRequest)?;
 
             use ed25519_dalek::Signer;
-            let seed_path = format!("wallet:{}:near", req.wallet_id);
+            let seed_path = wallet_seed(&req.wallet_id, "near");
             let keystore = state.keystore.read().await;
             let (signing_key, verifying_key) = keystore
                 .derive_keypair(customer, &seed_path)
@@ -5986,10 +6092,17 @@ async fn sign_hash_pinned(
                     chain_l
                 )));
             }
-            // NEAR / Solana / other ed25519 chains, scoped to the connector
-            // when the op names one (§D1). The seed is composed from the NAME
-            // in the signed op — never accepted as a path from the caller.
-            let seed = wallet_seed_impl(&req.wallet_id, &chain_l);
+            // Only the two ed25519 chains this keystore holds keys for. The
+            // chain is a seed segment, so an arbitrary string here would name
+            // an arbitrary seed — `evm` spells the secp256k1 key, `near:check:0`
+            // spells an exported payment-check key.
+            if chain_l != "near" && !is_solana_chain(&chain_l) {
+                return Err(ApiError::BadRequest(format!(
+                    "Raw signing supports chains near and solana, not '{}'",
+                    chain_l
+                )));
+            }
+            let seed = wallet_seed(&req.wallet_id, &chain_l);
             let keystore = state.keystore.read().await;
             let sig = keystore
                 .sign(customer, &seed, &bytes)
@@ -6151,6 +6264,7 @@ async fn wallet_check_policy_handler(
     if !state.is_ready() {
         return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
     }
+    validate_wallet_id(&req.wallet_id)?;
     let customer = extract_customer_from_header(&headers)?;
     state
         .ensure_customer_loaded(customer.as_ref())
@@ -6290,6 +6404,7 @@ async fn wallet_encrypt_policy_handler(
         ));
     }
 
+    validate_wallet_id(&req.wallet_id)?;
     let customer = extract_customer_from_header(&headers)?;
     state
         .ensure_customer_loaded(customer.as_ref())
@@ -6321,6 +6436,7 @@ async fn wallet_decrypt_policy_handler(
         return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
     }
 
+    validate_wallet_id(&req.wallet_id)?;
     let customer = extract_customer_from_header(&headers)?;
     state
         .ensure_customer_loaded(customer.as_ref())
@@ -6645,7 +6761,7 @@ mod wallet_sign_tests {
         let id = "abc-123";
         let evm = [
             "ethereum", "eth", "polygon", "pol", "matic", "base", "arbitrum", "arb", "optimism",
-            "op", "bsc", "avalanche", "avax",
+            "op", "bsc", "avalanche", "avax", "hyperevm",
         ];
         let canonical = wallet_seed(id, "ethereum");
         assert_eq!(canonical, format!("wallet:{}:evm", id));
@@ -6657,6 +6773,102 @@ mod wallet_sign_tests {
         assert_eq!(wallet_seed(id, "near"), format!("wallet:{}:near", id));
         assert_eq!(wallet_seed(id, "solana"), format!("wallet:{}:solana", id));
         assert!(!is_evm_chain("near") && !is_evm_chain("solana"));
+    }
+
+    #[test]
+    fn a_sub_key_is_its_own_key_under_its_own_root() {
+        // Two paths are two keys, no path is the wallet's own, and the seed
+        // does not depend on which EVM name was asked for. Address == f(seed),
+        // so this is the isolation argument for sub-keys.
+        let id = "abc-123";
+        let trading = subkey_seed(id, "connector.hl.trading");
+        assert_eq!(trading, "subkey:abc-123:evm:connector.hl.trading");
+        assert_ne!(subkey_seed(id, "connector.hl.bridge"), trading);
+        assert_ne!(trading, wallet_seed(id, "base"));
+        assert_ne!(trading, wallet_seed(id, "hyperevm"));
+    }
+
+    #[test]
+    fn no_exportable_seed_can_name_a_signing_key() {
+        // `/wallet/derive-ephemeral-key` hands out PRIVATE keys for seeds it
+        // builds as `wallet:{id}:{chain}:{sub_path}` from two request strings.
+        // Both curves derive from the same HMAC input, so any signing seed that
+        // endpoint could spell would be a signing key it could export. The
+        // invariant every key family must keep: signing seeds are either two
+        // segments under `wallet:` (which the exporter cannot spell — it needs
+        // a non-empty third) or live under a root that is not `wallet:`.
+        let id = "abc-123";
+        let exportable = |chain: &str, sub: &str| format!("wallet:{id}:{chain}:{sub}");
+        let signing = [
+            wallet_seed(id, "near"),
+            wallet_seed(id, "solana"),
+            wallet_seed(id, "ethereum"),
+            wallet_seed(id, "hyperevm"),
+            subkey_seed(id, "connector.hl.trading"),
+            subkey_seed(id, "0"),
+            // The other seeds this keystore signs with: the VRF key and a
+            // vault's TEE key (`mpc_ckd.rs`).
+            "vrf-key".to_string(),
+            format!("outlayer.near:{}", "vault.alice.near"),
+        ];
+        // The strings an attacker holding the exporter would try, including
+        // the ones that spell a sub-key path verbatim.
+        let attempts = [
+            ("evm", "connector.hl.trading"),
+            ("evm", "0"),
+            ("near", "check:0"),
+            ("near:check", "0"),
+            ("ethereum", "connector.hl.trading"),
+            ("evm:connector.hl.trading", ""),
+            ("", "evm:connector.hl.trading"),
+            ("subkey", "evm:connector.hl.trading"),
+        ];
+        for (chain, sub) in attempts {
+            let spelled = exportable(chain, sub);
+            for s in &signing {
+                assert_ne!(&spelled, s, "exporter input ({chain:?}, {sub:?}) reaches a signing key");
+            }
+        }
+        for s in &signing {
+            // The exporter's output always starts with `wallet:` and always has
+            // at least three `:`-separated segments after the root.
+            let under_wallet_root = s.starts_with("wallet:");
+            let two_segments = s.matches(':').count() == 2;
+            assert!(
+                !under_wallet_root || two_segments,
+                "{s} is a wallet seed with a third segment — the exporter can spell it"
+            );
+        }
+    }
+
+    #[test]
+    fn a_wallet_id_with_a_colon_is_refused_before_it_can_shift_a_seed() {
+        // Wallet `a:evm`'s NEAR seed would be `wallet:a:evm:near` — exactly the
+        // exporter's string for (a, evm, near). The id is refused instead.
+        assert_eq!(wallet_seed("a:evm", "near"), "wallet:a:evm:near");
+        assert!(validate_wallet_id("a:evm").is_err());
+        assert!(validate_wallet_id("").is_err());
+        assert!(validate_wallet_id("9c3c9e10-1c1f-4f5e-9c4a-1d7b9a8f3c20").is_ok());
+    }
+
+    #[test]
+    fn a_sub_path_has_exactly_one_shape() {
+        assert_eq!(validate_sub_path(None).unwrap(), None);
+        assert_eq!(validate_sub_path(Some("")).unwrap(), None);
+        assert_eq!(validate_sub_path(Some("connector.hl.trading")).unwrap(), Some("connector.hl.trading"));
+        assert_eq!(validate_sub_path(Some("0")).unwrap(), Some("0"));
+        assert_eq!(validate_sub_path(Some(&"a".repeat(64))).unwrap().map(str::len), Some(64));
+        for bad in [
+            ".leading-dot",
+            "-leading-dash",
+            "Upper",
+            "with:colon",
+            "with space",
+            "unicode-ё",
+            &"a".repeat(65),
+        ] {
+            assert!(validate_sub_path(Some(bad)).is_err(), "{bad:?} must be refused");
+        }
     }
 
     // --- Built: the withdraw artifact is constructed FROM the op fields ------------
@@ -8067,6 +8279,7 @@ mod tests {
         let request = WalletDeriveAddressRequest {
                         wallet_id: "test-wallet-id".to_string(),
             chain: "near".to_string(),
+            sub_path: None,
         };
         let response = wallet_derive_address_handler(
             axum::extract::State(state),
@@ -8101,6 +8314,7 @@ mod tests {
         let request = WalletDeriveAddressRequest {
                         wallet_id: "abc".to_string(),
             chain: "near".to_string(),
+            sub_path: None,
         };
         let response = wallet_derive_address_handler(
             axum::extract::State(state),

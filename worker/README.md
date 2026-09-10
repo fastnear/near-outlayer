@@ -239,6 +239,24 @@ Memory layout:
 - Input: written at offset 0 by executor
 - Output: 4-byte little-endian length followed by data
 
+### Host functions
+
+WASI P2 components import host interfaces from `wit/` (`near:rpc`,
+`near:storage`, `near:payment`, `near:vrf`, `outlayer:wallet`). The wallet
+interface is provided only when the execution carries a wallet (`X-Wallet-Id`);
+a component that imports it without one is refused before `main`. Its EVM
+signing functions take a sub-key `label`; the worker maps it to the keystore
+path `connector.{connector_id}.{label}` only for a connector in the connectors
+namespace whose verified in-wasm manifest names `connector_id` equal to its
+project name (`connector_manifest::sub_key_connector_id`), so a guest can only
+name its own connector's keys. The empty label is the sub-key `default`; the
+wallet's own EVM key is not reachable from a guest at all. Each execution has
+a budget of 200 wallet host calls.
+
+Guests have no raw sockets: both WASI contexts deny TCP, UDP and name lookup
+(`src/executor/wasi_p1.rs`, `wasi_p2.rs`); the only network path is
+`wasi:http`, which runs through the outbound allowlist and the egress audit.
+
 ## Security
 
 ### Sandboxing

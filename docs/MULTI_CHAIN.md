@@ -4,11 +4,11 @@ Agent Custody allows AI agents to hold and manage funds via TEE-secured wallets 
 
 ## Current Status
 
-| Component | NEAR | EVM (eth/polygon/base/arbitrum/optimism/bsc/avalanche) | Solana |
+| Component | NEAR | EVM (eth/polygon/base/arbitrum/optimism/bsc/avalanche/hyperevm) | Solana |
 |-----------|------|---------------------|--------|
 | Key generation (keystore) | ed25519 | secp256k1 (one shared address across all EVM chains) | ed25519 (base58 address) |
 | Transaction signing (keystore) | ed25519 | ECDSA secp256k1 (keccak256 + sign; off-chain EIP-712 / EIP-191 / raw-tx hash) | ed25519 over the raw serialized message (no digest step) |
-| Derivation seed | `wallet:{id}:near` | `wallet:{id}:evm` (shared by every EVM chain) | `wallet:{id}:solana` (the `sol` alias canonicalizes to it) |
+| Derivation seed | `wallet:{id}:near` | `wallet:{id}:evm` (shared by every EVM chain); a sub-key is `subkey:{id}:evm:{sub_path}` | `wallet:{id}:solana` (the `sol` alias canonicalizes to it) |
 | Coordinator handlers | withdraw, call, transfer, swap, deposit | `evm/sign-typed-data`, `evm/sign-message`, `evm/sign-transaction` (signing only — no build/broadcast) | `solana/sign-message`, `solana/sign-transaction` (signing only — no build/broadcast) |
 | Dashboard UI | full support | address display | not implemented |
 | Policy evaluation (keystore) | all rules | `evm_sign` capability (default-DENY under a policy; set `allowed:true`) + `raw_tx` sub-flag (default-OFF); shared policy | `solana_sign` capability — same model as `evm_sign` (`allowed` + `raw_tx`); shared policy |
@@ -25,7 +25,28 @@ EVM signing is **live**. The model is deliberately narrow: **the client builds a
 
 ### Supported chains
 
-`ethereum`, `polygon`, `base`, `arbitrum`, `optimism`, `bsc`, `avalanche` — plus the 1Click-style aliases `eth`, `pol`, `matic`, `arb`, `op`, `avax`. **All EVM chains share ONE derived secp256k1 address** (a single EOA, seed `wallet:{id}:evm`). `GET /wallet/v1/address` serves any of these and returns that one `0x` address. Account delete stays NEAR-only.
+`ethereum`, `polygon`, `base`, `arbitrum`, `optimism`, `bsc`, `avalanche`, `hyperevm` — plus the 1Click-style aliases `eth`, `pol`, `matic`, `arb`, `op`, `avax`. **All EVM chains share ONE derived secp256k1 address** (a single EOA, seed `wallet:{id}:evm`). `GET /wallet/v1/address` serves any of these and returns that one `0x` address. `hyperevm` is Hyperliquid's EVM (chain id 999): signable like the rest, not a 1Click deposit or withdraw chain. Account delete stays NEAR-only.
+
+### Sub-keys
+
+`GET /wallet/v1/address` and the three `evm/*` endpoints take an optional
+`sub_path` (`[a-z0-9][a-z0-9._-]{0,63}`, EVM only). It names a distinct
+secp256k1 key of the same wallet — seed `subkey:{id}:evm:{sub_path}`, under its
+own root so that no key-exporting endpoint of the keystore can spell it. It is
+a separate **address** under the wallet's one authority, not a separate
+authority: whoever holds the wallet's API key can sign for any path, and the
+owner's policy governs every path alike. What a path buys is separation of
+balances — a connector's trading key and its bridge key are different
+addresses, and neither is the wallet's; which path an integration may use is
+decided by whoever forwards it. The empty path is the wallet's own key — from
+the HTTPS API; a WASI guest never reaches it, because the worker maps every
+label it is given, the empty one included, to a `connector.…` path. The
+coordinator and the keystore validate the path with one shared rule
+(`shared_tee_helpers::is_valid_sub_path`) and both refuse it on non-EVM
+chains; the coordinator echoes it in the response. Nothing about a sub-key is
+stored — its address is derived on request. The same `evm_sign` capability
+governs every sub-key: a sub-key is the same wallet's authority over a
+separate balance, not a separate authority.
 
 ### Endpoints
 

@@ -1,10 +1,27 @@
 //! WASM LRU Cache
 //!
-//! Local cache for compiled WASM files to avoid re-downloading from coordinator.
-//! Uses LRU eviction by total size (configurable via WASM_CACHE_MAX_SIZE_MB).
+//! Local cache of raw wasm bytes so a re-run does not re-download them from the
+//! coordinator. LRU eviction by total size (`WASM_CACHE_MAX_SIZE_MB`).
 //!
-//! Security: Each cached file stores its expected checksum and verifies it
-//! before returning, preventing cache corruption or tampering.
+//! Keyed by the job's `wasm_checksum`, which is not always a content hash: for
+//! a WasmUrl publish it is the sha256 of the bytes, for a GitHub build it is
+//! the sha256 of `repo:commit:target`, and two binaries built from one commit
+//! share it. The cache therefore never trusts the key to authenticate a file.
+//!
+//! Security: the sha256 of the bytes is recorded IN MEMORY when they are
+//! stored — computed from the buffer the coordinator served — and every read
+//! is checked against that record. The cache directory may be reachable by a
+//! guest (the `/tmp` fallback is inside a P2 component's preopen), so a file
+//! on disk can be corrupted or replaced; the record cannot, and a mismatch is
+//! a miss followed by a fresh download. Across a restart the in-memory record
+//! is gone, so only self-authenticating files — named by their own content
+//! hash — are readmitted; anything else on disk is removed.
+//!
+//! Freshness: a coordinates-keyed entry is served only when the coordinator's
+//! current `content_hash` for the key equals the recorded one. A rebuild of
+//! the same commit keeps the key and changes the bytes; the coordinator's
+//! hash follows the bytes, so the stale copy misses. A content-keyed entry
+//! cannot be stale — the key is the bytes.
 
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
@@ -21,9 +38,11 @@ struct CacheEntry {
     path: PathBuf,
     /// File size in bytes
     size: u64,
-    /// Expected SHA256 checksum (stored for debugging, verified by recomputing)
-    #[allow(dead_code)]
-    expected_checksum: String,
+    /// sha256 of the bytes that were stored, recorded from the coordinator's
+    /// buffer. The file is verified against THIS on every read, never against
+    /// the key; and for a key that is not the content hash, THIS is compared
+    /// with what the coordinator reports holding now.
+    content_sha256: String,
     /// Last access time (for LRU eviction)
     last_used: Instant,
 }
@@ -121,13 +140,14 @@ impl WasmCache {
                 continue;
             }
 
-            // Add to entries
+            // Self-authenticating: the name is the content hash, so no
+            // in-memory record is needed to trust it.
             self.entries.insert(
                 checksum.clone(),
                 CacheEntry {
                     path,
                     size,
-                    expected_checksum: checksum,
+                    content_sha256: checksum,
                     last_used: Instant::now(),
                 },
             );
@@ -149,16 +169,31 @@ impl WasmCache {
     /// Get WASM from cache if available and valid
     ///
     /// # Arguments
-    /// * `checksum` - Expected SHA256 checksum
+    /// * `checksum` - The job's `wasm_checksum` (the key)
+    /// * `current_content_hash` - sha256 of the bytes the coordinator holds
+    ///   under that key right now; for a key that is not a content hash the
+    ///   entry is served only if it was stored from those same bytes
     ///
     /// # Returns
-    /// * `Some(bytes)` - Cached WASM bytes (verified)
-    /// * `None` - Cache miss or verification failed
-    pub fn get(&mut self, checksum: &str) -> Option<Vec<u8>> {
+    /// * `Some(bytes)` - Cached WASM bytes (verified against the recorded hash)
+    /// * `None` - Cache miss, stale, or verification failed
+    pub fn get(&mut self, checksum: &str, current_content_hash: Option<&str>) -> Option<Vec<u8>> {
         let entry = self.entries.get_mut(checksum)?;
 
         // Update last used time
         entry.last_used = Instant::now();
+
+        // A coordinates-keyed entry is only as fresh as the bytes it was
+        // stored from. A coordinator that does not report a hash is a miss,
+        // not a match.
+        let content_keyed = entry.content_sha256 == checksum;
+        if !content_keyed && current_content_hash != Some(entry.content_sha256.as_str()) {
+            debug!("WASM cache entry for {} is from another build, dropping", checksum);
+            let entry = self.entries.remove(checksum)?;
+            self.total_size = self.total_size.saturating_sub(entry.size);
+            let _ = fs::remove_file(&entry.path);
+            return None;
+        }
 
         // Read file
         let bytes = match fs::read(&entry.path) {
@@ -173,12 +208,14 @@ impl WasmCache {
             }
         };
 
-        // Verify hash before returning (security check)
+        // Verify against the hash recorded when the bytes were stored — the
+        // one thing on this path a guest with access to the directory cannot
+        // rewrite.
         let actual_hash = Self::compute_hash(&bytes);
-        if actual_hash != checksum {
+        if actual_hash != entry.content_sha256 {
             warn!(
-                "⚠️ Cache integrity check failed! Expected {}, got {}. File may be corrupted or tampered.",
-                checksum, actual_hash
+                "⚠️ Cache integrity check failed for {}! Expected {}, got {}. File may be corrupted or tampered.",
+                checksum, entry.content_sha256, actual_hash
             );
             // Remove corrupted entry
             let entry = self.entries.remove(checksum)?;
@@ -194,23 +231,15 @@ impl WasmCache {
     /// Store WASM in cache
     ///
     /// # Arguments
-    /// * `checksum` - Expected SHA256 checksum (will be verified)
-    /// * `bytes` - WASM binary data
+    /// * `checksum` - The job's `wasm_checksum` (the key; not verified against
+    ///   the bytes, since for a GitHub build it is not their hash)
+    /// * `bytes` - WASM binary data, as served by the coordinator
     ///
     /// # Returns
     /// * `Ok(())` - Successfully cached
-    /// * `Err(_)` - Hash mismatch or write failed
+    /// * `Err(_)` - Write failed
     pub fn put(&mut self, checksum: &str, bytes: &[u8]) -> Result<()> {
-        // Verify hash before storing
-        let actual_hash = Self::compute_hash(bytes);
-        if actual_hash != checksum {
-            anyhow::bail!(
-                "WASM hash mismatch: expected {}, got {}",
-                checksum,
-                actual_hash
-            );
-        }
-
+        let content_sha256 = Self::compute_hash(bytes);
         let size = bytes.len() as u64;
 
         // Skip if single file is larger than max cache size
@@ -243,7 +272,7 @@ impl WasmCache {
             CacheEntry {
                 path,
                 size,
-                expected_checksum: checksum.to_string(),
+                content_sha256,
                 last_used: Instant::now(),
             },
         );
@@ -326,11 +355,9 @@ mod tests {
         let wasm = create_test_wasm();
         let checksum = WasmCache::compute_hash(&wasm);
 
-        // Put
         cache.put(&checksum, &wasm).unwrap();
 
-        // Get - should hit
-        let cached = cache.get(&checksum);
+        let cached = cache.get(&checksum, None);
         assert!(cached.is_some());
         assert_eq!(cached.unwrap(), wasm);
     }
@@ -340,33 +367,75 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut cache = WasmCache::new(temp_dir.path().to_path_buf(), 10).unwrap();
 
-        // Get non-existent
-        let cached = cache.get("nonexistent");
-        assert!(cached.is_none());
+        assert!(cache.get("nonexistent", None).is_none());
     }
 
     #[test]
-    fn test_hash_verification() {
+    fn a_file_is_verified_against_the_hash_recorded_in_memory_not_the_key() {
         let temp_dir = TempDir::new().unwrap();
         let mut cache = WasmCache::new(temp_dir.path().to_path_buf(), 10).unwrap();
 
+        // A GitHub build: the key is a hash of coordinates, not of the bytes.
         let wasm = create_test_wasm();
-        let correct_checksum = WasmCache::compute_hash(&wasm);
+        let content = WasmCache::compute_hash(&wasm);
+        let key = "sha256-of-repo-commit-target";
+        cache.put(key, &wasm).unwrap();
+        assert_eq!(cache.get(key, Some(&content)).unwrap(), wasm);
 
-        // Try to put with wrong checksum
-        let result = cache.put("wrong_checksum", &wasm);
-        assert!(result.is_err());
-
-        // Put with correct checksum
-        cache.put(&correct_checksum, &wasm).unwrap();
-
-        // Tamper with file
-        let path = temp_dir.path().join(format!("{}.wasm", correct_checksum));
+        // A guest reaching the directory rewrites the file: the record in
+        // memory still says what the coordinator served, so this is a miss.
+        let path = temp_dir.path().join(format!("{}.wasm", key));
         fs::write(&path, b"tampered").unwrap();
+        assert!(cache.get(key, Some(&content)).is_none());
+        assert!(!path.exists(), "a tampered file is removed");
 
-        // Get should fail verification
-        let cached = cache.get(&correct_checksum);
-        assert!(cached.is_none());
+        // Same for a content-keyed entry.
+        let checksum = WasmCache::compute_hash(&wasm);
+        cache.put(&checksum, &wasm).unwrap();
+        fs::write(temp_dir.path().join(format!("{}.wasm", checksum)), b"tampered").unwrap();
+        assert!(cache.get(&checksum, None).is_none());
+    }
+
+    #[test]
+    fn a_rebuilt_project_is_not_served_from_the_previous_build() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut cache = WasmCache::new(temp_dir.path().to_path_buf(), 10).unwrap();
+
+        let key = "sha256-of-repo-commit-target";
+        let build_1 = create_test_wasm();
+        let build_2 = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x00];
+        cache.put(key, &build_1).unwrap();
+        // The coordinator now holds a rebuild under the same key.
+        assert!(cache.get(key, Some(&WasmCache::compute_hash(&build_2))).is_none());
+
+        cache.put(key, &build_2).unwrap();
+        assert_eq!(cache.get(key, Some(&WasmCache::compute_hash(&build_2))).unwrap(), build_2);
+        // ...and a coordinator that reports no hash gets a miss, not a guess.
+        assert!(cache.get(key, None).is_none());
+
+        // A content-keyed entry cannot be stale: the key IS the bytes.
+        let checksum = WasmCache::compute_hash(&build_1);
+        cache.put(&checksum, &build_1).unwrap();
+        assert!(cache.get(&checksum, Some("anything")).is_some());
+        assert!(cache.get(&checksum, None).is_some());
+    }
+
+    #[test]
+    fn only_self_authenticating_files_survive_a_restart() {
+        let temp_dir = TempDir::new().unwrap();
+        let wasm = create_test_wasm();
+        let checksum = WasmCache::compute_hash(&wasm);
+        {
+            let mut cache = WasmCache::new(temp_dir.path().to_path_buf(), 10).unwrap();
+            cache.put(&checksum, &wasm).unwrap();
+            cache.put("sha256-of-repo-commit-target", &wasm).unwrap();
+        }
+        // The in-memory records are gone with the process; a file whose name
+        // is not its own hash has nothing left to vouch for it.
+        let mut cache = WasmCache::new(temp_dir.path().to_path_buf(), 10).unwrap();
+        assert!(cache.get(&checksum, None).is_some());
+        assert!(cache.get("sha256-of-repo-commit-target", Some(&checksum)).is_none());
+        assert!(!temp_dir.path().join("sha256-of-repo-commit-target.wasm").exists());
     }
 
     #[test]
@@ -376,7 +445,6 @@ mod tests {
         let mut cache = WasmCache::new(temp_dir.path().to_path_buf(), 0).unwrap();
         cache.max_size_bytes = 1024; // Override for test
 
-        // Create two WASMs
         let wasm1 = vec![0u8; 500];
         let wasm2 = vec![1u8; 500];
         let wasm3 = vec![2u8; 500];
@@ -385,21 +453,17 @@ mod tests {
         let checksum2 = WasmCache::compute_hash(&wasm2);
         let checksum3 = WasmCache::compute_hash(&wasm3);
 
-        // Put first two (fits in 1KB)
         cache.put(&checksum1, &wasm1).unwrap();
         cache.put(&checksum2, &wasm2).unwrap();
 
         // Access first one to make it more recent
-        cache.get(&checksum1);
+        cache.get(&checksum1, None);
 
         // Put third - should evict second (least recently used)
         cache.put(&checksum3, &wasm3).unwrap();
 
-        // First should still be there
-        assert!(cache.get(&checksum1).is_some());
-        // Second should be evicted
-        assert!(cache.get(&checksum2).is_none());
-        // Third should be there
-        assert!(cache.get(&checksum3).is_some());
+        assert!(cache.get(&checksum1, None).is_some());
+        assert!(cache.get(&checksum2, None).is_none());
+        assert!(cache.get(&checksum3, None).is_some());
     }
 }
