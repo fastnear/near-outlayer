@@ -239,18 +239,30 @@ From the guest it is four host functions in `outlayer:wallet/api`:
 
 | function | what it does |
 |---|---|
-| `get-sub-key-address(chain, label)` | the sub-key's `0x` address (empty label = the wallet's own) |
+| `get-sub-key-address(chain, label)` | the sub-key's `0x` address (empty label = `default`) |
 | `evm-sign-typed-data(chain, typed_data_json, label)` | EIP-712 v4 signature |
 | `evm-sign-message(chain, message, encoding, label)` | EIP-191 `personal_sign`; `encoding: "hex"` for a pre-hashed digest such as an ERC-4337 userOpHash |
 | `evm-sign-transaction(chain, unsigned_tx, label)` | signature over a serialized unsigned transaction, `0x05‖rlp` EIP-7702 preimages included; needs `evm_sign.raw_tx` in the wallet's policy |
 
 The guest names only the **label** (`[a-z0-9][a-z0-9_-]{0,31}` — `trading`,
 `bridge`). The worker turns it into the keystore path
-`connector.{connector_id}.{label}`, taking `connector_id` from the manifest it
-verified inside the wasm it is running — never from the guest, never from the
-task. So a connector can reach its own sub-keys and nobody else's, and a
-project whose manifest has no `connector_id` has none at all (a non-empty
-label answers `sub_key_unavailable`).
+`connector.{connector_id}.{label}` — and it does so only for a project
+published under the connectors namespace whose verified manifest names
+`connector_id` equal to the project's own name. The id is read from the wasm
+the worker is running, never from the guest or the task, and tying it to the
+curated name is what keeps a hostile artefact from embedding another
+connector's id. So a connector reaches its own sub-keys and nobody else's; any
+other project has none at all (every label answers `sub_key_unavailable`).
+
+**Every EVM key a guest can sign with is a sub-key.** The empty label is the
+sub-key `default`, not the wallet's own key. The address `get-address` returns
+for an EVM chain — `wallet:{id}:evm`, where the owner's own funds may sit — is
+never signable from inside a module: the worker maps every label, the empty
+one included, to a `connector.…` path, so there is no call a module can make
+that reaches it. The wallet's own key is signable only from outside, through
+the HTTPS wallet API, by the holder of the wallet's credential. A module that
+must move the wallet's own funds uses the policy-metered operations
+(`withdraw`, `transfer`, `swap`), not a signature.
 
 A wallet-using connector is **HTTPS-only**. The wallet reaches the guest from
 the call's credential — a payment key the custody wallet owns, plus
@@ -262,7 +274,8 @@ caller use a different one.
 Two things a sub-key is not. It is not a separate authority: the owner's
 `evm_sign` policy governs every sub-key exactly as it governs the wallet's own
 key, and whoever holds the wallet's API key can sign for any path from outside
-the enclave. And it is not stored anywhere: the address is derived on request,
+the enclave — the isolation runs one way: a connector cannot reach the wallet's
+key, the wallet's owner can reach every connector's. And it is not stored anywhere: the address is derived on request,
 so the only record of which sub-keys a wallet ever used is the coordinator's
 log. Pick labels by purpose and keep them stable — a renamed label is a new
 address with an empty balance.

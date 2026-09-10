@@ -38,12 +38,15 @@ authority: whoever holds the wallet's API key can sign for any path, and the
 owner's policy governs every path alike. What a path buys is separation of
 balances — a connector's trading key and its bridge key are different
 addresses, and neither is the wallet's; which path an integration may use is
-decided by whoever forwards it. The empty path is the wallet's own key. The keystore validates the
-path and refuses it on non-EVM chains; the coordinator passes it through and
-echoes it in the response. Nothing about a sub-key is stored — its address is
-derived on request. The same `evm_sign` capability governs every sub-key: a
-sub-key is the same wallet's authority over a separate balance, not a separate
-authority.
+decided by whoever forwards it. The empty path is the wallet's own key — from
+the HTTPS API; a WASI guest never reaches it, because the worker maps every
+label it is given, the empty one included, to a `connector.…` path. The
+coordinator and the keystore validate the path with one shared rule
+(`shared_tee_helpers::is_valid_sub_path`) and both refuse it on non-EVM
+chains; the coordinator echoes it in the response. Nothing about a sub-key is
+stored — its address is derived on request. The same `evm_sign` capability
+governs every sub-key: a sub-key is the same wallet's authority over a
+separate balance, not a separate authority.
 
 ### Endpoints
 

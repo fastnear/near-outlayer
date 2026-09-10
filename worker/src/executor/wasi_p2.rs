@@ -549,6 +549,7 @@ pub async fn execute(
                 &wallet_cfg.wallet_id,
                 &wallet_cfg.coordinator_url,
                 &wallet_cfg.wallet_auth_token,
+                wallet_cfg.connector_id.as_deref(),
             ))
         } else {
             anyhow::bail!(
@@ -571,6 +572,17 @@ pub async fn execute(
     wasi_builder.stdin(stdin_pipe);
     wasi_builder.stdout(stdout_pipe.clone());
     wasi_builder.stderr(stderr_pipe.clone());
+
+    // No raw sockets, ever. The guest's only way to the network is
+    // `wasi:http`, which runs through the outbound allowlist and the egress
+    // audit below; a TCP or UDP socket, or a name lookup, would be a second
+    // door around both. The linker still provides `wasi:sockets` so a
+    // component that merely imports it instantiates — every call on it is
+    // refused.
+    wasi_builder.allow_tcp(false);
+    wasi_builder.allow_udp(false);
+    wasi_builder.allow_ip_name_lookup(false);
+    wasi_builder.socket_addr_check(|_, _| Box::pin(async { false }));
 
     // Add preopened directory (required for WASI P2 filesystem interface)
     wasi_builder.preopened_dir(
@@ -652,10 +664,25 @@ pub async fn execute(
         .context("Failed to instantiate component")?;
 
     debug!("Running wasi:cli/run");
-    let execution_result = command
-        .wasi_cli_run()
-        .call_run(&mut store)
-        .await;
+    // Wall-clock bound on the run itself. The epoch deadline above traps only
+    // when wasm code executes: a guest suspended in a host await — a
+    // `subscribe-duration` sleep, a body read on a slow server — never returns
+    // to wasm, and the epoch alone cannot end it. Dropping the future cancels
+    // the run (wasmtime unwinds the fiber; the store is read afterwards as
+    // after any trap). Two seconds past the epoch deadline, so this fires only
+    // where the epoch could not, and reports the same timeout.
+    let execution_result = match tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs + 2),
+        command.wasi_cli_run().call_run(&mut store),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(anyhow::anyhow!(
+            "interrupt: wall-clock limit of {}s reached while the guest waited in a host call",
+            timeout_secs
+        )),
+    };
     // Stop epoch ticker
     epoch_handle.abort();
 

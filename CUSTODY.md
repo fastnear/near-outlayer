@@ -268,7 +268,11 @@ WASI containers can call wallet functions via WIT interface.
 
 ```wit
 get-id() → (string, string)
-get-address(chain) → (string, string)                         # currently: near only
+get-address(chain) → (string, string)                         # near, solana, any EVM chain
+get-sub-key-address(chain, label) → (string, string)          # a connector's EVM sub-key (empty label = `default`; never the wallet's own key)
+evm-sign-typed-data(chain, typed-data, label) → (string, string)   # EIP-712 v4; evm_sign capability
+evm-sign-message(chain, message, encoding, label) → (string, string) # EIP-191; encoding utf8|hex
+evm-sign-transaction(chain, unsigned-tx, label) → (string, string) # keccak of the serialized tx; evm_sign.raw_tx
 withdraw(chain, to, amount, token) → (string, string)         # cross-chain via Intents (whitelisted assets only)
 withdraw-dry-run(chain, to, amount, token) → (string, string)
 get-request-status(request-id) → (string, string)
@@ -279,7 +283,7 @@ intents-deposit(token, amount) → (string, string)             # deposit FT to 
 swap(token-in, token-out, amount-in, min-amount-out) → (string, string)  # swap via Intents
 ```
 
-Available only when `WALLET_ID` env var is set (coordinator passes it when `X-Wallet-Id` header is valid). Rate limited to 50 calls per execution.
+Available only when `WALLET_ID` env var is set (coordinator passes it when `X-Wallet-Id` header is valid). Rate limited to 200 calls per execution. Sub-keys (`label`) exist only for a connector in the connectors namespace whose manifest `connector_id` equals its project name, and they are the only EVM keys a guest can sign with — the wallet's own EVM key is signable through the HTTPS API alone; see `docs/CONNECTORS.md` §4.5.
 
 ### Dashboard — `dashboard/app/wallet/`
 

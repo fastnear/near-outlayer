@@ -15,8 +15,8 @@ functions are host calls, not HTTP, and it reaches nothing else.
 
 | `operation` | price | shows |
 |---|---|---|
-| `address` | free | `get-sub-key-address` for the empty label, `trading` and `bridge` on `base` are three different addresses; `trading` on `hyperevm` is the same address as on `base` |
-| `sign` | $0.01 | `evm-sign-message("subkey-probe", utf8)` under `trading`; the module recovers the signer from the EIP-191 digest in-guest (k256) and compares it with the `trading` address |
+| `address` | free | `get-sub-key-address` for `default`, `trading` and `bridge` on `base` are three different addresses, none of them the wallet's own (`get-address`); the empty label is `default`; `trading` on `hyperevm` is the same address as on `base` |
+| `sign` | $0.01 | `evm-sign-message("subkey-probe", utf8)` under `trading`; the module recovers the signer from the EIP-191 digest in-guest (k256) and compares it with the `trading` address. Then the same with the empty label: it must sign, and recover to the `default` sub-key — never to the wallet's own address (`get-address`) |
 | `foreign_label` | free | `hl.trading`, `near-email:send`, `Trading`, `a b`, `connector.mercury.trading` (all `invalid_label`) and `trading` on `near`/`solana` (refused by the coordinator) — every one must be a refusal |
 
 `ok` is the verdict; `detail` says why. `address` carries the addresses,

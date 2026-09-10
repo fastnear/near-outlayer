@@ -802,13 +802,15 @@ conventions.
 
 `outlayer:wallet/api` signs on EVM chains too: `evm-sign-typed-data`,
 `evm-sign-message`, `evm-sign-transaction`, each taking a `label` as its last
-argument, and `get-sub-key-address(chain, label)`. An empty label is the
-wallet's own key. A non-empty label names a **sub-key** — a distinct address of
-the same wallet, under the keystore path `connector.{connector_id}.{label}`
-that the worker builds from the connector's verified manifest. Only a connector
-(a project whose manifest carries `connector_id`) has sub-keys; elsewhere a
-label answers `sub_key_unavailable`. Labels are `[a-z0-9][a-z0-9_-]{0,31}`;
-anything else is `invalid_label`.
+argument, and `get-sub-key-address(chain, label)`. A label names a **sub-key**
+— a distinct address of the same wallet, under the keystore path
+`connector.{connector_id}.{label}` that the worker builds from the connector's
+verified manifest. The empty label is the sub-key `default`; the wallet's own
+EVM key (what `get-address` returns) is never signable from inside a module.
+Only a connector published under the connectors namespace whose manifest
+`connector_id` equals its project name has sub-keys; elsewhere every label
+answers `sub_key_unavailable`. Labels are `[a-z0-9][a-z0-9_-]{0,31}`; anything
+else is `invalid_label`.
 
 ```rust
 // The connector's trading address on Base — stable for this connector + label.

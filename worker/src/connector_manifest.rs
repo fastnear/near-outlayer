@@ -293,6 +293,30 @@ pub fn is_connector_project(project_id: &str, namespace: &str) -> bool {
     }
 }
 
+/// The connector whose sub-keys this execution may name, or `None`.
+///
+/// Two conditions, both read from what the worker verified itself: the project
+/// is published under the connectors namespace, and the manifest inside the
+/// wasm names `connector_id` equal to the project's own name. A manifest is
+/// self-declared — any artefact can embed one — so the id alone would let a
+/// project outside the namespace, or a namespace project with somebody
+/// else's id, sign with that connector's sub-keys of the caller's wallet. The
+/// wallet's own policy would still govern, but the promise "a connector
+/// reaches only its own sub-keys" has to hold against a hostile artefact too,
+/// and tying the id to the curated name is what makes it hold.
+pub fn sub_key_connector_id(
+    in_connector_namespace: bool,
+    project_id: Option<&str>,
+    manifest: Option<&ProjectManifest>,
+) -> Option<String> {
+    if !in_connector_namespace {
+        return None;
+    }
+    let name = project_id?.split_once('/')?.1;
+    let declared = manifest?.connector_id.as_deref()?.trim();
+    (!declared.is_empty() && declared == name).then(|| declared.to_string())
+}
+
 /// Decide the network policy for one execution.
 ///
 /// A project is treated as a connector if EITHER is true:
@@ -454,6 +478,29 @@ pub fn decide_egress(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn manifest_with_id(id: &str) -> ProjectManifest {
+        serde_json::from_str(&format!(r#"{{"connector_id":"{id}"}}"#)).expect("manifest")
+    }
+
+    #[test]
+    fn sub_keys_belong_to_a_curated_connector_under_its_own_name_only() {
+        let ns = true;
+        let m = manifest_with_id("mercury");
+        assert_eq!(
+            sub_key_connector_id(ns, Some("connectors.outlayer.near/mercury"), Some(&m)).as_deref(),
+            Some("mercury")
+        );
+        // Outside the namespace: a manifest may say what it likes.
+        assert_eq!(sub_key_connector_id(false, Some("alice.near/mercury"), Some(&m)), None);
+        // Inside it, under another project's name: refused.
+        assert_eq!(sub_key_connector_id(ns, Some("connectors.outlayer.near/near-email"), Some(&m)), None);
+        // No manifest, no id, no project: nothing.
+        assert_eq!(sub_key_connector_id(ns, Some("connectors.outlayer.near/mercury"), None), None);
+        assert_eq!(sub_key_connector_id(ns, None, Some(&m)), None);
+        let blank = manifest_with_id("");
+        assert_eq!(sub_key_connector_id(ns, Some("connectors.outlayer.near/"), Some(&blank)), None);
+    }
 
     /// The allowlist comes from the BYTES THAT RUN, and from nowhere else.
     ///

@@ -81,59 +81,67 @@ interface api {
     /// - error: empty on success
     get-address: func(chain: string) -> tuple<string, string>;
 
-    /// ## Sub-keys (connectors only)
+    /// ## EVM keys of a connector: sub-keys
     ///
-    /// A connector may hold balances under addresses of its own: one per
-    /// `label` (`[a-z0-9][a-z0-9_-]{0,31}`, e.g. "trading", "bridge"). Each label
-    /// is a distinct secp256k1 key of the SAME wallet — the owner's policy
-    /// governs it like the wallet's own key — under the keystore path
-    /// `connector.{connector_id}.{label}`. The worker builds that path from the
-    /// `connector_id` in the running artefact's verified manifest, so a guest can
-    /// only ever name its own connector's keys. An empty label is the wallet's own
-    /// key. A project whose manifest has no `connector_id` has no sub-keys: any
-    /// non-empty label answers `sub_key_unavailable`.
+    /// A connector holds balances under addresses of its own: one per `label`
+    /// (`[a-z0-9][a-z0-9_-]{0,31}`, e.g. "trading", "bridge"). Each label is a
+    /// distinct secp256k1 key of the SAME wallet — the owner's policy governs
+    /// it like the wallet's own key — under the keystore path
+    /// `connector.{connector_id}.{label}`. The worker builds that path only for
+    /// a connector published under the connectors namespace whose verified
+    /// manifest names `connector_id` equal to its own project name, so a guest
+    /// can never name another connector's keys — not by mistake, and not by
+    /// embedding somebody else's id.
+    ///
+    /// Every EVM key a guest can sign with is a sub-key. The empty label is the
+    /// sub-key `default`, not the wallet's own key: `wallet:{id}:evm` — the
+    /// address `get-address` returns for an EVM chain — is never signable from
+    /// inside a module, only through the HTTPS wallet API by the holder of the
+    /// wallet's credential. A project outside the connectors namespace has no
+    /// sub-keys and so no EVM signing at all: every label, the empty one
+    /// included, answers `sub_key_unavailable`.
     ///
     /// Error codes of this family: `invalid_label`, `sub_key_unavailable`,
     /// `invalid_typed_data`, plus the coordinator's (`policy_denied`, …).
 
-    /// Address of a sub-key (or, with an empty label, of the wallet's own key).
+    /// Address of a sub-key (the empty label is `default`).
     ///
-    /// chain: an EVM chain name ("base", "hyperevm", …); a non-EVM chain with a
-    /// non-empty label is refused.
+    /// chain: an EVM chain name ("base", "hyperevm", …); a non-EVM chain is
+    /// refused — sub-keys are EVM keys.
     ///
     /// Returns (address_json, error):
     /// - address_json: {"address": "0x…", "public_key": "secp256k1:…", "sub_path": "connector.…"}
     get-sub-key-address: func(chain: string, label: string) -> tuple<string, string>;
 
-    /// Sign EIP-712 typed data with the wallet's EVM key or one of its sub-keys.
+    /// Sign EIP-712 typed data with one of the connector's sub-keys.
     ///
     /// typed-data: the full `eth_signTypedData_v4` object as a JSON string
     ///   (`{domain, types, primaryType, message}`); the digest is computed by the
     ///   keystore, never supplied by the guest.
-    /// label: sub-key label, or empty for the wallet's own key.
+    /// label: sub-key label; empty is `default`.
     ///
     /// Gated by the wallet's `evm_sign` capability.
     /// Returns (result_json, error):
     /// - result_json: {"signature": "0x…" (65 bytes r‖s‖v, v ∈ {27,28}), "chain": …, "sub_path": …}
     evm-sign-typed-data: func(chain: string, typed-data: string, label: string) -> tuple<string, string>;
 
-    /// Sign an EIP-191 personal_sign message.
+    /// Sign an EIP-191 personal_sign message with one of the connector's sub-keys.
     ///
     /// encoding: "utf8" (or empty) signs the UTF-8 bytes of `message`; "hex"
     ///   signs the decoded bytes — the form for a pre-hashed digest such as an
     ///   ERC-4337 userOpHash.
-    /// label: sub-key label, or empty for the wallet's own key.
+    /// label: sub-key label; empty is `default`.
     ///
     /// Gated by the wallet's `evm_sign` capability.
     evm-sign-message: func(chain: string, message: string, encoding: string, label: string) -> tuple<string, string>;
 
-    /// Sign a serialized unsigned EVM transaction.
+    /// Sign a serialized unsigned EVM transaction with one of the connector's sub-keys.
     ///
     /// unsigned-tx: `0x`-hex of the serialized unsigned transaction (viem
     ///   `serializeTransaction(tx)`; `0x05‖rlp(…)` for an EIP-7702 authorization
     ///   preimage). The keystore keccak256-hashes and signs; the guest assembles
     ///   the signed transaction and broadcasts it itself.
-    /// label: sub-key label, or empty for the wallet's own key.
+    /// label: sub-key label; empty is `default`.
     ///
     /// Gated by the wallet's `evm_sign.raw_tx` sub-capability (default OFF).
     evm-sign-transaction: func(chain: string, unsigned-tx: string, label: string) -> tuple<string, string>;

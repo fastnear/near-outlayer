@@ -81,6 +81,10 @@ pub struct WalletConfig {
     pub coordinator_url: String,
     /// Internal auth token for coordinator wallet API
     pub wallet_auth_token: String,
+    /// `connector_id` from the running artefact's verified manifest; `None`
+    /// for an ordinary project. Decides whether the guest may name sub-keys,
+    /// and of which connector.
+    pub connector_id: Option<String>,
 }
 
 /// Execution context with optional dependencies for WASM execution

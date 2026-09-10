@@ -4059,6 +4059,9 @@ fn wallet_seed_impl(wallet_id: &str, chain: &str) -> String {
 /// NEAR key (`wallet:a:evm:near`) would be the string the ephemeral exporter
 /// builds for `(a, evm, near)`. The coordinator only ever sends UUIDs; this is
 /// the keystore's own refusal, so the invariant does not rest on a caller.
+/// Applied at the top of every handler that takes a `wallet_id`, signing and
+/// exporting alike, so no seed of any family is ever built from an id that
+/// could shift it.
 pub(crate) fn validate_wallet_id(wallet_id: &str) -> Result<(), ApiError> {
     if wallet_id.is_empty() || wallet_id.contains(':') {
         return Err(ApiError::BadRequest(
@@ -4805,6 +4808,7 @@ async fn wallet_sign_secret_store_handler(
         return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
     }
 
+    validate_wallet_id(&req.wallet_id)?;
     let customer = extract_customer_from_header(&headers)?;
     state
         .ensure_customer_loaded(customer.as_ref())
@@ -4933,6 +4937,7 @@ async fn wallet_sign_secret_delete_handler(
         return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
     }
 
+    validate_wallet_id(&req.wallet_id)?;
     let customer = extract_customer_from_header(&headers)?;
     state
         .ensure_customer_loaded(customer.as_ref())
@@ -5005,6 +5010,7 @@ async fn wallet_sign_policy_handler(
         return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
     }
 
+    validate_wallet_id(&req.wallet_id)?;
     let customer = extract_customer_from_header(&headers)?;
     state
         .ensure_customer_loaded(customer.as_ref())
@@ -5679,6 +5685,7 @@ async fn wallet_sign_handler(
     if !state.is_ready() {
         return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
     }
+    validate_wallet_id(&req.wallet_id)?;
     let customer = extract_customer_from_header(&headers)?;
     state
         .ensure_customer_loaded(customer.as_ref())
@@ -6095,7 +6102,6 @@ async fn sign_hash_pinned(
                     chain_l
                 )));
             }
-            validate_wallet_id(&req.wallet_id)?;
             let seed = wallet_seed(&req.wallet_id, &chain_l);
             let keystore = state.keystore.read().await;
             let sig = keystore
@@ -6258,6 +6264,7 @@ async fn wallet_check_policy_handler(
     if !state.is_ready() {
         return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
     }
+    validate_wallet_id(&req.wallet_id)?;
     let customer = extract_customer_from_header(&headers)?;
     state
         .ensure_customer_loaded(customer.as_ref())
@@ -6397,6 +6404,7 @@ async fn wallet_encrypt_policy_handler(
         ));
     }
 
+    validate_wallet_id(&req.wallet_id)?;
     let customer = extract_customer_from_header(&headers)?;
     state
         .ensure_customer_loaded(customer.as_ref())
@@ -6428,6 +6436,7 @@ async fn wallet_decrypt_policy_handler(
         return Err(ApiError::Unauthorized("Keystore not ready.".to_string()));
     }
 
+    validate_wallet_id(&req.wallet_id)?;
     let customer = extract_customer_from_header(&headers)?;
     state
         .ensure_customer_loaded(customer.as_ref())

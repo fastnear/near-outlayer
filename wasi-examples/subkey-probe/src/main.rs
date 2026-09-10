@@ -8,8 +8,8 @@
 //!
 //! | `operation` | price | shows |
 //! |---|---|---|
-//! | `address` | free | three labels are three addresses, the same on every EVM chain |
-//! | `sign` | paid | a `personal_sign` under the `trading` label recovers to the `trading` address |
+//! | `address` | free | the empty label is `default`; `default`/`trading`/`bridge` are three addresses, none the wallet's own (`get-address`); a label is one key on every EVM chain |
+//! | `sign` | paid | a `personal_sign` under `trading` recovers to the `trading` address; one under the empty label recovers to `default`, never to the wallet's own address |
 //! | `foreign_label` | free | a label that could spell another connector, or a sub-key on a non-EVM chain, is refused |
 //!
 //! It is a connector (manifest with `connector_id`, deployed under
@@ -63,9 +63,12 @@ struct Output {
     operation: String,
     detail: String,
     // ---- address ----
-    /// label → address. The empty label is the wallet's own key.
+    /// label → address. The empty label is the `default` sub-key.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     addresses: BTreeMap<String, String>,
+    /// The wallet's own EVM address (`get-address`), which no sub-key may equal.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wallet_own: Option<String>,
     /// The `trading` address asked for on `hyperevm` — must equal the `base` one.
     #[serde(skip_serializing_if = "Option::is_none")]
     trading_on_hyperevm: Option<String>,
@@ -76,6 +79,9 @@ struct Output {
     signer_expected: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     signer_recovered: Option<String>,
+    /// Who signed when the label was empty — must be the `default` sub-key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    empty_label_signer: Option<String>,
     // ---- foreign_label ----
     /// Every refusal, with what was asked. All of them must be refusals.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -155,7 +161,7 @@ fn address(op: &str) -> Output {
         operation: op.into(),
         ..Default::default()
     };
-    for label in ["", "trading", "bridge"] {
+    for label in ["", "default", "trading", "bridge"] {
         match address_of(CHAIN, label) {
             Ok(a) => {
                 out.addresses.insert(label.to_string(), a);
@@ -174,15 +180,49 @@ fn address(op: &str) -> Output {
         }
     }
 
+    let own = match own_address(CHAIN) {
+        Ok(a) => a,
+        Err(e) => {
+            out.detail = format!("get-address({CHAIN}) failed: {e}");
+            return out;
+        }
+    };
+    out.wallet_own = Some(own.clone());
+
+    // "" and "default" are one key; default/trading/bridge are three; none of
+    // them is the wallet's own key — the one address a guest must never be
+    // able to sign for.
+    let empty_is_default = out.addresses.get("") == out.addresses.get("default");
     let distinct: std::collections::BTreeSet<&String> = out.addresses.values().collect();
+    let none_is_own = !distinct.contains(&own);
     let same_across_chains = out.trading_on_hyperevm.as_deref() == out.addresses.get("trading").map(String::as_str);
-    out.ok = distinct.len() == 3 && same_across_chains;
-    out.detail = match (distinct.len() == 3, same_across_chains) {
-        (true, true) => "three labels are three addresses, and a label is the same key on every EVM chain".into(),
-        (false, _) => "two labels derived the SAME address — sub-keys are not distinct".into(),
-        (_, false) => "the trading key differs between base and hyperevm — an EVM key must be one key".into(),
+    out.ok = empty_is_default && distinct.len() == 3 && none_is_own && same_across_chains;
+    out.detail = if !empty_is_default {
+        "the empty label and `default` derived DIFFERENT addresses".into()
+    } else if distinct.len() != 3 {
+        "two labels derived the SAME address — sub-keys are not distinct".into()
+    } else if !none_is_own {
+        "a sub-key IS the wallet's own address — a guest can reach the wallet's key".into()
+    } else if !same_across_chains {
+        "the trading key differs between base and hyperevm — an EVM key must be one key".into()
+    } else {
+        "the empty label is `default`; three labels are three addresses, none the wallet's own; a label is one key on every EVM chain".into()
     };
     out
+}
+
+/// The wallet's own EVM address, from `get-address` — the key no label reaches.
+fn own_address(chain: &str) -> Result<String, String> {
+    let (json, err) = wallet::get_address(chain);
+    if !err.is_empty() {
+        return Err(err);
+    }
+    let v: serde_json::Value =
+        serde_json::from_str(&json).map_err(|e| format!("address answer is not JSON: {e}"))?;
+    v.get("address")
+        .and_then(|a| a.as_str())
+        .map(|a| a.to_ascii_lowercase())
+        .ok_or_else(|| "address answer carries no `address`".to_string())
 }
 
 fn sign(op: &str) -> Output {
@@ -202,38 +242,67 @@ fn sign(op: &str) -> Output {
     };
     out.signer_expected = Some(expected.clone());
 
-    let (json, err) = wallet::evm_sign_message(CHAIN, MESSAGE, "utf8", LABEL);
-    if !err.is_empty() {
-        out.detail = format!("evm-sign-message failed: {err}");
-        return out;
-    }
-    let sig_hex = match serde_json::from_str::<serde_json::Value>(&json)
-        .ok()
-        .and_then(|v| v.get("signature").and_then(|s| s.as_str()).map(str::to_string))
-    {
-        Some(s) => s,
-        None => {
-            out.detail = "sign answer carries no `signature`".into();
+    // What a venue does with the signature: recover the signer from the
+    // EIP-191 digest and compare with the address the wallet reported.
+    let recovered = match sign_and_recover(MESSAGE, LABEL) {
+        Ok((sig, r)) => {
+            out.signature = Some(sig);
+            r
+        }
+        Err(e) => {
+            out.detail = e;
             return out;
         }
     };
-    out.signature = Some(sig_hex.clone());
-
-    // What a venue does with the signature: recover the signer from the
-    // EIP-191 digest and compare with the address the wallet reported.
-    match recover_personal_sign(MESSAGE.as_bytes(), &sig_hex) {
-        Ok(recovered) => {
-            out.ok = recovered == expected;
-            out.detail = if out.ok {
-                "the signature recovers to the trading sub-key's address".into()
-            } else {
-                "the signature recovers to a DIFFERENT address than the trading sub-key".into()
-            };
-            out.signer_recovered = Some(recovered);
-        }
-        Err(e) => out.detail = format!("recovery failed: {e}"),
+    out.signer_recovered = Some(recovered.clone());
+    if recovered != expected {
+        out.detail = "the signature recovers to a DIFFERENT address than the trading sub-key".into();
+        return out;
     }
+
+    // The empty label signs too — as the `default` sub-key, never as the
+    // wallet's own key (`get-address`), the one address a guest must not be
+    // able to sign for.
+    let (default_addr, own) = match (address_of(CHAIN, ""), own_address(CHAIN)) {
+        (Ok(d), Ok(o)) => (d, o),
+        (Err(e), _) | (_, Err(e)) => {
+            out.detail = format!("address lookup failed: {e}");
+            return out;
+        }
+    };
+    out.wallet_own = Some(own.clone());
+    let empty_signer = match sign_and_recover("subkey-probe:empty-label", "") {
+        Ok((_, r)) => r,
+        Err(e) => {
+            out.detail = format!("the empty label must sign as `default`, but: {e}");
+            return out;
+        }
+    };
+    out.empty_label_signer = Some(empty_signer.clone());
+    out.ok = empty_signer == default_addr && empty_signer != own;
+    out.detail = if out.ok {
+        "the trading signature recovers to the trading sub-key, and the empty label signs as `default`, not as the wallet's own key".into()
+    } else if empty_signer == own {
+        "the empty label signed with the WALLET'S OWN key — a guest can reach it".into()
+    } else {
+        "the empty label signed as neither `default` nor the wallet's own key".into()
+    };
     out
+}
+
+/// `evm-sign-message(utf8)` under `label`, and the address recovered from the
+/// signature over the EIP-191 digest.
+fn sign_and_recover(message: &str, label: &str) -> Result<(String, String), String> {
+    let (json, err) = wallet::evm_sign_message(CHAIN, message, "utf8", label);
+    if !err.is_empty() {
+        return Err(format!("evm-sign-message failed: {err}"));
+    }
+    let sig_hex = serde_json::from_str::<serde_json::Value>(&json)
+        .ok()
+        .and_then(|v| v.get("signature").and_then(|s| s.as_str()).map(str::to_string))
+        .ok_or_else(|| "sign answer carries no `signature`".to_string())?;
+    let recovered = recover_personal_sign(message.as_bytes(), &sig_hex).map_err(|e| format!("recovery failed: {e}"))?;
+    Ok((sig_hex, recovered))
 }
 
 fn foreign_label(op: &str) -> Output {
