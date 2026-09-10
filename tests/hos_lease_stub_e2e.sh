@@ -601,6 +601,10 @@ do
     [[ "$(jq -r '.terminal' <<<"$BODY")" == "false" ]] \
       && pass "C-$val is marked reversible — the owner can lift it" \
       || note "  terminal=$(jq -r '.terminal' <<<"$BODY")"
+    # The status read says the same thing the refusal did — in the field, not
+    # in a log. Whoever polls the binding learns WHAT to lift.
+    api "$SEED_S" GET /wallet/v1/binding >/dev/null
+    assert_json "C-$val the status read carries the reason" '.status_reason' "$cls"
   fi
 done
 
@@ -613,6 +617,8 @@ fi
 if set_status "$(status_json "$GRANT_OK" Active Unfrozen "$FUTURE_NS" 0 5)"; then
   send "C-version an implementation this build has no decoder for" "$(ext_transfer "$WL" "1000000000000000000000")"
   assert_class "C-version (K8/R9)" "unsupported_wallet_implementation"
+  api "$SEED_S" GET /wallet/v1/binding >/dev/null
+  assert_json "C-version the status read names the version gate — the lock the operator fixes with one row" '.status_reason' "unsupported_wallet_implementation"
 fi
 
 if set_status '{"extension_enabled":true,"grant":null,"state":"Active","frozen":"Unfrozen","lease_until_ns":"not a number","reserve_yocto":"0","impl_version":6}'; then
@@ -658,6 +664,7 @@ if set_status "$(status_json "$GRANT_OK")"; then
   if set_nft_token null; then
     api "$SEED_S" GET /wallet/v1/binding >/dev/null
     assert_json "PAIR2 the collection has no such token → the binding is SUSPENDED, not revoked" '.binding_status' suspended
+    assert_json "PAIR2 and the status read says why" '.status_reason' registry_disagrees
     send "PAIR2' a spend while the collection has no such token (NEP-171 null)" "$(ext_transfer "$WL" "1000000000000000000000")"
     if assert_class "PAIR2' refused by the gate itself — a null answer is the collection speaking, not a transport problem" "registry_disagrees"; then
       # `bool_of`, not `assert_json`: the latter reads through `// ""`, and a
@@ -670,6 +677,9 @@ if set_status "$(status_json "$GRANT_OK")"; then
   if set_nft_token "$(nft_token_json)"; then
     api "$SEED_S" GET /wallet/v1/binding >/dev/null
     assert_json "PAIR3 the record is back → the lane returns without re-binding" '.binding_status' active
+    [[ "$(bool_of status_reason)" == "absent" ]] \
+      && pass "PAIR3 and the reason is gone with the fault — nothing stale on an active row" \
+      || fail "PAIR3 an active row still carries status_reason='$(jq -r '.status_reason' <<<"$BODY")'"
     send "PAIR3' a spend once the collection has the token again" "$(ext_transfer "$WL" "1000000000000000000000")"
     if [[ "$HTTP" == "403" ]]; then
       fail "PAIR3' the gate still refuses after the record returned: class '$(class_of)'"

@@ -241,8 +241,11 @@ the account reports now, the one recorded at PUT, and whether a row maps it.
 Three counts at the top — `unrecognized_code`, `unmapped_versions`,
 `unreadable` — are the numbers to alarm on. The first two mean a partner
 shipped: every lane behind them is, or is about to be, suspended by a fact one
-`POST` above fixes. Poll it from the status page rather than waiting for a
-binding to read `pending` with no reason on it.
+`POST` above fixes. Each affected binding also says so itself —
+`GET /wallet/v1/binding` carries `status_reason` (`unrecognized_wallet_code`,
+`unsupported_wallet_implementation`, ...) whenever it is not `active` — but that
+is one binding at a time, read by whoever polls it. This is the fleet in one
+answer; poll it from the status page.
 
 ## Adding an admin route
 

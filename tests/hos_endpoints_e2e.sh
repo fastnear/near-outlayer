@@ -529,4 +529,50 @@ for MB in 2 8; do
 done
 api "$SEED_BODY" DELETE /wallet/v1/binding >/dev/null 2>&1 || true
 
+# ── E18 the admin lists that decide what the door believes ─────────────────
+#
+# Four live tables, no constants: which implementation code and which wallet
+# builds are recognized, which partner impl_version each decoder reads, and
+# the watchdog that holds every live binding against them. The refusals here
+# are the two an operator in a hurry would trip: a decoder this build does not
+# carry, and a version whose grants never bounded token movement.
+log "E18 admin lists: versions, wallet builds, the watchdog"
+if [[ -n "${ADMIN_TOKEN:-}" ]]; then
+  adm() { curl -sS --max-time 60 -X "$1" "$COORDINATOR_URL$2" -H "Authorization: Bearer $ADMIN_TOKEN" \
+            -H 'Content-Type: application/json' ${3:+--data-binary "$3"} 2>/dev/null; }
+  V=$(adm GET /admin/hos-impl-versions)
+  [[ "$(jq -r '[.versions[].impl_version] | index(6) != null and index(7) != null' <<<"$V")" == "true" ]] \
+    && pass "E18a impl_version 6 and 7 are mapped ($(jq -c '[.versions[] | "\(.impl_version)→\(.decoder_version)"]' <<<"$V"))" \
+    || fail "E18a the version table does not map 6 and 7: $(head -c 200 <<<"$V")"
+  [[ "$(jq -c '.decoders' <<<"$V")" == "[1]" ]] \
+    && pass "E18a and the build states the decoders it carries: [1]" \
+    || fail "E18a decoders read $(jq -c '.decoders' <<<"$V"), expected [1]"
+  R=$(adm POST /admin/hos-impl-versions '{"impl_version":99,"decoder_version":2}')
+  grep -q 'not carried by this build' <<<"$R" \
+    && pass "E18b a version cannot be mapped to a decoder the build does not carry" \
+    || fail "E18b mapping 99→2 answered: $(head -c 160 <<<"$R")"
+  R=$(adm POST /admin/hos-impl-versions '{"impl_version":5,"decoder_version":1}')
+  grep -q 'below 6' <<<"$R" \
+    && pass "E18c versions below 6 cannot be mapped — their grants never bounded token movement" \
+    || fail "E18c mapping 5→1 answered: $(head -c 160 <<<"$R")"
+  W=$(adm GET /admin/wallet-code-hashes)
+  grep -q 'BwjDnyemmBhrCyuviDGpoQAm9mdjTfrX7ZjqgZB4MHvM' <<<"$W" \
+    && pass "E18d the wallet build the personal profile was written against is recognized" \
+    || fail "E18d wallet_code_hashes does not list BwjDnyem…: $(head -c 160 <<<"$W")"
+  I=$(adm GET /admin/binding-implementations)
+  if [[ "$(jq -r 'has("unrecognized_code") and has("unmapped_versions") and has("unreadable")' <<<"$I")" == "true" ]]; then
+    pass "E18e the watchdog answers ($(jq -c '{unrecognized_code, unmapped_versions, unreadable, live: (.bindings|length)}' <<<"$I"))"
+    [[ "$(jq -r '.unrecognized_code + .unmapped_versions' <<<"$I")" == "0" ]] \
+      && pass "E18e and nothing live runs code or a version the lists do not know" \
+      || finding "E18e the watchdog reports $(jq -c '{unrecognized_code, unmapped_versions}' <<<"$I") — a partner shipped, or a list is behind; one POST fixes it"
+  else
+    fail "E18e the watchdog did not answer with its counts: $(head -c 200 <<<"$I")"
+  fi
+  H=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 "$COORDINATOR_URL/admin/hos-impl-versions" 2>/dev/null)
+  [[ "$H" == "401" ]] && pass "E18f the lists are admin-only (401 without the token)" \
+    || fail "E18f /admin/hos-impl-versions answered $H without a token"
+else
+  skip "E18 — set ADMIN_TOKEN (scripts/.env → ADMIN_BEARER_TOKEN_TESTNET) to judge the admin lists"
+fi
+
 verdict "§2 endpoints"
