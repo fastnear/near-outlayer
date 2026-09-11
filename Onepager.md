@@ -23,7 +23,14 @@ Two things have to be true at the same time, and no one delivers both:
 
 ## What OutLayer Is
 
-Two products in one attested enclave.
+**Agent custody across Web3 rails and Web2 interfaces, under one security model.**
+
+An on-chain private key and a bank API token are the same kind of thing: a secret
+that lets an agent move money or act in someone's name. OutLayer custodies both the
+same way — inside the same Intel TDX enclave, under the same keystore — and puts an
+owner-set policy in front of each, one the agent can call through but cannot rewrite.
+
+Two products carry that model.
 
 ### 1. Agent Custody
 
@@ -67,11 +74,21 @@ operation.
 
 ### Why they belong together
 
-A connector runs **in the same enclave that holds the keys**. The bank token, the
-exchange credential and the signing key are all inside the same attested boundary —
-so the money and the logic never end up in two different trust zones.
+A connector runs **in the same enclave that holds the keys**, and the credential it
+uses is custodied exactly like a wallet key: the Gmail token, the Mercury bank token
+and the Hyperliquid signing key are all secrets the owner's wallet stored, decrypted
+only inside the enclave, never handed to the agent.
 
-That is the whole architecture in one sentence, and it is what a signing service
+The policy follows the same pattern on both sides. The wallet has its spending
+policy — caps, allowlists, freeze — enforced in the enclave before any signature.
+Each connector carries its own owner-set policy — who the agent may email, how much
+it may pay per invoice and per month, how much it may trade per day — stored next to
+the credential by the same wallet and enforced in the enclave before anything
+reaches Google, the bank or the exchange. Fail-closed: no policy means read-only.
+The agent calls through both; it can rewrite neither.
+
+So the money and the logic never end up in two different trust zones — and neither
+do the on-chain assets and the Web2 accounts. That is what a signing service
 structurally cannot copy.
 
 ---
