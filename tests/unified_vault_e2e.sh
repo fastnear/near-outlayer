@@ -94,6 +94,7 @@
 #   MPC_PUBLIC_KEY=bls12381g2:... PARENT=zavodil2.testnet ./tests/unified_vault_e2e.sh --apply
 
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/agent_secret_mode.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APPLY=false
@@ -1295,7 +1296,7 @@ fi
 #       Needs the `set-for-agent` subcommand ($OUTLAYER_BIN, default `outlayer`). An older binary
 #       SKIP-notes rather than failing: it is a missing tool, not a broken guarantee.
 # ════════════════════════════════════════════════════════════════════════════════
-if want V6; then
+if want V6 && agent_secret_mode V6; then
   if [[ "$VAULT_MODE" != true ]]; then
     note "V6 SKIPPED (vault mode off): a secret can only be BOUND to a vault that exists — set MPC_PUBLIC_KEY"
   elif ! "$OUTLAYER_BIN" secrets set-for-agent --help >/dev/null 2>&1; then

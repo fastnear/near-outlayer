@@ -87,6 +87,15 @@ pub struct Config {
 
     // Worker capabilities (what this worker can do)
     pub capabilities: WorkerCapabilities,
+    /// Routes this worker will NOT run, as `<project_id>:<operation>` or
+    /// `<project_id>:*` (`EXECUTE_EXCLUDES`, comma-separated).
+    ///
+    /// The operator sets this because only the operator knows what the node
+    /// cannot reach: a venue that geofences the country it sits in, a host its
+    /// network blocks. The coordinator then hands those tasks to another
+    /// worker instead of this one, and the guest never sees a failure it could
+    /// not have avoided.
+    pub execute_excludes: Vec<String>,
 
     // FastFS receiver contract (optional - for storing compiled WASM)
     pub fastfs_receiver: Option<String>,
@@ -483,8 +492,16 @@ impl Config {
             }
         });
 
+        let execute_excludes: Vec<String> = env::var("EXECUTE_EXCLUDES")
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
         Ok(Self {
             api_base_url,
+            execute_excludes,
             api_auth_token,
             near_rpc_url,
             neardata_api_url,
@@ -772,6 +789,7 @@ mod tests {
                 allow_transactions: true,
             },
             wasm_cache_max_size_mb: 100,
+            execute_excludes: Vec::new(),
             wasm_cache_dir: "/tmp/wasm_cache_test".to_string(),
         }
     }

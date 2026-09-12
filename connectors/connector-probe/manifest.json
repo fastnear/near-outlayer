@@ -18,14 +18,17 @@
     "sockets",
     "trap",
     "fail",
-    "sleep"
+    "sleep",
+    "budget"
   ],
   "capabilities": {
     "network": [
       "rpc.testnet.fastnear.com"
     ]
   },
-  "author_secrets": { "profile": "author" },
+  "author_secrets": {
+    "profile": "author"
+  },
   "limits": [
     {
       "operation": "burn",

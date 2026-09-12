@@ -45,7 +45,12 @@
 #
 # Needs a deployed project that reports which secrets it can see. The default is
 # `$PARENT/test-secrets`, which is `wasi-examples/test-secrets-example`:
-#   cd wasi-examples/test-secrets-example && outlayer deploy test-secrets
+#   cd wasi-examples/test-secrets-example && ./build.sh && outlayer deploy test-secrets
+# That artefact carries a manifest naming the AUTHOR's profile `author`, which
+# must be stored under Project($PARENT/test-secrets) with access allow-all (see
+# the example's README) — while it is absent, EVERY run of the project is
+# refused and each case below reads as a denial. `03_project_model.sh` in the
+# example's tests stores it as part of its fixture.
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

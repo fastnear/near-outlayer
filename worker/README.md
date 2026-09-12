@@ -253,6 +253,34 @@ name its own connector's keys. The empty label is the sub-key `default`; the
 wallet's own EVM key is not reachable from a guest at all. Each execution has
 a budget of 200 wallet host calls.
 
+### Routes this node will not run
+
+`EXECUTE_EXCLUDES` is a comma-separated list of `<project_id>:<operation>` (or
+`<project_id>:*`) that this worker refuses. The operator sets it, because only
+the operator knows what the node cannot reach: a venue that geofences the
+country the node sits in, a host its network blocks. The worker sends the list
+on every poll; the coordinator then skips those tasks for this worker and
+leaves them in the queue, in order, for one that will take them. A task nobody
+will take waits until the caller's own timeout, exactly as it would if every
+worker were busy.
+
+```
+EXECUTE_EXCLUDES=connectors.outlayer.near/polymarket:order
+```
+
+`scripts/deploy_tdx.sh` fills this in from a per-node table (`node_excludes`,
+keyed by the host in `--node`) and prints what it set, so a deploy carries the
+node's geography with it. The table answers one of three things, and they differ:
+a rule list is written; `none` means the node is KNOWN to refuse nothing, so any
+stale value on it is CLEARED; an empty answer means the node is not in the table
+at all and whatever the operator set by hand is left exactly as it is.
+`--execute-excludes "<rules>"` overrides the table, and `--execute-excludes ""`
+forces none. The value travels to the node as base64, so a rule is never
+interpolated into a shell word or a `sed` replacement.
+
+Compile jobs are never excluded: compiling reaches no venue. An empty list is
+the ordinary path and leaves the coordinator's blocking pop untouched.
+
 Guests have no raw sockets: both WASI contexts deny TCP, UDP and name lookup
 (`src/executor/wasi_p1.rs`, `wasi_p2.rs`); the only network path is
 `wasi:http`, which runs through the outbound allowlist and the egress audit.

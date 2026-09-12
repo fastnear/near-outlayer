@@ -50,6 +50,7 @@ with no price and no fee.
 | `trap` | $0.01 | the module panics: the call fails, the fee is refunded, the author is paid nothing |
 | `fail` | $0.01 | the module answers `ok: false` and exits 1 — shows how a non-zero exit is reported and billed |
 | `sleep` | $0.01 | sleeps `seconds` (≤ 600) so the execution limit, not the module, ends the run |
+| `budget` | free | a daily budget kept the way the connectors keep theirs: `mode` reserve / release / read against `cap` on counter `run`, through the atomic `storage::increment`; `tests/connector_budget_parallel_e2e.sh` fires it in parallel to show the cap holds |
 | `unpriced` | — | absent from the price table AND unimplemented here: must be refused before anything runs |
 
 `forbidden_fetch` **passes when it fails**: `ok: false` with an `http_error` is
@@ -58,8 +59,24 @@ inside a TEE that holds keys, and the manifest allowlist is not being enforced.
 
 ## The secret
 
-Store it under the AGENT's own account, which is what the keystore compares
-against the caller:
+The probe reads secrets exactly as any project does, so both routes an agent
+has are exercised against it. Keys it looks for: `PROBE_TOKEN`, `PROBE_SECOND`.
+
+**Named in the body.** Any row whose on-chain condition admits the calling
+wallet — typically the owner's, stored once under the owner's account with the
+agent's wallet account whitelisted:
+
+```
+outlayer secrets set '{"PROBE_TOKEN":"…"}' --project connectors.outlayer.testnet/connector-probe \
+  --profile shared --access whitelist:you.testnet,<agent account>
+```
+
+and the call carries `"secrets_ref": {"account_id": "you.testnet", "profile": "shared"}`.
+Revoking is `outlayer secrets access … --access whitelist:you.testnet`. This is
+what `wasi-examples/test-secrets-example/tests/03_project_model.sh` C1 drives.
+
+**The agent's own row, by header.** Stored under the AGENT's own account, which
+is what the keystore compares against the caller:
 
 ```
 accessor: Project("connectors.outlayer.testnet/connector-probe")
@@ -68,12 +85,11 @@ owner:    <agent account>
 ```
 
 Use `POST /wallet/v1/agent-secret/prepare` (the author pays, the agent needs no
-NEAR) or `POST /wallet/v1/agent-secret` (the agent's own wallet signs). Keys the
-probe looks for: `PROBE_TOKEN`, `PROBE_SECOND`.
-
-Then call with `X-Use-Owner-Secret: 1`. Without that header no secret is looked
-up at all — which is itself worth testing: `operation: "secret"` should then report
-`found: false` for everything.
+NEAR) or `POST /wallet/v1/agent-secret` (the agent's own wallet signs), then
+call with `X-Use-Owner-Secret: 1` and no `secrets_ref`. With neither the header
+nor a body reference, no secret is looked up at all — which is itself worth
+testing: `operation: "secret"` should then report `found: false` for everything.
+When both are present the body wins.
 
 ## What it never does
 

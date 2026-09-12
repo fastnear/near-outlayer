@@ -132,6 +132,28 @@ There are no raw sockets: the guest's only network path is `wasi:http`. TCP,
 UDP and name lookups are refused by the worker, so nothing can go around the
 allowlist or the audit trail.
 
+**A host may be unreachable from some nodes, and that is handled by placement,
+not by your code.** Executors sit in more than one country, and a venue can
+refuse one of them: Polymarket's CLOB answers order placement with
+`403 Trading restricted in your region` to a US address while serving reads,
+cancels and its relayer from everywhere. The operator of such a node lists the
+routes it cannot run (`EXECUTE_EXCLUDES`, `<project>:<operation>`), and the
+coordinator gives those calls to a node that can. Your connector therefore sees
+one behaviour everywhere and needs no fallback of its own. What you should
+still do is report a venue's geo refusal as what it is — a refusal naming the
+region, not a transport error — so the operator can add the rule.
+
+**Keep a budget with `storage::increment`, reserve first, and never read-then-write.**
+Two calls of one agent can run at the same time — a key paying with money is not
+limited to one call in flight — so a cap kept as "read the day's total, check,
+write the new total" lets both calls see room for the last unit. `increment` is
+atomic (compare-and-swap with retries in the host). Take the unit before the
+work, refuse and give it back if that passes the cap, and give it back if the
+work did not happen; keep it when the outcome is unknown, because an over-count
+refuses one request and an under-count lets one past the owner's limit. The
+Gmail, Polymarket and Hyperliquid connectors each carry a small `Reservation`
+that releases itself when dropped unkept — copy that.
+
 **Report an error by answering, not by exiting.** A run that ends with a
 non-zero exit code or a trap is a failed run: its output is discarded, the
 caller sees a bare trap message, and the operation fee is refunded. An
@@ -143,8 +165,10 @@ because it ran.
 
 ## 4. Secrets
 
-This is the part most connectors get wrong, because there are two entirely
-different secrets involved and they belong to different people.
+A connector reads secrets exactly as any other project does — the model is the
+one in `wasi-examples/WASI_TUTORIAL.md` §3c. What trips connectors up is that
+three credentials belonging to different people meet in one run: yours, the
+caller's, and the agent's.
 
 ### 4.1 Your credential (the connector author's)
 
@@ -166,19 +190,24 @@ outlayer secrets set --project connectors.outlayer.near/<id> --profile prod '{"B
 The worker decrypts that profile into the environment on **every** run of the
 connector, next to whatever the call itself names (an agent's own secrets,
 §4.2); the call carries nothing. `owner` defaults to the account the project
-is published under. A name defined on both sides refuses the run rather than
-picking a winner, and so does a manifest that names a profile nobody stored —
-a connector written around a credential does not run without it.
+is published under. The row's access condition is judged against the real
+caller, so it is also who may run your connector at all — `AllowAll` for
+everyone, a whitelist or DAO role for a circle. A name defined on both sides
+refuses the run rather than picking a winner, and so does a manifest that names
+a profile nobody stored — a connector written around a credential does not run
+without it.
 
-A caller may still point a call at a credential of theirs through the body's
-`secrets_ref` on an ordinary project; on a connector the coordinator sets that
-field itself (§4.2), which is why the author's goes in the manifest.
+A caller points a call at a credential of theirs through the body's
+`secrets_ref`, on a connector as on any project; the author's goes in the
+manifest because it is the artefact's, not the call's.
 
 Access to a stored secret is governed on chain by an `AccessCondition`, which is
 richer than a list: `AllowAll`, `Whitelist`, `AccountPattern`, `NearBalance`,
-`FtBalance`, `NftOwned`, `DaoMember`, and `Logic`/`Not` to combine them. That is
-how you can hand a credential to a class of callers — everyone holding a
-particular NFT, every member of a DAO role — without naming them.
+`FtBalance`, `NftOwned`, `DaoMember`, `ValidUntil` (admits only before an
+instant), and `Logic`/`Not` to combine them. That is how you can hand a
+credential to a class of callers — everyone holding a particular NFT, every
+member of a DAO role — without naming them, and how a grant to one agent is
+made to lapse on its own: `And[Whitelist[agent], ValidUntil(lease end)]`.
 
 Decryption happens in the keystore TEE and the plaintext exists only inside the
 worker that runs your module. The coordinator never sees it.
@@ -198,15 +227,21 @@ Nothing is looked up unless the call asks, because most connectors need no
 secret and a lookup costs a keystore round trip plus a "not found" that means
 nothing.
 
-Where it is looked up is not negotiable and not in the request: both the profile
-and the owner are the agent's **own account**, taken from the payment key's row.
-The secret was stored BY that wallet, so it is owned by the same account it is
-named after — which is what makes it unforgeable, since only the wallet's key
-can make that wallet sign.
+With the header alone, where it is looked up is not in the request: both the
+profile and the owner are the agent's **own account**, taken from the payment
+key's row. The secret was stored BY that wallet, so it is owned by the same
+account it is named after — which is what makes it unforgeable, since only the
+wallet's key can make that wallet sign.
 
-A header rather than a body field on purpose: on the connector path the body is
-your input, and reserving a key inside it would collide with whatever you
-already accept.
+A body `secrets_ref`, when present, is used instead — the same field every
+project's callers use. It names any row whose on-chain condition admits the
+calling wallet: an owner who stored a credential once under their own account
+and whitelisted their agents hands it over this way, and takes it back by editing
+the whitelist. The header is the shortcut for the one row an agent need not know
+the name of, its own. A reference the contract could never hold a row for — an
+account id that is not one, a profile that is empty or over 64 characters — is
+refused at the door (`invalid_secrets_ref`, 400) rather than queued for a run
+that would read nothing.
 
 The header is meaningful only for a key owned by a custody wallet. An ordinary
 payment key's holder addresses their own secrets through the body, as always.
@@ -290,6 +325,14 @@ the call's credential — a payment key the custody wallet owns, plus
 imports `outlayer:wallet` cannot start from `request_execution` at all. Keep
 wallet operations in a connector that is called over HTTPS, and let an on-chain
 caller use a different one.
+
+By convention a venue connector uses two labels: `trading` for the account
+the venue knows (the key that signs orders) and `bridge` for the EVM address
+its funding legs pass through. The path still carries the connector's id, so
+`connector.hyperliquid.trading` and `connector.polymarket.trading` are
+different keys; the shared names are for the agent's benefit — one learned
+connector reads like the next. A label is part of the address: renaming one
+after funds have arrived means a new, empty address.
 
 Two things a sub-key is not. It is not a separate authority: the owner's
 `evm_sign` policy governs every sub-key exactly as it governs the wallet's own
@@ -437,4 +480,5 @@ access; one that echoed secrets would make every test run a leak.
 * [`wasi-examples/CONNECTOR_MANIFEST.md`](../wasi-examples/CONNECTOR_MANIFEST.md) — manifest reference
 * [`wasi-examples/WASI_TUTORIAL.md`](../wasi-examples/WASI_TUTORIAL.md) — writing and building a WASI guest
 * [`wasi-examples/WASM_ENV_VARS.md`](../wasi-examples/WASM_ENV_VARS.md) — every injected variable
+* [`connectors/SKILL.md`](../connectors/SKILL.md) — the library as an AGENT reads it: the call, the refusal codes, what a call costs, and one line per connector. Every connector ships its own `SKILL.md` next to its code; write one when you publish, because an agent that has to infer your operations from prose gets them wrong
 * [`connectors/connector-probe/`](../connectors/connector-probe/) — a working connector to copy

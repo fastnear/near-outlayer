@@ -1,0 +1,44 @@
+[package]
+name = "near-email-connector"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "OutLayer connector for near.email: an agent sends and reads mail from its NEAR account's own address, priced per operation"
+
+[[bin]]
+name = "near-email-connector"
+path = "src/main.rs"
+
+[dependencies]
+outlayer = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# The egress client every connector uses; the worker's allowlist decides whether
+# a request leaves at all.
+wasi-http-client = "0.2"
+# The chunked writer the database client needs for bodies above 4 KB.
+url = "2.5"
+wasi = "0.13"
+# The near.email wire, byte for byte: libsecp256k1 (pure Rust, WASI-safe) for the
+# key derivation, ChaCha20-Poly1305 for the EC01 envelope, the `ecies` crate for
+# the legacy blobs the SMTP server still writes.
+libsecp256k1 = "0.7"
+ecies = { version = "0.2", default-features = false, features = ["pure"] }
+sha2 = "0.10"
+chacha20poly1305 = "0.10"
+rand = "0.8"
+hex = "0.4"
+base64 = "0.21"
+
+[dev-dependencies]
+# The `ecies` pure backend reaches for a `critical-section` implementation, which
+# a host target has none of — that is why the module this is forked from has no
+# host tests at all. The std implementation lets the tests below link, and it is
+# a DEV dependency only: the wasm build is untouched by it.
+critical-section = { version = "1", features = ["std"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1

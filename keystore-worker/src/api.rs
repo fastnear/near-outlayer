@@ -1969,12 +1969,13 @@ async fn decrypt_handler(
         })?;
 
     if !access_granted {
+        let message = access_condition.denial_message();
         tracing::warn!(
             task_id = %task_id_str,
             caller = %caller,
-            "Access denied by access condition"
+            "{message}"
         );
-        return Err(ApiError::Unauthorized("Access denied by access condition".to_string()));
+        return Err(ApiError::Unauthorized(message));
     }
 
     tracing::info!(task_id = %task_id_str, caller = %caller, "Access granted");

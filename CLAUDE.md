@@ -90,7 +90,7 @@ anyhow::bail!("Feature X is not supported. Please use Y instead.");
 | [outlayer-coordinator](https://github.com/out-layer/outlayer-coordinator) | 8080 | Task queue, WASM cache, PostgreSQL + Redis (private repo) |
 | [shared-tee-helpers](https://github.com/out-layer/shared-tee-helpers) | - | TEE challenge-response auth (private repo) |
 | `wasi-examples/` | - | WASI container examples (public) |
-| `connectors/` | - | Connectors: the public testnet probes (`connector-probe`, `subkey-probe`) in-tree, and each pro connector as a PRIVATE `out-layer/*-connector` submodule (`mercury-connector`, `hyperliquid-connector`, `polymarket-connector` to come) |
+| `connectors/` | - | Connectors: public ones in-tree (`connector-probe`, `subkey-probe`, `gmail-connector`), and each pro connector as a PRIVATE `out-layer/*-connector` submodule (`mercury-connector`, `hyperliquid-connector`, `polymarket-connector`) |
 | `docker/` | - | Docker configs (Phala deployment) |
 | `tests/` | - | Integration tests |
 | `scripts/` | - | Deployment & utility scripts |

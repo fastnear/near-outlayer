@@ -52,3 +52,9 @@
 [submodule "wasi-examples/mercury-connector"]
 	path = connectors/mercury-connector
 	url = git@github.com:out-layer/mercury-connector.git
+[submodule "connectors/hyperliquid-connector"]
+	path = connectors/hyperliquid-connector
+	url = git@github.com:out-layer/hyperliquid-connector.git
+[submodule "connectors/polymarket-connector"]
+	path = connectors/polymarket-connector
+	url = git@github.com:out-layer/polymarket-connector.git

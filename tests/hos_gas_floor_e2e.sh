@@ -38,6 +38,7 @@
 # answer. See .idea/TESTING-WITH-ADMIN.md.
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hos_common.sh"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/agent_secret_mode.sh"
 
 [[ "${1:-}" == "--apply" ]] || { sed -n '3,39p' "$0" >&2; echo "  Pass --apply to run." >&2; exit 0; }
 hos_require
@@ -177,9 +178,11 @@ if [[ "$HTTP" == "402" ]]; then
   # there is no author who can pay instead. `/wallet/v1/agent-secret/prepare`
   # stores a secret and cannot fund gas, and the store_secrets path is where
   # that advice belongs.
-  grep -q "agent-secret" <<<"$M" \
-    && fail "F2 the message offers /wallet/v1/agent-secret/prepare, which stores a secret and cannot fund an executor's gas — a partner following it spends their time on the wrong endpoint" \
-    || pass "F2 and offers no route that cannot fix this — the only fix is NEAR on that account, which is what it says"
+  if agent_secret_mode F2; then
+    grep -q "agent-secret" <<<"$M" \
+      && fail "F2 the message offers /wallet/v1/agent-secret/prepare, which stores a secret and cannot fund an executor's gas — a partner following it spends their time on the wrong endpoint" \
+      || pass "F2 and offers no route that cannot fix this — the only fix is NEAR on that account, which is what it says"
+  fi
 fi
 
 # ── F3 the request was settled, not abandoned ──────────────────────────────

@@ -13,6 +13,9 @@
 # Required:
 #   --version <ver>     release, e.g. 0.1.35
 #   --node <ssh>        SSH target for the TDX node (lands as root/sudoer), e.g. root@173.237.9.76
+#   --execute-excludes  worker only: routes this node must not run, e.g.
+#                       "connectors.outlayer.near/polymarket:order". Omit it and the
+#                       per-node table in this script decides (see node_excludes).
 # Optional:
 #   [instance-name]     CVM VM label (default outlayer-<component>-<net>-<ver>-1)
 #   --digest <sha256>   image digest override (else resolved + attested locally via gh)
@@ -42,6 +45,7 @@
 set -euo pipefail
 
 DEPLOY_VERSION=""; NODE=""; DIGEST=""; DRY_RUN=false; GATEWAY_URL=""
+EXECUTE_EXCLUDES=""; EXCLUDES_SET=false
 REMOTE_USER="outlayer"; REMOTE_DIR="/home/outlayer/self-hosted-tdx"
 POS=()
 while [[ $# -gt 0 ]]; do case "$1" in
@@ -53,6 +57,10 @@ while [[ $# -gt 0 ]]; do case "$1" in
   # keystore only: per-VM dstack-gateway URL. Set -> keystore deploys gateway-enabled (public HTTPS
   # https://<keystore-app-id>-8081.<domain>). Forwarded to the node as GATEWAY_URL=...
   --gateway-url) GATEWAY_URL="${2:?}"; shift 2;;
+  # worker only: routes this node must NOT run, `<project>:<operation>` or
+  # `<project>:*`, comma-separated. Given here it overrides the per-node table
+  # below; an empty string forces "no exclusions" on a node the table covers.
+  --execute-excludes) EXECUTE_EXCLUDES="${2-}"; EXCLUDES_SET=true; shift 2;;
   --dry-run|--info) DRY_RUN=true; shift;;
   *) POS+=("$1"); shift;;
 esac; done
@@ -62,6 +70,45 @@ case "$COMPONENT" in worker|keystore) ;; *) echo "component must be worker|keyst
 case "$NETWORK" in testnet|mainnet) ;; *) echo "network must be testnet|mainnet (got '$NETWORK')" >&2; exit 1;; esac
 [ -n "$DEPLOY_VERSION" ] || { echo "--version <ver> required (e.g. --version 0.1.35)" >&2; exit 1; }
 [ -n "$NODE" ] || { echo "--node <ssh-target> required (e.g. --node root@173.237.9.76)" >&2; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Routes a node cannot run, by node.
+#
+# A venue can refuse one of our nodes and serve the others: Polymarket's CLOB
+# answers order placement with `403 Trading restricted in your region` to a US
+# address while serving its reads, its cancels and its relayer from everywhere
+# (measured 2026-09-11 from both nodes). The worker passes this list to the
+# coordinator on every poll, and the coordinator hands those calls to a node
+# that can run them, so a guest never sees a failure its placement could have
+# avoided.
+#
+# Keyed by the HOST of `--node`, because that is what the operator types. Keep
+# it in step with where the nodes actually are: a node that moves country needs
+# its row changed, and nothing in the deploy can notice that for you.
+# Answers one of three things, and the difference matters:
+#   a rule list   this node refuses those routes
+#   `none`        this node is KNOWN to refuse nothing, so a stale value on it
+#                 is cleared
+#   empty         this node is not in the table at all, so whatever the operator
+#                 set by hand is left exactly as it is
+node_excludes() {
+  # $SUFFIX is near|testnet and is set before this is ever called, so a rule
+  # names the project of the network being deployed.
+  local pm="connectors.outlayer.$SUFFIX/polymarket"
+  case "${1#*@}" in
+    # Dallas, Texas — US. Polymarket's edge refuses ORDER PLACEMENT from here
+    # (measured 2026-09-11: only `POST /order` and `POST /orders` answer 403;
+    # reads, credential derivation, cancels, the relayer and the bridge all
+    # behave the same as from Europe). Only the operation that places an order
+    # is excluded — excluding a read would make this node wait for another one
+    # to answer something it can answer itself.
+    173.237.9.76) echo "$pm:order" ;;
+    # Haarlem — NL. Nothing known to refuse it.
+    23.109.254.164) echo "none" ;;
+    # A node nobody has measured: left alone rather than guessed at.
+    *) echo "" ;;
+  esac
+}
 
 VER="${DEPLOY_VERSION#v}"
 SUFFIX=$([ "$NETWORK" = mainnet ] && echo near || echo testnet)
@@ -125,6 +172,15 @@ fi
 if $DRY_RUN; then
   if [ "$COMPONENT" = worker ]; then
     echo "(dry-run) would: deploy CVM '$NAME' on $NODE -> read measurements -> approve on $REGISTER (signer $OWNER) -> restart -> verify"
+    if [ "$EXCLUDES_SET" = true ]; then
+      echo "(dry-run) would set in $REMOTE_DIR/worker/.env.${NETWORK}-worker-tdx: EXECUTE_EXCLUDES=${EXECUTE_EXCLUDES:-<empty>} (from --execute-excludes)"
+    else
+      case "$(node_excludes "$NODE")" in
+        "")   echo "(dry-run) $NODE is not in the per-node table: EXECUTE_EXCLUDES left exactly as it is on the node" ;;
+        none) echo "(dry-run) would CLEAR EXECUTE_EXCLUDES in $REMOTE_DIR/worker/.env.${NETWORK}-worker-tdx (the table knows this node refuses nothing)" ;;
+        *)    echo "(dry-run) would set in $REMOTE_DIR/worker/.env.${NETWORK}-worker-tdx: EXECUTE_EXCLUDES=$(node_excludes "$NODE")" ;;
+      esac
+    fi
   else
     echo "(dry-run) would: deploy CVM '$NAME' on $NODE${GATEWAY_URL:+ (gateway-url=$GATEWAY_URL)} -> read measurements -> approve on $DAO (signer $OWNER) -> wait for proposal -> vote (signer $VOTER) -> poll /health"
   fi
@@ -134,6 +190,51 @@ fi
 if [ "$COMPONENT" = worker ]; then
 # [2/5] deploy the CVM on the node (node-side deploy_tdx.sh derives the stable COMPOSE_NAME)
 echo "[2/5] Deploy CVM on node (reads node env: $REMOTE_DIR/worker/.env.${NETWORK}-worker-tdx — NOT your local copy)..."
+
+# EXECUTE_EXCLUDES lands in the NODE's env file, which is what the CVM reads.
+# `--execute-excludes` wins; otherwise the table above decides, and a node the
+# table does not cover is left exactly as the operator last set it — this
+# script never silently erases a value somebody put there by hand.
+WANT_EXCLUDES=""
+WRITE_EXCLUDES=false
+if [ "$EXCLUDES_SET" = true ]; then
+  # `--execute-excludes ""` is a deliberate "refuse nothing", so it writes.
+  WANT_EXCLUDES="$EXECUTE_EXCLUDES"; WRITE_EXCLUDES=true
+else
+  case "$(node_excludes "$NODE")" in
+    "")      WRITE_EXCLUDES=false ;;
+    none)    WANT_EXCLUDES=""; WRITE_EXCLUDES=true ;;
+    *)       WANT_EXCLUDES="$(node_excludes "$NODE")"; WRITE_EXCLUDES=true ;;
+  esac
+fi
+if [ "$WRITE_EXCLUDES" = true ]; then
+  ENV_FILE="$REMOTE_DIR/worker/.env.${NETWORK}-worker-tdx"
+  WAS=$(node_run "grep -m1 '^EXECUTE_EXCLUDES=' '$ENV_FILE' 2>/dev/null | cut -d= -f2- || true" 2>/dev/null | tr -d '\r')
+  # Sent as base64, so operator text never becomes part of a sed replacement
+  # (where `&` means the whole match) or of a shell word on the node.
+  EXCLUDES_B64=$(printf '%s' "$WANT_EXCLUDES" | base64 | tr -d '\n')
+  SET_OUT=$(node_run "set -e
+    f='$ENV_FILE'
+    if [ ! -f \"\$f\" ]; then echo MISSING; exit 0; fi
+    v=\$(printf %s '$EXCLUDES_B64' | base64 -d)
+    { grep -v '^EXECUTE_EXCLUDES=' \"\$f\" || true; } > \"\$f.tmp\"
+    printf 'EXECUTE_EXCLUDES=%s\n' \"\$v\" >> \"\$f.tmp\"
+    cat \"\$f.tmp\" > \"\$f\"
+    rm -f \"\$f.tmp\"
+    echo OK" 2>&1 | tail -1 | tr -d '\r')
+  if [ "$SET_OUT" = MISSING ]; then
+    echo "  !! $ENV_FILE not found on the node. EXECUTE_EXCLUDES not set, and the deploy below reads the same file."
+  elif [ "$SET_OUT" != OK ]; then
+    echo "  !! could not set EXECUTE_EXCLUDES on the node: $SET_OUT" >&2
+    exit 1
+  elif [ -z "$WANT_EXCLUDES" ]; then
+    echo "  routes this node refuses: none${WAS:+ (cleared; was: $WAS)}"
+  else
+    echo "  routes this node refuses: $WANT_EXCLUDES"
+    echo "    those venues refuse this node's address; the coordinator gives such calls to another node"
+    [ -n "$WAS" ] && [ "$WAS" != "$WANT_EXCLUDES" ] && echo "    previous value on the node: $WAS"
+  fi
+fi
 node_run "WORKER_DIGEST=$DIGEST ./deploy_tdx.sh worker $NETWORK $NAME --version $VER"
 
 # [3/5] read the 5 TEE measurements from the worker's logs

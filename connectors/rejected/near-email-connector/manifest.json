@@ -1,0 +1,39 @@
+{
+  "connector_id": "near-email",
+  "display": {
+    "name": "near.email",
+    "author": "outlayer.near"
+  },
+  "operations": [
+    "status",
+    "send_pubkey",
+    "list",
+    "read_attachment",
+    "send",
+    "send_with_attachment",
+    "delete"
+  ],
+  "capabilities": {
+    "network": [
+      "mail.near.email"
+    ]
+  },
+  "author_secrets": {
+    "owner": "zavodil.near",
+    "profile": "default"
+  },
+  "limits": [
+    {
+      "operation": "send:external",
+      "window": "day",
+      "max_count": 3,
+      "applies": "covered"
+    },
+    {
+      "operation": "send_with_attachment:external",
+      "window": "day",
+      "max_count": 3,
+      "applies": "covered"
+    }
+  ]
+}

@@ -85,6 +85,44 @@ pub enum AccessCondition {
         dao_contract: String,
         role: String,
     },
+    /// Admit only until a moment in time: nanoseconds since the epoch, carried
+    /// as a decimal string the way the contract writes its `U64`. Composed with
+    /// the others — `And[Whitelist[agent], ValidUntil(t)]` is a grant that
+    /// lapses on its own, `Not { ValidUntil }` reads as "valid after". Judged
+    /// against this host's clock, the same machine trust the rest of custody
+    /// rests on.
+    ValidUntil {
+        until_ns: String,
+    },
+}
+
+/// Nanoseconds since the epoch, by this host's clock. A clock that reads
+/// before the epoch answers `u64::MAX`, so every time limit has lapsed: a
+/// host whose time cannot be trusted admits nobody on the strength of it.
+fn now_ns() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos().min(u64::MAX as u128) as u64)
+        .unwrap_or(u64::MAX)
+}
+
+/// `ns` since the epoch as `YYYY-MM-DDTHH:MM:SSZ`, for a refusal a person reads.
+/// Civil-from-days after Howard Hinnant; no calendar crate for one line of output.
+pub fn iso8601_utc(ns: u64) -> String {
+    let secs = ns / 1_000_000_000;
+    let (days, rem) = (secs / 86_400, secs % 86_400);
+    let (h, m, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let mo = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if mo <= 2 { y + 1 } else { y };
+    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
 }
 
 /// Compile an [`AccessCondition::AccountPattern`] into a FULL-MATCH regex.
@@ -337,6 +375,59 @@ impl AccessCondition {
 
                 Ok(granted)
             }
+
+            AccessCondition::ValidUntil { until_ns } => Ok(Self::valid_until_at(until_ns, now_ns())),
+        }
+    }
+
+    /// `ValidUntil` at a given instant. A limit that does not parse denies —
+    /// the owner wrote something the chain stored and nobody can read, and the
+    /// safe reading of that is "not yet".
+    fn valid_until_at(until_ns: &str, now: u64) -> bool {
+        match until_ns.parse::<u64>() {
+            Ok(until) => {
+                let granted = now < until;
+                tracing::debug!(condition = "ValidUntil", until_ns = %until, now_ns = %now, granted = %granted, "Validated time limit");
+                granted
+            }
+            Err(_) => {
+                tracing::warn!(condition = "ValidUntil", until_ns = %until_ns, "time limit is not a number; denying");
+                false
+            }
+        }
+    }
+
+    /// A time limit that has passed AND necessarily stands in the way, if any —
+    /// so a refusal can say "your grant lapsed at …" rather than only "denied".
+    /// A hint for a person; the verdict is [`Self::validate`]'s. Named only
+    /// where the lapse must be part of the reason: under `And` any lapsed leaf
+    /// denies the whole; under `Or` only when every branch carries one (a live
+    /// sibling branch means the caller was refused for something else); never
+    /// under `Not`, where a passed limit is what ADMITS.
+    pub fn lapsed_time_limit(&self, now: u64) -> Option<u64> {
+        match self {
+            AccessCondition::ValidUntil { until_ns } => until_ns.parse::<u64>().ok().filter(|until| *until <= now),
+            AccessCondition::Logic { operator: LogicOperator::And, conditions } => {
+                conditions.iter().find_map(|c| c.lapsed_time_limit(now))
+            }
+            AccessCondition::Logic { operator: LogicOperator::Or, conditions } => {
+                let lapsed: Vec<u64> = conditions.iter().filter_map(|c| c.lapsed_time_limit(now)).collect();
+                (!conditions.is_empty() && lapsed.len() == conditions.len()).then(|| lapsed[0])
+            }
+            _ => None,
+        }
+    }
+
+    /// What a refused caller is told. Names a lapsed time limit when there is
+    /// one, because that is the one refusal the owner fixes by re-granting
+    /// rather than the caller by asking.
+    pub fn denial_message(&self) -> String {
+        match self.lapsed_time_limit(now_ns()) {
+            Some(until) => format!(
+                "Access denied by access condition: its time limit passed at {}",
+                iso8601_utc(until)
+            ),
+            None => "Access denied by access condition".to_string(),
         }
     }
 
@@ -356,6 +447,109 @@ impl AccessCondition {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const T: u64 = 1_760_000_000_000_000_000; // 2025-10-09T08:53:20Z
+
+    /// A time limit admits strictly before its instant and denies from it on;
+    /// one that does not parse denies rather than erroring.
+    #[test]
+    fn a_time_limit_admits_before_and_denies_from_its_instant() {
+        let until = T.to_string();
+        assert!(AccessCondition::valid_until_at(&until, T - 1));
+        assert!(!AccessCondition::valid_until_at(&until, T));
+        assert!(!AccessCondition::valid_until_at(&until, T + 1));
+        assert!(!AccessCondition::valid_until_at("soon", T - 1), "unparseable denies");
+        assert!(!AccessCondition::valid_until_at("", T - 1));
+        assert!(!AccessCondition::valid_until_at(&until, u64::MAX), "an untrusted clock (now_ns's fallback) denies");
+    }
+
+    /// The contract writes `U64` as a decimal string; that is the shape read here.
+    #[test]
+    fn valid_until_parses_the_contracts_json() {
+        let parsed: AccessCondition =
+            serde_json::from_str(r#"{"ValidUntil":{"until_ns":"1760000000000000000"}}"#).unwrap();
+        assert_eq!(parsed, AccessCondition::ValidUntil { until_ns: T.to_string() });
+    }
+
+    /// Composed the way a grant is written: one agent, until a date. `Not`
+    /// turns it into "valid after".
+    #[tokio::test]
+    async fn a_grant_with_a_time_limit_composes_with_a_whitelist() {
+        let far = (now_ns() + 3_600_000_000_000).to_string();
+        let past = "1".to_string();
+        let grant = |until: &str| AccessCondition::Logic {
+            operator: LogicOperator::And,
+            conditions: vec![
+                AccessCondition::Whitelist { accounts: vec!["agent.near".into()] },
+                AccessCondition::ValidUntil { until_ns: until.to_string() },
+            ],
+        };
+        assert!(grant(&far).validate("agent.near", None).await.unwrap());
+        assert!(!grant(&far).validate("other.near", None).await.unwrap(), "the whitelist still decides who");
+        assert!(!grant(&past).validate("agent.near", None).await.unwrap(), "and the limit decides when");
+        let after = AccessCondition::Not {
+            condition: Box::new(AccessCondition::ValidUntil { until_ns: past.clone() }),
+        };
+        assert!(after.validate("anyone.near", None).await.unwrap(), "Not over ValidUntil is valid-after");
+    }
+
+    /// The refusal names a lapsed limit wherever it sits in the tree, and says
+    /// nothing about time when none has lapsed.
+    #[test]
+    fn a_lapsed_limit_is_found_in_the_tree_and_named() {
+        let nested = AccessCondition::Logic {
+            operator: LogicOperator::Or,
+            conditions: vec![
+                AccessCondition::Whitelist { accounts: vec![] },
+                AccessCondition::Logic {
+                    operator: LogicOperator::And,
+                    conditions: vec![
+                        AccessCondition::Whitelist { accounts: vec!["a.near".into()] },
+                        AccessCondition::ValidUntil { until_ns: T.to_string() },
+                    ],
+                },
+            ],
+        };
+        // The other Or branch (an empty whitelist) carries no limit, so a caller
+        // refused here was refused for not being on it — the lapse is not named.
+        assert_eq!(nested.lapsed_time_limit(T + 5), None, "a live sibling branch means time was not the reason");
+        assert_eq!(nested.lapsed_time_limit(T - 5), None, "a live limit is not lapsed");
+        let and_only = AccessCondition::Logic {
+            operator: LogicOperator::And,
+            conditions: vec![
+                AccessCondition::Whitelist { accounts: vec!["a.near".into()] },
+                AccessCondition::ValidUntil { until_ns: T.to_string() },
+            ],
+        };
+        assert_eq!(and_only.lapsed_time_limit(T + 5), Some(T), "under And a lapsed leaf is the reason");
+        let all_lapsed = AccessCondition::Logic {
+            operator: LogicOperator::Or,
+            conditions: vec![and_only.clone(), AccessCondition::ValidUntil { until_ns: (T - 1).to_string() }],
+        };
+        assert_eq!(all_lapsed.lapsed_time_limit(T + 5), Some(T), "every Or branch lapsed: time is the reason");
+        let valid_after = AccessCondition::Not {
+            condition: Box::new(AccessCondition::ValidUntil { until_ns: "1".to_string() }),
+        };
+        assert_eq!(valid_after.lapsed_time_limit(T), None, "under Not a passed limit admits");
+        assert_eq!(AccessCondition::AllowAll.lapsed_time_limit(T), None);
+        let lapsed = AccessCondition::ValidUntil { until_ns: "1".to_string() };
+        assert_eq!(
+            lapsed.denial_message(),
+            "Access denied by access condition: its time limit passed at 1970-01-01T00:00:00Z"
+        );
+        assert_eq!(
+            AccessCondition::Whitelist { accounts: vec![] }.denial_message(),
+            "Access denied by access condition"
+        );
+    }
+
+    #[test]
+    fn iso8601_renders_known_instants() {
+        assert_eq!(iso8601_utc(0), "1970-01-01T00:00:00Z");
+        assert_eq!(iso8601_utc(1_700_000_000 * 1_000_000_000), "2023-11-14T22:13:20Z");
+        assert_eq!(iso8601_utc(T), "2025-10-09T08:53:20Z");
+        assert_eq!(iso8601_utc(951_782_400 * 1_000_000_000), "2000-02-29T00:00:00Z", "a leap day");
+    }
 
     #[tokio::test]
     async fn test_allow_all() {

@@ -1,8 +1,9 @@
-# Connector manifest
+# Project manifest
 
-A connector runs inside a keys-bearing TEE and talks to the internet. What it
-may talk to is declared by the connector itself, in a manifest embedded **inside
-the wasm**.
+A module runs inside a keys-bearing TEE and may talk to the internet and hold
+its author's credential. Both are declared by the module itself, in a manifest
+embedded **inside the wasm**. Any project may carry one; for a connector it is
+mandatory, and `connector_id` is what makes the network section fail-closed.
 
 ## Where it lives, and why there
 
@@ -53,10 +54,10 @@ and exactly the ones priced on chain — see the next section.
 | Field | Read by the worker | Meaning |
 |---|---|---|
 | `connector_id` | **yes** | Stable identity. Its presence also opts the project into fail-closed allowlist enforcement, wherever it is published. Never contains a version — the version is a property of the code, not of who the connector is; a version here would make every release a different connector to everything that keys off the id — its prices, its limits, its stored secrets. |
-| `capabilities.network` | **yes** | The outbound allowlist. Exact hostnames, case-insensitive, **no implicit subdomain wildcard**: `example.com` does not permit `evil.example.com`. List every host you need. |
+| `capabilities.network` | **yes** | The outbound allowlist. Exact hostnames, case-insensitive, **no implicit subdomain wildcard**: `example.com` does not permit `evil.example.com`. List every host you need. Absent on a project without `connector_id`: egress stays unrestricted, as for a wasm with no manifest at all. |
 | `operations` | no | Documentation, and a cross-check against the price list. |
 | `limits` | **yes** | Caps this connector declares about itself. Unioned with the coordinator's own rules — every applicable one must pass — so a declaration can only ever tighten. |
-| `author_secrets` | **yes** | The author's own credential: the secrets `owner` stored under the accessor `Project(<this project id>)` and `profile`, decrypted into the environment on every run next to the caller's. `owner` defaults to the publishing account. A name on both sides, or a profile nobody stored, refuses the run. See `docs/CONNECTORS.md` §4.1. |
+| `author_secrets` | **yes** | The author's own credential, for any project: the row `owner` stored under the accessor `Project(<this project id>)` and `profile`, decrypted into the environment on every run next to the caller's. `owner` defaults to the publishing account. The row's access condition is judged against the real caller, so it is who may run the project — `AllowAll` for everyone, a whitelist or DAO role for a circle. A name on both sides, or a profile nobody stored, refuses the run. A run with no project (a `Repo` source executed directly) cannot hold one. See `WASI_TUTORIAL.md` §3c and `docs/CONNECTORS.md` §4.1. |
 | `display` | no | For the dashboard. |
 
 ### The words `limits` may use

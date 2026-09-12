@@ -63,6 +63,7 @@
 #   CALLER=you.testnet ./tests/connector_pricing_e2e.sh --apply
 
 set -uo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/agent_secret_mode.sh"
 
 APPLY=false
 [[ "${1:-}" == "--apply" ]] && APPLY=true
@@ -571,7 +572,7 @@ fi
 # addresses their own secrets through the body. So this is the custody path —
 # the wallet's `wk_` stores the secret, and a payment key the wallet owns makes
 # the call.
-if want C6; then
+if want C6 && agent_secret_mode C6; then
   if [[ -z "$AGENT_WALLET_KEY" || -z "$AGENT_PAYMENT_KEY" ]]; then
     note "C6 SKIPPED: set AGENT_WALLET_KEY (a wallet's wk_) and AGENT_PAYMENT_KEY (a key that wallet owns)"
   elif ! "$OUTLAYER_BIN" secrets set-for-agent --help >/dev/null 2>&1; then
@@ -997,7 +998,7 @@ fi
 #
 # Needs AGENT_WALLET_KEY (a wallet's wk_) with a secret already stored for it —
 # C6 stores one, so run `ONLY=C6,C12`.
-if want C12; then
+if want C12 && agent_secret_mode C12; then
   if [[ -z "$AGENT_WALLET_KEY" || -z "$AGENT_ACCOUNT" || -z "$AGENT_PAYMENT_KEY" ]]; then
     note "C12 SKIPPED: needs AGENT_WALLET_KEY, AGENT_PAYMENT_KEY and AGENT_ACCOUNT"
   elif [[ "$APPLY" != true ]]; then
@@ -1642,7 +1643,7 @@ fi
 # Written against OVERWRITE rather than delete: it asks the same question — can
 # this credential still act on this secret — and needs nothing that is not
 # already deployed. The delete path is the same authority with a different verb.
-if want C18; then
+if want C18 && agent_secret_mode C18; then
   if [[ "$APPLY" != true ]]; then
     printf '\033[90m  (dry-run) a rotated wk_ still writes; the wk_ is the authority, not the payer\033[0m\n' >&2
   elif [[ -z "$AGENT_WALLET_KEY" || -z "$CALLER" ]]; then
@@ -1833,7 +1834,7 @@ fi
 # that a hash names a real build, and it should not: a secret may be stored for
 # a version that has not been published yet. Using a made-up one is therefore
 # the honest test of the accessor rather than a shortcut around publishing.
-if want C19; then
+if want C19 && agent_secret_mode C19; then
   if [[ "$APPLY" != true ]]; then
     printf '\033[90m  (dry-run) a wasm-scoped secret is stored and read back; a delete removes it\033[0m\n' >&2
   elif [[ -z "$AGENT_WALLET_KEY" ]]; then

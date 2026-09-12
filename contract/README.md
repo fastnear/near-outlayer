@@ -248,6 +248,42 @@ near call outlayer.testnet delete_secrets '{
 }' --accountId alice.testnet
 ```
 
+#### `update_access`
+Change who may read a stored secret. The condition moves; the ciphertext and
+the storage deposit stay, so no value is re-entered and a TEE-generated key is
+never lost. Keyed on `(accessor, profile, caller)`: only the owner of the row
+can change it, and a non-owner's call panics with `Secrets not found`. This is
+how an owner hands a secret to an agent and takes it back — the agent names
+`{account_id: owner, profile}` in `secrets_ref`.
+
+```bash
+near call outlayer.testnet update_access '{
+  "accessor": {"Project": {"project_id": "alice.testnet/app"}},
+  "profile": "default",
+  "new_access": {"Logic": {"operator": "Or", "conditions": [
+    {"Whitelist": {"accounts": ["alice.testnet"]}},
+    {"Logic": {"operator": "And", "conditions": [
+      {"Whitelist": {"accounts": ["<agent wallet account>"]}},
+      {"ValidUntil": {"until_ns": "1790812800000000000"}}
+    ]}}
+  ]}}
+}' --accountId alice.testnet --gas 30000000000000
+```
+
+#### Access conditions
+`access` (on `store_secrets` and `update_access`) is an `AccessCondition`, evaluated
+by the keystore inside the TEE against the account that pays for the run (the
+transaction's signer, or a payment key's owner) — never against a name the call
+claims. Variants: `"AllowAll"`; `{"Whitelist": {"accounts": [...]}}` (exact match);
+`{"AccountPattern": {"pattern": "..."}}` (a regex anchored to the whole id);
+`{"NearBalance": {"operator": "Gte", "value": "<yocto>"}}`; `{"FtBalance": {"contract",
+"operator", "value"}}`; `{"NftOwned": {"contract", "token_id"}}`; `{"DaoMember":
+{"dao_contract", "role"}}`; `{"ValidUntil": {"until_ns": "<nanoseconds since the
+epoch, as a string>"}}` (admits strictly before that instant); `{"Logic": {"operator":
+"And" | "Or", "conditions": [...]}}` and `{"Not": {"condition": ...}}` to combine
+them. The contract stores the condition without evaluating it; the Borsh layout of
+`SecretProfile.access` is the variant order, so new variants are only ever appended.
+
 #### `list_user_secrets`
 One PAGE of the secrets stored by an account. It reads storage per entry, so an
 unbounded answer would eventually exceed the view's gas and fail for everyone —

@@ -562,12 +562,25 @@ impl ApiClient {
     /// * `Ok(Some(request))` - New execution request received
     /// * `Ok(None)` - No request available (timeout reached)
     /// * `Err(_)` - Request failed
-    pub async fn poll_task(&self, timeout: u64, capabilities: &[String]) -> Result<Option<ExecutionRequest>> {
+    pub async fn poll_task(
+        &self,
+        timeout: u64,
+        capabilities: &[String],
+        excludes: &[String],
+    ) -> Result<Option<ExecutionRequest>> {
         // Build URL with query parameters
         let capabilities_param = capabilities.join(",");
+        // Routes this node will not run. Sent on every poll so the coordinator
+        // can hand them to another worker; an empty list is the ordinary path
+        // and leaves the coordinator's blocking pop untouched.
+        let excludes_param = if excludes.is_empty() {
+            String::new()
+        } else {
+            format!("&excludes={}", urlencoding::encode(&excludes.join(",")))
+        };
         let url = format!(
-            "{}/executions/poll?timeout={}&capabilities={}",
-            self.base_url, timeout, capabilities_param
+            "{}/executions/poll?timeout={}&capabilities={}{}",
+            self.base_url, timeout, capabilities_param, excludes_param
         );
 
         tracing::debug!("🔍 Polling for execution request: {}", url);

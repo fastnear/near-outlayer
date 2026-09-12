@@ -1,3 +1,4 @@
+use near_sdk::json_types::U64;
 use near_sdk::{near, AccountId, NearToken};
 
 // V1 enums for backward compatibility
@@ -87,6 +88,18 @@ pub enum AccessConditionV1 {
         dao_contract: AccountId,
         role: String,
     },
+    /// Admit only until a moment in time (nanoseconds since the epoch, the
+    /// chain's own unit). Composed with the others: `And[Whitelist[agent],
+    /// ValidUntil(t)]` is a grant to one agent that lapses on its own, and
+    /// `Not { ValidUntil }` reads as "valid after". Evaluated by the keystore
+    /// against its clock, like every other condition; stored here.
+    ///
+    /// APPENDED LAST, and must stay last: `SecretProfile.access` is stored as
+    /// Borsh of this enum directly, so a variant's index is its position here,
+    /// and every row already on chain decodes by that position.
+    ValidUntil {
+        until_ns: U64,
+    },
 }
 
 // Versioned enums for future upgrades
@@ -158,6 +171,43 @@ pub type AccessCondition = AccessConditionV1;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Variant positions are storage layout. `DaoMember` was the last variant
+    /// when rows were first written; `ValidUntil` sits after it and nothing may
+    /// be inserted before either.
+    #[test]
+    fn borsh_positions_are_the_layout_rows_were_written_in() {
+        use near_sdk::borsh;
+        let dao = AccessCondition::DaoMember {
+            dao_contract: "dao.near".parse().unwrap(),
+            role: "council".to_string(),
+        };
+        let until = AccessCondition::ValidUntil { until_ns: U64(1_760_000_000_000_000_000) };
+        assert_eq!(borsh::to_vec(&dao).unwrap()[0], 8, "DaoMember is the ninth variant");
+        assert_eq!(borsh::to_vec(&until).unwrap()[0], 9, "ValidUntil is appended after it");
+        assert_eq!(borsh::to_vec(&AccessCondition::AllowAll).unwrap()[0], 2);
+    }
+
+    /// The JSON a client sends, round-tripped: a string for the time, since
+    /// nanoseconds overflow JSON numbers.
+    #[test]
+    fn valid_until_is_written_as_a_string_of_nanoseconds() {
+        let json = r#"{"ValidUntil":{"until_ns":"1760000000000000000"}}"#;
+        let parsed: AccessCondition = near_sdk::serde_json::from_str(json).unwrap();
+        assert_eq!(parsed, AccessCondition::ValidUntil { until_ns: U64(1_760_000_000_000_000_000) });
+        assert_eq!(near_sdk::serde_json::to_string(&parsed).unwrap(), json);
+    }
+
+    /// The contract's JSON shape for a whitelist is the struct variant,
+    /// `{"Whitelist":{"accounts":[...]}}`. A bare array under the variant name is
+    /// not a whitelist and must not be read as one.
+    #[test]
+    fn a_whitelist_is_an_object_with_accounts_not_a_bare_array() {
+        let shaped = r#"{"Whitelist":{"accounts":["alice.near"]}}"#;
+        assert!(near_sdk::serde_json::from_str::<AccessCondition>(shaped).is_ok());
+        let bare = r#"{"Whitelist":["alice.near"]}"#;
+        assert!(near_sdk::serde_json::from_str::<AccessCondition>(bare).is_err());
+    }
 
     #[test]
     fn test_access_condition_serialization() {

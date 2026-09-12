@@ -237,6 +237,15 @@ struct Input {
     /// to outlive the execution limit, which is the worker's to enforce.
     #[serde(default)]
     seconds: Option<u64>,
+    /// `budget` only: `reserve` (the default), `release` or `read`.
+    #[serde(default)]
+    mode: Option<String>,
+    /// `budget` only: the cap a reservation is refused past.
+    #[serde(default)]
+    cap: Option<i64>,
+    /// `budget` only: which counter — a test run's own id, so runs never share one.
+    #[serde(default)]
+    run: Option<String>,
 }
 
 /// One system variable, as the guest actually received it.
@@ -297,6 +306,13 @@ struct Output {
     /// `HTTPS` or `NEAR` — which door this run came through.
     #[serde(skip_serializing_if = "Option::is_none")]
     execution_type: Option<String>,
+    // ---- budget ----
+    /// Whether this call got a place under the cap.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    admitted: Option<bool>,
+    /// The counter after this call, as the atomic increment returned it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    count: Option<i64>,
     // ---- env ----
     #[serde(skip_serializing_if = "Vec::is_empty")]
     system_env: Vec<VarSeen>,
@@ -437,6 +453,9 @@ fn main() {
     let input = match env::input_json::<Input>() {
         Ok(Some(i)) => i,
         Ok(None) => Input {
+            mode: None,
+            cap: None,
+            run: None,
             operation: String::new(),
             rounds: None,
             seed: None,
@@ -484,6 +503,7 @@ fn run(input: &Input) -> Output {
         "trap" => trap(),
         "fail" => fail(op),
         "sleep" => sleep(op, input.seconds.unwrap_or(1)),
+        "budget" => budget(op, input.mode.as_deref(), input.cap, input.run.as_deref()),
         "" => Output {
             ok: false,
             operation: op.into(),
@@ -839,5 +859,54 @@ fn fetch(op: &str, url: &str, detail: &str) -> Output {
             http_error: Some(format!("{e}")),
             ..Default::default()
         },
+    }
+}
+
+/// A daily budget kept the way the connectors keep theirs: reserved with the
+/// SDK's atomic `storage::increment` BEFORE the work, and given back when the
+/// work does not happen. Exists so the one thing no unit test can reach — that
+/// the increment is atomic on the real worker and coordinator — can be checked
+/// from outside by firing calls at once (`tests/connector_budget_parallel_e2e.sh`).
+///
+/// `reserve` takes a place and keeps it; `release` takes one and gives it back,
+/// as a call whose work failed does; `read` returns the counter.
+fn budget(op: &str, mode: Option<&str>, cap: Option<i64>, run: Option<&str>) -> Output {
+    let answer = |ok: bool, admitted: Option<bool>, count: Option<i64>, detail: String| Output {
+        ok,
+        operation: op.into(),
+        detail,
+        admitted,
+        count,
+        ..Default::default()
+    };
+    let run = run.unwrap_or_default();
+    if run.is_empty() || run.len() > 64 || !run.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return answer(false, None, None, "`run` must be 1–64 letters, digits, '-' or '_'".into());
+    }
+    let cap = cap.unwrap_or(5).clamp(1, 1000);
+    let key = format!("probe:budget:{run}");
+    match mode.unwrap_or("reserve") {
+        "read" => match outlayer::storage::increment(&key, 0) {
+            Ok(count) => answer(true, None, Some(count), format!("counter {run} reads {count}")),
+            Err(e) => answer(false, None, None, format!("the counter could not be read: {e}")),
+        },
+        mode @ ("reserve" | "release") => {
+            let after = match outlayer::storage::increment(&key, 1) {
+                Ok(after) => after,
+                // Lost the compare-and-swap too often, or storage failed: refused,
+                // which is the safe direction for a budget.
+                Err(e) => return answer(false, Some(false), None, format!("the counter could not be updated: {e}")),
+            };
+            if after > cap {
+                let back = outlayer::storage::increment(&key, -1).unwrap_or(after);
+                return answer(true, Some(false), Some(back), format!("refused: the cap of {cap} is full"));
+            }
+            if mode == "release" {
+                let back = outlayer::storage::increment(&key, -1).unwrap_or(after);
+                return answer(true, Some(true), Some(back), "reserved, then given back as a call whose work did not happen does".into());
+            }
+            answer(true, Some(true), Some(after), format!("admitted: {after} of {cap}"))
+        }
+        other => answer(false, None, None, format!("`mode` must be reserve, release or read, not `{other}`")),
     }
 }

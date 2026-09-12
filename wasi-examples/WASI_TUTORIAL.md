@@ -833,9 +833,57 @@ three exist for the wallet's CONFIDENTIAL balance
 `confidential-withdraw`): same policy, but a movement out of it does not name
 the wallet's NEAR account on chain. A connector that funds a venue lets the
 caller choose the source (`intents` or `confidential`) and pays into the
-same address either way. A connector
-that must hold its author's credential on every run names it in the manifest
-(`author_secrets`, see `CONNECTOR_MANIFEST.md`) instead of in the call.
+same address either way.
+
+### 3c. Secrets: the author's, yours, the agent's
+
+Three kinds of secret can reach a run, and every project — not only a
+connector — may use all three. All of them are rows stored on chain with
+`store_secrets` under an **accessor** (`Project`, `Repo` or `WasmHash`), a
+**profile** and an **owner**, encrypted to the keystore; the keystore decrypts
+them inside the TEE and the worker hands them to your module as environment
+variables.
+
+**The author's.** Your own credential — an upstream API key, an SMTP password
+— the same for every caller. Store it under your account with the accessor of
+the project you publish, and name the profile in a manifest embedded in the
+wasm (`outlayer.manifest` custom section, see `CONNECTOR_MANIFEST.md`):
+
+```jsonc
+{ "author_secrets": { "profile": "author" } }
+```
+
+The worker decrypts that profile into **every** run of the project; the call
+carries nothing. Its access condition is judged against the real caller, which
+makes it the project's admission gate: `AllowAll` for a public app, a
+`Whitelist` or `DaoMember` for a circle — a caller the condition refuses gets a
+refused run before anything executes. A declared profile nobody stored refuses
+the run too, with a message saying what to store. Two cautions: a manifest that
+carries `connector_id` turns the outbound allowlist mandatory (a connector's
+rule), so leave it out; and a run that has no project — a `Repo` source
+executed directly — has nowhere to hold an author secret, so build the
+manifest into the artefact you publish as a project only
+(`test-secrets-example` does this with a cargo feature).
+
+**The caller's.** A secret the caller names in the request — `secrets_ref:
+{account_id, profile}` in the HTTPS wrapper or in `request_execution` — gated
+by the condition its owner stored. The dashboard and the CLI default a new
+personal secret under a project to `Whitelist[you]`: anyone who names an
+`AllowAll` row can run the project with it. An owner hands a credential to
+their agents by storing it once and whitelisting the agents' wallet accounts
+(`outlayer secrets access --access whitelist:me.near,<agent>@2026-10-01` —
+the `@date` makes the grant lapse on its own); the agent names `{owner,
+profile}` in `secrets_ref`. Revoking is editing the whitelist; the ciphertext
+never moves.
+
+**The agent's.** A secret stored FOR a custody wallet under the wallet's own
+account (`outlayer secrets set-for-agent`), which a connector call fetches with
+`X-Use-Owner-Secret: 1` and nothing else can read.
+
+A key defined on both the author's and the caller's side refuses the run rather
+than picking a winner. Reserved names (`NEAR_SENDER_ID`, `PROTECTED_*`, …) are
+refused at storage time and stripped at run time, so whatever your module reads
+under a system name came from the worker.
 
 ### 4. Output Size
 

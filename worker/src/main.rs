@@ -115,6 +115,12 @@ async fn main() -> Result<()> {
     info!("Contract ID: {}", config.offchainvm_contract_id);
     info!("Event monitor enabled: {}", config.enable_event_monitor);
     info!("Worker capabilities: {:?}", config.capabilities.to_array());
+    if !config.execute_excludes.is_empty() {
+        info!(
+            "🚫 This node will NOT run: {:?} (EXECUTE_EXCLUDES) — the coordinator hands those tasks to another worker",
+            config.execute_excludes
+        );
+    }
 
     // Initialize API client
     let api_client = ApiClient::new(config.api_base_url.clone(), config.api_auth_token.clone())
@@ -644,7 +650,7 @@ async fn worker_iteration(
     let capabilities = config.capabilities.to_array();
     debug!("🔄 Polling for task (timeout={}s)...", config.poll_timeout_seconds);
     let task = api_client
-        .poll_task(config.poll_timeout_seconds, &capabilities)
+        .poll_task(config.poll_timeout_seconds, &capabilities, &config.execute_excludes)
         .await
         .context("Failed to poll for task")?;
     debug!("🔄 Poll returned: {}", if task.is_some() { "task received" } else { "no task" });
@@ -904,12 +910,7 @@ come from the coordinator's own flow. contract={:?} task={:?}",
                 "Refusing to run: use_bound_identity was requested, but this caller has no \
                  active binding to run as".to_string();
             error!("❌ {}", error_msg);
-            for job in claim_response.jobs {
-                api_client
-                    .complete_job(job.job_id, false, None, Some(error_msg.clone()), 0, 0,
-                                  None, None, None, None, None)
-                    .await?;
-            }
+            refuse_claimed_jobs(api_client, near_client, claim_response.jobs, request_id, is_https_call, call_id.as_deref(), error_msg).await?;
             return Ok(true);
         }
         Some((claimed, payer, require_implicit)) => {
@@ -1003,23 +1004,7 @@ come from the coordinator's own flow. contract={:?} task={:?}",
                 }
                 Err(error_msg) => {
                     error!("❌ {}", error_msg);
-                    for job in claim_response.jobs {
-                        api_client
-                            .complete_job(
-                                job.job_id,
-                                false,
-                                None,
-                                Some(error_msg.clone()),
-                                0,
-                                0,
-                                None,
-                                None,
-                                None,
-                                None,
-                                None,
-                            )
-                            .await?;
-                    }
+                    refuse_claimed_jobs(api_client, near_client, claim_response.jobs, request_id, is_https_call, call_id.as_deref(), error_msg).await?;
                     return Ok(true);
                 }
             }
@@ -2227,7 +2212,7 @@ async fn handle_execute_job(
                 Err(e) => {
                     let error_msg = format!("Failed to download WASM: {}", e);
                     error!("❌ {}", error_msg);
-                    api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None).await?;
+                    report_refusal(api_client, near_client, job, request_id, is_https_call, call_id.map(|s| s.as_str()), error_msg, Some(api_client::JobStatus::Failed)).await?;
                     return Ok(());
                 }
             }
@@ -2242,7 +2227,7 @@ async fn handle_execute_job(
             Err(e) => {
                 let error_msg = format!("Failed to download WASM: {}", e);
                 error!("❌ {}", error_msg);
-                api_client.complete_job(job.job_id, false, None, Some(error_msg), 0, 0, None, None, None, Some(api_client::JobStatus::Failed), None).await?;
+                report_refusal(api_client, near_client, job, request_id, is_https_call, call_id.map(|s| s.as_str()), error_msg, Some(api_client::JobStatus::Failed)).await?;
                 return Ok(());
             }
         }
@@ -2284,11 +2269,75 @@ async fn handle_execute_job(
     info!("🔍 DEBUG secrets_ref: {:?}", secrets_ref);
     info!("🔍 DEBUG keystore_client: {}", if keystore_client.is_some() { "Some" } else { "None" });
 
+    // Whether this run belongs to a curated connector. Structural — decided by
+    // the project's owner account on chain, which a project cannot claim about
+    // itself. Secrets do not care: a connector names and reads them exactly as
+    // any other project does. What does care is the operation check just
+    // below, and later the outbound allowlist and the sub-key gate.
+    let is_connector_call = job
+        .project_id
+        .as_deref()
+        .map(|pid| connector_manifest::is_connector_project(pid, connectors_namespace(&config.near_rpc_url)))
+        .unwrap_or(false);
+
+    // A connector call must name its operation, or it does not run.
+    //
+    // Last of the three checks on the same field, and the only one inside the
+    // TEE. The contract priced this call by reading `operation` out of these
+    // very bytes; the coordinator billed it the same way. This one asserts the
+    // invariant where the code actually runs: if a connector is about to
+    // execute a body that names no operation, then something upstream priced
+    // nothing, and the safe answer is to run nothing.
+    //
+    // Refused BEFORE execution, deliberately. Running and then charging would
+    // mean the side effect — the email — has already happened, and no amount of
+    // money kept afterwards undoes it. The timing is the protection; the money
+    // is not.
+    //
+    // And before the secrets: a call that will not run has nothing to decrypt
+    // for, so no keystore round trip is made and no plaintext exists in this
+    // process for a run that was never going to happen.
+    if let Err(e) = connector_manifest::may_run(is_connector_call, &input_data) {
+        let msg = format!("This is a connector call and {} Nothing was executed.", e.message());
+        error!("❌ {}", msg);
+        report_refusal(
+            api_client,
+            near_client,
+            job,
+            request_id,
+            is_https_call,
+            call_id.map(|s| s.as_str()),
+            msg,
+            Some(api_client::JobStatus::Custom),
+        )
+        .await?;
+        return Ok(());
+    }
+
     let user_secrets = if let (Some(secrets_ref), Some(keystore)) = (secrets_ref, keystore_client) {
         info!("🔐 Decrypting secrets: profile={}, owner={}", secrets_ref.profile, secrets_ref.account_id);
 
-        // user_account_id is the account that requested execution (used for access control)
-        let caller = user_account_id.map(|s| s.as_str()).unwrap_or(&secrets_ref.account_id);
+        // The subject the keystore judges the secret's on-chain
+        // `AccessCondition` against. A run with no proven sender decrypts
+        // nothing — see `proven_sender`.
+        let caller = match proven_sender(user_account_id.map(|s| s.as_str()), &secrets_ref.account_id) {
+            Ok(sender) => sender,
+            Err(msg) => {
+                error!("❌ {}", msg);
+                report_refusal(
+                    api_client,
+                    near_client,
+                    job,
+                    request_id,
+                    is_https_call,
+                    call_id.map(|s| s.as_str()),
+                    msg,
+                    Some(api_client::JobStatus::AccessDenied),
+                )
+                .await?;
+                return Ok(());
+            }
+        };
 
         // Decrypt secrets based on project_id (if present) or code_source type
         let secrets_result = if let Some(ref proj_id) = job.project_id {
@@ -2356,7 +2405,7 @@ async fn handle_execute_job(
                 } else {
                     error!("❌ Secrets decryption failed: {}", error_msg);
                     let error_category = secrets_failure_category(&error_msg);
-                    report_secrets_failure(api_client, near_client, job, request_id, is_https_call, error_msg, error_category).await?;
+                    report_refusal(api_client, near_client, job, request_id, is_https_call, call_id.map(|s| s.as_str()), error_msg, Some(error_category)).await?;
                     return Ok(());
                 }
             }
@@ -2384,7 +2433,7 @@ async fn handle_execute_job(
         Ok(secrets) => secrets,
         Err((msg, category)) => {
             error!("❌ Author secrets: {}", msg);
-            report_secrets_failure(api_client, near_client, job, request_id, is_https_call, msg, category).await?;
+            report_refusal(api_client, near_client, job, request_id, is_https_call, call_id.map(|s| s.as_str()), msg, Some(category)).await?;
             return Ok(());
         }
     };
@@ -2501,31 +2550,7 @@ async fn handle_execute_job(
     //
     // A connector whose manifest cannot be read gets an EMPTY allowlist: no
     // network at all.
-    let in_namespace = job
-        .project_id
-        .as_deref()
-        .map(|pid| connector_manifest::is_connector_project(pid, connectors_namespace(&config.near_rpc_url)))
-        .unwrap_or(false);
-
-    // A connector call must name its operation, or it does not run.
-    //
-    // Last of the three checks on the same field, and the only one inside the
-    // TEE. The contract priced this call by reading `operation` out of these
-    // very bytes; the coordinator billed it the same way. This one asserts the
-    // invariant where the code actually runs: if a connector is about to
-    // execute a body that names no operation, then something upstream priced
-    // nothing, and the safe answer is to run nothing.
-    //
-    // Refused BEFORE execution, deliberately. Running and then charging would
-    // mean the side effect — the email — has already happened, and no amount of
-    // money kept afterwards undoes it. The timing is the protection; the money
-    // is not.
-    if let Err(e) = connector_manifest::may_run(in_namespace, &input_data) {
-        anyhow::bail!(
-            "This is a connector call and {} Nothing was executed.",
-            e.message()
-        );
-    }
+    let in_namespace = is_connector_call;
 
     let network_config = {
         let manifest = declared_manifest.clone();
@@ -3462,36 +3487,6 @@ async fn run_contract_system_callbacks_handler(
 }
 
 
-/// May this job name its own code? (§C3)
-///
-/// A supplied `code_source` names a repository and a ref that nothing on chain
-/// has committed to. For a connector that would hollow out the domain allowlist
-/// — the manifest is read from exactly that repo at exactly that ref, so a
-/// payload-chosen source is a payload-chosen allowlist, the one thing §C3 says
-/// the allowlist must never be.
-///
-/// The test is the PATH, not the project. On the blockchain path this field is
-/// filled by the contract itself: `request_execution` with a `Project` source
-/// resolves the project's active version and puts the result in the event, so
-/// `code_source` and `project_id` arrive together and both come from the chain.
-/// A check that refused that pairing would refuse every legitimate on-chain
-/// execution of a project — and the earlier version of this one did exactly that
-/// for any connector published under the curated namespace, which is the shape
-/// we would move to.
-///
-/// On the HTTPS path the code is whatever the CONTRACT names for the project, and
-/// the worker resolves it itself. The one HTTPS task that legitimately carries a
-/// `code_source` is the coordinator's compile-queue task for an uncached version
-/// — a copy of the chain's answer so the compile worker can download without
-/// resolving — and it is accepted only because the resolution here finds it
-/// identical. The execute task the coordinator re-queues after that download
-/// carries none (`requeued_code_source` in the coordinator). A job naming
-/// anything else is refused, and the refusal is reported back on the call so it
-/// fails now rather than waiting for the stale sweeper.
-///
-/// A function rather than an inline condition so the test can exercise the rule
-/// that actually runs. Written inline, the rule could be deleted from the job
-/// path and a test asserting the same expression would keep passing.
 /// Refuse an HTTPS job before it is claimed, and SAY SO on the call.
 ///
 /// Refused before the claim, nothing downstream would ever settle the call:
@@ -3525,6 +3520,50 @@ async fn refuse_https_call(api_client: &ApiClient, is_https_call: bool, call_id:
     }
 }
 
+/// Refuse every job claimed for one request, after the claim. The request —
+/// the contract's or the HTTPS caller's — is answered ONCE, on the first job;
+/// every job is then completed with the same reason, so nothing stays claimed.
+/// The category is left to the coordinator's default, as it was.
+async fn refuse_claimed_jobs(
+    api_client: &ApiClient,
+    near_client: &NearClient,
+    jobs: Vec<JobInfo>,
+    request_id: u64,
+    is_https_call: bool,
+    call_id: Option<&str>,
+    error_msg: String,
+) -> Result<()> {
+    let mut jobs = jobs.into_iter();
+    if let Some(first) = jobs.next() {
+        report_refusal(api_client, near_client, &first, request_id, is_https_call, call_id, error_msg.clone(), None).await?;
+    }
+    for job in jobs {
+        api_client
+            .complete_job(job.job_id, false, None, Some(error_msg.clone()), 0, 0, None, None, None, None, None)
+            .await?;
+    }
+    Ok(())
+}
+
+/// The account a run is PROVEN to come from, for the keystore to judge a
+/// secret's `AccessCondition` against: on chain the transaction's own signer,
+/// over HTTPS the owner of the payment key that paid. Never `context.sender_id`,
+/// which is what a call claims about itself.
+///
+/// Every door fills it — the contract's event carries `sender_id` as a plain
+/// account, the event monitor and both HTTPS paths forward it — so its absence
+/// is a request none of our doors produced. Such a run decrypts nothing. The
+/// only other answer would be to judge the condition as if the secret's owner
+/// had asked, and that is a way for an impossible request to read as the owner.
+fn proven_sender<'a>(sender: Option<&'a str>, secrets_owner: &str) -> Result<&'a str, String> {
+    sender.ok_or_else(|| {
+        format!(
+            "this run names secrets owned by {secrets_owner} but carries no sender to judge their \
+             access condition against, so nothing was decrypted."
+        )
+    })
+}
+
 /// Which job status a failed secrets decryption maps to.
 fn secrets_failure_category(error_msg: &str) -> api_client::JobStatus {
     if error_msg.contains("Access") && error_msg.contains("denied") {
@@ -3536,49 +3575,28 @@ fn secrets_failure_category(error_msg: &str) -> api_client::JobStatus {
     }
 }
 
-/// Report a run that could not start because its secrets could not be
-/// obtained: for an on-chain request the contract hears of the failure (and
-/// prices it), then the job is completed with the message and the category.
-/// An HTTPS call has no request on chain to answer — the coordinator settles
-/// it from the completed job.
-async fn report_secrets_failure(
+/// Report a run that was refused before the guest ran — its secrets could not
+/// be obtained, its binding did not verify, its connector call named no
+/// operation, its wasm could not be fetched — so that whoever is waiting hears
+/// the reason now rather than at a timeout.
+///
+/// For an on-chain request the contract hears of the failure and prices it.
+/// For an HTTPS call the CALL is settled here, with the reason: the coordinator
+/// settles an HTTPS call only through `complete_https_call`, never from the
+/// job, and a call nobody settles sits `pending` until the timeout sweeper
+/// bills the caller for a run that never started. Then the job is completed
+/// with the message and the category (`None` keeps the coordinator's default).
+async fn report_refusal(
     api_client: &ApiClient,
     near_client: &NearClient,
     job: &JobInfo,
     request_id: u64,
     is_https_call: bool,
+    call_id: Option<&str>,
     error_msg: String,
-    error_category: api_client::JobStatus,
+    error_category: Option<api_client::JobStatus>,
 ) -> Result<()> {
-    let error_result = ExecutionResult {
-        success: false,
-        output: None,
-        error: Some(error_msg.clone()),
-        execution_time_ms: 0,
-        instructions: 0,
-        compile_time_ms: None,
-        compilation_note: None,
-        refund_usd: None,
-    };
-
-    let actual_cost = if is_https_call {
-        0
-    } else {
-        match near_client.submit_execution_result(request_id, &error_result).await {
-            Ok((tx_hash, outcome)) => {
-                info!("✅ Failure reported to NEAR contract (contract panicked as expected): tx_hash={}", tx_hash);
-                let cost = NearClient::extract_payment_from_logs(&outcome);
-                if cost > 0 {
-                    info!("💰 Extracted cost from contract: {} yoctoNEAR ({:.6} NEAR)", cost, cost as f64 / 1e24);
-                }
-                cost
-            }
-            Err(e) => {
-                error!("❌ Failed to report failure to NEAR: {}", e);
-                0
-            }
-        }
-    };
+    let actual_cost = settle_refusal(api_client, near_client, job.job_id, request_id, is_https_call, call_id, &error_msg).await;
 
     api_client
         .complete_job(
@@ -3591,10 +3609,64 @@ async fn report_secrets_failure(
             None,
             if actual_cost > 0 { Some(actual_cost.to_string()) } else { None },
             None,
-            Some(error_category),
+            error_category,
             None, // No compile_result
         )
         .await
+}
+
+/// Answer the party waiting on a refused run — the contract or the HTTPS
+/// caller — and return what the contract charged (0 over HTTPS). Failures to
+/// answer are logged, never propagated: the job still has to be completed, and
+/// the coordinator's timeout sweeper remains the backstop for the call.
+async fn settle_refusal(
+    api_client: &ApiClient,
+    near_client: &NearClient,
+    job_id: i64,
+    request_id: u64,
+    is_https_call: bool,
+    call_id: Option<&str>,
+    error_msg: &str,
+) -> u128 {
+    if is_https_call {
+        match call_id {
+            Some(cid) => {
+                if let Err(e) = api_client
+                    .complete_https_call(cid, false, None, Some(error_msg.to_string()), 0, 0, Some(job_id))
+                    .await
+                {
+                    error!("❌ Failed to settle HTTPS call {} with the refusal: {}", cid, e);
+                }
+            }
+            None => error!("❌ HTTPS job {} carries no call_id; its call cannot be settled", job_id),
+        }
+        return 0;
+    }
+
+    let error_result = ExecutionResult {
+        success: false,
+        output: None,
+        error: Some(error_msg.to_string()),
+        execution_time_ms: 0,
+        instructions: 0,
+        compile_time_ms: None,
+        compilation_note: None,
+        refund_usd: None,
+    };
+    match near_client.submit_execution_result(request_id, &error_result).await {
+        Ok((tx_hash, outcome)) => {
+            info!("✅ Failure reported to NEAR contract (contract panicked as expected): tx_hash={}", tx_hash);
+            let cost = NearClient::extract_payment_from_logs(&outcome);
+            if cost > 0 {
+                info!("💰 Extracted cost from contract: {} yoctoNEAR ({:.6} NEAR)", cost, cost as f64 / 1e24);
+            }
+            cost
+        }
+        Err(e) => {
+            error!("❌ Failed to report failure to NEAR: {}", e);
+            0
+        }
+    }
 }
 
 /// The environment a run gets: the caller's secrets plus, when the manifest
@@ -3639,7 +3711,7 @@ async fn author_secrets_for_run(
         "🔐 Decrypting the author's secrets: project={}, owner={}, profile={}",
         project_id, author.owner, author.profile
     );
-    let caller = caller.unwrap_or(author.owner.as_str());
+    let caller = proven_sender(caller, &author.owner).map_err(|m| (m, JobStatus::AccessDenied))?;
     let decrypted = keystore
         .decrypt_secrets_by_project(project_id, &author.profile, &author.owner, caller, Some(data_id))
         .await
@@ -3666,6 +3738,36 @@ async fn author_secrets_for_run(
         .map_err(|m| (m, JobStatus::Custom))
 }
 
+/// May this job name its own code? (§C3)
+///
+/// A supplied `code_source` names a repository and a ref that nothing on chain
+/// has committed to. For a connector that would hollow out the domain allowlist
+/// — the manifest is read from exactly that repo at exactly that ref, so a
+/// payload-chosen source is a payload-chosen allowlist, the one thing §C3 says
+/// the allowlist must never be.
+///
+/// The test is the PATH, not the project. On the blockchain path this field is
+/// filled by the contract itself: `request_execution` with a `Project` source
+/// resolves the project's active version and puts the result in the event, so
+/// `code_source` and `project_id` arrive together and both come from the chain.
+/// A check that refused that pairing would refuse every legitimate on-chain
+/// execution of a project — and the earlier version of this one did exactly that
+/// for any connector published under the curated namespace, which is the shape
+/// we would move to.
+///
+/// On the HTTPS path the code is whatever the CONTRACT names for the project, and
+/// the worker resolves it itself. The one HTTPS task that legitimately carries a
+/// `code_source` is the coordinator's compile-queue task for an uncached version
+/// — a copy of the chain's answer so the compile worker can download without
+/// resolving — and it is accepted only because the resolution here finds it
+/// identical. The execute task the coordinator re-queues after that download
+/// carries none (`requeued_code_source` in the coordinator). A job naming
+/// anything else is refused, and the refusal is reported back on the call so it
+/// fails now rather than waiting for the stale sweeper.
+///
+/// A function rather than an inline condition so the test can exercise the rule
+/// that actually runs. Written inline, the rule could be deleted from the job
+/// path and a test asserting the same expression would keep passing.
 fn refuses_own_code_source(
     is_https_call: bool,
     provided: Option<&api_client::CodeSource>,
@@ -4391,5 +4493,83 @@ mod verified_sender_tests {
     }
 }
 
+#[cfg(test)]
+mod refusal_settlement_tests {
+    fn production() -> String {
+        let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
+            .expect("the worker can read its own source");
+        src.split_once("#[cfg(test)]").map(|(before, _)| before.to_string()).expect("tests sit last")
+    }
 
+    /// The one refusal path answers BOTH doors before completing the job: the
+    /// contract with `submit_execution_result`, the HTTPS caller with
+    /// `complete_https_call`. The coordinator settles an HTTPS call only through
+    /// the latter; a refusal that only completes the job leaves the call pending
+    /// until the timeout sweeper bills the caller for a run that never started.
+    #[test]
+    fn the_refusal_path_answers_both_doors_then_completes_the_job() {
+        let src = production();
+        let start = src.find("async fn settle_refusal(").expect("the settlement exists");
+        let end = start + src[start..].find("\n}\n").expect("it ends");
+        let settle = &src[start..end];
+        assert!(settle.contains("complete_https_call("), "HTTPS door not answered");
+        assert!(settle.contains("submit_execution_result("), "on-chain door not answered");
+        let start = src.find("async fn report_refusal(").expect("the refusal path exists");
+        let end = start + src[start..].find("\n}\n").expect("it ends");
+        let report = &src[start..end];
+        assert!(report.contains("settle_refusal("), "the refusal path does not settle first");
+        assert!(report.contains("complete_job("), "and it still completes the job");
+    }
 
+    /// Every refusal that happens after the claim goes through that path — a
+    /// site that only completes the job is the bug this module exists for.
+    #[test]
+    fn every_post_claim_refusal_goes_through_the_refusal_path() {
+        let src = production();
+        let after = |anchor: &str, window: usize| -> String {
+            let at = src.find(anchor).unwrap_or_else(|| panic!("anchor moved: {anchor}"));
+            src[at..src.len().min(at + window)].to_string()
+        };
+        // The binding refusals: both arms.
+        assert!(after("Refusing to run: use_bound_identity was requested", 600).contains("refuse_claimed_jobs("));
+        let verdict = after("match verdict {", 900);
+        assert!(verdict.contains("refuse_claimed_jobs("), "the verdict's Err arm does not refuse through the path");
+        // refuse_claimed_jobs itself answers the request on the first job.
+        assert!(after("async fn refuse_claimed_jobs(", 900).contains("report_refusal("));
+        // The connector operation check.
+        assert!(after("connector_manifest::may_run(is_connector_call, &input_data)", 500).contains("report_refusal("));
+        // And it runs BEFORE any secret is decrypted: a call that will not run
+        // has nothing to decrypt for (catalogue C9).
+        let op_check = src.find("connector_manifest::may_run(is_connector_call, &input_data)").expect("the operation check exists");
+        let decryption = src.find("let user_secrets = if let (Some(secrets_ref), Some(keystore))").expect("the secrets block exists");
+        assert!(op_check < decryption, "a connector call naming no operation must be refused before its secrets are decrypted");
+        assert!(!src.contains("anyhow::bail!(\n            \"This is a connector call and"), "may_run bails instead of refusing");
+        // Both wasm download failures.
+        let mut rest = src.as_str();
+        let mut seen = 0;
+        // The two SITES, not the helper that formats the error they carry.
+        while let Some(at) = rest.find("let error_msg = format!(\"Failed to download WASM: {}\", e);") {
+            seen += 1;
+            let window = &rest[at..rest.len().min(at + 500)];
+            assert!(window.contains("report_refusal("), "a wasm download failure only completes the job");
+            rest = &rest[at + 1..];
+        }
+        assert_eq!(seen, 2, "both download branches are checked");
+        // The secrets refusals (caller's, author's, unknown sender).
+        assert!(src.matches("report_refusal(").count() >= 7, "fewer refusal sites than expected");
+    }
+}
+
+#[cfg(test)]
+mod proven_sender_tests {
+    use super::proven_sender;
+
+    /// A sender is passed through untouched; its absence refuses and names the
+    /// secret's owner, never substitutes them.
+    #[test]
+    fn a_run_without_a_sender_decrypts_nothing() {
+        assert_eq!(proven_sender(Some("alice.near"), "bob.near"), Ok("alice.near"));
+        let refusal = proven_sender(None, "bob.near").expect_err("no sender, no decryption");
+        assert!(refusal.contains("bob.near") && refusal.contains("no sender"), "{refusal}");
+    }
+}

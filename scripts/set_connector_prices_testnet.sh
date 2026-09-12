@@ -150,7 +150,8 @@ near_call set_project_pricing "$(cat <<EOF
       {"operation": "sockets",         "price_usd": "0",     "developer_share_bp": 0},
       {"operation": "trap",            "price_usd": "10000", "developer_share_bp": 7000},
       {"operation": "fail",            "price_usd": "10000", "developer_share_bp": 7000},
-      {"operation": "sleep",           "price_usd": "10000", "developer_share_bp": 7000}
+      {"operation": "sleep",           "price_usd": "10000", "developer_share_bp": 7000},
+      {"operation": "budget",          "price_usd": "0",     "developer_share_bp": 0}
     ]
   }
 }

@@ -1,0 +1,31 @@
+{
+  "connector_id": "gmail",
+  "display": {
+    "name": "Gmail",
+    "author": "outlayer.near"
+  },
+  "operations": [
+    "status",
+    "send"
+  ],
+  "capabilities": {
+    "network": [
+      "oauth2.googleapis.com",
+      "gmail.googleapis.com"
+    ]
+  },
+  "limits": [
+    {
+      "operation": "send",
+      "window": "day",
+      "max_count": 400,
+      "applies": "everyone"
+    },
+    {
+      "operation": "status",
+      "window": "day",
+      "max_count": 1000,
+      "applies": "everyone"
+    }
+  ]
+}
