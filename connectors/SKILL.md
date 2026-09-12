@@ -32,7 +32,9 @@ Content-Type: application/json
   (policy, API tokens) into the run. To use a credential your owner stored under
   THEIR account and whitelisted you for, name it instead:
   `{"input": {...}, "secrets_ref": {"account_id": "owner.near", "profile": "gmail"}}`.
-  With neither, the connector starts with no secrets and says so.
+  Such a grant may carry an expiry, so a call that worked yesterday can be
+  refused today with the date it lapsed on. With neither, the connector starts
+  with no secrets and says so.
 * Testnet: `https://testnet-api.outlayer.ai/call/connectors.outlayer.testnet/<connector>`.
 
 The answer is always `{"success": bool, "output": {...}, "error": "...", "logs": []}`.
@@ -47,7 +49,8 @@ The answer is always `{"success": bool, "output": {...}, "error": "...", "logs":
 | `Daily connector quota reached` | the wallet's daily call budget is spent (refused calls count too) | wait; the budget grows with wallet age |
 | `unknown_operation` / "does not sell operation" | the operation is not priced | read the connector's skill for the list |
 | `invalid_secrets_ref` | the `secrets_ref` names no possible row: the account id is not one, or the profile is empty or over 64 characters | fix the reference — `{"account_id": "<owner>", "profile": "<name>"}` |
-| `Access to secrets denied` | the row exists but its condition does not admit your wallet | ask the owner to whitelist your wallet's 64-character account (`outlayer secrets access`), or name a row that does |
+| `Access denied by access condition` | the row exists but its condition does not admit your wallet | ask the owner to whitelist your wallet's 64-character account (`outlayer secrets access`), or name a row that does |
+| `… its time limit passed at <date>` | you WERE granted and the grant has expired | ask the owner to grant again with a later date; being named again without one does not help |
 | the venue's own text | the outside service refused | act on it; the platform did its part |
 
 ## What a call costs

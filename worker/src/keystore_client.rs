@@ -216,6 +216,28 @@ pub struct KeystoreClient {
     tee_signing_info: Option<Arc<near_crypto::SecretKey>>,
 }
 
+/// What a caller is told when the keystore refuses a secret's access condition.
+///
+/// The keystore's OWN sentence is kept. It is the only party that knows why the
+/// condition refused, and the one reason it can name — a time limit that has
+/// passed — is also the one the owner fixes by re-granting rather than the
+/// caller by asking to be let in. A fixed string here made a lapsed grant read
+/// exactly like never having been granted at all.
+fn access_denied_message(error_text: &str) -> String {
+    let said = serde_json::from_str::<serde_json::Value>(error_text)
+        .ok()
+        .and_then(|json| {
+            json.get("error")
+                .and_then(|e| e.as_str())
+                .map(|e| e.trim().trim_end_matches('.').to_string())
+        })
+        .filter(|e| !e.is_empty());
+    match said {
+        Some(said) => format!("{said}. Check the access conditions configured by the secret owner."),
+        None => "Access to secrets denied. Check access conditions.".to_string(),
+    }
+}
+
 impl KeystoreClient {
     /// Create new keystore client over one or more instances (see [`parse_base_urls`]).
     pub fn new(base_urls: Vec<String>, auth_token: String) -> Result<Self> {
@@ -819,19 +841,7 @@ impl KeystoreClient {
                     "Invalid secrets request. Please check your secrets configuration.".to_string()
                 }
             } else if status == 401 {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&error_text) {
-                    if let Some(error) = json.get("error").and_then(|e| e.as_str()) {
-                        if error.contains("Access denied") {
-                            "Access to secrets denied. You do not have permission to use these secrets. Check the access conditions configured by the secret owner.".to_string()
-                        } else {
-                            format!("Secret access error: {}", error)
-                        }
-                    } else {
-                        "Access to secrets denied. Check access conditions.".to_string()
-                    }
-                } else {
-                    "Access to secrets denied. Check access conditions.".to_string()
-                }
+                access_denied_message(&error_text)
             } else if status == 404 {
                 format!("Secrets not found for this {}.", context)
             } else {
@@ -1545,5 +1555,51 @@ mod tests {
         // Keystore expects: {"type": "WasmHash", "hash": "..."}
         assert!(json.contains(r#""type":"WasmHash""#));
         assert!(json.contains(r#""hash":"deadbeef""#));
+    }
+}
+
+#[cfg(test)]
+mod access_denied_tests {
+    use super::access_denied_message;
+
+    /// The keystore names the instant a grant lapsed, and that instant must
+    /// reach the caller: it is the whole difference between "ask to be granted"
+    /// and "ask to be granted again".
+    #[test]
+    fn a_lapsed_time_limit_reaches_the_caller() {
+        let m = access_denied_message(
+            r#"{"error":"Access denied by access condition: its time limit passed at 2026-10-01T00:00:00Z"}"#,
+        );
+        assert!(m.contains("time limit passed at 2026-10-01T00:00:00Z"), "{m}");
+        assert!(m.contains("access conditions"), "the advice is still offered: {m}");
+    }
+
+    #[test]
+    fn a_plain_refusal_still_reads_as_one() {
+        assert_eq!(
+            access_denied_message(r#"{"error":"Access denied by access condition"}"#),
+            "Access denied by access condition. Check the access conditions configured by the secret owner."
+        );
+    }
+
+    /// An agent-shaped row refused for being somebody else's is not a condition
+    /// refusal, and its own sentence reaches the caller too.
+    #[test]
+    fn any_reason_the_keystore_gives_is_passed_on() {
+        let m = access_denied_message(r#"{"error":"This secret belongs to another agent"}"#);
+        assert!(m.starts_with("This secret belongs to another agent."), "{m}");
+    }
+
+    /// A body that is not the keystore's shape must not produce an empty or
+    /// misleading sentence.
+    #[test]
+    fn an_unreadable_body_falls_back() {
+        for body in ["", "not json", "{}", r#"{"error":""}"#, r#"{"error":"   "}"#] {
+            assert_eq!(
+                access_denied_message(body),
+                "Access to secrets denied. Check access conditions.",
+                "{body}"
+            );
+        }
     }
 }
