@@ -29,14 +29,19 @@
 #   S1  a wallet the row does not name is refused, with and without
 #       use_bound_identity — a binding moves the name a guest acts as, not
 #       access
-#   P1  header AND body on a connector: the body's row wins
-#       [AGENT_SECRET_MODE; RUN_CONNECTOR_BODY=1 once the coordinator honouring
-#        a body secrets_ref on the connector path is deployed]
+#   P1  header AND body on a connector: the body's row wins [AGENT_SECRET_MODE;
+#       RUN_CONNECTOR_BODY=0 skips it on a coordinator too old to honour a body
+#       secrets_ref on the connector path]
 #   T1  a grant whose ValidUntil has passed refuses, and the message names the
-#       instant                              [contract + keystore with ValidUntil]
+#       instant (the naming needs a worker carrying access_denied_message; the
+#       rows skip themselves on a contract or keystore without ValidUntil)
 #   T2  the same grant moved to the future admits
 #   T3  until_ns "abc" is refused by the contract; "0" is stored, and the
 #       owner's own Or-branch still admits the owner
+#   T4  the whole cycle on one row: granted until a future instant and admitted,
+#       the instant moved into the past and refused, a later instant and admitted
+#       again — with the stored instant read back to the nanosecond and the
+#       ciphertext never moving
 #
 # Needs:
 #   PARENT               the project owner, key in the keychain; the outlayer
@@ -49,7 +54,7 @@
 #   AGENT_PAYMENT_KEY / AGENT_ACCOUNT   (S1, P1) a custody wallet's key and
 #                        implicit account — a wallet the rows here never name
 #   AGENT_WK             (P1) that wallet's wk_, for `secrets set-for-agent`
-#   RUN_CONNECTOR_BODY=1 (P1) see above; default 0
+#   RUN_CONNECTOR_BODY=0 (P1) skip it against an older coordinator; default 1
 #   AGENT_SECRET_MODE    run|skip (tests/lib/agent_secret_mode.sh); P1 is the
 #                        one case here that uses the agent-secret mode
 #
@@ -75,12 +80,12 @@ AGENT_PAYMENT_KEY="${AGENT_PAYMENT_KEY:-}"
 AGENT_ACCOUNT="${AGENT_ACCOUNT:-}"
 AGENT_WK="${AGENT_WK:-}"
 OUTLAYER_BIN="${OUTLAYER_BIN:-outlayer}"
-RUN_CONNECTOR_BODY="${RUN_CONNECTOR_BODY:-0}"
+RUN_CONNECTOR_BODY="${RUN_CONNECTOR_BODY:-1}"
 DEPOSIT='0.1 NEAR'
 
 MODE="${1:-}"
 if [[ "$MODE" != "--apply" ]]; then
-  sed -n '3,63p' "$0" >&2
+  sed -n '3,67p' "$0" >&2
   echo "  Pass --apply to run." >&2
   exit 0
 fi
@@ -404,14 +409,24 @@ if ! try_update_access "$PARENT" "$PROJECT" "$ROW" "$(grant_until 1)"; then
   skip "T1–T3: the contract refuses ValidUntil ($(grep -o 'unknown variant[^"]\{0,60\}\|Smart contract panicked[^"]\{0,60\}' <<<"$TRY_OUT" | head -1)) — deploy the contract that carries it"
 else
   run_as "$STRANGER" "$PARENT/$ROW"
-  if [[ "$RUN_OK" == "false" ]] && grep -q "time limit passed at 1970-01-01T00:00:00Z" <<<"$RUN_ERR"; then
-    pass "T1 refused, naming the instant: $(head -c 120 <<<"$RUN_ERR")"
-  elif [[ "$RUN_OK" == "false" ]] && grep -qi "unknown variant\|ValidUntil\|parse" <<<"$RUN_ERR"; then
+  if [[ "$RUN_OK" == "false" ]] && grep -qi "unknown variant\|ValidUntil\|parse" <<<"$RUN_ERR"; then
     skip "T1–T3: the keystore does not know ValidUntil yet ($(head -c 100 <<<"$RUN_ERR")) — deploy the keystore that carries it"
     restore_row
     verdict "secrets security"; exit $?
+  elif [[ "$RUN_OK" == "false" ]] && grep -qi "denied" <<<"$RUN_ERR"; then
+    # The VERDICT and the REASON are two claims, and only the first is the
+    # product's behaviour. A lapsed grant must refuse; naming the instant it
+    # lapsed at is the worker passing the keystore's own sentence through
+    # (`access_denied_message`), which a worker built before that fix replaces
+    # with a fixed string.
+    pass "T1 the lapsed grant refuses the stranger: $(head -c 100 <<<"$RUN_ERR")"
+    if grep -q "time limit passed at 1970-01-01T00:00:00Z" <<<"$RUN_ERR"; then
+      pass "T1 and the message names the instant it lapsed at"
+    else
+      finding "T1 the refusal does not name the instant — this worker replaces the keystore's sentence with a fixed string; needs the access_denied_message fix deployed"
+    fi
   else
-    fail "T1 stranger: success=$RUN_OK user=$(field .user) err='$RUN_ERR' (expected a refusal naming 1970-01-01T00:00:00Z)"
+    fail "T1 stranger: success=$RUN_OK user=$(field .user) err='$RUN_ERR' (expected a refusal)"
   fi
   run_as "$PARENT" "$PARENT/$ROW"
   [[ "$RUN_OK" == "true" && "$(field .user)" == "true" ]] \
@@ -440,6 +455,44 @@ else
   [[ "$RUN_OK" == "false" ]] \
     && pass "T3 and the stranger's lapsed branch refuses" \
     || fail "T3 stranger under until_ns 0 was admitted"
+
+  # ── T4 the whole cycle, on one row, with the value never re-stored ──────────
+  #
+  # What an owner actually does: grant until a date, watch it lapse, grant
+  # again. Nobody waits an hour for the lapse — moving the instant into the past
+  # is the same thing to the keystore, and it is the same `update_access` the
+  # owner would use to shorten a grant.
+  log "T4 granted, lapsed, granted again"
+  BLOB_T4=$(jq -r '.encrypted_secrets' <<<"$(row_of "$PROJECT" "$ROW")")
+  FUTURE=$(( NOW_NS + 3600 * 1000000000 ))
+  set_access "$PROJECT" "$ROW" "$(grant_until "$FUTURE")"
+  # Stored is stored: the instant must come back as it went in, to the
+  # nanosecond. A `U64` that lost precision or a string that became a number
+  # would still look like a date here and admit at the wrong moment.
+  STORED_UNTIL=$(jq -r '.. | objects | select(has("ValidUntil")) | .ValidUntil.until_ns' \
+    <<<"$(row_of "$PROJECT" "$ROW")" 2>/dev/null | head -1)
+  [[ "$STORED_UNTIL" == "$FUTURE" ]] \
+    && pass "T4 the chain stored the exact instant it was given ($FUTURE)" \
+    || fail "T4 the chain stored until_ns '$STORED_UNTIL', expected '$FUTURE'"
+  run_as "$STRANGER" "$PARENT/$ROW"
+  [[ "$RUN_OK" == "true" && "$(field .user)" == "true" ]] \
+    && pass "T4 granted until an hour from now: the stranger reads it" \
+    || fail "T4 granted: success=$RUN_OK user=$(field .user) err='$RUN_ERR'"
+
+  set_access "$PROJECT" "$ROW" "$(grant_until 1)"
+  run_as "$STRANGER" "$PARENT/$ROW"
+  [[ "$RUN_OK" == "false" ]] && grep -qi "denied" <<<"$RUN_ERR" \
+    && pass "T4 the instant moved into the past: the same caller is refused" \
+    || fail "T4 lapsed: success=$RUN_OK user=$(field .user) err='$RUN_ERR'"
+
+  set_access "$PROJECT" "$ROW" "$(grant_until "$FUTURE")"
+  run_as "$STRANGER" "$PARENT/$ROW"
+  [[ "$RUN_OK" == "true" && "$(field .user)" == "true" && "$(secret_value USER_SECRET)" == "$USER_CANARY" ]] \
+    && pass "T4 a later instant brings it back, and the canary is the same secret" \
+    || fail "T4 re-dated: success=$RUN_OK user=$(field .user) err='$RUN_ERR'"
+  [[ -n "$BLOB_T4" && "$(jq -r '.encrypted_secrets' <<<"$(row_of "$PROJECT" "$ROW")")" == "$BLOB_T4" ]] \
+    && pass "T4 and the ciphertext never moved: only the date was ever edited" \
+    || fail "T4 the ciphertext changed while only the date was edited"
   restore_row
 fi
 fi
